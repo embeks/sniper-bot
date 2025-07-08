@@ -75,7 +75,8 @@ def check_new_tokens():
                 f"Name: {name.upper()}\nLiquidity: ${liquidity:,.0f}\nHolders: {holders}"
             )
 
-send_telegram_alert("✅ Sniper bot is now live and running on Render.")  # ← outside the function
+# ✅ Send once when the script starts
+send_telegram_alert("✅ Sniper bot is now live")
 
 # Main loop
 while True:
