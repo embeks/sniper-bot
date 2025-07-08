@@ -75,10 +75,11 @@ def check_new_tokens():
                 f"Name: {name.upper()}\nLiquidity: ${liquidity:,.0f}\nHolders: {holders}"
             )
             send_telegram_alert(msg)
-
+            
 # Main loop
 while True:
     try:
+        send_telegram_alert("✅ Sniper bot is now live and running on Render.")
         check_new_tokens()
         print("Waiting...")
         time.sleep(CHECK_INTERVAL)
