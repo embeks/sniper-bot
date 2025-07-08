@@ -74,9 +74,9 @@ def check_new_tokens():
                 f"🆕 NEW SOLANA TOKEN DETECTED\n\n"
                 f"Name: {name.upper()}\nLiquidity: ${liquidity:,.0f}\nHolders: {holders}"
             )
-            send_telegram_alert(msg)
-            
-        send_telegram_alert("✅ Sniper bot is now live and running on Render.")    
+
+send_telegram_alert("✅ Sniper bot is now live and running on Render.")  # ← outside the function
+
 # Main loop
 while True:
     try:
