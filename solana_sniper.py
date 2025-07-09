@@ -1,5 +1,5 @@
-# solana_sniper.py
-
+import os
+import json
 from solana.publickey import PublicKey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
@@ -7,22 +7,25 @@ from solana.system_program import TransferParams, transfer
 from solana.keypair import Keypair
 from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
-import os
-import json
+
+# 🔐 Load Solana private key from environment
+solana_key_str = os.getenv("SOLANA_PRIVATE_KEY")
+if solana_key_str:
+    solana_private_key = json.loads(solana_key_str)
+else:
+    raise Exception("❌ SOLANA_PRIVATE_KEY not set in environment!")
+
+# 🧠 Convert to usable keypair
+keypair = Keypair.from_secret_key(bytes(solana_private_key))
+wallet_public_key = keypair.public_key
 
 # 🔧 Setup RPC client
 client = Client("https://api.mainnet-beta.solana.com")
 
-# 🔑 Load wallet keypair from .json file
-def load_keypair(filepath="solana_wallet.json"):
-    with open(filepath, "r") as f:
-        secret = json.load(f)
-    return Keypair.from_secret_key(bytes(secret))
-
 # 🧨 Send SOL to the token address (simple buy logic)
 def buy_token(token_address, sol_amount=0.01):
     try:
-        wallet = load_keypair()
+        wallet = keypair
         token_pubkey = PublicKey(token_address)
 
         tx = Transaction()
