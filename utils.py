@@ -72,15 +72,18 @@ def check_new_tokens():
             continue
 
         # 🔒 Protection Checks
-        if not is_token_verified(address):
-            print(f"[⛔] Skipped: Contract not verified - {name.upper()}")
-            continue
-        if has_blacklist_or_mint_functions(address):
-            print(f"[⛔] Skipped: Suspicious bytecode - {name.upper()}")
-            continue
-        if not is_lp_locked_or_burned(address):
-            print(f"[⛔] Skipped: LP not locked or burned - {name.upper()}")
-            continue
+if not is_token_verified(address):
+    print(f"[⛔] Skipped: Contract not verified – {name.upper()}")
+    continue
+if has_blacklist_or_mint_functions(address):
+    print(f"[⛔] Skipped: Suspicious bytecode – {name.upper()}")
+    continue
+if not is_lp_locked_or_burned(address):
+    print(f"[⛔] Skipped: LP not locked or burned – {name.upper()}")
+    continue
+if is_honeypot(address):
+    print(f"[⛔] Skipped: Honeypot suspected — {name.upper()}")
+    continue
             
         # ✅ Passed filters — Check cooldown
         now = time.time()
@@ -186,4 +189,26 @@ def is_lp_locked_or_burned(token_address):
         return False
     except Exception as e:
         print(f"[!] LP lock check failed: {e}")
+        return False
+def is_honeypot(token_address):
+    try:
+        url = f"https://public-api.birdeye.so/public/token/{token_address}"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        res = requests.get(url, headers=headers)
+        token_data = res.json().get("data", {})
+        if not token_data:
+            return True  # Unknown token – assume risk
+
+        # Heuristic: high sell tax or blocked sales
+        buy_tax = token_data.get("buy_tax", 0)
+        sell_tax = token_data.get("sell_tax", 0)
+        is_blocked = token_data.get("is_honeypot", False)
+
+        if sell_tax > 20 or is_blocked:
+            print(f"[⛔] Flagged as honeypot: SELL TAX = {sell_tax}%, BLOCKED = {is_blocked}")
+            return True
+
+        return False
+    except Exception as e:
+        print(f"[!] Honeypot check failed: {e}")
         return False
