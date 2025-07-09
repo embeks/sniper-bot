@@ -3,6 +3,9 @@ import os
 import time
 import requests
 from dotenv import load_dotenv
+# Alert cooldowns
+ALERT_COOLDOWN = 300  # seconds (e.g. 5 minutes)
+last_alert_times = {}  # token_address: timestamp
 
 # Load secrets from .env
 load_dotenv()
@@ -78,15 +81,22 @@ def check_new_tokens():
         if not is_lp_locked_or_burned(address):
             print(f"[⛔] Skipped: LP not locked or burned - {name.upper()}")
             continue
+            
+        # ✅ Passed filters — Check cooldown
+        now = time.time()
+        if address in last_alert_times and now - last_alert_times[address] < ALERT_COOLDOWN:
+            print(f"[⏳] Skipping duplicate alert for {name.upper()} (cooldown)")
+            continue
 
-        # ✅ Passed filters — Alert!
-       msg = (
-    f"✅ Passed Filters — New SOLANA Token Detected\n\n"
-    f"🪙 Name: {name.upper()}\n"
-    f"💧 Liquidity: ${liquidity:,.0f}\n"
-    f"👥 Holders: {holders}\n"
-    f"📬 Address: {address}"
-)
+        last_alert_times[address] = now
+
+        msg = (
+            f"✅ Passed Filters — New SOLANA Token Detected\n\n"
+            f"🪙 Name: {name.upper()}\n"
+            f"💧 Liquidity: ${liquidity:,.0f}\n"
+            f"👥 Holders: {holders}\n"
+            f"📬 Address: {address}"
+        )
         send_telegram_alert(msg)
 # 🚀 Add to the bottom of your utils.py file
 
