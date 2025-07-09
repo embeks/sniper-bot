@@ -112,3 +112,53 @@ def check_wallet_activity(wallets_to_follow):
 
     except Exception as e:
         print(f"[!] Wallet activity check failed: {e}")
+# utils.py (add this at the bottom of the file)
+
+import base64
+import json
+
+# 🚨 RUG PROTECTION - Basic contract safety checks
+
+def is_contract_verified(token_address):
+    try:
+        url = f"https://public-api.birdeye.so/public/token/{token_address}"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        res = requests.get(url, headers=headers)
+        data = res.json().get("data", {})
+        verified = data.get("is_verified", False)
+        return verified
+    except Exception as e:
+        print(f"[!] Contract verification check failed: {e}")
+        return False
+
+def has_blacklist_or_mint_functions(token_address):
+    try:
+        url = f"https://public-api.birdeye.so/public/token/{token_address}"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        res = requests.get(url, headers=headers)
+        bytecode = res.json().get("data", {}).get("bytecode", "")
+
+        decoded = base64.b64decode(bytecode.encode()).decode(errors="ignore")
+        flags = ["blacklist", "mint", "pause", "setAdmin", "setBlacklist"]
+        for flag in flags:
+            if flag in decoded:
+                print(f"[!] Flagged function detected in bytecode: {flag}")
+                return True
+        return False
+    except Exception as e:
+        print(f"[!] Bytecode flag check failed: {e}")
+        return False
+def is_lp_locked_or_burned(token_address):
+    try:
+        url = f"https://public-api.birdeye.so/public/token/{token_address}/lp"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        res = requests.get(url, headers=headers)
+        lp_data = res.json().get("data", {})
+        locked = lp_data.get("locked", 0)
+        burned = lp_data.get("burned", 0)
+        if locked > 0 or burned > 0:
+            return True
+        return False
+    except Exception as e:
+        print(f"[!] LP lock check failed: {e}")
+        return False
