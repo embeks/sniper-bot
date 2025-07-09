@@ -98,7 +98,7 @@ if is_honeypot(address):
             f"📬 Address: {address}"
         )
         send_telegram_alert(msg)
-snipe_token(address)
+buy_token(address, sol_amount=0.045)
 import json
 
 def load_wallets_to_follow(filename="wallets_to_follow.txt"):
