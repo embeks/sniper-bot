@@ -73,3 +73,42 @@ def check_new_tokens():
                 f"Name: {name.upper()}\nLiquidity: ${liquidity:,.0f}\nHolders: {holders}"
             )
             send_telegram_alert(msg)
+# 🚀 Add to the bottom of your utils.py file
+
+import json
+
+# 🔍 Load wallets to follow from wallets_to_follow.txt
+def load_wallets_to_follow(filename="wallets_to_follow.txt"):
+    try:
+        with open(filename, "r") as f:
+            wallets = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        print(f"[+] Loaded {len(wallets)} wallets to follow.")
+        return wallets
+    except Exception as e:
+        print(f"[!] Error loading wallet list: {e}")
+        return []
+        
+# 🔍 Scan recent transactions and alert if any tracked wallet buys a new token
+def check_wallet_activity(wallets_to_follow):
+    try:
+        url = "https://public-api.birdeye.so/public/txs/recent?limit=50"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        txs = res.json().get("data", [])
+
+        for tx in txs:
+            buyer = tx.get("signer")
+            token = tx.get("token_symbol")
+            token_address = tx.get("token_address")
+
+            if buyer and buyer.lower() in wallets_to_follow:
+                msg = (
+                    f"🐋 Wallet Buy Detected\n\n"
+                    f"Wallet: {buyer}\nToken: {token}\nToken Address: {token_address}"
+                )
+                send_telegram_alert(msg)
+                print(f"[ALERT] Whale Buy: {buyer} -> {token}")
+
+    except Exception as e:
+        print(f"[!] Wallet activity check failed: {e}")
