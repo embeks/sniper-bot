@@ -34,16 +34,16 @@ def send_telegram_alert(msg):
         print(f"[!] Telegram error: {e}")
 
 def check_new_tokens():
-    url = "https://public-api.birdeye.so/public/tokenlist?sort_by=txns24h&sort_type=desc&limit=15"
-    headers = {"X-API-KEY": BIRDEYE_API_KEY}
     try:
+        url = "https://public-api.birdeye.so/public/tokenlist?sort_by=txns24h&sort_type=desc&limit=15"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
         response = requests.get(url, headers=headers)
-        tokens = response.json().get("data", [])
+        data = response.json()
     except Exception as e:
         print(f"[!] Birdeye error: {e}")
         return
 
-    for token in tokens:
+    for token in data.get("data", []):
         name = token.get("name", "").lower()
         address = token.get("address")
         liquidity = token.get("liquidity", 0)
@@ -52,27 +52,40 @@ def check_new_tokens():
         txns_5m = token.get("txns5m", 0)
         chain = token.get("chain", "unknown")
 
-        print(f"Scanning: {name} | Chain: {chain} | Price: {price} | LP: {liquidity} | Holders: {holders} | 5m TXNs: {txns_5m}")
+        print(f"🔍 Scanning: {name.upper()} | Price: {price} | LP: {liquidity} | Holders: {holders} | 5m TXNs: {txns_5m}")
 
-        # DEGE x targets
+        # 🎯 DEGE WATCHLIST
         if name == "dege":
             for label, target in dege_targets.items():
                 if price >= target["price"] and not target["hit"]:
-                    send_telegram_alert(f"🔥 DEGE HIT {label.upper()}\nPrice: ${price:.5f}")
-                    target["hit"] = True
+                    send_telegram_alert(f"🎯 DEGE HIT {label}!\nPrice: ${price:.5f}")
+                    dege_targets[label]["hit"] = True
 
         if chain != "solana":
             continue
-
         if txns_5m > 100 and liquidity < 1000:
             continue
+        if not (liquidity >= MIN_LIQUIDITY and MIN_HOLDERS <= holders <= MAX_HOLDERS):
+            continue
 
-        if liquidity >= MIN_LIQUIDITY and MIN_HOLDERS <= holders <= MAX_HOLDERS:
-            msg = (
-                f"🆕 NEW SOLANA TOKEN DETECTED\n\n"
-                f"Name: {name.upper()}\nLiquidity: ${liquidity:,.0f}\nHolders: {holders}"
-            )
-            send_telegram_alert(msg)
+        # 🔒 Protection Checks
+        if not is_token_verified(address):
+            print(f"[⛔] Skipped: Contract not verified - {name.upper()}")
+            continue
+        if has_blacklist_or_mint_functions(address):
+            print(f"[⛔] Skipped: Suspicious bytecode - {name.upper()}")
+            continue
+        if not is_lp_locked_or_burned(address):
+            print(f"[⛔] Skipped: LP not locked or burned - {name.upper()}")
+            continue
+
+        # ✅ Passed filters — Alert!
+        msg = (
+            f"🆕 NEW SOLANA TOKEN DETECTED\n\n"
+            f"Name: {name.upper()}\nLiquidity: ${liquidity:,.0f}\nHolders: {holders}\n\n"
+            f"Address: {address}"
+        )
+        send_telegram_alert(msg)
 # 🚀 Add to the bottom of your utils.py file
 
 import json
