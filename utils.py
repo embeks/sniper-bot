@@ -80,11 +80,13 @@ def check_new_tokens():
             continue
 
         # ✅ Passed filters — Alert!
-        msg = (
-            f"🆕 NEW SOLANA TOKEN DETECTED\n\n"
-            f"Name: {name.upper()}\nLiquidity: ${liquidity:,.0f}\nHolders: {holders}\n\n"
-            f"Address: {address}"
-        )
+       msg = (
+    f"✅ Passed Filters — New SOLANA Token Detected\n\n"
+    f"🪙 Name: {name.upper()}\n"
+    f"💧 Liquidity: ${liquidity:,.0f}\n"
+    f"👥 Holders: {holders}\n"
+    f"📬 Address: {address}"
+)
         send_telegram_alert(msg)
 # 🚀 Add to the bottom of your utils.py file
 
