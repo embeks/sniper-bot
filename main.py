@@ -1,4 +1,4 @@
-from utils import check_new_tokens, send_telegram_alert
+from utils import check_new_tokens, send_telegram_alert, load_wallets_to_follow, check_wallet_activity
 import time
 
 # ✅ Run once at start
