@@ -71,7 +71,6 @@ def check_new_tokens():
         if not (liquidity >= MIN_LIQUIDITY and MIN_HOLDERS <= holders <= MAX_HOLDERS):
             continue
 
-        # 🔒 Protection Checks
 if not is_token_verified(address):
     print(f"[⛔] Skipped: Contract not verified – {name.upper()}")
     continue
@@ -85,14 +84,12 @@ if is_honeypot(address):
     print(f"[⛔] Skipped: Honeypot suspected — {name.upper()}")
     continue
             
-        # ✅ Passed filters — Check cooldown
         now = time.time()
         if address in last_alert_times and now - last_alert_times[address] < ALERT_COOLDOWN:
             print(f"[⏳] Skipping duplicate alert for {name.upper()} (cooldown)")
             continue
 
         last_alert_times[address] = now
-
         msg = (
             f"✅ Passed Filters — New SOLANA Token Detected\n\n"
             f"🪙 Name: {name.upper()}\n"
@@ -101,11 +98,9 @@ if is_honeypot(address):
             f"📬 Address: {address}"
         )
         send_telegram_alert(msg)
-# 🚀 Add to the bottom of your utils.py file
-
+snipe_token(address)
 import json
 
-# 🔍 Load wallets to follow from wallets_to_follow.txt
 def load_wallets_to_follow(filename="wallets_to_follow.txt"):
     try:
         with open(filename, "r") as f:
@@ -116,7 +111,6 @@ def load_wallets_to_follow(filename="wallets_to_follow.txt"):
         print(f"[!] Error loading wallet list: {e}")
         return []
         
-# 🔍 Scan recent transactions and alert if any tracked wallet buys a new token
 def check_wallet_activity(wallets_to_follow):
     try:
         url = "https://public-api.birdeye.so/public/txs/recent?limit=50"
@@ -211,4 +205,19 @@ def is_honeypot(token_address):
         return False
     except Exception as e:
         print(f"[!] Honeypot check failed: {e}")
+        return False
+# 🎯 Snipe token function (add to utils.py)
+def snipe_token(token_address):
+    try:
+        # Placeholder logic: replace with actual Web3 buy logic
+        print(f"[🚀] Sniping token: {token_address}")
+        
+        # Send Telegram alert
+        send_telegram_alert(f"🚀 SNIPED TOKEN\nAddress: {token_address}")
+
+        # TODO: Implement real buy logic using your preferred library (e.g., web3.py or solana-py)
+
+        return True
+    except Exception as e:
+        print(f"[!] Sniping failed: {e}")
         return False
