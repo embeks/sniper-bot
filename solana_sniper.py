@@ -22,12 +22,16 @@ wallet_public_key = keypair.public_key
 # 🔧 Setup RPC client
 client = Client("https://api.mainnet-beta.solana.com")
 
-# 🧨 Send SOL to the token address (simple buy logic)
 def buy_token(token_address, sol_amount=0.01):
     try:
         wallet = keypair
         token_pubkey = PublicKey(token_address)
 
+        # 🧾 Get wallet balance before
+        before_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
+        print(f"💰 Balance before buy: {before_balance:.4f} SOL")
+
+        # 💸 Create transaction
         tx = Transaction()
         tx.add(
             transfer(
@@ -39,15 +43,21 @@ def buy_token(token_address, sol_amount=0.01):
             )
         )
 
+        # 🚀 Send transaction
         resp = client.send_transaction(
             tx,
             wallet,
-            opts=TxOpts(skip_confirmation=False, preflight_commitment=Confirmed)
+            opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
         )
 
-        print(f"✅ SNIPED {token_address} | TX: {resp['result']}")
-        return True
+        # ⏱ Wait a moment for network confirmation (optional safety buffer)
+        import time
+        time.sleep(2)
+
+        # 🧾 Get wallet balance after
+        after_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
+        print(f"✅ Buy successful — TX: {resp['result']}")
+        print(f"💰 Balance after buy: {after_balance:.4f} SOL")
 
     except Exception as e:
-        print(f"[!] Snipe failed: {e}")
-        return False
+        print(f"[!] Sniping failed: {e}")
