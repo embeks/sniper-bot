@@ -1,5 +1,7 @@
+from price_utils import get_token_price, get_token_liquidity
 import os
 import json
+import time
 from solana.publickey import PublicKey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
@@ -21,6 +23,51 @@ wallet_public_key = keypair.public_key
 
 # 🔧 Setup RPC client
 client = Client("https://api.mainnet-beta.solana.com")
+
+
+def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, timeout=300):
+    from time import time, sleep
+
+    print(f"[⏳] Monitoring {token_address} for take-profit...")
+    start_time = time()
+
+    while time() - start_time < timeout:
+        try:
+            current_price = get_token_price(token_address)
+            if current_price and current_price >= entry_price * take_profit:
+                print(f"[✅] Profit target hit — {current_price:.4f} (entry: {entry_price:.4f})")
+                sell_token(token_address, wallet)
+                return
+        except Exception as e:
+            print(f"[⚠️] Error checking price: {e}")
+        sleep(5)
+
+    print(f"[⛔] Timeout hit — profit target not reached. Consider manual exit or safety logic.")
+
+
+def sell_token(token_address, wallet):
+    try:
+        token_pubkey = PublicKey(token_address)
+        tx = Transaction()
+        tx.add(
+            transfer(
+                TransferParams(
+                    from_pubkey=wallet.public_key,
+                    to_pubkey=token_pubkey,
+                    lamports=500_000  # Example: sell 0.0005 SOL
+                )
+            )
+        )
+
+        resp = client.send_transaction(
+            tx,
+            wallet,
+            opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+        )
+        print(f"[💰] Sell TX Sent — {resp['result']}")
+    except Exception as e:
+        print(f"[‼️] Sell failed: {e}")
+
 
 def buy_token(token_address, sol_amount=0.01):
     try:
@@ -51,13 +98,16 @@ def buy_token(token_address, sol_amount=0.01):
         )
 
         # ⏱ Wait a moment for network confirmation (optional safety buffer)
-        import time
         time.sleep(2)
 
         # 🧾 Get wallet balance after
         after_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
         print(f"✅ Buy successful — TX: {resp['result']}")
         print(f"💰 Balance after buy: {after_balance:.4f} SOL")
+
+        # 📈 Start monitoring for profit-taking
+        entry_price = get_token_price(token_address)
+        auto_sell_if_profit(token_address, entry_price, wallet)
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
