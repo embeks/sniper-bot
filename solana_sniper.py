@@ -1,5 +1,10 @@
 from price_utils import get_token_price, get_token_liquidity
-from utils import send_telegram_alert, is_contract_verified, has_blacklist_or_mint_functions, is_lp_locked_or_burned
+from utils import (
+    send_telegram_alert,
+    is_contract_verified,
+    has_blacklist_or_mint_functions,
+    is_lp_locked_or_burned
+)
 import os
 import json
 import time
@@ -26,17 +31,25 @@ wallet_public_key = keypair.public_key
 client = Client("https://api.mainnet-beta.solana.com")
 
 
-def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, timeout=300):
+def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, timeout=300, rug_trigger_pct=0.25):
     start_time = time.time()
+    initial_liquidity = get_token_liquidity(token_address)
     while time.time() - start_time < timeout:
         try:
             current_price = get_token_price(token_address)
+            current_liquidity = get_token_liquidity(token_address)
+
+            if current_liquidity < initial_liquidity * (1 - rug_trigger_pct):
+                send_telegram_alert(f"[🚨] Liquidity dropped! Selling {token_address}")
+                sell_token(token_address, wallet)
+                return
+
             if current_price and current_price >= entry_price * take_profit:
                 send_telegram_alert(f"[✅] Profit target hit — Price: {current_price:.4f}")
                 sell_token(token_address, wallet)
                 return
         except Exception as e:
-            print(f"[⚠️] Error checking price: {e}")
+            print(f"[⚠️] Error in auto-sell check: {e}")
         time.sleep(5)
     send_telegram_alert("[⛔] Timeout hit — No profit exit.")
 
@@ -50,7 +63,7 @@ def sell_token(token_address, wallet):
                 TransferParams(
                     from_pubkey=wallet.public_key,
                     to_pubkey=token_pubkey,
-                    lamports=500_000  # Example: sell 0.0005 SOL
+                    lamports=500_000  # Example: 0.0005 SOL
                 )
             )
         )
@@ -68,18 +81,27 @@ def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
         wallet = keypair
         token_pubkey = PublicKey(token_address)
 
+        # ✅ Pre-buy safety checks
+        if not is_contract_verified(token_address):
+            send_telegram_alert("[⛔] Contract not verified")
+            return
+        if has_blacklist_or_mint_functions(token_address):
+            send_telegram_alert("[⛔] Suspicious functions detected")
+            return
+        if not is_lp_locked_or_burned(token_address):
+            send_telegram_alert("[⛔] LP not locked or burned")
+            return
+
         entry_price = get_token_price(token_address)
         if not entry_price:
             send_telegram_alert("[⛔] Entry price unavailable — aborting snipe")
             return
 
-        # ✅ Slippage logic (check liquidity)
         liquidity = get_token_liquidity(token_address)
         if liquidity == 0:
             send_telegram_alert("[❌] Liquidity is zero. Skipping token.")
             return
 
-        # 🧾 Wallet balance before
         before_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
         print(f"💰 Balance before buy: {before_balance:.4f} SOL")
 
@@ -103,7 +125,6 @@ def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
         after_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
         send_telegram_alert(f"✅ Buy TX sent — {resp['result']}\n💰 New balance: {after_balance:.4f} SOL")
 
-        # Start profit monitor
         auto_sell_if_profit(token_address, entry_price, wallet)
 
     except Exception as e:
@@ -111,19 +132,16 @@ def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
         send_telegram_alert(f"[!] Sniping failed: {e}")
 
 
-# 🧠 Mempool Monitoring (simplified — placeholder)
 def mempool_monitor():
     print("[👁️] Mempool listener running...")
     while True:
         try:
-            # Replace this with real-time tx feed integration (e.g., Helius)
-            # Simulated token detection for now:
+            # Placeholder — Replace with Helius/Webhook integration
             dummy_token_address = "Dummy111111111111111111111111111111111111111"
             buy_token(dummy_token_address, sol_amount=0.01)
-
         except Exception as e:
             print(f"[!] Mempool error: {e}")
-        time.sleep(60)  # Adjust for live feeds
+        time.sleep(60)
 
 
 if __name__ == "__main__":
