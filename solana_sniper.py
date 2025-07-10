@@ -1,7 +1,8 @@
+from price_utils import get_token_price, get_token_liquidity
+from utils import send_telegram_alert, is_contract_verified, has_blacklist_or_mint_functions, is_lp_locked_or_burned
 import os
-import time
 import json
-from datetime import datetime
+import time
 from solana.publickey import PublicKey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
@@ -10,170 +11,123 @@ from solana.keypair import Keypair
 from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
 
-from price_utils import get_token_price, get_token_liquidity
-from utils import (
-    send_telegram_alert,
-    is_contract_verified,
-    has_blacklist_or_mint_functions,
-    is_lp_locked_or_burned,
-    check_token_owner_permissions,
-    simulate_sell,
-    is_blacklisted,
-    fetch_token_metadata
-)
-
-# Load private key
+# 🔐 Load Solana private key from environment
 solana_key_str = os.getenv("SOLANA_PRIVATE_KEY")
-if not solana_key_str:
+if solana_key_str:
+    solana_private_key = json.loads(solana_key_str)
+else:
     raise Exception("❌ SOLANA_PRIVATE_KEY not set in environment!")
-solana_private_key = json.loads(solana_key_str)
+
+# 🧠 Convert to usable keypair
 keypair = Keypair.from_secret_key(bytes(solana_private_key))
 wallet_public_key = keypair.public_key
+
+# 🔧 Setup RPC client
 client = Client("https://api.mainnet-beta.solana.com")
 
-# Tracking for sells
-tracked_tokens = {}
-PARTIAL_SELLS = {"2x": 0.33, "5x": 0.33, "10x": 1.0}
-TIMEOUT_SELL_SECONDS = 300
-RUG_THRESHOLD = 0.75
+# 🪙 Logging function
+def log_trade_to_csv(token_address, action, amount, price):
+    with open("trade_log.csv", "a") as f:
+        f.write(f"{time.time()},{token_address},{action},{amount},{price}\n")
 
-# Sniping time filter (optional)
-def is_sniping_window():
-    current_hour = datetime.now().hour
-    return 10 <= current_hour <= 14 or 1 <= current_hour <= 5
 
-# Pre-buy checks
+def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, timeout=300):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            current_price = get_token_price(token_address)
+            if current_price and current_price >= entry_price * take_profit:
+                send_telegram_alert(f"[✅] Profit target hit — Price: {current_price:.4f}")
+                log_trade_to_csv(token_address, "auto_sell", "ALL", current_price)
+                sell_token(token_address, wallet)
+                return
+        except Exception as e:
+            print(f"[⚠️] Error checking price: {e}")
+        time.sleep(5)
+    send_telegram_alert("[⛔] Timeout hit — No profit exit.")
 
-def should_buy(token_data):
-    if token_data['liquidity'] < 2000:
-        return False
-    if is_blacklisted(token_data['creator_wallet']):
-        return False
-    if not simulate_sell(token_data['token_address']):
-        return False
-    if token_data['owner_permissions'].get('can_disable_trading') or token_data['owner_permissions'].get('can_drain_lp'):
-        return False
-    if token_data['pair_program'] not in ['raydium', 'jupiter']:
-        return False
-    if token_data['buys_in_first_5s'] < 10 or token_data['volume'] < 1.0:
-        return False
-    return True
 
-# Sell logic
-
-def sell_token(token_address, percentage=1.0):
+def sell_token(token_address, wallet):
     try:
         token_pubkey = PublicKey(token_address)
         tx = Transaction()
         tx.add(
             transfer(
                 TransferParams(
-                    from_pubkey=wallet_public_key,
+                    from_pubkey=wallet.public_key,
                     to_pubkey=token_pubkey,
-                    lamports=int(500_000 * percentage)  # Dummy logic
+                    lamports=500_000  # Example: sell 0.0005 SOL
                 )
             )
         )
         resp = client.send_transaction(
-            tx, keypair, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+            tx, wallet, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
         )
         send_telegram_alert(f"[💰] Sell TX sent — {resp['result']}")
+        log_trade_to_csv(token_address, "sell", 0.0005, get_token_price(token_address))
     except Exception as e:
+        print(f"[‼️] Sell failed: {e}")
         send_telegram_alert(f"[‼️] Sell failed: {e}")
 
-# Token tracker
 
-def track_token(token_address, buy_price, initial_liquidity, symbol):
-    tracked_tokens[token_address] = {
-        "buy_price": buy_price,
-        "initial_liquidity": initial_liquidity,
-        "buy_time": time.time(),
-        "sells": set(),
-        "symbol": symbol
-    }
-    send_telegram_alert(f"✅ Tracking {symbol} at ${buy_price:.6f}")
+def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
+    try:
+        wallet = keypair
+        token_pubkey = PublicKey(token_address)
 
-# Monitor and exit strategy
+        entry_price = get_token_price(token_address)
+        if not entry_price:
+            send_telegram_alert("[⛔] Entry price unavailable — aborting snipe")
+            return
 
-def monitor_tokens():
-    for token_address, data in list(tracked_tokens.items()):
-        current_price = get_token_price(token_address)
-        current_liquidity = get_token_liquidity(token_address)
-        buy_price = data["buy_price"]
-        sells = data["sells"]
+        liquidity = get_token_liquidity(token_address)
+        if liquidity == 0:
+            send_telegram_alert("[❌] Liquidity is zero. Skipping token.")
+            return
 
-        if current_price >= 2 * buy_price and "2x" not in sells:
-            sell_token(token_address, 0.33)
-            sells.add("2x")
-        elif current_price >= 5 * buy_price and "5x" not in sells:
-            sell_token(token_address, 0.33)
-            sells.add("5x")
-        elif current_price >= 10 * buy_price and "10x" not in sells:
-            sell_token(token_address, 1.0)
-            sells.add("10x")
+        before_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
+        print(f"💰 Balance before buy: {before_balance:.4f} SOL")
 
-        if time.time() - data["buy_time"] > TIMEOUT_SELL_SECONDS and "timeout" not in sells:
-            sell_token(token_address, 1.0)
-            sells.add("timeout")
-
-        if current_liquidity < data["initial_liquidity"] * RUG_THRESHOLD and "rug" not in sells:
-            sell_token(token_address, 1.0)
-            sells.add("rug")
-
-        send_telegram_alert(f"✅ Sold {data['symbol']}\nROI: {current_price / buy_price:.2f}x\nHeld: {int(time.time() - data['buy_time'])}s\nTriggers: {', '.join(sells)}")
-
-# Token buying
-
-def buy_token(token_address):
-    if not is_sniping_window():
-        return
-
-    token_data = fetch_token_metadata(token_address)
-    if not should_buy(token_data):
-        return
-
-    send_telegram_alert(f"""
-👀 [NEW TOKEN ALERT]
-
-• Token: {token_data['name']}
-• LP: {token_data['liquidity']} SOL
-• Raydium/Jupiter: ✅
-• Blacklist: ❌
-• Honeypot: ❌
-• Volume: {token_data['volume']} SOL
-• Buys in 5s: {token_data['buys_in_first_5s']}
-
-Auto-sniping in 3 seconds... 🚀
-""")
-    time.sleep(3)
-
-    entry_price = get_token_price(token_address)
-    liquidity = get_token_liquidity(token_address)
-
-    tx = Transaction()
-    tx.add(
-        transfer(
-            TransferParams(
-                from_pubkey=wallet_public_key,
-                to_pubkey=PublicKey(token_address),
-                lamports=int(0.01 * 1_000_000_000)
+        tx = Transaction()
+        tx.add(
+            transfer(
+                TransferParams(
+                    from_pubkey=wallet.public_key,
+                    to_pubkey=token_pubkey,
+                    lamports=int(sol_amount * 1_000_000_000)
+                )
             )
         )
-    )
-    resp = client.send_transaction(
-        tx, keypair, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
-    )
 
-    send_telegram_alert(f"✅ Buy TX: {resp['result']}")
-    track_token(token_address, entry_price, liquidity, token_data['symbol'])
+        resp = client.send_transaction(
+            tx, wallet, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+        )
 
-# Main loop
+        time.sleep(2)
+
+        after_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
+        send_telegram_alert(f"✅ Buy TX sent — {resp['result']}\n💰 New balance: {after_balance:.4f} SOL")
+        log_trade_to_csv(token_address, "buy", sol_amount, entry_price)
+
+        auto_sell_if_profit(token_address, entry_price, wallet)
+
+    except Exception as e:
+        print(f"[!] Sniping failed: {e}")
+        send_telegram_alert(f"[!] Sniping failed: {e}")
+
+
+# 🧠 Mempool Monitoring (simplified — placeholder)
+def mempool_monitor():
+    print("[👁️] Mempool listener running...")
+    while True:
+        try:
+            dummy_token_address = "Dummy111111111111111111111111111111111111111"
+            buy_token(dummy_token_address, sol_amount=0.01)
+        except Exception as e:
+            print(f"[!] Mempool error: {e}")
+        time.sleep(60)
+
 
 if __name__ == "__main__":
-    send_telegram_alert("✅ Sniper launched — scanning...")
-    while True:
-        # This should be connected to real-time feed
-        dummy_token = "So11111111111111111111111111111111111111112"
-        buy_token(dummy_token)
-        monitor_tokens()
-        time.sleep(15)
+    send_telegram_alert("✅ Sniper bot launched — monitoring mempool")
+    mempool_monitor()
