@@ -1,10 +1,5 @@
 from price_utils import get_token_price, get_token_liquidity
-from utils import (
-    send_telegram_alert,
-    is_contract_verified,
-    has_blacklist_or_mint_functions,
-    is_lp_locked_or_burned
-)
+from utils import send_telegram_alert, is_contract_verified, has_blacklist_or_mint_functions, is_lp_locked_or_burned
 import os
 import json
 import time
@@ -30,9 +25,6 @@ wallet_public_key = keypair.public_key
 # 🔧 Setup RPC client
 client = Client("https://api.mainnet-beta.solana.com")
 
-# 📉 RUG PROTECTION
-previous_price = {}
-
 def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, timeout=300):
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -42,16 +34,6 @@ def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, tim
                 send_telegram_alert(f"[✅] Profit target hit — Price: {current_price:.4f}")
                 sell_token(token_address, wallet)
                 return
-
-            # 🧨 Rug Detection
-            if token_address in previous_price:
-                drop = (previous_price[token_address] - current_price) / previous_price[token_address]
-                if drop >= 0.25:
-                    send_telegram_alert(f"[🚨] Rug alert! Price dropped by 25+% — {current_price:.4f}")
-                    sell_token(token_address, wallet)
-                    return
-            previous_price[token_address] = current_price
-
         except Exception as e:
             print(f"[⚠️] Error checking price: {e}")
         time.sleep(5)
@@ -94,17 +76,7 @@ def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
             send_telegram_alert("[❌] Liquidity is zero. Skipping token.")
             return
 
-        # 🔒 Protection Checks
-        if not is_contract_verified(token_address):
-            send_telegram_alert("[⛔] Token not verified — skipping")
-            return
-        if has_blacklist_or_mint_functions(token_address):
-            send_telegram_alert("[⛔] Suspicious token functions — skipping")
-            return
-        if not is_lp_locked_or_burned(token_address):
-            send_telegram_alert("[⛔] LP not locked or burned — skipping")
-            return
-
+        # 🧾 Wallet balance before
         before_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
         print(f"💰 Balance before buy: {before_balance:.4f} SOL")
 
@@ -128,23 +100,24 @@ def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
         after_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
         send_telegram_alert(f"✅ Buy TX sent — {resp['result']}\n💰 New balance: {after_balance:.4f} SOL")
 
+        # Start profit monitor
         auto_sell_if_profit(token_address, entry_price, wallet)
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
         send_telegram_alert(f"[!] Sniping failed: {e}")
 
-# 🧠 Mempool Monitoring (placeholder logic)
+# 🧠 Real-Time Token Feed Filter (Mempool simulation for now)
 def mempool_monitor():
     print("[👁️] Mempool listener running...")
+    from utils import check_new_tokens
     while True:
         try:
-            dummy_token_address = "Dummy111111111111111111111111111111111111111"
-            buy_token(dummy_token_address, sol_amount=0.01)
+            check_new_tokens()
         except Exception as e:
             print(f"[!] Mempool error: {e}")
-        time.sleep(60)
+        time.sleep(30)  # Tune based on your target speed
 
 if __name__ == "__main__":
-    send_telegram_alert("✅ Sniper bot launched — monitoring mempool")
+    send_telegram_alert("✅ Sniper bot launched — monitoring token feed")
     mempool_monitor()
