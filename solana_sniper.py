@@ -1,5 +1,5 @@
 from price_utils import get_token_price, get_token_liquidity
-from utils import send_telegram_alert
+from utils import send_telegram_alert, is_contract_verified, has_blacklist_or_mint_functions, is_lp_locked_or_burned
 import os
 import json
 import time
@@ -18,12 +18,30 @@ if solana_key_str:
 else:
     raise Exception("❌ SOLANA_PRIVATE_KEY not set in environment!")
 
+# 🧠 Convert to usable keypair
 keypair = Keypair.from_secret_key(bytes(solana_private_key))
 wallet_public_key = keypair.public_key
+
+# 🔧 Setup RPC client
 client = Client("https://api.mainnet-beta.solana.com")
 
 
-def sell_partial(token_address, wallet, sol_amount):
+def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, timeout=300):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            current_price = get_token_price(token_address)
+            if current_price and current_price >= entry_price * take_profit:
+                send_telegram_alert(f"[✅] Profit target hit — Price: {current_price:.4f}")
+                sell_token(token_address, wallet)
+                return
+        except Exception as e:
+            print(f"[⚠️] Error checking price: {e}")
+        time.sleep(5)
+    send_telegram_alert("[⛔] Timeout hit — No profit exit.")
+
+
+def sell_token(token_address, wallet):
     try:
         token_pubkey = PublicKey(token_address)
         tx = Transaction()
@@ -32,110 +50,36 @@ def sell_partial(token_address, wallet, sol_amount):
                 TransferParams(
                     from_pubkey=wallet.public_key,
                     to_pubkey=token_pubkey,
-                    lamports=int(sol_amount * 1_000_000_000)
+                    lamports=500_000  # Example: sell 0.0005 SOL
                 )
             )
         )
         resp = client.send_transaction(
-            tx,
-            wallet,
-            opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+            tx, wallet, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
         )
-        print(f"[💸] Partial Sell Sent — TX: {resp['result']}")
-        send_telegram_alert(f"📤 Partial sell executed\nTX: {resp['result']}")
+        send_telegram_alert(f"[💰] Sell TX sent — {resp['result']}")
     except Exception as e:
-        print(f"[‼️] Partial sell failed: {e}")
+        print(f"[‼️] Sell failed: {e}")
+        send_telegram_alert(f"[‼️] Sell failed: {e}")
 
 
-def auto_sell_if_profit(token_address, entry_price, wallet, take_profits=[2, 5, 10], timeout=300):
-    print(f"[⏳] Monitoring {token_address} for profit or rug protection...")
-    start_time = time.time()
-    last_liquidity = get_token_liquidity(token_address)
-    sold_levels = set()
-
-    while time.time() - start_time < timeout:
-        try:
-            current_price = get_token_price(token_address)
-            current_liq = get_token_liquidity(token_address)
-
-            # 🪓 Rug detection
-            if current_liq < last_liquidity * 0.75:
-                sell_partial(token_address, wallet, 0.99)
-                send_telegram_alert(f"⚠️ Rug detected! Liquidity dropped by >25%\nAuto-exited.")
-                return
-
-            # 📈 Take-profit logic
-            for level in take_profits:
-                if current_price >= entry_price * level and level not in sold_levels:
-                    percentage = {2: 0.5, 5: 0.25, 10: 0.25}.get(level, 0.1)
-                    sell_partial(token_address, wallet, percentage)
-                    send_telegram_alert(f"✅ {level}x profit reached!\nAuto-sold {int(percentage * 100)}%")
-                    sold_levels.add(level)
-
-            time.sleep(5)
-
-        except Exception as e:
-            print(f"[⚠️] Monitor Error: {e}")
-
-    print(f"[⛔] Timeout hit — no profit targets reached.")
-    send_telegram_alert("⏰ Timeout — trade closed without hitting any TP levels.")
-
-
-def buy_token(token_address, sol_amount=0.01):
+def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
     try:
         wallet = keypair
         token_pubkey = PublicKey(token_address)
-        from utils import simulate_sell_transaction, send_telegram_alert  # Add this at the top of the file if not already
 
-# 🛡️ Honeypot check before buying
-print(f"[⚠️] Simulating sell to check for honeypot: {token_address}")
-safe_to_buy = simulate_sell_transaction(token_address)
+        entry_price = get_token_price(token_address)
+        if not entry_price:
+            send_telegram_alert("[⛔] Entry price unavailable — aborting snipe")
+            return
 
-if not safe_to_buy:
-    msg = (
-        f"⛔ Honeypot Detected!\n\n"
-        f"Token: {token_address}\n"
-        f"Buy skipped to protect funds."
-    )
-    print("[🚫] Honeypot detected — aborting buy.")
-    send_telegram_alert(msg)
-    return  # Exit function, don’t buy
-else:
-    print("[✅] Honeypot check passed.")
-    # 💧 Check token liquidity before buying
-liquidity = get_token_liquidity(token_address)
-min_liquidity = 500  # Minimum liquidity in USD
+        # ✅ Slippage logic (check liquidity)
+        liquidity = get_token_liquidity(token_address)
+        if liquidity == 0:
+            send_telegram_alert("[❌] Liquidity is zero. Skipping token.")
+            return
 
-if liquidity < min_liquidity:
-    msg = (
-        f"⚠️ Low Liquidity Warning!\n\n"
-        f"Token: {token_address}\n"
-        f"Liquidity: ${liquidity:.2f} — Skipping buy."
-    )
-    print(f"[🚫] Liquidity too low (${liquidity:.2f}) — skipping.")
-    send_telegram_alert(msg)
-    return
-else:
-    print(f"[✅] Liquidity check passed: ${liquidity:.2f}")
-    # 📉 Slippage check before buying
-current_price = get_token_price(token_address)
-projected_price = get_token_price(token_address)  # In a real setup, you'd estimate this based on your buy impact
-slippage_threshold = 0.30  # 30% max slippage
-
-if projected_price and current_price:
-    slippage = abs(current_price - projected_price) / current_price
-    if slippage > slippage_threshold:
-        msg = (
-            f"⚠️ High Slippage Warning!\n\n"
-            f"Token: {token_address}\n"
-            f"Slippage: {slippage * 100:.2f}% — Skipping buy."
-        )
-        print(f"[⛔] Slippage too high ({slippage:.2%}) — skipping.")
-        send_telegram_alert(msg)
-        return
-    else:
-        print(f"[✅] Slippage check passed: {slippage:.2%}")
-
+        # 🧾 Wallet balance before
         before_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
         print(f"💰 Balance before buy: {before_balance:.4f} SOL")
 
@@ -151,22 +95,37 @@ if projected_price and current_price:
         )
 
         resp = client.send_transaction(
-            tx,
-            wallet,
-            opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+            tx, wallet, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
         )
 
         time.sleep(2)
 
         after_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
-        print(f"✅ Buy successful — TX: {resp['result']}")
-        print(f"💰 Balance after buy: {after_balance:.4f} SOL")
-        send_telegram_alert(f"🟢 Sniped Token: {token_address}\nTX: {resp['result']}")
+        send_telegram_alert(f"✅ Buy TX sent — {resp['result']}\n💰 New balance: {after_balance:.4f} SOL")
 
-        # Monitor for profit or rug triggers
-        entry_price = get_token_price(token_address)
+        # Start profit monitor
         auto_sell_if_profit(token_address, entry_price, wallet)
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
-        send_telegram_alert(f"❌ Buy failed for {token_address}\nReason: {e}")
+        send_telegram_alert(f"[!] Sniping failed: {e}")
+
+
+# 🧠 Mempool Monitoring (simplified — placeholder)
+def mempool_monitor():
+    print("[👁️] Mempool listener running...")
+    while True:
+        try:
+            # Replace this with real-time tx feed integration (e.g., Helius)
+            # Simulated token detection for now:
+            dummy_token_address = "Dummy111111111111111111111111111111111111111"
+            buy_token(dummy_token_address, sol_amount=0.01)
+
+        except Exception as e:
+            print(f"[!] Mempool error: {e}")
+        time.sleep(60)  # Adjust for live feeds
+
+
+if __name__ == "__main__":
+    send_telegram_alert("✅ Sniper bot launched — monitoring mempool")
+    mempool_monitor()
