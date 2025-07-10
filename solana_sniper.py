@@ -85,6 +85,56 @@ def buy_token(token_address, sol_amount=0.01):
     try:
         wallet = keypair
         token_pubkey = PublicKey(token_address)
+        from utils import simulate_sell_transaction, send_telegram_alert  # Add this at the top of the file if not already
+
+# 🛡️ Honeypot check before buying
+print(f"[⚠️] Simulating sell to check for honeypot: {token_address}")
+safe_to_buy = simulate_sell_transaction(token_address)
+
+if not safe_to_buy:
+    msg = (
+        f"⛔ Honeypot Detected!\n\n"
+        f"Token: {token_address}\n"
+        f"Buy skipped to protect funds."
+    )
+    print("[🚫] Honeypot detected — aborting buy.")
+    send_telegram_alert(msg)
+    return  # Exit function, don’t buy
+else:
+    print("[✅] Honeypot check passed.")
+    # 💧 Check token liquidity before buying
+liquidity = get_token_liquidity(token_address)
+min_liquidity = 500  # Minimum liquidity in USD
+
+if liquidity < min_liquidity:
+    msg = (
+        f"⚠️ Low Liquidity Warning!\n\n"
+        f"Token: {token_address}\n"
+        f"Liquidity: ${liquidity:.2f} — Skipping buy."
+    )
+    print(f"[🚫] Liquidity too low (${liquidity:.2f}) — skipping.")
+    send_telegram_alert(msg)
+    return
+else:
+    print(f"[✅] Liquidity check passed: ${liquidity:.2f}")
+    # 📉 Slippage check before buying
+current_price = get_token_price(token_address)
+projected_price = get_token_price(token_address)  # In a real setup, you'd estimate this based on your buy impact
+slippage_threshold = 0.30  # 30% max slippage
+
+if projected_price and current_price:
+    slippage = abs(current_price - projected_price) / current_price
+    if slippage > slippage_threshold:
+        msg = (
+            f"⚠️ High Slippage Warning!\n\n"
+            f"Token: {token_address}\n"
+            f"Slippage: {slippage * 100:.2f}% — Skipping buy."
+        )
+        print(f"[⛔] Slippage too high ({slippage:.2%}) — skipping.")
+        send_telegram_alert(msg)
+        return
+    else:
+        print(f"[✅] Slippage check passed: {slippage:.2%}")
 
         before_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
         print(f"💰 Balance before buy: {before_balance:.4f} SOL")
