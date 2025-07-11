@@ -1,7 +1,7 @@
 import os
 import requests
 from dotenv import load_dotenv
-from solana.publickey import PublicKey
+from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.rpc.types import MemcmpOpts, TokenAccountOpts
 from solana.transaction import Transaction
@@ -111,3 +111,4 @@ def detect_rug_conditions(token_data):
         return False
     except:
         return False
+   
