@@ -4,3 +4,4 @@ requests
 solana
 pyserum
 asyncio
+solders==0.16.3
