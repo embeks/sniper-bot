@@ -1,7 +1,9 @@
 import requests
 import os
 
+# 🔧 Birdeye API key from environment
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+
 
 # 📈 Get current token price
 def get_token_price(token_address):
@@ -16,6 +18,7 @@ def get_token_price(token_address):
     except Exception as e:
         print(f"[!] Failed to fetch price: {e}")
         return 0
+
 
 # 💧 Get current token liquidity
 def get_token_liquidity(token_address):
