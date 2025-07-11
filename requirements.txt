@@ -3,5 +3,4 @@ python-dotenv
 requests
 solana
 pyserum
-spl-token
 asyncio
