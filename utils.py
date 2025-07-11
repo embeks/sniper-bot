@@ -1,9 +1,9 @@
 import os
+import json
 import requests
 from dotenv import load_dotenv
-from solders.pubkey import Pubkey as PublicKey
+from solana.publickey import PublicKey
 from solana.rpc.api import Client
-from solana.rpc.types import MemcmpOpts, TokenAccountOpts
 from solana.transaction import Transaction
 from solana.system_program import TransferParams, transfer
 from solana.rpc.commitment import Confirmed
@@ -11,45 +11,40 @@ from solana.keypair import Keypair
 
 load_dotenv()
 
-# 🔧 Telegram config
+# 🔧 Config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# 🔧 Birdeye config
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-
-# 🔧 Solana RPC
 client = Client("https://api.mainnet-beta.solana.com")
 
 
-# 📤 Telegram alert
+# 📤 Send Telegram Alert
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[⚠️] Telegram config not set — skipping alert.")
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        requests.post(url, data=data)
     except Exception as e:
         print(f"[!] Telegram alert failed: {e}")
 
 
-# 🧠 Simulated sell to detect honeypots
+# 🧠 Simulated Sell (placeholder)
 def simulate_sell_transaction(token_address):
     try:
-        # Add real simulation logic if needed (for now we assume it's sellable)
-        return True
+        return True  # Placeholder logic
     except Exception as e:
         print(f"[!] Sell simulation failed: {e}")
         return False
 
 
-# 🔍 Token Safety Checker (from honeypot_checker.py)
+# 🔍 Honeypot Check via Birdeye
 def check_token_safety(token_address):
-    url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
-    headers = {"X-API-KEY": BIRDEYE_API_KEY}
-
     try:
+        url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
         res = requests.get(url, headers=headers)
         data = res.json().get("data", {})
 
@@ -66,12 +61,11 @@ def check_token_safety(token_address):
             return "⚠️ Low Holders: Possibly Inactive"
 
         return "✅ Token passed basic safety checks"
-
     except Exception as e:
         return f"[!] Error checking honeypot: {e}"
 
 
-# 🚫 Check for blacklist or mint functions
+# 🚫 Blacklist & Mint Check
 def has_blacklist_or_mint_functions(token_address):
     try:
         url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
@@ -82,24 +76,22 @@ def has_blacklist_or_mint_functions(token_address):
         mint = data.get("hasMintAuthority", True)
         return blacklist or mint
     except Exception:
-        return True  # Assume dangerous by default
+        return True  # Assume unsafe if can't verify
 
 
-# 🔒 Check if LP is locked or burned
+# 🔒 LP Locked or Burned Check
 def is_lp_locked_or_burned(token_address):
     try:
         url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
         headers = {"X-API-KEY": BIRDEYE_API_KEY}
         res = requests.get(url, headers=headers)
         data = res.json().get("data", {})
-        burned = data.get("lpIsBurned", False)
-        locked = data.get("lpLocked", False)
-        return burned or locked
+        return data.get("lpIsBurned", False) or data.get("lpLocked", False)
     except Exception:
         return False
 
 
-# 🛡️ Smart Rug Trigger Logic
+# 🚨 Smart Rug Trigger Logic
 def detect_rug_conditions(token_data):
     try:
         if token_data["liquidity"] < 1000:
@@ -109,6 +101,5 @@ def detect_rug_conditions(token_data):
         if token_data["sellTax"] > 25:
             return True
         return False
-    except:
+    except Exception:
         return False
-   
