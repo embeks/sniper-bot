@@ -1,5 +1,6 @@
-requests
-python-dotenv
 websockets
-solana==0.29.0
-solders-py==0.10.2
+python-dotenv
+requests
+solana
+pyserum
+asyncio
