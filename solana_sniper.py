@@ -1,8 +1,15 @@
-from price_utils import get_token_price, get_token_liquidity
-from utils import send_telegram_alert, is_contract_verified, has_blacklist_or_mint_functions, is_lp_locked_or_burned
 import os
 import json
 import time
+
+from utils import (
+    send_telegram_alert,
+    is_contract_verified,
+    has_blacklist_or_mint_functions,
+    is_lp_locked_or_burned,
+)
+from price_utils import get_token_price, get_token_liquidity
+
 from solana.publickey import PublicKey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
@@ -24,6 +31,7 @@ wallet_public_key = keypair.public_key
 
 # 🔧 Setup RPC client
 client = Client("https://api.mainnet-beta.solana.com")
+
 
 # 🪙 Logging function
 def log_trade_to_csv(token_address, action, amount, price):
