@@ -88,7 +88,7 @@ async def is_lp_locked_or_burned(token_address):
 async def get_token_price(token_address):
     try:
         async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/public/price?address={token_address}"
+            url = f"https://public-api.birdeye.so/public/price/token_price?address={token_address}"
             headers = {"X-API-KEY": BIRDEYE_API_KEY}
             res = await session.get(url, headers=headers)
 
@@ -97,11 +97,7 @@ async def get_token_price(token_address):
                 return None
 
             data = res.json().get("data", {})
-            value = data.get("value", None)
-            if value is None:
-                print(f"[!] No price found for token: {token_address}")
-                return None
-            return float(value)
+            return float(data.get("value", 0))
     except Exception as e:
         print(f"[!] Price fetch failed: {e}")
         return None
