@@ -43,12 +43,12 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
 import asyncio
 from solana_sniper import buy_token
 
-# Replace this with a token that has a known working Jupiter route
-# Example: JUP token (Jupiter's own token)
+# ✅ Replace with a token that has active Jupiter liquidity
+# This is the official JUP token (used for testing Jupiter swaps)
 TOKEN_MINT = "JUP4Fb2cqiRUcaTHdrPC8h2gXs4MFhLFGkztAgAiFxG"
 
 async def simulate_trade():
-    await buy_token(TOKEN_MINT, 0.1)  # Amount in SOL
+    await buy_token(TOKEN_MINT, 0.1)  # 0.1 SOL buy
 
 if __name__ == "__main__":
     asyncio.run(simulate_trade())
