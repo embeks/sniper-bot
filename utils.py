@@ -9,6 +9,7 @@ from solana.rpc.types import TokenAccountOpts
 
 load_dotenv()
 
+# 🔧 Config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
@@ -18,11 +19,6 @@ SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 WALLET_ADDRESS = str(keypair.pubkey())
 client = Client(SOLANA_RPC)
-
-# 🔧 Config
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 # 📤 Send Telegram Alert (Async)
 async def send_telegram_alert(message):
