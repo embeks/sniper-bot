@@ -42,8 +42,7 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
 import asyncio
 from solana_sniper import buy_token
 
-TOKEN_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # USDC
-
+TOKEN_MINT = "DezXjR4Dyg55n6E4SgzLXwGCjUGwxrsP7PVPXcNs9LcA"  # Bonk
 async def simulate_trade():
     await buy_token(TOKEN_MINT, 0.5)
 
