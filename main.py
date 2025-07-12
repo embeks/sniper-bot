@@ -45,7 +45,7 @@ from solana_sniper import buy_token
 
 async def simulate_trade():
     
-    await buy_token("B7fBSwCXybDPFJbn2vNdrkY9WQYMK9i1z9tvZ4A9gC6F", 0.1)
+    await buy_token("2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv", 0.1)
 
 if __name__ == "__main__":
     asyncio.run(simulate_trade())
