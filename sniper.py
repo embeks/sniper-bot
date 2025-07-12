@@ -3,6 +3,7 @@ import json
 import base64
 import httpx
 import asyncio
+from time import time
 
 from dotenv import load_dotenv
 from solders.keypair import Keypair
@@ -10,7 +11,13 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 
-from utils import send_telegram_alert, log_trade_to_csv
+from utils import (
+    send_telegram_alert,
+    log_trade_to_csv,
+    get_token_price,
+    get_token_balance,
+    detect_rug_conditions
+)
 
 # 🔐 Load environment
 load_dotenv()
@@ -113,6 +120,7 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         if signature:
             await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
             log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
+            await monitor_token_after_buy(token_address, route['outAmount'] / 1e9)
         else:
             await send_telegram_alert(f"‼️ TX failed for {token_address}")
 
@@ -120,7 +128,43 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
 
-# 💰 Placeholder for selling (to be completed in trade_logic.py)
+# 📊 Monitor token after buy for profit/rug
+async def monitor_token_after_buy(token_address, entry_price):
+    start_time = time()
+    timeout_seconds = 300  # 5 minutes
+
+    try:
+        while True:
+            await asyncio.sleep(10)
+
+            current_price = await get_token_price(token_address)
+            if not current_price:
+                continue
+
+            pnl_ratio = current_price / entry_price
+            if pnl_ratio >= 10:
+                await send_telegram_alert(f"💸 10x Reached: Selling {token_address}")
+                await sell_token(token_address, await get_token_balance(token_address))
+                break
+            elif pnl_ratio >= 5:
+                await send_telegram_alert(f"🔥 5x Hit: Consider Partial Sell for {token_address}")
+            elif pnl_ratio >= 2:
+                await send_telegram_alert(f"📈 2x Target Reached for {token_address}")
+
+            if detect_rug_conditions({"liquidity": 999, "volume24h": 50, "sellTax": 30}):  # Replace with real data
+                await send_telegram_alert(f"🚨 Rug detected on {token_address}, selling!")
+                await sell_token(token_address, await get_token_balance(token_address))
+                break
+
+            if time() - start_time > timeout_seconds:
+                await send_telegram_alert(f"⏱️ Timeout hit for {token_address}, exiting")
+                await sell_token(token_address, await get_token_balance(token_address))
+                break
+
+    except Exception as e:
+        await send_telegram_alert(f"‼️ Monitor error: {e}")
+
+# 💰 Placeholder for selling (to be completed properly)
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
 
