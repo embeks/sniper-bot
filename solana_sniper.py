@@ -26,14 +26,25 @@ wallet_address = str(keypair.pubkey())
 # 🌐 Jupiter Endpoints
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
+JUPITER_TOKEN_LIST_URL = "https://cache.jup.ag/tokens"
 
+# ✅ Check if token is supported by Jupiter
+async def is_token_supported_by_jupiter(mint: str) -> bool:
+    try:
+        async with httpx.AsyncClient() as session:
+            res = await session.get(JUPITER_TOKEN_LIST_URL)
+            tokens = res.json()
+            return any(token["address"] == mint for token in tokens)
+    except Exception as e:
+        print(f"[!] Jupiter token list fetch error: {e}")
+        return False
 
 # ✅ Get best route quote from Jupiter
 async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 5.0):
     try:
         lamports = int(amount_sol * 1_000_000_000)
         params = {
-            "inputMint": "So11111111111111111111111111111111111111112",  # ✅ Jupiter SOL input mint
+            "inputMint": "So11111111111111111111111111111111111111112",  # SOL mint
             "outputMint": output_mint,
             "amount": lamports,
             "slippageBps": int(slippage * 100)
@@ -45,7 +56,6 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
     except Exception as e:
         print(f"[!] Jupiter quote error: {e}")
         return None
-
 
 # 🧠 Build swap transaction
 async def build_jupiter_swap_tx(route):
@@ -65,7 +75,6 @@ async def build_jupiter_swap_tx(route):
         print(f"[!] Build TX error: {e}")
         return None
 
-
 # 🚀 Sign and send transaction
 def sign_and_send_tx(raw_tx: bytes):
     try:
@@ -77,18 +86,20 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-
-# 🪙 Buy token with SOL (debug version)
+# 🪙 Buy token with SOL
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
+
+        supported = await is_token_supported_by_jupiter(token_address)
+        if not supported:
+            await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
+            return
 
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
             await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
             return
-
-        await send_telegram_alert(f"🔍 Route received:\n{json.dumps(route, indent=2)[:4000]}")
 
         if route.get('outAmount', 0) < 1:
             await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
@@ -99,9 +110,6 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
 
-        tx_len = len(raw_tx)
-        await send_telegram_alert(f"📦 Raw TX size: {tx_len} bytes")
-
         signature = sign_and_send_tx(raw_tx)
         if signature:
             await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
@@ -110,10 +118,9 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"‼️ TX failed for {token_address}")
 
     except Exception as e:
-        await send_telegram_alert(f"[❗] Sniping error: {e}")
-        print(f"[!] Full Exception Traceback:\n{e}")
+        print(f"[!] Sniping failed: {e}")
+        await send_telegram_alert(f"[!] Sniping error: {e}")
 
-
-# 💰 Placeholder for selling (extend later)
+# 💰 Placeholder for selling
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
