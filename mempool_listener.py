@@ -1,8 +1,9 @@
 # mempool_listener.py
+import os
 import asyncio
-import base64
 import json
 import websockets
+from dotenv import load_dotenv
 from solana.publickey import PublicKey
 from utils import (
     send_telegram_alert,
@@ -12,6 +13,8 @@ from utils import (
 )
 from solana_sniper import buy_token, auto_sell_if_profit, get_token_price
 
+load_dotenv()
+
 # Raydium AMM Program ID
 RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
 
@@ -20,9 +23,13 @@ MIN_LIQUIDITY = 2000
 # Amount to buy in SOL (approx. $5 AUD)
 BUY_AMOUNT_SOL = 0.027
 
+# Track already-sniped tokens to prevent double buys
+sniped_tokens = set()
+
 # Main mempool listener loop
 async def mempool_listener():
-    url = "wss://api.mainnet.helius.xyz/?api-key=devnet"
+    helius_api_key = os.getenv("HELIUS_API_KEY")
+    url = f"wss://mainnet.helius-rpc.com/?api-key={helius_api_key}"
     async with websockets.connect(url) as ws:
         sub_msg = {
             "jsonrpc": "2.0",
@@ -53,6 +60,8 @@ async def mempool_listener():
                         for acc in accounts:
                             try:
                                 token_mint = str(acc)
+                                if token_mint in sniped_tokens:
+                                    continue
                                 if token_mint.startswith("So111") or len(token_mint) != 44:
                                     continue
 
@@ -74,6 +83,7 @@ async def mempool_listener():
                                     await send_telegram_alert("❌ No price found, skipping")
                                     continue
 
+                                sniped_tokens.add(token_mint)
                                 await buy_token(token_mint, BUY_AMOUNT_SOL)
                                 await auto_sell_if_profit(token_mint, entry_price, None)
 
