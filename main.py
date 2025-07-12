@@ -44,7 +44,7 @@ import asyncio
 from solana_sniper import buy_token
 
 # Wrapped USDC (Jupiter-supported)
-TOKEN_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+TOKEN_MINT = "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E"  # USDT (Tether)"
 
 async def simulate_trade():
     await buy_token(TOKEN_MINT, 0.1)  # Buy 0.1 SOL worth
