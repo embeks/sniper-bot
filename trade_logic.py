@@ -6,7 +6,7 @@ from utils import (
     get_token_price,
     get_token_balance
 )
-from sniper_module import sell_token
+from sniper_logic import start_sniper
 
 # 🔧 Profit Targets and Timeout
 TARGET_MULTIPLIERS = [2, 5, 10]  # Auto-sell thresholds
