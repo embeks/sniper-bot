@@ -40,14 +40,11 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
     except Exception as e:
         await send_telegram_alert(f"[‼️] Auto-sell failed: {e}")
 
-import asyncio
-from solana_sniper import buy_token
-
-# Use a token with confirmed Jupiter route — Jupiter (JUP) token
-TOKEN_MINT = "JUP4Fb2cqiRUcaTHdrPC8h2gXs4MFhLFGkztAgAiFxG"  # JUP
+# Replace with USDC (confirmed working token on Jupiter)
+TOKEN_MINT = "Es9vMFrzaCER9GQmj5UAz2nM1Lef1kVX9qw5XkZ6P3tD"  # USDC
 
 async def simulate_trade():
-    await buy_token(TOKEN_MINT, 0.1)  # 0.1 SOL test
+    await buy_token(TOKEN_MINT, 0.1)
 
 if __name__ == "__main__":
     asyncio.run(simulate_trade())
