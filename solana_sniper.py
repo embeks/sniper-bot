@@ -7,7 +7,6 @@ import httpx
 from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solana.rpc.types import TxOpts
-from solana.transaction import Transaction
 from solders.transaction import VersionedTransaction
 from dotenv import load_dotenv
 from utils import send_telegram_alert, log_trade_to_csv
