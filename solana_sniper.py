@@ -1,141 +1,89 @@
+# solana_sniper.py
 import os
 import json
-import time
-
-from utils import (
-    send_telegram_alert,
-    is_contract_verified,
-    has_blacklist_or_mint_functions,
-    is_lp_locked_or_burned,
-)
-from price_utils import get_token_price, get_token_liquidity
-
-from solana.publickey import PublicKey
+import base64
+import asyncio
+import httpx
 from solana.rpc.api import Client
-from solana.transaction import Transaction
-from solana.system_program import TransferParams, transfer
 from solana.keypair import Keypair
-from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
+from solana.transaction import Transaction
+from solders.transaction import VersionedTransaction
+from dotenv import load_dotenv
+from utils import send_telegram_alert, log_trade_to_csv
 
-# 🔐 Load Solana private key from environment
-solana_key_str = os.getenv("SOLANA_PRIVATE_KEY")
-if solana_key_str:
-    solana_private_key = json.loads(solana_key_str)
-else:
-    raise Exception("❌ SOLANA_PRIVATE_KEY not set in environment!")
+load_dotenv()
 
-# 🧠 Convert to usable keypair
-keypair = Keypair.from_secret_key(bytes(solana_private_key))
-wallet_public_key = keypair.public_key
+# 🔐 Load wallet
+SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+client = Client(SOLANA_RPC)
+keypair = Keypair.from_secret_key(bytes(SOLANA_PRIVATE_KEY))
+wallet_address = str(keypair.public_key)
 
-# 🔧 Setup RPC client
-client = Client("https://api.mainnet-beta.solana.com")
+JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
+JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
 
+# ✅ Get a quote from Jupiter
+async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 1.0):
+    lamports = int(amount_sol * 1_000_000_000)
+    params = {
+        "inputMint": "So11111111111111111111111111111111111111112",  # SOL
+        "outputMint": output_mint,
+        "amount": lamports,
+        "slippage": slippage
+    }
+    async with httpx.AsyncClient() as session:
+        res = await session.get(JUPITER_QUOTE_URL, params=params)
+        data = res.json()
+        routes = data.get("data", [])
+        return routes[0] if routes else None
 
-# 🪙 Logging function
-def log_trade_to_csv(token_address, action, amount, price):
-    with open("trade_log.csv", "a") as f:
-        f.write(f"{time.time()},{token_address},{action},{amount},{price}\n")
+# 🧠 Build swap transaction
+async def build_jupiter_swap_tx(route):
+    payload = {
+        "route": route,
+        "userPublicKey": wallet_address,
+        "wrapUnwrapSOL": True,
+        "feeAccount": None,
+        "computeUnitPriceMicroLamports": 5000
+    }
+    async with httpx.AsyncClient() as session:
+        res = await session.post(JUPITER_SWAP_URL, json=payload)
+        tx_data = res.json().get("swapTransaction")
+        return base64.b64decode(tx_data) if tx_data else None
 
-
-def auto_sell_if_profit(token_address, entry_price, wallet, take_profit=1.5, timeout=300):
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            current_price = get_token_price(token_address)
-            if current_price and current_price >= entry_price * take_profit:
-                send_telegram_alert(f"[✅] Profit target hit — Price: {current_price:.4f}")
-                log_trade_to_csv(token_address, "auto_sell", "ALL", current_price)
-                sell_token(token_address, wallet)
-                return
-        except Exception as e:
-            print(f"[⚠️] Error checking price: {e}")
-        time.sleep(5)
-    send_telegram_alert("[⛔] Timeout hit — No profit exit.")
-
-
-def sell_token(token_address, wallet):
+# 🚀 Sign and send transaction
+def sign_and_send_tx(raw_tx: bytes):
     try:
-        token_pubkey = PublicKey(token_address)
-        tx = Transaction()
-        tx.add(
-            transfer(
-                TransferParams(
-                    from_pubkey=wallet.public_key,
-                    to_pubkey=token_pubkey,
-                    lamports=500_000  # Example: sell 0.0005 SOL
-                )
-            )
-        )
-        resp = client.send_transaction(
-            tx, wallet, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
-        )
-        send_telegram_alert(f"[💰] Sell TX sent — {resp['result']}")
-        log_trade_to_csv(token_address, "sell", 0.0005, get_token_price(token_address))
+        tx = VersionedTransaction.deserialize(raw_tx)
+        tx.sign([keypair])
+        client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True))
+        return True
     except Exception as e:
-        print(f"[‼️] Sell failed: {e}")
-        send_telegram_alert(f"[‼️] Sell failed: {e}")
+        print(f"[‼️] TX Error: {e}")
+        return False
 
-
-def buy_token(token_address, sol_amount=0.01, max_slippage=0.15):
+# 🪙 Buy token with SOL
+async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
-        wallet = keypair
-        token_pubkey = PublicKey(token_address)
-
-        entry_price = get_token_price(token_address)
-        if not entry_price:
-            send_telegram_alert("[⛔] Entry price unavailable — aborting snipe")
+        route = await get_jupiter_quote(token_address, amount_sol)
+        if not route:
+            await send_telegram_alert(f"❌ No Jupiter route found for token {token_address}")
             return
 
-        liquidity = get_token_liquidity(token_address)
-        if liquidity == 0:
-            send_telegram_alert("[❌] Liquidity is zero. Skipping token.")
+        raw_tx = await build_jupiter_swap_tx(route)
+        if not raw_tx:
+            await send_telegram_alert(f"❌ Could not build transaction for token {token_address}")
             return
 
-        before_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
-        print(f"💰 Balance before buy: {before_balance:.4f} SOL")
-
-        tx = Transaction()
-        tx.add(
-            transfer(
-                TransferParams(
-                    from_pubkey=wallet.public_key,
-                    to_pubkey=token_pubkey,
-                    lamports=int(sol_amount * 1_000_000_000)
-                )
-            )
-        )
-
-        resp = client.send_transaction(
-            tx, wallet, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
-        )
-
-        time.sleep(2)
-
-        after_balance = client.get_balance(wallet.public_key)["result"]["value"] / 1_000_000_000
-        send_telegram_alert(f"✅ Buy TX sent — {resp['result']}\n💰 New balance: {after_balance:.4f} SOL")
-        log_trade_to_csv(token_address, "buy", sol_amount, entry_price)
-
-        auto_sell_if_profit(token_address, entry_price, wallet)
+        success = sign_and_send_tx(raw_tx)
+        if success:
+            await send_telegram_alert(f"✅ Buy TX sent successfully for {token_address}")
+            log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
+        else:
+            await send_telegram_alert(f"‼️ Failed to send buy TX for {token_address}")
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
-        send_telegram_alert(f"[!] Sniping failed: {e}")
-
-
-# 🧠 Mempool Monitoring (simplified — placeholder)
-def mempool_monitor():
-    print("[👁️] Mempool listener running...")
-    while True:
-        try:
-            dummy_token_address = "Dummy111111111111111111111111111111111111111"
-            buy_token(dummy_token_address, sol_amount=0.01)
-        except Exception as e:
-            print(f"[!] Mempool error: {e}")
-        time.sleep(60)
-
-
-if __name__ == "__main__":
-    send_telegram_alert("✅ Sniper bot launched — monitoring mempool")
-    mempool_monitor()
+        await send_telegram_alert(f"[!] Sniping failed: {e}")
