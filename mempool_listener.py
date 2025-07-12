@@ -3,7 +3,7 @@ import asyncio
 import json
 import websockets
 from dotenv import load_dotenv
-from solana.publickey import PublicKey
+from solders.pubkey import Pubkey
 from utils import (
     send_telegram_alert,
     check_token_safety,
