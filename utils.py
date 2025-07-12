@@ -91,8 +91,17 @@ async def get_token_price(token_address):
             url = f"https://public-api.birdeye.so/public/price?address={token_address}"
             headers = {"X-API-KEY": BIRDEYE_API_KEY}
             res = await session.get(url, headers=headers)
+
+            if res.status_code != 200:
+                print(f"[!] Birdeye response error: {res.status_code}")
+                return None
+
             data = res.json().get("data", {})
-            return float(data.get("value", 0))
+            value = data.get("value", None)
+            if value is None:
+                print(f"[!] No price found for token: {token_address}")
+                return None
+            return float(value)
     except Exception as e:
         print(f"[!] Price fetch failed: {e}")
         return None
@@ -113,7 +122,7 @@ async def get_token_balance(token_mint):
         print(f"[!] Balance fetch failed: {e}")
         return 0
 
-# 🚨 Rug Condition Logic
+# ⚠️ Rug Condition Logic
 def detect_rug_conditions(token_data):
     try:
         return (
@@ -129,3 +138,4 @@ def log_trade_to_csv(token_address, action, amount, price):
     from time import time
     with open("trade_log.csv", "a") as f:
         f.write(f"{time()},{token_address},{action},{amount},{price}\n")
+
