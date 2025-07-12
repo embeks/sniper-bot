@@ -11,7 +11,7 @@ from utils import (
     is_lp_locked_or_burned,
     get_token_price
 )
-from sniper_module import buy_token
+from sniper_logic import start_sniper
 from trade_logic import auto_sell_if_profit
 
 load_dotenv()
