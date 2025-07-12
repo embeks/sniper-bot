@@ -9,11 +9,14 @@ from solana.rpc.types import TokenAccountOpts
 
 load_dotenv()
 
-# 🔐 Load Wallet + RPC
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
-WALLET_ADDRESS = keypair.pubkey()
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+
+keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
+WALLET_ADDRESS = str(keypair.pubkey())
 client = Client(SOLANA_RPC)
 
 # 🔧 Config
