@@ -1,4 +1,3 @@
-# mempool_listener.py
 import os
 import asyncio
 import json
@@ -20,63 +19,60 @@ RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
 
 # Minimum Liquidity in USD
 MIN_LIQUIDITY = 2000
-# Amount to buy in SOL (approx. $5 AUD)
-BUY_AMOUNT_SOL = 0.027
+BUY_AMOUNT_SOL = 0.027  # ≈ $5 AUD
 
-# Track already-sniped tokens to prevent double buys
 sniped_tokens = set()
 
-# Main mempool listener loop
 async def mempool_listener():
     helius_api_key = os.getenv("HELIUS_API_KEY")
+    if not helius_api_key:
+        print("[‼️] No Helius API Key found in environment.")
+        return
+
     url = f"wss://mainnet.helius-rpc.com/?api-key={helius_api_key}"
-    async with websockets.connect(url) as ws:
-        sub_msg = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "logsSubscribe",
-            "params": [
-                {
-                    "mentions": [RAYDIUM_PROGRAM_ID]
-                },
-                {
-                    "commitment": "processed",
-                    "encoding": "jsonParsed"
-                }
-            ]
-        }
-        await ws.send(json.dumps(sub_msg))
-        await send_telegram_alert("📡 Mempool listener active...")
+    try:
+        async with websockets.connect(url) as ws:
+            sub_msg = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "logsSubscribe",
+                "params": [
+                    {"mentions": [RAYDIUM_PROGRAM_ID]},
+                    {"commitment": "processed", "encoding": "jsonParsed"}
+                ]
+            }
+            await ws.send(json.dumps(sub_msg))
+            await send_telegram_alert("📡 Mempool listener active...")
 
-        while True:
-            try:
-                message = await ws.recv()
-                data = json.loads(message)
+            while True:
+                try:
+                    message = await ws.recv()
+                    data = json.loads(message)
 
-                if "result" in data and "value" in data["result"]:
-                    log = data["result"]["value"]
-                    if "accountKeys" in log:
-                        accounts = log["accountKeys"]
-                        for acc in accounts:
-                            try:
+                    if "result" in data and "value" in data["result"]:
+                        log = data["result"]["value"]
+                        if "accountKeys" in log:
+                            accounts = log["accountKeys"]
+                            for acc in accounts:
                                 token_mint = str(acc)
-                                if token_mint in sniped_tokens:
-                                    continue
-                                if token_mint.startswith("So111") or len(token_mint) != 44:
+
+                                if (
+                                    token_mint in sniped_tokens or
+                                    token_mint.startswith("So111") or
+                                    len(token_mint) != 44
+                                ):
                                     continue
 
-                                # ✅ Run filters
+                                # 🧠 Run filters
                                 safety = await check_token_safety(token_mint)
                                 if "❌" in safety or "⚠️" in safety:
                                     continue
-
                                 if await has_blacklist_or_mint_functions(token_mint):
                                     continue
-
                                 if not await is_lp_locked_or_burned(token_mint):
                                     continue
 
-                                await send_telegram_alert(f"🔎 New token detected: {token_mint}\n{safety}\nAuto-sniping now...")
+                                await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
 
                                 entry_price = await get_token_price(token_mint)
                                 if not entry_price:
@@ -87,9 +83,10 @@ async def mempool_listener():
                                 await buy_token(token_mint, BUY_AMOUNT_SOL)
                                 await auto_sell_if_profit(token_mint, entry_price, None)
 
-                            except Exception as inner_e:
-                                print(f"[!] Error inside account loop: {inner_e}")
+                except Exception as inner_e:
+                    print(f"[!] Inner loop error: {inner_e}")
+                    await asyncio.sleep(3)
 
-            except Exception as e:
-                print(f"[!] Mempool error: {e}")
-                await asyncio.sleep(5)
+    except Exception as outer_e:
+        print(f"[‼️] Mempool listener startup failed: {outer_e}")
+        await send_telegram_alert("‼️ Mempool listener crashed.")
