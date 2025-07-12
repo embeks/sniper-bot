@@ -1,24 +1,25 @@
-# utils.py
 import os
 import json
 import httpx
 from dotenv import load_dotenv
-from solana.rpc.api import Client
-from solana.rpc.types import MemcmpOpts, TokenAccountOpts
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
+from solana.rpc.api import Client
+from solana.rpc.types import TokenAccountOpts
 
 load_dotenv()
+
+# 🔐 Load Wallet + RPC
+SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
+WALLET_ADDRESS = keypair.pubkey()
+SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+client = Client(SOLANA_RPC)
 
 # 🔧 Config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-keypair = Keypair.from_secret_key(bytes(SOLANA_PRIVATE_KEY))
-WALLET_ADDRESS = keypair.pubkey()
-SOLANA_RPC = "https://api.mainnet-beta.solana.com"
-client = Client(SOLANA_RPC)
 
 # 📤 Send Telegram Alert (Async)
 async def send_telegram_alert(message):
@@ -33,14 +34,6 @@ async def send_telegram_alert(message):
             )
     except Exception as e:
         print(f"[!] Telegram alert failed: {e}")
-
-# 🧠 Simulated Sell (Still sync placeholder)
-def simulate_sell_transaction(token_address):
-    try:
-        return True  # Placeholder logic
-    except Exception as e:
-        print(f"[!] Sell simulation failed: {e}")
-        return False
 
 # 🔍 Honeypot Check via Birdeye
 async def check_token_safety(token_address):
@@ -93,19 +86,6 @@ async def is_lp_locked_or_burned(token_address):
     except Exception:
         return False
 
-# 🚨 Smart Rug Trigger Logic
-def detect_rug_conditions(token_data):
-    try:
-        if token_data["liquidity"] < 1000:
-            return True
-        if token_data["volume24h"] < 100:
-            return True
-        if token_data["sellTax"] > 25:
-            return True
-        return False
-    except Exception:
-        return False
-
 # 📈 Get token price from Birdeye
 async def get_token_price(token_address):
     try:
@@ -122,11 +102,11 @@ async def get_token_price(token_address):
 # 💰 Get token balance of wallet
 async def get_token_balance(token_mint):
     try:
-        token_account_opts = TokenAccountOpts(
+        opts = TokenAccountOpts(
             mint=token_mint,
-            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         )
-        accounts = client.get_token_accounts_by_owner(WALLET_ADDRESS, token_account_opts)
+        accounts = client.get_token_accounts_by_owner(str(WALLET_ADDRESS), opts)
         for acc in accounts["result"]["value"]:
             amount = int(acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
             return amount
@@ -134,6 +114,19 @@ async def get_token_balance(token_mint):
     except Exception as e:
         print(f"[!] Balance fetch failed: {e}")
         return 0
+
+# 🚨 Smart Rug Trigger Logic
+def detect_rug_conditions(token_data):
+    try:
+        if token_data["liquidity"] < 1000:
+            return True
+        if token_data["volume24h"] < 100:
+            return True
+        if token_data["sellTax"] > 25:
+            return True
+        return False
+    except Exception:
+        return False
 
 # 🧾 Trade Logger
 def log_trade_to_csv(token_address, action, amount, price):
