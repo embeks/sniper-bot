@@ -43,9 +43,9 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
 import asyncio
 from solana_sniper import buy_token
 
+# Simulate a buy of 0.1 SOL worth of BONK
 async def simulate_trade():
-    
-    await buy_token("2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv", 0.1)
+    await buy_token("DezX6u4Ce3e3Bbs2hPBCChsEwR8WSPXk6cEfbZRx4Q5v", 0.1)
 
 if __name__ == "__main__":
     asyncio.run(simulate_trade())
