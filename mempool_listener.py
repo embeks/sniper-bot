@@ -4,14 +4,17 @@ import json
 import websockets
 from dotenv import load_dotenv
 from solders.pubkey import Pubkey
+
 from utils import (
     send_telegram_alert,
     check_token_safety,
     has_blacklist_or_mint_functions,
-    is_lp_locked_or_burned
+    is_lp_locked_or_burned,
+    get_token_price
 )
-from solana_sniper import buy_token
-from utils import get_token_price
+from sniper import buy_token  # ✅ updated from solana_sniper
+from main import auto_sell_if_profit  # ✅ pulls from main where the sell logic lives
+
 load_dotenv()
 
 # Raydium AMM Program ID
