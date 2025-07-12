@@ -110,7 +110,7 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
 
-        print("[DEBUG] Sending transaction...")  # ✅ Inserted here
+        print("[DEBUG] Sending transaction...")
 
         signature = sign_and_send_tx(raw_tx)
         if signature:
@@ -123,7 +123,7 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
 
-# 💰 Placeholder for selling (to be completed in trade_logic.py)
+# 💰 Placeholder for selling
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
 
@@ -131,3 +131,5 @@ async def sell_token(token_address: str, amount_token: int):
 async def start_sniper():
     await send_telegram_alert("✅ Starting sniper bot...")
     await mempool_listener()
+
+__all__ = ["buy_token", "start_sniper"]
