@@ -32,12 +32,10 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
     try:
         lamports = int(amount_sol * 1_000_000_000)
         params = {
-            "inputMint": "So11111111111111111111111111111111111111112",  # SOL
+            "inputMint": "sol",  # ✅ MUST BE "sol", not So1111...
             "outputMint": output_mint,
             "amount": lamports,
-            "slippage": slippage,
-            "onlyDirectRoutes": False,
-            "swapMode": "ExactIn"
+            "slippage": slippage
         }
         async with httpx.AsyncClient() as session:
             res = await session.get(JUPITER_QUOTE_URL, params=params)
@@ -54,6 +52,7 @@ async def build_jupiter_swap_tx(route):
             "route": route,
             "userPublicKey": wallet_address,
             "wrapUnwrapSOL": True,
+            "feeAccount": None,
             "computeUnitPriceMicroLamports": 5000
         }
         async with httpx.AsyncClient() as session:
