@@ -1,10 +1,12 @@
+# utils.py
 import os
 import json
 import httpx
 from dotenv import load_dotenv
 from solana.rpc.api import Client
-from solana.publickey import PublicKey
-from solana.rpc.types import TokenAccountOpts
+from solana.rpc.types import MemcmpOpts, TokenAccountOpts
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 
 load_dotenv()
 
@@ -13,14 +15,15 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-WALLET_ADDRESS = str(PublicKey.from_secret_key(bytes(SOLANA_PRIVATE_KEY)))
+keypair = Keypair.from_secret_key(bytes(SOLANA_PRIVATE_KEY))
+WALLET_ADDRESS = keypair.pubkey()
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 client = Client(SOLANA_RPC)
 
-# 📤 Telegram Alert
-async def send_telegram_alert(message: str):
+# 📤 Send Telegram Alert (Async)
+async def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[⚠️] Telegram config missing.")
+        print("[⚠️] Telegram config not set — skipping alert.")
         return
     try:
         async with httpx.AsyncClient() as client:
@@ -31,15 +34,15 @@ async def send_telegram_alert(message: str):
     except Exception as e:
         print(f"[!] Telegram alert failed: {e}")
 
-# 🧠 Simulated Sell (Placeholder)
+# 🧠 Simulated Sell (Still sync placeholder)
 def simulate_sell_transaction(token_address):
     try:
-        return True
+        return True  # Placeholder logic
     except Exception as e:
         print(f"[!] Sell simulation failed: {e}")
         return False
 
-# 🧪 Token Safety via Birdeye
+# 🔍 Honeypot Check via Birdeye
 async def check_token_safety(token_address):
     try:
         async with httpx.AsyncClient() as client:
@@ -56,14 +59,15 @@ async def check_token_safety(token_address):
             if liquidity < 10000:
                 return "❌ Rug Risk: Low Liquidity"
             if buy_tax > 15 or sell_tax > 15:
-                return f"⚠️ Honeypot Risk: Buy/Sell Tax too high ({buy_tax}% / {sell_tax}%)"
+                return f"⚠️ Possible Honeypot: Buy/Sell Tax too high ({buy_tax}% / {sell_tax}%)"
             if holders < 20:
                 return "⚠️ Low Holders: Possibly Inactive"
-            return "✅ Token passed safety checks"
+
+            return "✅ Token passed basic safety checks"
     except Exception as e:
         return f"[!] Error checking honeypot: {e}"
 
-# 🚫 Blacklist / Mint Checks
+# 🚫 Blacklist & Mint Check
 async def has_blacklist_or_mint_functions(token_address):
     try:
         async with httpx.AsyncClient() as client:
@@ -71,7 +75,9 @@ async def has_blacklist_or_mint_functions(token_address):
             headers = {"X-API-KEY": BIRDEYE_API_KEY}
             res = await client.get(url, headers=headers)
             data = res.json().get("data", {})
-            return data.get("hasBlacklist", False) or data.get("hasMintAuthority", True)
+            blacklist = data.get("hasBlacklist", False)
+            mint = data.get("hasMintAuthority", True)
+            return blacklist or mint
     except Exception:
         return True  # Assume unsafe if can't verify
 
@@ -87,18 +93,20 @@ async def is_lp_locked_or_burned(token_address):
     except Exception:
         return False
 
-# ⚠️ Smart Rug Condition Checker
+# 🚨 Smart Rug Trigger Logic
 def detect_rug_conditions(token_data):
     try:
-        return (
-            token_data.get("liquidity", 0) < 1000 or
-            token_data.get("volume24h", 0) < 100 or
-            token_data.get("sellTax", 0) > 25
-        )
+        if token_data["liquidity"] < 1000:
+            return True
+        if token_data["volume24h"] < 100:
+            return True
+        if token_data["sellTax"] > 25:
+            return True
+        return False
     except Exception:
         return False
 
-# 📈 Token Price from Birdeye
+# 📈 Get token price from Birdeye
 async def get_token_price(token_address):
     try:
         url = f"https://public-api.birdeye.so/public/price?address={token_address}"
@@ -111,25 +119,24 @@ async def get_token_price(token_address):
         print(f"[!] Price fetch failed: {e}")
         return None
 
-# 💰 Token Balance in Wallet
+# 💰 Get token balance of wallet
 async def get_token_balance(token_mint):
     try:
-        opts = TokenAccountOpts(mint=token_mint, program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-        response = client.get_token_accounts_by_owner(WALLET_ADDRESS, opts)
-        accounts = response.get("result", {}).get("value", [])
-        for acc in accounts:
-            amount = acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
-            return int(amount)
+        token_account_opts = TokenAccountOpts(
+            mint=token_mint,
+            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        )
+        accounts = client.get_token_accounts_by_owner(WALLET_ADDRESS, token_account_opts)
+        for acc in accounts["result"]["value"]:
+            amount = int(acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
+            return amount
         return 0
     except Exception as e:
         print(f"[!] Balance fetch failed: {e}")
         return 0
 
-# 📜 CSV Trade Logger
+# 🧾 Trade Logger
 def log_trade_to_csv(token_address, action, amount, price):
     from time import time
-    try:
-        with open("trade_log.csv", "a") as f:
-            f.write(f"{time()},{token_address},{action},{amount},{price}\n")
-    except Exception as e:
-        print(f"[!] Failed to log trade: {e}")
+    with open("trade_log.csv", "a") as f:
+        f.write(f"{time()},{token_address},{action},{amount},{price}\n")
