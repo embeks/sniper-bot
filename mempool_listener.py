@@ -12,8 +12,8 @@ from utils import (
     is_lp_locked_or_burned,
     get_token_price
 )
-from sniper import buy_token  # ✅ updated from solana_sniper
-from main import auto_sell_if_profit  # ✅ pulls from main where the sell logic lives
+from sniper import buy_token
+from trade_logic import auto_sell_if_profit  # ✅ now imported from trade_logic.py
 
 load_dotenv()
 
@@ -84,7 +84,7 @@ async def mempool_listener():
 
                                 sniped_tokens.add(token_mint)
                                 await buy_token(token_mint, BUY_AMOUNT_SOL)
-                                await auto_sell_if_profit(token_mint, entry_price, None)
+                                await auto_sell_if_profit(token_mint, entry_price)
 
                 except Exception as inner_e:
                     print(f"[!] Inner loop error: {inner_e}")
