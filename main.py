@@ -40,7 +40,7 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
     except Exception as e:
         await send_telegram_alert(f"[‼️] Auto-sell failed: {e}")
 
-import asyncio
+from sniper import start_sniper
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(start_sniper())
