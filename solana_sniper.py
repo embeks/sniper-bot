@@ -58,8 +58,9 @@ def sign_and_send_tx(raw_tx: bytes):
     try:
         tx = VersionedTransaction.deserialize(raw_tx)
         tx.sign([keypair])
-        client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True))
-        return True
+        signature = client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True))
+        print(f"[+] TX sent: {signature['result']}")
+        return signature['result']
     except Exception as e:
         print(f"[‼️] TX Error: {e}")
         return False
@@ -72,14 +73,18 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"❌ No Jupiter route found for token {token_address}")
             return
 
+        if route['outAmount'] < 1:
+            await send_telegram_alert(f"❌ Output too low for token {token_address}, skipping")
+            return
+
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Could not build transaction for token {token_address}")
             return
 
-        success = sign_and_send_tx(raw_tx)
-        if success:
-            await send_telegram_alert(f"✅ Buy TX sent successfully for {token_address}")
+        signature = sign_and_send_tx(raw_tx)
+        if signature:
+            await send_telegram_alert(f"✅ Buy TX sent: {signature}\nToken: {token_address}")
             log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
         else:
             await send_telegram_alert(f"‼️ Failed to send buy TX for {token_address}")
