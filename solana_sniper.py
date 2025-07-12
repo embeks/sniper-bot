@@ -7,6 +7,7 @@ import asyncio
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
+from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 
@@ -19,13 +20,12 @@ SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 
 # 🔧 Setup
 client = Client(SOLANA_RPC)
-keypair = Keypair.from_secret_key(bytes(SOLANA_PRIVATE_KEY))
-wallet_address = str(keypair.public_key)
+keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
+wallet_address = str(keypair.pubkey())
 
 # 🌐 Jupiter Endpoints
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
-
 
 # ✅ Get best route quote from Jupiter
 async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 1.0):
@@ -45,7 +45,6 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
         print(f"[!] Jupiter quote error: {e}")
         return None
 
-
 # 🧠 Build swap transaction
 async def build_jupiter_swap_tx(route):
     try:
@@ -64,7 +63,6 @@ async def build_jupiter_swap_tx(route):
         print(f"[!] Build TX error: {e}")
         return None
 
-
 # 🚀 Sign and send transaction
 def sign_and_send_tx(raw_tx: bytes):
     try:
@@ -75,7 +73,6 @@ def sign_and_send_tx(raw_tx: bytes):
     except Exception as e:
         print(f"[‼️] TX signing error: {e}")
         return None
-
 
 # 🪙 Buy token with SOL
 async def buy_token(token_address: str, amount_sol: float = 0.01):
@@ -104,7 +101,6 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
-
 
 # 💰 Placeholder for selling (extend later)
 async def sell_token(token_address: str, amount_token: int):
