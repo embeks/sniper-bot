@@ -5,7 +5,7 @@ import base64
 import asyncio
 import httpx
 from solana.rpc.api import Client
-from solana.keypair import Keypair
+from solders.keypair import Keypair
 from solana.rpc.types import TxOpts
 from solana.transaction import Transaction
 from solders.transaction import VersionedTransaction
