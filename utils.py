@@ -3,7 +3,6 @@ import json
 import httpx
 from dotenv import load_dotenv
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.rpc.types import TokenAccountOpts
 
