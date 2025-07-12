@@ -7,7 +7,6 @@ import asyncio
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 
@@ -44,7 +43,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
     try:
         lamports = int(amount_sol * 1_000_000_000)
         params = {
-            "inputMint": "So11111111111111111111111111111111111111112",  # SOL mint
+            "inputMint": "So11111111111111111111111111111111111111112",
             "outputMint": output_mint,
             "amount": lamports,
             "slippageBps": int(slippage * 100)
@@ -121,6 +120,13 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
 
-# 💰 Placeholder for selling
+# 💰 Placeholder for selling (to be completed in trade_logic.py)
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
+
+# ✅ Export start_sniper for main.py
+from mempool_listener import mempool_listener
+
+async def start_sniper():
+    await send_telegram_alert("✅ Starting sniper bot...")
+    await mempool_listener()
