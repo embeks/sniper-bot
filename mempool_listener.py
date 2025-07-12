@@ -3,7 +3,6 @@ import asyncio
 import json
 import websockets
 from dotenv import load_dotenv
-from solders.pubkey import Pubkey
 
 from utils import (
     send_telegram_alert,
@@ -39,6 +38,8 @@ async def mempool_listener():
 
     await buy_token(test_token_mint, BUY_AMOUNT_SOL)
     await auto_sell_if_profit(test_token_mint, entry_price)
+    await send_telegram_alert("✅ Test buy completed. Skipping mempool.")
+    await asyncio.sleep(2)
     return  # prevent mempool from starting after test
 
     # 💡 Real mempool logic (skipped for test)
@@ -96,6 +97,7 @@ async def mempool_listener():
                                 sniped_tokens.add(token_mint)
                                 await buy_token(token_mint, BUY_AMOUNT_SOL)
                                 await auto_sell_if_profit(token_mint, entry_price)
+                                await asyncio.sleep(2)
 
                 except Exception as inner_e:
                     print(f"[!] Inner loop error: {inner_e}")
