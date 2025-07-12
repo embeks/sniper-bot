@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from solana_sniper import buy_token, sell_token
+from sniper import buy_token, sell_token  # ✅ Updated from solana_sniper
 from mempool_listener import mempool_listener
 from utils import send_telegram_alert, get_token_balance, get_token_price
 
@@ -40,6 +40,7 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
     except Exception as e:
         await send_telegram_alert(f"[‼️] Auto-sell failed: {e}")
 
+# ✅ Entry point (updated to match sniper.py)
 from sniper import start_sniper
 
 if __name__ == "__main__":
