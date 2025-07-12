@@ -40,12 +40,12 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
     except Exception as e:
         await send_telegram_alert(f"[‼️] Auto-sell failed: {e}")
 
-# 🌀 Main loop
-async def main():
-    await startup()
-    asyncio.create_task(mempool_listener())
-    while True:
-        await asyncio.sleep(60)
+import asyncio
+from solana_sniper import buy_token
+
+async def simulate_trade():
+    # Simulate a buy of 0.1 SOL worth of BONK
+    await buy_token("DezX6u4Ce3e3Bbs2hPBCChsEwR8WSPXk6cEfbZRx4Q5v", 0.1)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(simulate_trade())
