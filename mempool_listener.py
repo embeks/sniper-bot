@@ -11,7 +11,7 @@ from utils import (
     is_lp_locked_or_burned
 )
 from solana_sniper import buy_token
-from price_utils import get_token_price
+from utils import get_token_price
 load_dotenv()
 
 # Raydium AMM Program ID
