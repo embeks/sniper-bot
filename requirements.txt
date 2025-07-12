@@ -1,7 +1,6 @@
 websockets
 httpx
 requests
-solana
-pyserum
 python-dotenv
 solders
+solana
