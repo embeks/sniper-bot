@@ -28,6 +28,20 @@ async def mempool_listener():
         print("[‼️] No Helius API Key found in environment.")
         return
 
+    # 🔥 TEST LOGIC: Force snipe a single token (skip mempool)
+    test_token_mint = "DezX1x5C6AvPSLqR7EDHkPZgRbWvBvGJx5JXqt6Zt9V9"
+    await send_telegram_alert(f"🧪 Test mode: Forcing snipe of {test_token_mint}")
+    
+    entry_price = await get_token_price(test_token_mint)
+    if not entry_price:
+        await send_telegram_alert("❌ No price found for test token.")
+        return
+
+    await buy_token(test_token_mint, BUY_AMOUNT_SOL)
+    await auto_sell_if_profit(test_token_mint, entry_price)
+    return  # prevent mempool from starting after test
+
+    # 💡 Real mempool logic (skipped for test)
     uri = f"wss://mainnet.helius-rpc.com/?api-key={helius_api_key}"
 
     try:
