@@ -29,7 +29,7 @@ async def mempool_listener():
         return
 
     # 🔥 TEST LOGIC: Force snipe a single token (skip mempool)
-    test_token_mint = "DezX1x5C6AvPSLqR7EDHkPZgRbWvBvGJx5JXqt6Zt9V9"
+    test_token_mint = "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv"
     await send_telegram_alert(f"🧪 Test mode: Forcing snipe of {test_token_mint}")
     
     entry_price = await get_token_price(test_token_mint)
