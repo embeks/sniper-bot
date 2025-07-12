@@ -45,7 +45,7 @@ from solana_sniper import buy_token
 TOKEN_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # USDC
 
 async def simulate_trade():
-    await buy_token(TOKEN_MINT, 0.1)  # buy 0.1 SOL worth
+    await buy_token(TOKEN_MINT, 0.5)
 
 if __name__ == "__main__":
     asyncio.run(simulate_trade())
