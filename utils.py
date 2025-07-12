@@ -84,11 +84,11 @@ async def is_lp_locked_or_burned(token_address):
     except Exception:
         return False
 
-# 📈 Get Token Price
+# 📈 Get Token Price (✅ FIXED Endpoint)
 async def get_token_price(token_address):
     try:
         async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/public/price/token_price?address={token_address}"
+            url = f"https://public-api.birdeye.so/public/price/token_price?address={token_address}&network=solana"
             headers = {"X-API-KEY": BIRDEYE_API_KEY}
             res = await session.get(url, headers=headers)
 
