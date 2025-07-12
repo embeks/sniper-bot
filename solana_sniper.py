@@ -28,14 +28,14 @@ JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
 
 # ✅ Get best route quote from Jupiter
-async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 1.0):
+async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 5.0):
     try:
         lamports = int(amount_sol * 1_000_000_000)
         params = {
             "inputMint": "So11111111111111111111111111111111111111112",  # ✅ Correct Jupiter SOL mint
             "outputMint": output_mint,
             "amount": lamports,
-            "slippage": slippage
+            "slippageBps": int(slippage * 100)
         }
         async with httpx.AsyncClient() as session:
             res = await session.get(JUPITER_QUOTE_URL, params=params)
