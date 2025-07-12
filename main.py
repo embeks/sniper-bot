@@ -1,17 +1,26 @@
-from utils import check_new_tokens, send_telegram_alert, load_wallets_to_follow, check_wallet_activity
-import time
+import asyncio
+from utils import (
+    check_new_tokens,
+    send_telegram_alert,
+    load_wallets_to_follow,
+    check_wallet_activity
+)
 
-# ✅ Run once at start
-send_telegram_alert("✅ Sniper bot is now live")
-wallets_to_follow = load_wallets_to_follow()
+async def main():
+    send_telegram_alert("✅ Sniper bot is now live")
+    wallets_to_follow = load_wallets_to_follow()
 
-# 🌀 Main Loop
-while True:
-    try:
-        check_new_tokens()
-        check_wallet_activity(wallets_to_follow)
-        print("Waiting for next scan...")
-        time.sleep(60)  # Default interval
-    except Exception as e:
-        print(f"[!] Loop error: {e}")
-        time.sleep(30)
+    while True:
+        try:
+            await asyncio.gather(
+                check_new_tokens(),
+                check_wallet_activity(wallets_to_follow)
+            )
+            print("✅ Waiting 60s until next check...")
+            await asyncio.sleep(60)
+        except Exception as e:
+            print(f"[!] Loop error: {e}")
+            await asyncio.sleep(30)
+
+if __name__ == "__main__":
+    asyncio.run(main())
