@@ -10,7 +10,8 @@ from utils import (
     has_blacklist_or_mint_functions,
     is_lp_locked_or_burned
 )
-from solana_sniper import buy_token, auto_sell_if_profit, get_token_price
+from solana_sniper import buy_token, get_token_price
+from main import auto_sell_if_profit
 
 load_dotenv()
 
