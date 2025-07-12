@@ -1,23 +1,25 @@
+# main.py
 import asyncio
-from utils import (
-    check_new_tokens,
-    send_telegram_alert,
-    load_wallets_to_follow,
-    check_wallet_activity
-)
+from solana_sniper import buy_token
+from utils import send_telegram_alert
 
+# ✅ Called once on start
+async def startup():
+    await send_telegram_alert("✅ Sniper bot is now live and ready to snipe")
+
+# 🌀 Main loop (placeholder for real triggers)
 async def main():
-    send_telegram_alert("✅ Sniper bot is now live")
-    wallets_to_follow = load_wallets_to_follow()
+    await startup()
 
     while True:
         try:
-            await asyncio.gather(
-                check_new_tokens(),
-                check_wallet_activity(wallets_to_follow)
-            )
-            print("✅ Waiting 60s until next check...")
+            # 🧠 Example: hardcoded token to test
+            token_to_snipe = "TOKEN_MINT_ADDRESS_HERE"
+            await buy_token(token_to_snipe, amount_sol=0.01)
+
+            print("Waiting for next snipe...")
             await asyncio.sleep(60)
+
         except Exception as e:
             print(f"[!] Loop error: {e}")
             await asyncio.sleep(30)
