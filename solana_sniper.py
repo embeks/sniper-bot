@@ -32,7 +32,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
     try:
         lamports = int(amount_sol * 1_000_000_000)
         params = {
-            "inputMint": "sol",  # ✅ MUST BE "sol", not So1111...
+            "inputMint": "So11111111111111111111111111111111111111112",  # ✅ Correct Jupiter SOL mint
             "outputMint": output_mint,
             "amount": lamports,
             "slippage": slippage
