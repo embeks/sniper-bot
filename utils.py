@@ -1,7 +1,11 @@
+# utils.py
 import os
 import json
 import httpx
 from dotenv import load_dotenv
+from solana.rpc.api import Client
+from solana.publickey import PublicKey
+from solana.rpc.types import MemcmpOpts, TokenAccountOpts
 
 load_dotenv()
 
@@ -9,6 +13,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+WALLET_ADDRESS = str(PublicKey.from_secret_key(bytes(SOLANA_PRIVATE_KEY)))
+SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+client = Client(SOLANA_RPC)
 
 # 📤 Send Telegram Alert (Async)
 async def send_telegram_alert(message):
@@ -95,3 +103,38 @@ def detect_rug_conditions(token_data):
         return False
     except Exception:
         return False
+
+# 📈 Get token price from Birdeye
+async def get_token_price(token_address):
+    try:
+        url = f"https://public-api.birdeye.so/public/price?address={token_address}"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers)
+            data = res.json().get("data", {})
+            return float(data.get("value", 0))
+    except Exception as e:
+        print(f"[!] Price fetch failed: {e}")
+        return None
+
+# 💰 Get token balance of wallet
+async def get_token_balance(token_mint):
+    try:
+        token_account_opts = TokenAccountOpts(
+            mint=token_mint,
+            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        )
+        accounts = client.get_token_accounts_by_owner(WALLET_ADDRESS, token_account_opts)
+        for acc in accounts["result"]["value"]:
+            amount = int(acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
+            return amount
+        return 0
+    except Exception as e:
+        print(f"[!] Balance fetch failed: {e}")
+        return 0
+
+# 🧾 Trade Logger
+def log_trade_to_csv(token_address, action, amount, price):
+    from time import time
+    with open("trade_log.csv", "a") as f:
+        f.write(f"{time()},{token_address},{action},{amount},{price}\n")
