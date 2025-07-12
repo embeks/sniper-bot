@@ -1,22 +1,20 @@
-# main.py
 import asyncio
+import time
+
 from solana_sniper import buy_token, sell_token
 from mempool_listener import mempool_listener
 from utils import send_telegram_alert, get_token_balance, get_token_price
-import time
 
 # 🔧 Config
-TOKEN_MINT_ADDRESS = "TOKEN_MINT_ADDRESS_HERE"
-AMOUNT_SOL_TO_SPEND = 0.01
 TARGET_MULTIPLIERS = [2, 5, 10]  # x2, x5, x10
 TIMEOUT_SECONDS = 300  # 5 minutes
 
-# ✅ Called once on start
+# ✅ Startup alert
 async def startup():
     await send_telegram_alert("✅ Sniper bot is now live and monitoring mempool")
 
-# 🚨 Auto-sell if profit or timeout
-async def auto_sell_if_profit(token_mint, entry_price, wallet):
+# 🚨 Auto-sell logic
+async def auto_sell_if_profit(token_mint, entry_price, wallet=None):
     try:
         start_time = time.time()
         last_multiplier_hit = None
@@ -42,14 +40,10 @@ async def auto_sell_if_profit(token_mint, entry_price, wallet):
     except Exception as e:
         await send_telegram_alert(f"[‼️] Auto-sell failed: {e}")
 
-# 🌀 Main async loop
+# 🌀 Main loop
 async def main():
     await startup()
-
-    # Launch mempool listener concurrently
     asyncio.create_task(mempool_listener())
-
-    # Loop here is idle — can be extended for other tasks later
     while True:
         await asyncio.sleep(60)
 
