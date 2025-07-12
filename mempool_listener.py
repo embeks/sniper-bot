@@ -57,14 +57,10 @@ async def mempool_listener():
                         if "accountKeys" in log:
                             accounts = log["accountKeys"]
                             for acc in accounts:
-                                token_mint = str(acc)
-
-                                if (
-                                    token_mint in sniped_tokens or
-                                    token_mint.startswith("So111") or
-                                    len(token_mint) != 44
-                                ):
-                                    continue
+                                # === FORCE BONK SNIPE TEST ===
+token_mint = "DezX1x5C6AvPSLqR7EDHkPZgRbWvBvGJx5JXqt6Zt9V9"
+if token_mint in sniped_tokens:
+    continue
 
                                 # 🧠 Run filters
                                 safety = await check_token_safety(token_mint)
