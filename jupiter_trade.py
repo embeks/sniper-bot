@@ -90,6 +90,7 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
         await send_telegram_alert(f"🧪 [TEST MODE] Simulating buy for {token_address} with {amount_sol} SOL – TX skipped")
         return
+
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
         supported = await is_token_supported_by_jupiter(token_address)
