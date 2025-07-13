@@ -85,47 +85,50 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪙 Buy token with SOL — TEST MODE with step-by-step debugging
+# 🪙 Buy token with SOL (LIVE)
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
-        await send_telegram_alert(f"🧪 [Manual Test] Simulating snipe of {token_address}")
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
+        await send_telegram_alert(f"🔍 Step 1: Checking if token is supported by Jupiter...")
 
-        # Step 1: Check support
-        await send_telegram_alert("🔍 Step 1: Checking if token is supported by Jupiter...")
         supported = await is_token_supported_by_jupiter(token_address)
         if not supported:
             await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
             return
-        await send_telegram_alert("✅ Token is supported!")
 
-        # Step 2: Get route
-        await send_telegram_alert("🔍 Step 2: Getting Jupiter quote...")
+        await send_telegram_alert(f"🔍 Step 2: Fetching Jupiter route quote...")
+
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
             await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
             return
-        await send_telegram_alert("✅ Route found!")
 
-        # Step 3: Check output
-        out_amount = route.get('outAmount', 0)
-        if out_amount < 1:
+        if route.get('outAmount', 0) < 1:
             await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
             return
-        await send_telegram_alert(f"✅ Output OK: {out_amount / 1e9:.6f} tokens")
 
-        # Step 4: Build TX
-        await send_telegram_alert("🔍 Step 4: Building transaction...")
+        await send_telegram_alert(f"🔍 Step 3: Building transaction...")
+
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
-        await send_telegram_alert(f"✅ [TEST MODE] TX built successfully for {token_address}, skipping send.\n🔄 Estimated Out: {out_amount / 1e9:.6f} tokens")
+
+        await send_telegram_alert(f"🚀 Step 4: Sending transaction to blockchain...")
+
+        signature = sign_and_send_tx(raw_tx)
+        if signature:
+            await send_telegram_alert(
+                f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}"
+            )
+            log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
+        else:
+            await send_telegram_alert(f"‼️ TX failed for {token_address}")
 
     except Exception as e:
-        print(f"[!] Simulated buy failed: {e}")
-        await send_telegram_alert(f"[!] Simulated buy error: {e}")
+        print(f"[!] Live buy failed: {e}")
+        await send_telegram_alert(f"[!] Buy error: {e}")
 
-# 💰 Placeholder Sell Logic
+# 💰 Placeholder Sell Logic (used by trade_logic.py)
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
