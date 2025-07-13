@@ -19,6 +19,8 @@ async def startup():
 # 🚨 Auto-sell handler
 async def auto_sell_if_profit(token_mint: str, entry_price: float, wallet: str = None):
     try:
+        await send_telegram_alert(f"🧠 Auto-sell logic activated for {token_mint} at entry {entry_price:.6f} SOL")
+
         start_time = time.time()
         last_multiplier_hit = None
 
