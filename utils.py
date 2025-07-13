@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import httpx
 from dotenv import load_dotenv
 from solders.keypair import Keypair
@@ -68,7 +69,8 @@ async def has_blacklist_or_mint_functions(token_address):
             res = await session.get(url, headers=headers)
             data = res.json().get("data", {})
             return data.get("hasBlacklist", False) or data.get("hasMintAuthority", True)
-    except Exception:
+    except Exception as e:
+        print(f"[!] Authority check error: {e}")
         return True  # Assume dangerous if failed
 
 # 🔒 LP Locked or Burned
@@ -80,7 +82,8 @@ async def is_lp_locked_or_burned(token_address):
             res = await session.get(url, headers=headers)
             data = res.json().get("data", {})
             return data.get("lpIsBurned", False) or data.get("lpLocked", False)
-    except Exception:
+    except Exception as e:
+        print(f"[!] LP check failed: {e}")
         return False
 
 # 📈 Get Token Price
@@ -109,27 +112,33 @@ async def get_token_balance(token_mint):
             program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         )
         accounts = client.get_token_accounts_by_owner(WALLET_ADDRESS, opts)
-        for acc in accounts["result"]["value"]:
+
+        results = accounts.get("result", {}).get("value", [])
+        for acc in results:
             amount = int(acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
             return amount
+
         return 0
     except Exception as e:
         print(f"[!] Balance fetch failed: {e}")
         return 0
 
-# ⚠️ Rug Condition Logic
+# ⚠️ Rug Condition Logic (Optional usage)
 def detect_rug_conditions(token_data):
     try:
         return (
-            token_data["liquidity"] < 1000 or
-            token_data["volume24h"] < 100 or
-            token_data["sellTax"] > 25
+            token_data.get("liquidity", 0) < 1000 or
+            token_data.get("volume24h", 0) < 100 or
+            token_data.get("sellTax", 0) > 25
         )
-    except Exception:
+    except Exception as e:
+        print(f"[!] Rug detection error: {e}")
         return False
 
 # 📉 Trade Logger
 def log_trade_to_csv(token_address, action, amount, price):
-    from time import time
-    with open("trade_log.csv", "a") as f:
-        f.write(f"{time()},{token_address},{action},{amount},{price}\n")
+    try:
+        with open("trade_log.csv", "a") as f:
+            f.write(f"{time.time()},{token_address},{action},{amount},{price}\n")
+    except Exception as e:
+        print(f"[‼️] CSV log error: {e}")
