@@ -2,6 +2,8 @@ import os
 import json
 import base64
 import httpx
+import asyncio
+
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
@@ -10,18 +12,22 @@ from solana.rpc.types import TxOpts
 
 from utils import send_telegram_alert, log_trade_to_csv
 
+# 🔐 Load environment
 load_dotenv()
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 
+# 🔧 Setup
 client = Client(SOLANA_RPC)
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_address = str(keypair.pubkey())
 
+# 🌐 Jupiter Endpoints
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
 JUPITER_TOKEN_LIST_URL = "https://cache.jup.ag/tokens"
 
+# ✅ Check if token is supported by Jupiter
 async def is_token_supported_by_jupiter(mint: str) -> bool:
     try:
         async with httpx.AsyncClient() as session:
@@ -32,6 +38,7 @@ async def is_token_supported_by_jupiter(mint: str) -> bool:
         print(f"[!] Jupiter token list fetch error: {e}")
         return False
 
+# ✅ Get best route quote from Jupiter
 async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 5.0):
     try:
         lamports = int(amount_sol * 1_000_000_000)
@@ -49,6 +56,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
         print(f"[!] Jupiter quote error: {e}")
         return None
 
+# 🧠 Build swap transaction
 async def build_jupiter_swap_tx(route):
     try:
         payload = {
@@ -66,6 +74,7 @@ async def build_jupiter_swap_tx(route):
         print(f"[!] Build TX error: {e}")
         return None
 
+# 🚀 Sign and send transaction
 def sign_and_send_tx(raw_tx: bytes):
     try:
         tx = VersionedTransaction.deserialize(raw_tx)
@@ -76,6 +85,7 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
+# 🪙 Buy token with SOL
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
@@ -99,6 +109,8 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
 
+        print("[DEBUG] Sending transaction...")
+
         signature = sign_and_send_tx(raw_tx)
         if signature:
             await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
@@ -109,3 +121,7 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
+
+# 💰 Placeholder Sell Logic (used by trade_logic.py)
+async def sell_token(token_address: str, amount_token: int):
+    await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
