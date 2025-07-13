@@ -6,7 +6,7 @@ from utils import (
     get_token_price,
     get_token_balance
 )
-from sniper_logic import sell_token  # Needed for sell function
+from jupiter_trade import sell_token
 
 # 🔧 Auto-sell config
 TARGET_MULTIPLIERS = [2, 5, 10]     # e.g., sell at 2x, 5x, 10x
