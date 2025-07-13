@@ -85,12 +85,9 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪙 Buy token with SOL
+# 🪙 Simulated Buy (Safe Test Mode)
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
-        await send_telegram_alert(f"🧪 [TEST MODE] Simulating buy for {token_address} with {amount_sol} SOL – TX skipped")
-        return
-
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
         supported = await is_token_supported_by_jupiter(token_address)
@@ -112,8 +109,14 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
 
-        print("[DEBUG] Sending transaction...")
+        # 🚫 TEST MODE – skip actual TX
+        await send_telegram_alert(
+            f"🧪 [TEST MODE] TX built successfully for {token_address}, skipping actual send.\n"
+            f"🔄 Estimated Out: {route['outAmount'] / 1e9:.6f} tokens"
+        )
+        return
 
+        # ✅ LIVE MODE BELOW (unreachable while test mode is active)
         signature = sign_and_send_tx(raw_tx)
         if signature:
             await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
@@ -125,6 +128,6 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
 
-# 💰 Placeholder Sell Logic (used by trade_logic.py)
+# 💰 Placeholder Sell Logic
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
