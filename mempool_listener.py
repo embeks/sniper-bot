@@ -11,7 +11,7 @@ from utils import (
     is_lp_locked_or_burned,
     get_token_price
 )
-from sniper_logic import start_sniper
+from sniper_logic import buy_token
 from trade_logic import auto_sell_if_profit
 
 load_dotenv()
@@ -27,7 +27,7 @@ async def mempool_listener():
         print("[‼️] No Helius API Key found in environment.")
         return
 
-    # 🔥 TEST LOGIC: Force snipe a single token (skip mempool)
+    # 🔥 TEST LOGIC — Force buy 1 token before real listener
     test_token_mint = "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv"
     await send_telegram_alert(f"🧪 Test mode: Forcing snipe of {test_token_mint}")
     
@@ -39,10 +39,9 @@ async def mempool_listener():
     await buy_token(test_token_mint, BUY_AMOUNT_SOL)
     await auto_sell_if_profit(test_token_mint, entry_price)
     await send_telegram_alert("✅ Test buy completed. Skipping mempool.")
-    await asyncio.sleep(2)
-    return  # prevent mempool from starting after test
+    return  # stop here for test mode
 
-    # 💡 Real mempool logic (skipped for test)
+    # 📡 Real mempool listener logic
     uri = f"wss://mainnet.helius-rpc.com/?api-key={helius_api_key}"
 
     try:
@@ -78,7 +77,7 @@ async def mempool_listener():
                                 ):
                                     continue
 
-                                # 🧠 Run filters
+                                # 🧠 Run pre-buy filters
                                 safety = await check_token_safety(token_mint)
                                 if "❌" in safety or "⚠️" in safety:
                                     continue
@@ -97,7 +96,6 @@ async def mempool_listener():
                                 sniped_tokens.add(token_mint)
                                 await buy_token(token_mint, BUY_AMOUNT_SOL)
                                 await auto_sell_if_profit(token_mint, entry_price)
-                                await asyncio.sleep(2)
 
                 except Exception as inner_e:
                     print(f"[!] Inner loop error: {inner_e}")
