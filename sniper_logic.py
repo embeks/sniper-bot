@@ -2,9 +2,8 @@ import os
 import json
 import base64
 import httpx
-import asyncio
-
 from dotenv import load_dotenv
+
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
@@ -13,25 +12,26 @@ from solana.rpc.types import TxOpts
 from utils import send_telegram_alert, log_trade_to_csv
 from mempool_listener import mempool_listener
 
-# 🔐 Load environment
+# ============================== 🔧 Config ==============================
 load_dotenv()
+
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 
-# 🔧 Setup
-client = Client(SOLANA_RPC)
-keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
-wallet_address = str(keypair.pubkey())
-
-# 🌐 Jupiter Endpoints
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
 JUPITER_TOKEN_LIST_URL = "https://cache.jup.ag/tokens"
 
+client = Client(SOLANA_RPC)
+keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
+wallet_address = str(keypair.pubkey())
+
+# ============================== 🧠 Core Logic ==============================
+
 # ✅ Check if token is supported by Jupiter
 async def is_token_supported_by_jupiter(mint: str) -> bool:
     try:
-        async with httpx.AsyncClient() as session:
+        async with httpx.AsyncClient(timeout=10) as session:
             res = await session.get(JUPITER_TOKEN_LIST_URL)
             tokens = res.json()
             return any(token["address"] == mint for token in tokens)
@@ -49,7 +49,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
             "amount": lamports,
             "slippageBps": int(slippage * 100)
         }
-        async with httpx.AsyncClient() as session:
+        async with httpx.AsyncClient(timeout=10) as session:
             res = await session.get(JUPITER_QUOTE_URL, params=params)
             data = res.json()
             return data.get("data", [None])[0]
@@ -57,7 +57,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
         print(f"[!] Jupiter quote error: {e}")
         return None
 
-# 🧠 Build swap transaction
+# 🧱 Build swap transaction
 async def build_jupiter_swap_tx(route):
     try:
         payload = {
@@ -67,9 +67,10 @@ async def build_jupiter_swap_tx(route):
             "feeAccount": None,
             "computeUnitPriceMicroLamports": 5000
         }
-        async with httpx.AsyncClient() as session:
+        async with httpx.AsyncClient(timeout=10) as session:
             res = await session.post(JUPITER_SWAP_URL, json=payload)
-            tx_data = res.json().get("swapTransaction")
+            data = res.json()
+            tx_data = data.get("swapTransaction")
             return base64.b64decode(tx_data) if tx_data else None
     except Exception as e:
         print(f"[!] Build TX error: {e}")
@@ -123,11 +124,11 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
 
-# 💰 Placeholder for selling (used by trade_logic.py)
+# 💰 Placeholder for selling
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
 
-# ✅ Entry point
+# ✅ Main entry point
 async def start_sniper():
     await send_telegram_alert("✅ Starting sniper bot...")
     await mempool_listener()
