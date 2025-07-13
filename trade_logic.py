@@ -6,17 +6,17 @@ from utils import (
     get_token_price,
     get_token_balance
 )
-from sniper_logic import start_sniper
+from sniper_logic import sell_token  # Needed for sell function
 
-# 🔧 Profit Targets and Timeout
-TARGET_MULTIPLIERS = [2, 5, 10]  # Auto-sell thresholds
-TIMEOUT_SECONDS = 300  # Max hold time (in seconds)
+# 🔧 Auto-sell config
+TARGET_MULTIPLIERS = [2, 5, 10]     # e.g., sell at 2x, 5x, 10x
+TIMEOUT_SECONDS = 300              # Sell after 5 minutes max hold
 
-# ✅ Initial Bot Alert
+# ✅ Startup alert (optional)
 async def startup():
     await send_telegram_alert("✅ Sniper bot is now live and scanning the mempool...")
 
-# 🚨 Profit-Take Logic
+# 🚨 Auto-sell handler
 async def auto_sell_if_profit(token_mint: str, entry_price: float, wallet: str = None):
     try:
         start_time = time.time()
@@ -25,19 +25,23 @@ async def auto_sell_if_profit(token_mint: str, entry_price: float, wallet: str =
         while time.time() - start_time < TIMEOUT_SECONDS:
             current_price = await get_token_price(token_mint)
 
-            if current_price:
-                for mult in TARGET_MULTIPLIERS:
-                    if current_price >= entry_price * mult:
-                        if last_multiplier_hit != mult:
-                            amount_token = await get_token_balance(token_mint)
-                            await send_telegram_alert(f"🚀 {mult}x hit on {token_mint}! Selling now...")
-                            await sell_token(token_mint, amount_token)
-                            return
-                        last_multiplier_hit = mult
+            if not current_price:
+                print(f"[!] Failed to fetch price for {token_mint}")
+                await asyncio.sleep(5)
+                continue
+
+            for mult in TARGET_MULTIPLIERS:
+                if current_price >= entry_price * mult:
+                    if last_multiplier_hit != mult:
+                        amount_token = await get_token_balance(token_mint)
+                        await send_telegram_alert(f"🚀 {mult}x hit on {token_mint}! Selling now...")
+                        await sell_token(token_mint, amount_token)
+                        return
+                    last_multiplier_hit = mult
 
             await asyncio.sleep(5)
 
-        # ⏱ Timeout reached
+        # ⏱ Timeout reached, force sell
         await send_telegram_alert(f"⏱ Timeout hit on {token_mint}. Selling now...")
         amount_token = await get_token_balance(token_mint)
         await sell_token(token_mint, amount_token)
