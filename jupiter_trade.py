@@ -85,7 +85,7 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪙 Simulated Buy (Safe Test Mode)
+# 🪙 Buy token with SOL — TEST MODE
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
@@ -109,14 +109,14 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
 
-        # 🚫 TEST MODE – skip actual TX
+        # ✅ TEST MODE – Stop here, show simulation result
         await send_telegram_alert(
             f"🧪 [TEST MODE] TX built successfully for {token_address}, skipping actual send.\n"
-            f"🔄 Estimated Out: {route['outAmount'] / 1e9:.6f} tokens"
+            f"🔄 Estimated Output: {route['outAmount'] / 1e9:.6f} tokens"
         )
         return
 
-        # ✅ LIVE MODE BELOW (unreachable while test mode is active)
+        # ✅ LIVE MODE (only runs if test return above is removed)
         signature = sign_and_send_tx(raw_tx)
         if signature:
             await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
@@ -125,8 +125,8 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
             await send_telegram_alert(f"‼️ TX failed for {token_address}")
 
     except Exception as e:
-        print(f"[!] Sniping failed: {e}")
-        await send_telegram_alert(f"[!] Sniping error: {e}")
+        print(f"[!] Simulated buy failed: {e}")
+        await send_telegram_alert(f"[!] Simulated buy error: {e}")
 
 # 💰 Placeholder Sell Logic
 async def sell_token(token_address: str, amount_token: int):
