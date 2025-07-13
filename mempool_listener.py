@@ -27,6 +27,18 @@ async def mempool_listener():
         print("[‼️] No Helius API Key found in environment.")
         return
 
+    # 🔬 Manual Test Mode: Simulate one token before mempool
+    manual_test_token = os.getenv("MANUAL_TEST_TOKEN")
+    if manual_test_token:
+        await send_telegram_alert(f"🧪 [Manual Test] Simulating snipe of {manual_test_token}")
+        entry_price = await get_token_price(manual_test_token)
+        if not entry_price:
+            await send_telegram_alert("❌ No price found for manual test token.")
+        else:
+            await buy_token(manual_test_token, BUY_AMOUNT_SOL)
+            await auto_sell_if_profit(manual_test_token, entry_price)
+        await send_telegram_alert("🧪 Manual test complete. Starting live mempool listener...")
+
     # 📡 Real mempool listener logic
     uri = f"wss://mainnet.helius-rpc.com/?api-key={helius_api_key}"
 
