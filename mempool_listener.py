@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import websockets
+from datetime import datetime
 from dotenv import load_dotenv
 
 from utils import (
@@ -19,18 +20,34 @@ load_dotenv()
 RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
 BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
-
-# Use flag so we don't spam listener alert
 mempool_announced = False
+
+LOG_FILE = "sniper.log"
+HEARTBEAT_INTERVAL = 4 * 60 * 60  # 4 hours in seconds
+
+async def log_event(message: str):
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] {message}\n"
+    with open(LOG_FILE, "a") as f:
+        f.write(log_line)
+    print(log_line.strip())
+
+async def heartbeat():
+    while True:
+        await send_telegram_alert("❤️ Heartbeat: Mempool listener running.")
+        await log_event("Heartbeat sent to Telegram")
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
 
 async def mempool_listener():
     global mempool_announced
     helius_api_key = os.getenv("HELIUS_API_KEY")
     if not helius_api_key:
-        print("[‼️] No Helius API Key found in environment.")
+        await log_event("[‼️] No Helius API Key found in environment.")
         return
 
     uri = f"wss://mainnet.helius-rpc.com/?api-key={helius_api_key}"
+
+    asyncio.create_task(heartbeat())
 
     while True:
         try:
@@ -48,6 +65,7 @@ async def mempool_listener():
 
                 if not mempool_announced:
                     await send_telegram_alert("📡 Mempool listener active...")
+                    await log_event("📡 Mempool listener active...")
                     mempool_announced = True
 
                 while True:
@@ -79,10 +97,12 @@ async def mempool_listener():
                                         continue
 
                                     await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
+                                    await log_event(f"Sniping token: {token_mint}")
 
                                     entry_price = await get_token_price(token_mint)
                                     if not entry_price:
                                         await send_telegram_alert("❌ No price found, skipping")
+                                        await log_event(f"❌ No price found for {token_mint}")
                                         continue
 
                                     sniped_tokens.add(token_mint)
@@ -90,11 +110,11 @@ async def mempool_listener():
                                     await auto_sell_if_profit(token_mint, entry_price)
 
                     except Exception as inner_e:
-                        print(f"[!] Inner loop error: {inner_e}")
+                        await log_event(f"[!] Inner loop error: {inner_e}")
                         await asyncio.sleep(2)
-                        break  # Breaks inner loop to reconnect websocket
+                        break
 
         except Exception as outer_e:
-            print(f"[‼️] Mempool connection failed: {outer_e}")
-            mempool_announced = False  # Reset so we re-alert on next full reconnect
+            await log_event(f"[‼️] Mempool connection failed: {outer_e}")
+            mempool_announced = False
             await asyncio.sleep(5)
