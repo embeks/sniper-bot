@@ -2,7 +2,6 @@ import os
 import asyncio
 import json
 import websockets
-import traceback
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -54,21 +53,28 @@ async def mempool_listener():
 
                 while True:
                     try:
+                        # Heartbeat
                         now = datetime.utcnow()
                         if now - last_heartbeat >= heartbeat_interval:
-                            await send_telegram_alert(f"❤️ Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]")
+                            await send_telegram_alert(
+                                f"❤️ Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]"
+                            )
                             last_heartbeat = now
 
                         message = await ws.recv()
                         data = json.loads(message)
 
-                        log = data.get("result", {}).get("value", {})
+                        # Defensive type checking
+                        result = data.get("result")
+                        if not isinstance(result, dict):
+                            continue
+
+                        log = result.get("value")
                         if not isinstance(log, dict):
                             continue
 
                         accounts = log.get("accountKeys")
                         if not isinstance(accounts, list):
-                            print(f"[!] Skipped: 'accountKeys' is not a list. Value: {accounts}")
                             continue
 
                         for acc in accounts:
@@ -82,16 +88,16 @@ async def mempool_listener():
                                 continue
 
                             safety = await check_token_safety(token_mint)
-                            if not isinstance(safety, str):
-                                continue
-                            if "❌" in safety or "⚠️" in safety:
+                            if isinstance(safety, str) and ("❌" in safety or "⚠️" in safety):
                                 continue
                             if await has_blacklist_or_mint_functions(token_mint):
                                 continue
                             if not await is_lp_locked_or_burned(token_mint):
                                 continue
 
-                            await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
+                            await send_telegram_alert(
+                                f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping..."
+                            )
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
@@ -105,11 +111,11 @@ async def mempool_listener():
                     except Exception as inner_e:
                         error_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
                         print(f"[{error_time}] [!] Inner loop error: {inner_e}")
-                        traceback.print_exc()
                         await asyncio.sleep(2)
                         break
 
         except Exception as outer_e:
             error_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{error_time}] [‼️] Mempool connection failed: {outer_e}")
+            mempool_announced = False
             await asyncio.sleep(5)
