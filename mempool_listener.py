@@ -63,10 +63,11 @@ async def mempool_listener():
 
                         if "result" in data and "value" in data["result"]:
                             log = data["result"]["value"]
-                            accounts = log.get("accountKeys", [])
-
+                            accounts = log.get("accountKeys")
+                            
                             if not isinstance(accounts, list):
-                                continue  # avoid non-list issues
+                                print(f"[!] Skipped malformed log (accountKeys not list): {log}")
+                                continue
 
                             for acc in accounts:
                                 token_mint = str(acc)
@@ -78,6 +79,7 @@ async def mempool_listener():
                                 ):
                                     continue
 
+                                # 🧠 Pre-buy filters
                                 safety = await check_token_safety(token_mint)
                                 if isinstance(safety, str) and ("❌" in safety or "⚠️" in safety):
                                     continue
