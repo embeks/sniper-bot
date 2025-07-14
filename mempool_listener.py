@@ -2,8 +2,8 @@ import os
 import asyncio
 import json
 import websockets
-from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
 from utils import (
     send_telegram_alert,
@@ -21,10 +21,11 @@ RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
 BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
 mempool_announced = False
-last_heartbeat_time = datetime.utcnow() - timedelta(hours=4)
+heartbeat_interval = timedelta(hours=4)
+last_heartbeat = datetime.utcnow()
 
 async def mempool_listener():
-    global mempool_announced, last_heartbeat_time
+    global mempool_announced, last_heartbeat
     helius_api_key = os.getenv("HELIUS_API_KEY")
     if not helius_api_key:
         print("[‼️] No Helius API Key found in environment.")
@@ -47,60 +48,62 @@ async def mempool_listener():
                 await ws.send(json.dumps(sub_msg))
 
                 if not mempool_announced:
-                    await send_telegram_alert("📡 Mempool listener active...")
+                    await send_telegram_alert("\ud83d\udce1 Mempool listener active...")
                     mempool_announced = True
 
                 while True:
                     try:
+                        # Heartbeat check
                         now = datetime.utcnow()
-                        if now - last_heartbeat_time >= timedelta(hours=4):
-                            last_heartbeat_time = now
-                            await send_telegram_alert("❤️ Heartbeat: Mempool listener still running")
+                        if now - last_heartbeat >= heartbeat_interval:
+                            await send_telegram_alert("\u2764\ufe0f Bot is still running [Heartbeat @ {} UTC]".format(now.strftime('%Y-%m-%d %H:%M:%S')))
+                            last_heartbeat = now
 
                         message = await ws.recv()
                         data = json.loads(message)
 
                         if "result" in data and "value" in data["result"]:
                             log = data["result"]["value"]
-                            if "accountKeys" in log:
-                                accounts = log["accountKeys"]
-                                for acc in accounts:
-                                    token_mint = str(acc)
+                            accounts = log.get("accountKeys", [])
 
-                                    if (
-                                        token_mint in sniped_tokens or
-                                        token_mint.startswith("So111") or
-                                        len(token_mint) != 44
-                                    ):
-                                        continue
+                            for acc in accounts:
+                                token_mint = str(acc)
 
-                                    # 🧠 Pre-buy filters
-                                    safety = await check_token_safety(token_mint)
-                                    if "❌" in str(safety) or "⚠️" in str(safety):
-                                        continue
-                                    if await has_blacklist_or_mint_functions(token_mint):
-                                        continue
-                                    if not await is_lp_locked_or_burned(token_mint):
-                                        continue
+                                if (
+                                    token_mint in sniped_tokens or
+                                    token_mint.startswith("So111") or
+                                    len(token_mint) != 44
+                                ):
+                                    continue
 
-                                    await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
+                                # \ud83e\udde0 Pre-buy filters
+                                safety = await check_token_safety(token_mint)
+                                if isinstance(safety, str) and ("\u274c" in safety or "\u26a0\ufe0f" in safety):
+                                    continue
+                                if await has_blacklist_or_mint_functions(token_mint):
+                                    continue
+                                if not await is_lp_locked_or_burned(token_mint):
+                                    continue
 
-                                    entry_price = await get_token_price(token_mint)
-                                    if not entry_price:
-                                        await send_telegram_alert("❌ No price found, skipping")
-                                        continue
+                                await send_telegram_alert(f"\ud83d\udd0e New token: {token_mint}\n{safety}\nAuto-sniping...")
 
-                                    sniped_tokens.add(token_mint)
-                                    await buy_token(token_mint, BUY_AMOUNT_SOL)
-                                    await auto_sell_if_profit(token_mint, entry_price)
+                                entry_price = await get_token_price(token_mint)
+                                if not entry_price:
+                                    await send_telegram_alert("\u274c No price found, skipping")
+                                    continue
+
+                                sniped_tokens.add(token_mint)
+                                await buy_token(token_mint, BUY_AMOUNT_SOL)
+                                await auto_sell_if_profit(token_mint, entry_price)
 
                     except Exception as inner_e:
-                        print(f"[!] Inner loop error: {inner_e}")
+                        error_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                        print(f"[{error_time}] [!] Inner loop error: {inner_e}")
                         await asyncio.sleep(2)
                         break
 
         except Exception as outer_e:
-            print(f"[‼️] Mempool connection failed: {outer_e}")
+            error_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{error_time}] [‼️] Mempool connection failed: {outer_e}")
             mempool_announced = False
             await asyncio.sleep(5)
-
