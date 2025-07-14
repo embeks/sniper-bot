@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import websockets
+import traceback
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -61,16 +62,13 @@ async def mempool_listener():
                         message = await ws.recv()
                         data = json.loads(message)
 
-                        if "result" not in data or "value" not in data["result"]:
-                            continue
-
-                        log = data["result"]["value"]
-
-                        # ✅ Extra safety checks
+                        log = data.get("result", {}).get("value", {})
                         if not isinstance(log, dict):
                             continue
+
                         accounts = log.get("accountKeys")
                         if not isinstance(accounts, list):
+                            print(f"[!] Skipped: 'accountKeys' is not a list. Value: {accounts}")
                             continue
 
                         for acc in accounts:
@@ -84,7 +82,9 @@ async def mempool_listener():
                                 continue
 
                             safety = await check_token_safety(token_mint)
-                            if isinstance(safety, str) and ("❌" in safety or "⚠️" in safety):
+                            if not isinstance(safety, str):
+                                continue
+                            if "❌" in safety or "⚠️" in safety:
                                 continue
                             if await has_blacklist_or_mint_functions(token_mint):
                                 continue
@@ -105,11 +105,11 @@ async def mempool_listener():
                     except Exception as inner_e:
                         error_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
                         print(f"[{error_time}] [!] Inner loop error: {inner_e}")
+                        traceback.print_exc()
                         await asyncio.sleep(2)
                         break
 
         except Exception as outer_e:
             error_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{error_time}] [‼️] Mempool connection failed: {outer_e}")
-            mempool_announced = False
             await asyncio.sleep(5)
