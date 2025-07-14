@@ -53,9 +53,10 @@ async def mempool_listener():
 
                 while True:
                     try:
+                        # Heartbeat check
                         now = datetime.utcnow()
                         if now - last_heartbeat >= heartbeat_interval:
-                            await send_telegram_alert(f"❤️ Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]")
+                            await send_telegram_alert("❤️ Bot is still running [Heartbeat @ {} UTC]".format(now.strftime('%Y-%m-%d %H:%M:%S')))
                             last_heartbeat = now
 
                         message = await ws.recv()
@@ -63,10 +64,11 @@ async def mempool_listener():
 
                         if "result" in data and "value" in data["result"]:
                             log = data["result"]["value"]
-                            accounts = log.get("accountKeys")
-                            
+                            accounts = log.get("accountKeys", [])
+
                             if not isinstance(accounts, list):
-                                print(f"[!] Skipped malformed log (accountKeys not list): {log}")
+                                error_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                                print(f"[{error_time}] [!] Skipping malformed log (accountKeys not iterable): {log}")
                                 continue
 
                             for acc in accounts:
@@ -79,7 +81,6 @@ async def mempool_listener():
                                 ):
                                     continue
 
-                                # 🧠 Pre-buy filters
                                 safety = await check_token_safety(token_mint)
                                 if isinstance(safety, str) and ("❌" in safety or "⚠️" in safety):
                                     continue
