@@ -48,7 +48,7 @@ async def mempool_listener():
                 await ws.send(json.dumps(sub_msg))
 
                 if not mempool_announced:
-                    await send_telegram_alert("📡 Mempool listener active...")
+                    await send_telegram_alert("\ud83d\udce1 Mempool listener active...")
                     mempool_announced = True
 
                 while True:
@@ -56,7 +56,7 @@ async def mempool_listener():
                         # Heartbeat check
                         now = datetime.utcnow()
                         if now - last_heartbeat >= heartbeat_interval:
-                            await send_telegram_alert(f"❤️ Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]")
+                            await send_telegram_alert(f"\u2764\ufe0f Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]")
                             last_heartbeat = now
 
                         message = await ws.recv()
@@ -65,8 +65,7 @@ async def mempool_listener():
                         if "result" in data and "value" in data["result"]:
                             log = data["result"]["value"]
 
-                            # ✅ Safe access to accountKeys
-                            accounts = log.get("accountKeys", [])
+                            accounts = log.get("accountKeys")
                             if not isinstance(accounts, list):
                                 continue
 
@@ -81,18 +80,18 @@ async def mempool_listener():
                                     continue
 
                                 safety = await check_token_safety(token_mint)
-                                if isinstance(safety, str) and ("❌" in safety or "⚠️" in safety):
+                                if isinstance(safety, str) and ("\u274c" in safety or "\u26a0\ufe0f" in safety):
                                     continue
                                 if await has_blacklist_or_mint_functions(token_mint):
                                     continue
                                 if not await is_lp_locked_or_burned(token_mint):
                                     continue
 
-                                await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
+                                await send_telegram_alert(f"\ud83d\udd0e New token: {token_mint}\n{safety}\nAuto-sniping...")
 
                                 entry_price = await get_token_price(token_mint)
                                 if not entry_price:
-                                    await send_telegram_alert("❌ No price found, skipping")
+                                    await send_telegram_alert("\u274c No price found, skipping")
                                     continue
 
                                 sniped_tokens.add(token_mint)
