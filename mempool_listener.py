@@ -17,12 +17,15 @@ from trade_logic import auto_sell_if_profit
 
 load_dotenv()
 
+# === CONFIG ===
+DEBUG = True  # ✅ Toggle debug mode here
 RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
 BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
 mempool_announced = False
 heartbeat_interval = timedelta(hours=4)
 last_heartbeat = datetime.utcnow()
+
 
 async def mempool_listener():
     global mempool_announced, last_heartbeat
@@ -53,7 +56,6 @@ async def mempool_listener():
 
                 while True:
                     try:
-                        # Heartbeat
                         now = datetime.utcnow()
                         if now - last_heartbeat >= heartbeat_interval:
                             await send_telegram_alert(
@@ -64,35 +66,57 @@ async def mempool_listener():
                         message = await ws.recv()
                         data = json.loads(message)
 
-                        # Defensive type checking
+                        if DEBUG:
+                            print("[DEBUG] Raw message:", data)
+
                         result = data.get("result")
                         if not isinstance(result, dict):
+                            if DEBUG:
+                                print("[DEBUG] Skipped: result not dict")
                             continue
 
                         log = result.get("value")
                         if not isinstance(log, dict):
+                            if DEBUG:
+                                print("[DEBUG] Skipped: value not dict")
                             continue
 
                         accounts = log.get("accountKeys")
                         if not isinstance(accounts, list):
+                            if DEBUG:
+                                print("[DEBUG] Skipped: accountKeys not list")
                             continue
 
                         for acc in accounts:
                             token_mint = str(acc)
 
-                            if (
-                                token_mint in sniped_tokens or
-                                token_mint.startswith("So111") or
-                                len(token_mint) != 44
-                            ):
+                            if token_mint in sniped_tokens:
+                                if DEBUG:
+                                    print(f"[DEBUG] Skipped {token_mint}: already sniped")
+                                continue
+                            if token_mint.startswith("So111"):
+                                if DEBUG:
+                                    print(f"[DEBUG] Skipped {token_mint}: native SOL")
+                                continue
+                            if len(token_mint) != 44:
+                                if DEBUG:
+                                    print(f"[DEBUG] Skipped {token_mint}: invalid length")
                                 continue
 
                             safety = await check_token_safety(token_mint)
                             if isinstance(safety, str) and ("❌" in safety or "⚠️" in safety):
+                                if DEBUG:
+                                    print(f"[DEBUG] Skipped {token_mint}: {safety}")
                                 continue
+
                             if await has_blacklist_or_mint_functions(token_mint):
+                                if DEBUG:
+                                    print(f"[DEBUG] Skipped {token_mint}: blacklist or mint authority present")
                                 continue
+
                             if not await is_lp_locked_or_burned(token_mint):
+                                if DEBUG:
+                                    print(f"[DEBUG] Skipped {token_mint}: LP not locked or burned")
                                 continue
 
                             await send_telegram_alert(
