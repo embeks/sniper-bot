@@ -16,79 +16,85 @@ from trade_logic import auto_sell_if_profit
 
 load_dotenv()
 
-# Raydium AMM Program ID
 RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
-BUY_AMOUNT_SOL = 0.027  # ≈ $5 AUD
+BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
 
+# Use flag so we don't spam listener alert
+mempool_announced = False
+
 async def mempool_listener():
+    global mempool_announced
     helius_api_key = os.getenv("HELIUS_API_KEY")
     if not helius_api_key:
         print("[‼️] No Helius API Key found in environment.")
         return
 
     uri = f"wss://mainnet.helius-rpc.com/?api-key={helius_api_key}"
-    subscribed_once = False
 
-    try:
-        async with websockets.connect(uri) as ws:
-            sub_msg = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "logsSubscribe",
-                "params": [
-                    {"mentions": [RAYDIUM_PROGRAM_ID]},
-                    {"commitment": "processed", "encoding": "jsonParsed"}
-                ]
-            }
-            await ws.send(json.dumps(sub_msg))
-            if not subscribed_once:
-                await send_telegram_alert("📡 Mempool listener active...")
-                subscribed_once = True
+    while True:
+        try:
+            async with websockets.connect(uri) as ws:
+                sub_msg = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "logsSubscribe",
+                    "params": [
+                        {"mentions": [RAYDIUM_PROGRAM_ID]},
+                        {"commitment": "processed", "encoding": "jsonParsed"}
+                    ]
+                }
+                await ws.send(json.dumps(sub_msg))
 
-            while True:
-                try:
-                    message = await ws.recv()
-                    data = json.loads(message)
+                if not mempool_announced:
+                    await send_telegram_alert("📡 Mempool listener active...")
+                    mempool_announced = True
 
-                    if "result" in data and "value" in data["result"]:
-                        log = data["result"]["value"]
-                        if "accountKeys" in log:
-                            accounts = log["accountKeys"]
-                            for acc in accounts:
-                                token_mint = str(acc)
+                while True:
+                    try:
+                        message = await ws.recv()
+                        data = json.loads(message)
 
-                                if (
-                                    token_mint in sniped_tokens or
-                                    token_mint.startswith("So111") or
-                                    len(token_mint) != 44
-                                ):
-                                    continue
+                        if "result" in data and "value" in data["result"]:
+                            log = data["result"]["value"]
+                            if "accountKeys" in log:
+                                accounts = log["accountKeys"]
+                                for acc in accounts:
+                                    token_mint = str(acc)
 
-                                # 🧠 Run pre-buy filters
-                                safety = await check_token_safety(token_mint)
-                                if "❌" in safety or "⚠️" in safety:
-                                    continue
-                                if await has_blacklist_or_mint_functions(token_mint):
-                                    continue
-                                if not await is_lp_locked_or_burned(token_mint):
-                                    continue
+                                    if (
+                                        token_mint in sniped_tokens or
+                                        token_mint.startswith("So111") or
+                                        len(token_mint) != 44
+                                    ):
+                                        continue
 
-                                await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
+                                    # 🧠 Pre-buy filters
+                                    safety = await check_token_safety(token_mint)
+                                    if "❌" in safety or "⚠️" in safety:
+                                        continue
+                                    if await has_blacklist_or_mint_functions(token_mint):
+                                        continue
+                                    if not await is_lp_locked_or_burned(token_mint):
+                                        continue
 
-                                entry_price = await get_token_price(token_mint)
-                                if not entry_price:
-                                    await send_telegram_alert("❌ No price found, skipping")
-                                    continue
+                                    await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
 
-                                sniped_tokens.add(token_mint)
-                                await buy_token(token_mint, BUY_AMOUNT_SOL)
-                                await auto_sell_if_profit(token_mint, entry_price)
+                                    entry_price = await get_token_price(token_mint)
+                                    if not entry_price:
+                                        await send_telegram_alert("❌ No price found, skipping")
+                                        continue
 
-                except Exception as inner_e:
-                    print(f"[!] Inner loop error: {inner_e}")
-                    await asyncio.sleep(3)
+                                    sniped_tokens.add(token_mint)
+                                    await buy_token(token_mint, BUY_AMOUNT_SOL)
+                                    await auto_sell_if_profit(token_mint, entry_price)
 
-    except Exception as outer_e:
-        print(f"[‼️] Mempool listener startup failed: {outer_e}")
-        await send_telegram_alert("‼️ Mempool listener crashed.")
+                    except Exception as inner_e:
+                        print(f"[!] Inner loop error: {inner_e}")
+                        await asyncio.sleep(2)
+                        break  # Breaks inner loop to reconnect websocket
+
+        except Exception as outer_e:
+            print(f"[‼️] Mempool connection failed: {outer_e}")
+            mempool_announced = False  # Reset so we re-alert on next full reconnect
+            await asyncio.sleep(5)
