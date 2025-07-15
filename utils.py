@@ -142,3 +142,15 @@ def log_trade_to_csv(token_address, action, amount, price):
             f.write(f"{time.time()},{token_address},{action},{amount},{price}\n")
     except Exception as e:
         print(f"[‼️] CSV log error: {e}")
+
+# 🧪 Get full token data (for rug detection, price, liquidity)
+async def get_token_data(token_address):
+    try:
+        async with httpx.AsyncClient() as session:
+            url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
+            headers = {"X-API-KEY": BIRDEYE_API_KEY}
+            res = await session.get(url, headers=headers)
+            return res.json().get("data", {})
+    except Exception as e:
+        print(f"[!] Token data fetch failed: {e}")
+        return {}
