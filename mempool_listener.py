@@ -21,7 +21,7 @@ sniped_tokens = set()
 mempool_announced = False
 heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
-FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")  # Optional test token
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")  # Optional: test token to simulate buy
 
 async def mempool_listener():
     global mempool_announced, last_heartbeat
@@ -51,7 +51,7 @@ async def mempool_listener():
                 print("[INFO] Subscribed to logs (raw mode)...")
                 mempool_announced = True
 
-                # Optional test snipe to verify flow
+                # Optional simulated test buy
                 if FORCE_TEST_MINT and FORCE_TEST_MINT not in sniped_tokens:
                     await send_telegram_alert(f"🧪 Simulating snipe attempt on {FORCE_TEST_MINT}")
                     entry_price = await get_token_price(FORCE_TEST_MINT)
