@@ -26,7 +26,6 @@ mempool_announced = False
 heartbeat_interval = timedelta(hours=4)
 last_heartbeat = datetime.utcnow()
 
-
 async def mempool_listener():
     global mempool_announced, last_heartbeat
     helius_api_key = os.getenv("HELIUS_API_KEY")
@@ -103,21 +102,35 @@ async def mempool_listener():
                                     print(f"[DEBUG] Skipped {token_mint}: invalid length")
                                 continue
 
+                            # 🧪 Safety Relaxed: Now checks for lower thresholds
                             safety = await check_token_safety(token_mint)
-                            if isinstance(safety, str) and ("❌" in safety or "⚠️" in safety):
+                            if isinstance(safety, str):
+                                if "❌ Rug Risk" in safety:  # Liquidity < 2000
+                                    if DEBUG:
+                                        print(f"[DEBUG] Skipped {token_mint}: {safety}")
+                                    continue
+                                if "⚠️ Honeypot Risk" in safety and any(int(x) > 20 for x in safety.split("(")[1].split(")")[0].replace("%", "").split("/")):
+                                    if DEBUG:
+                                        print(f"[DEBUG] Skipped {token_mint}: High tax")
+                                    continue
+                                if "⚠️ Low Holders" in safety and "holders < 5" in safety:
+                                    if DEBUG:
+                                        print(f"[DEBUG] Skipped {token_mint}: Low holders")
+                                    continue
+
+                            # 🛑 Skip only if BOTH blacklist AND mint authority are true
+                            has_danger = await has_blacklist_or_mint_functions(token_mint)
+                            if has_danger:
                                 if DEBUG:
-                                    print(f"[DEBUG] Skipped {token_mint}: {safety}")
+                                    print(f"[DEBUG] Skipped {token_mint}: blacklist/mint authority")
                                 continue
 
-                            if await has_blacklist_or_mint_functions(token_mint):
-                                if DEBUG:
-                                    print(f"[DEBUG] Skipped {token_mint}: blacklist or mint authority present")
-                                continue
-
-                            if not await is_lp_locked_or_burned(token_mint):
-                                if DEBUG:
-                                    print(f"[DEBUG] Skipped {token_mint}: LP not locked or burned")
-                                continue
+                            # 🔓 LP lock check DISABLED in relaxed mode
+                            # Uncomment below if you want to keep enforcing LP locks
+                            # if not await is_lp_locked_or_burned(token_mint):
+                            #     if DEBUG:
+                            #         print(f"[DEBUG] Skipped {token_mint}: LP not locked or burned")
+                            #     continue
 
                             await send_telegram_alert(
                                 f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping..."
