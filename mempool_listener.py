@@ -19,7 +19,11 @@ load_dotenv()
 
 # === CONFIG ===
 DEBUG = True
-RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
+PROGRAM_IDS = [
+    "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU",  # Raydium
+    "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",  # Jupiter
+    "82yxjeMsxhMF2j5BuWvFo5YzRrFdje4rj58k5DFhGcFh"   # Orca
+]
 BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
 mempool_announced = False
@@ -43,14 +47,14 @@ async def mempool_listener():
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
-                        {"mentions": [RAYDIUM_PROGRAM_ID]},
+                        {"mentions": PROGRAM_IDS},
                         {"commitment": "processed", "encoding": "jsonParsed"}
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
 
                 if not mempool_announced:
-                    await send_telegram_alert("📡 Mempool listener active...")
+                    await send_telegram_alert("📡 Mempool listener active (RAY+JUP+ORCA)...")
                     mempool_announced = True
 
                 while True:
