@@ -18,7 +18,7 @@ from trade_logic import auto_sell_if_profit
 load_dotenv()
 
 # === CONFIG ===
-DEBUG = True  # ✅ Toggle debug mode here
+DEBUG = True
 RAYDIUM_PROGRAM_ID = "RVKd61ztZW9BvU4wjf3GGN2TjK5uAAgnk99bQzVJ8zU"
 BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
@@ -89,56 +89,59 @@ async def mempool_listener():
                         for acc in accounts:
                             token_mint = str(acc)
 
+                            if DEBUG:
+                                await send_telegram_alert(f"[DEBUG] Token seen: {token_mint}")
+
                             if token_mint in sniped_tokens:
                                 if DEBUG:
-                                    print(f"[DEBUG] Skipped {token_mint}: already sniped")
+                                    await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: already sniped")
                                 continue
                             if token_mint.startswith("So111"):
                                 if DEBUG:
-                                    print(f"[DEBUG] Skipped {token_mint}: native SOL")
+                                    await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: native SOL")
                                 continue
                             if len(token_mint) != 44:
                                 if DEBUG:
-                                    print(f"[DEBUG] Skipped {token_mint}: invalid length")
+                                    await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: invalid length")
                                 continue
 
-                            # 🧪 Safety Relaxed: Now checks for lower thresholds
                             safety = await check_token_safety(token_mint)
                             if isinstance(safety, str):
-                                if "❌ Rug Risk" in safety:  # Liquidity < 2000
+                                if "❌ Rug Risk" in safety:
                                     if DEBUG:
-                                        print(f"[DEBUG] Skipped {token_mint}: {safety}")
+                                        await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: {safety}")
                                     continue
-                                if "⚠️ Honeypot Risk" in safety and any(int(x) > 20 for x in safety.split("(")[1].split(")")[0].replace("%", "").split("/")):
+                                if "⚠️ Honeypot Risk" in safety:
+                                    try:
+                                        tax_str = safety.split("(")[1].split(")")[0]
+                                        buy_tax, sell_tax = [int(x.strip().replace("%", "")) for x in tax_str.split("/")]
+                                        if buy_tax > 20 or sell_tax > 20:
+                                            if DEBUG:
+                                                await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: {safety}")
+                                            continue
+                                    except:
+                                        pass
+                                if "⚠️ Low Holders" in safety:
                                     if DEBUG:
-                                        print(f"[DEBUG] Skipped {token_mint}: High tax")
-                                    continue
-                                if "⚠️ Low Holders" in safety and "holders < 5" in safety:
-                                    if DEBUG:
-                                        print(f"[DEBUG] Skipped {token_mint}: Low holders")
+                                        await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: {safety}")
                                     continue
 
-                            # 🛑 Skip only if BOTH blacklist AND mint authority are true
-                            has_danger = await has_blacklist_or_mint_functions(token_mint)
-                            if has_danger:
+                            if await has_blacklist_or_mint_functions(token_mint):
                                 if DEBUG:
-                                    print(f"[DEBUG] Skipped {token_mint}: blacklist/mint authority")
+                                    await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: blacklist or mint authority present")
                                 continue
 
-                            # 🔓 LP lock check DISABLED in relaxed mode
-                            # Uncomment below if you want to keep enforcing LP locks
+                            # LP check skipped in relaxed mode — uncomment if needed
                             # if not await is_lp_locked_or_burned(token_mint):
                             #     if DEBUG:
-                            #         print(f"[DEBUG] Skipped {token_mint}: LP not locked or burned")
+                            #         await send_telegram_alert(f"[DEBUG] Skipped {token_mint}: LP not locked or burned")
                             #     continue
 
-                            await send_telegram_alert(
-                                f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping..."
-                            )
+                            await send_telegram_alert(f"🔎 New token: {token_mint}\n{safety}\nAuto-sniping...")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
-                                await send_telegram_alert("❌ No price found, skipping")
+                                await send_telegram_alert(f"❌ {token_mint}: No price found, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
