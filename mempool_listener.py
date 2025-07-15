@@ -21,9 +21,11 @@ sniped_tokens = set()
 mempool_announced = False
 heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")  # Optional test token
 
 async def mempool_listener():
     global mempool_announced, last_heartbeat
+
     helius_api_key = os.getenv("HELIUS_API_KEY")
     if not helius_api_key:
         print("[‼️] No Helius API Key found in environment.")
@@ -39,7 +41,7 @@ async def mempool_listener():
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
-                        {},  # RAW MODE — catch everything
+                        {},  # Catch all logs (RAW MODE)
                         {"commitment": "processed", "encoding": "jsonParsed"}
                     ]
                 }
@@ -48,6 +50,17 @@ async def mempool_listener():
                 await send_telegram_alert("📡 Mempool listener active (RAW MODE)...")
                 print("[INFO] Subscribed to logs (raw mode)...")
                 mempool_announced = True
+
+                # Optional test snipe to verify flow
+                if FORCE_TEST_MINT and FORCE_TEST_MINT not in sniped_tokens:
+                    await send_telegram_alert(f"🧪 Simulating snipe attempt on {FORCE_TEST_MINT}")
+                    entry_price = await get_token_price(FORCE_TEST_MINT)
+                    if entry_price:
+                        sniped_tokens.add(FORCE_TEST_MINT)
+                        await buy_token(FORCE_TEST_MINT, BUY_AMOUNT_SOL)
+                        await auto_sell_if_profit(FORCE_TEST_MINT, entry_price)
+                    else:
+                        await send_telegram_alert(f"❌ {FORCE_TEST_MINT}: No price found, skipping test")
 
                 while True:
                     now = datetime.utcnow()
@@ -60,9 +73,6 @@ async def mempool_listener():
                     try:
                         message = await asyncio.wait_for(ws.recv(), timeout=60)
                         data = json.loads(message)
-
-                        if DEBUG:
-                            print("[DEBUG] Full raw message:", json.dumps(data)[:400])
 
                         result = data.get("result", {})
                         log = result.get("value", {})
@@ -77,14 +87,18 @@ async def mempool_listener():
                             if token_mint in sniped_tokens:
                                 continue
 
-                            await send_telegram_alert(f"🚨 Raw token seen: {token_mint} — attempting buy")
+                            if DEBUG:
+                                print(f"[DEBUG] Seen: {token_mint}")
+                                await send_telegram_alert(f"👀 [DEBUG] Seen: {token_mint}")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
-                                await send_telegram_alert(f"❌ {token_mint}: No price found, skipping")
+                                if DEBUG:
+                                    print(f"[DEBUG] {token_mint} has no price, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
+                            await send_telegram_alert(f"🚨 Raw token seen: {token_mint} — attempting buy")
                             await buy_token(token_mint, BUY_AMOUNT_SOL)
                             await auto_sell_if_profit(token_mint, entry_price)
 
