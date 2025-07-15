@@ -14,11 +14,12 @@ from trade_logic import auto_sell_if_profit
 
 load_dotenv()
 
+# === CONFIG ===
 DEBUG = True
 BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
 mempool_announced = False
-heartbeat_interval = timedelta(hours=4)
+heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
 
 async def mempool_listener():
@@ -32,49 +33,48 @@ async def mempool_listener():
 
     while True:
         try:
-            async with websockets.connect(uri) as ws:
+            async with websockets.connect(uri, ping_interval=30, ping_timeout=10) as ws:
                 sub_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
-                        {"filter": {"all": []}},  # ⬅️ Catch all logs
+                        {},  # RAW MODE — catch everything
                         {"commitment": "processed", "encoding": "jsonParsed"}
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
 
-                if not mempool_announced:
-                    await send_telegram_alert("📡 Mempool listener active (RAW MODE)...")
-                    mempool_announced = True
+                await send_telegram_alert("📡 Mempool listener active (RAW MODE)...")
+                print("[INFO] Subscribed to logs (raw mode)...")
+                mempool_announced = True
 
                 while True:
-                    try:
-                        now = datetime.utcnow()
-                        if now - last_heartbeat >= heartbeat_interval:
-                            await send_telegram_alert(
-                                f"❤️ Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]"
-                            )
-                            last_heartbeat = now
+                    now = datetime.utcnow()
+                    if now - last_heartbeat >= heartbeat_interval:
+                        await send_telegram_alert(
+                            f"❤️ Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]"
+                        )
+                        last_heartbeat = now
 
-                        message = await ws.recv()
+                    try:
+                        message = await asyncio.wait_for(ws.recv(), timeout=60)
                         data = json.loads(message)
 
-                        result = data.get("result")
-                        if not isinstance(result, dict):
-                            continue
+                        if DEBUG:
+                            print("[DEBUG] Full raw message:", json.dumps(data)[:400])
 
+                        result = data.get("result", {})
                         log = result.get("value", {})
                         accounts = log.get("accountKeys", [])
+
                         if not isinstance(accounts, list):
                             continue
 
                         for token_mint in accounts:
-                            if len(token_mint) != 44:
+                            if len(token_mint) != 44 or token_mint.startswith("So111"):
                                 continue
                             if token_mint in sniped_tokens:
-                                continue
-                            if token_mint.startswith("So111"):
                                 continue
 
                             await send_telegram_alert(f"🚨 Raw token seen: {token_mint} — attempting buy")
@@ -88,8 +88,13 @@ async def mempool_listener():
                             await buy_token(token_mint, BUY_AMOUNT_SOL)
                             await auto_sell_if_profit(token_mint, entry_price)
 
+                    except asyncio.TimeoutError:
+                        print("[⚠️] Timeout waiting for ws.recv() — pinging server to keep alive...")
+                        await ws.ping()
+                        continue
+
                     except Exception as inner_e:
-                        print(f"[!] Inner loop error: {inner_e}")
+                        print(f"[‼️] Inner loop error: {inner_e}")
                         await asyncio.sleep(2)
                         break
 
