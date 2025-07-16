@@ -4,6 +4,7 @@ import time
 import httpx
 from dotenv import load_dotenv
 from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.rpc.types import TokenAccountOpts
 
@@ -34,6 +35,16 @@ async def send_telegram_alert(message):
             )
     except Exception as e:
         print(f"[‼️] Telegram alert failed: {e}")
+
+# 💰 Get SOL Balance (handles Pubkey conversion)
+def get_sol_balance(pubkey_str=None):
+    try:
+        pubkey = Pubkey.from_string(pubkey_str) if pubkey_str else keypair.pubkey()
+        result = client.get_balance(pubkey)
+        return result['result']['value'] / 1e9  # Convert lamports to SOL
+    except Exception as e:
+        print(f"[!] Failed to fetch SOL balance: {e}")
+        return 0
 
 # 🔍 Honeypot Filter
 async def check_token_safety(token_address):
