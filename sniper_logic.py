@@ -25,8 +25,7 @@ JUPITER_TOKEN_LIST_URL = "https://cache.jup.ag/tokens"
 
 client = Client(SOLANA_RPC)
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
-wallet_pubkey = keypair.pubkey()               # ✅ Correct Pubkey object for RPC
-wallet_address = str(wallet_pubkey)            # ✅ For logging/Telegram
+wallet_address = str(keypair.pubkey())
 
 # ============================== 🧠 Core Logic ==============================
 
@@ -95,7 +94,7 @@ def confirm_tx(signature: str, max_wait: int = 20):
 
 async def get_sol_balance():
     try:
-        balance = client.get_balance(wallet_pubkey).value  # ✅ Use correct pubkey object
+        balance = client.get_balance(keypair.pubkey()).value
         return balance / 1e9
     except Exception as e:
         print(f"[!] Failed to fetch SOL balance: {e}")
@@ -110,15 +109,19 @@ async def buy_token(token_address: str, amount_sol: float = 0.03):
 
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
+        await send_telegram_alert("✅ Step 1: Checking token support")
         supported = await is_token_supported_by_jupiter(token_address)
         if not supported:
             await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
             return
 
+        await send_telegram_alert("✅ Step 2: Fetching Jupiter quote")
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
             await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
             return
+
+        await send_telegram_alert("✅ Step 3: Jupiter route fetched")
 
         if route.get('outAmount', 0) < 1:
             await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
