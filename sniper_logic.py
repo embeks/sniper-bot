@@ -27,7 +27,7 @@ client = Client(SOLANA_RPC)
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_address = str(keypair.pubkey())
 
-# ============================== 🧐 Core Logic ==============================
+# ============================== 🧠 Core Logic ==============================
 
 # ✅ Check if token is supported by Jupiter
 async def is_token_supported_by_jupiter(mint: str) -> bool:
@@ -82,15 +82,15 @@ def sign_and_send_tx(raw_tx: bytes):
     try:
         tx = VersionedTransaction.deserialize(raw_tx)
         tx.sign([keypair])
-        signature = client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True))
-        print(f"[DEBUG] RPC Response: {signature}")
+        serialized = tx.serialize()
+        signature = client.send_raw_transaction(serialized, opts=TxOpts(skip_preflight=True))
         return signature.get('result')
     except Exception as e:
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪹 Buy token with SOL
-async def buy_token(token_address: str, amount_sol: float = 0.015):
+# 🪙 Buy token with SOL
+async def buy_token(token_address: str, amount_sol: float = 0.06):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
@@ -108,6 +108,9 @@ async def buy_token(token_address: str, amount_sol: float = 0.015):
             await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
             return
 
+        print("[DEBUG] Route preview:")
+        print(json.dumps(route, indent=2))
+
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
@@ -120,7 +123,8 @@ async def buy_token(token_address: str, amount_sol: float = 0.015):
             await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
             log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
         else:
-            await send_telegram_alert(f"‼️ TX failed for {token_address} (check logs)")
+            await send_telegram_alert(f"‼️ TX failed or no signature for {token_address}")
+            print("[DEBUG] TX failed — no signature returned.")
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
@@ -137,4 +141,3 @@ async def start_sniper():
         mempool_listener_jupiter(),
         mempool_listener_raydium()
     )
-
