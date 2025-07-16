@@ -88,12 +88,13 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪙 Buy token with SOL
+# 🪹 Buy token with SOL (Verbose)
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
         supported = await is_token_supported_by_jupiter(token_address)
+        print(f"[DEBUG] Token supported by Jupiter: {supported}")
         if not supported:
             await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
             return
@@ -101,25 +102,31 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
             await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
+            print("[DEBUG] Jupiter returned no route.")
             return
 
-        if route.get('outAmount', 0) < 1:
-            await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
+        out_amount = route.get("outAmount", 0)
+        print(f"[DEBUG] Jupiter quote outAmount: {out_amount}")
+        if out_amount < 1:
+            await send_telegram_alert(f"❌ Output too low for {token_address}, skipping (outAmount={out_amount})")
             return
 
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
+            print("[DEBUG] Failed to build transaction.")
             return
 
         print("[DEBUG] Sending transaction...")
 
         signature = sign_and_send_tx(raw_tx)
+        print(f"[DEBUG] TX Signature: {signature}")
         if signature:
             await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
-            log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
+            log_trade_to_csv(token_address, "buy", amount_sol, out_amount / 1e9)
         else:
             await send_telegram_alert(f"‼️ TX failed for {token_address}")
+            print("[DEBUG] TX signing or sending failed.")
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
@@ -136,3 +143,4 @@ async def start_sniper():
         mempool_listener_jupiter(),
         mempool_listener_raydium()
     )
+
