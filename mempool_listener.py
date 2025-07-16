@@ -17,8 +17,12 @@ sniped_tokens = set()
 heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
 
-# Use single Jupiter program (verified to work)
-JUPITER_PROGRAM_ID = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
+# Verified Jupiter & Raydium programs
+PROGRAM_IDS = [
+    "ComputeBudget111111111111111111111111111111",  # system
+    "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",  # Jupiter
+    "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv",  # Raydium
+]
 
 async def mempool_listener():
     global last_heartbeat
@@ -32,14 +36,14 @@ async def mempool_listener():
     while True:
         try:
             async with websockets.connect(uri, ping_interval=30, ping_timeout=10) as ws:
-                # Subscribe to single Jupiter address
+                # Send subscription message
                 sub_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
                         {
-                            "mentions": [JUPITER_PROGRAM_ID]
+                            "mentions": PROGRAM_IDS
                         },
                         {
                             "commitment": "processed",
@@ -48,8 +52,11 @@ async def mempool_listener():
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
+
+                # Send the startup alert just once per connection
                 await send_telegram_alert("📡 Mempool listener active on JUP4...")
-                print("✅ Subscribed to Jupiter logs (single address mode)")
+                if DEBUG:
+                    print("[📡] Listening to Jupiter + Raydium logs...")
 
                 while True:
                     now = datetime.utcnow()
@@ -62,7 +69,7 @@ async def mempool_listener():
                     try:
                         message = await asyncio.wait_for(ws.recv(), timeout=60)
                         timestamp = datetime.utcnow().strftime('%H:%M:%S')
-                        print(f"[{timestamp}] Raw log: {message[:150]}...")
+                        print(f"[{timestamp}] Raw log: {message}")
 
                         data = json.loads(message)
                         result = data.get("result", {})
@@ -93,12 +100,13 @@ async def mempool_listener():
                             await auto_sell_if_profit(token_mint, entry_price)
 
                     except asyncio.TimeoutError:
-                        print("⏰ No logs in 60s, still alive.")
+                        print("[⚠️] Timeout waiting for ws.recv() — pinging server...")
                         await ws.ping()
-                    except Exception as e:
-                        print("❌ Error:", e)
+
+                    except Exception as err:
+                        print(f"[‼️] WS recv error: {err}")
                         await asyncio.sleep(2)
-                        break
+                        break  # Exit inner loop and reconnect
 
         except Exception as outer:
             print(f"[‼️] WS connection failed: {outer}")
