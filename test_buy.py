@@ -10,7 +10,7 @@ async def main():
     mint_address = "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
 
     # Updated test amount
-    amount_in_sol = 0.2
+    amount_in_sol = 0.03
 
     print(f"[TEST] Attempting to buy {amount_in_sol} SOL of token: {mint_address}")
     await buy_token(mint_address, amount_sol=amount_in_sol)
