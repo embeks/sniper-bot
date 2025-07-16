@@ -10,7 +10,7 @@ from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 
 from utils import send_telegram_alert, log_trade_to_csv
-from mempool_listener import mempool_listener
+from mempool_listener import mempool_listener_jupiter, mempool_listener_raydium
 
 # ============================== 🔧 Config ==============================
 load_dotenv()
@@ -128,7 +128,10 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
 
-# ✅ Main entry point
+# ✅ Main entry point (Dual Socket Integration)
 async def start_sniper():
-    await send_telegram_alert("✅ Starting sniper bot...")
-    await mempool_listener()
+    await send_telegram_alert("✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
+    await asyncio.gather(
+        mempool_listener_jupiter(),
+        mempool_listener_raydium()
+    )
