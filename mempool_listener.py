@@ -17,15 +17,12 @@ sniped_tokens = set()
 heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
 
-# Verified Jupiter & Raydium programs
-PROGRAM_IDS = [
-    "ComputeBudget111111111111111111111111111111",  # system
-    "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",  # Jupiter
-    "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv",  # Raydium
-]
+# Replace with one: Jupiter or Raydium
+PROGRAM_ID = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"  # Jupiter example
 
 async def mempool_listener():
     global last_heartbeat
+
     helius_api_key = os.getenv("HELIUS_API_KEY")
     if not helius_api_key:
         print("[‼️] No Helius API Key found.")
@@ -36,14 +33,15 @@ async def mempool_listener():
     while True:
         try:
             async with websockets.connect(uri, ping_interval=30, ping_timeout=10) as ws:
-                # Subscribe using filters
                 sub_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
                         {
-                            "mentions": PROGRAM_IDS
+                            "filter": {
+                                "programId": PROGRAM_ID
+                            }
                         },
                         {
                             "commitment": "processed",
@@ -51,22 +49,23 @@ async def mempool_listener():
                         }
                     ]
                 }
+
                 await ws.send(json.dumps(sub_msg))
-                await send_telegram_alert("📡 Mempool listener active (JUPITER + RAYDIUM MODE)...")
-                print("[📡] Listening to Jupiter + Raydium logs...")
+                print(f"[📡] Subscribed to program {PROGRAM_ID}")
+                await send_telegram_alert(f"📡 Mempool listener active on {PROGRAM_ID[:4]}...")
 
                 while True:
                     now = datetime.utcnow()
                     if now - last_heartbeat >= heartbeat_interval:
                         await send_telegram_alert(
-                            f"❤️ Bot is still running [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]"
+                            f"❤️ Bot still alive [Heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC]"
                         )
                         last_heartbeat = now
 
                     try:
                         message = await asyncio.wait_for(ws.recv(), timeout=60)
                         timestamp = datetime.utcnow().strftime('%H:%M:%S')
-                        print(f"[{timestamp}] Raw log: {message}")
+                        print(f"[{timestamp}] New log: {message}")
 
                         data = json.loads(message)
                         result = data.get("result", {})
@@ -83,28 +82,28 @@ async def mempool_listener():
                                 continue
 
                             if DEBUG:
-                                await send_telegram_alert(f"👀 Detected mint: {token_mint}")
+                                await send_telegram_alert(f"👀 Detected: {token_mint}")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
                                 if DEBUG:
-                                    print(f"[DEBUG] {token_mint} has no price, skipping")
+                                    print(f"[DEBUG] No price for {token_mint}, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
-                            await send_telegram_alert(f"🚨 Raw token seen: {token_mint} — attempting buy")
+                            await send_telegram_alert(f"🚨 New token: {token_mint} — buying now")
                             await buy_token(token_mint, BUY_AMOUNT_SOL)
                             await auto_sell_if_profit(token_mint, entry_price)
 
                     except asyncio.TimeoutError:
-                        print("[⚠️] Timeout waiting for ws.recv() — pinging server...")
+                        print("[⚠️] Timeout — pinging...")
                         await ws.ping()
 
                     except Exception as err:
-                        print(f"[‼️] WS recv error: {err}")
+                        print(f"[‼️] Error receiving logs: {err}")
                         await asyncio.sleep(2)
                         break
 
         except Exception as outer:
-            print(f"[‼️] WS connection failed: {outer}")
+            print(f"[‼️] WebSocket connection failed: {outer}")
             await asyncio.sleep(5)
