@@ -100,7 +100,7 @@ async def get_sol_balance():
         print(f"[!] Failed to fetch SOL balance: {e}")
         return 0
 
-async def buy_token(token_address: str, amount_sol: float = 0.06):
+async def buy_token(token_address: str, amount_sol: float = 0.2):
     try:
         balance = await get_sol_balance()
         if balance < amount_sol:
