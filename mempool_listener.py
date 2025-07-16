@@ -12,7 +12,7 @@ from trade_logic import auto_sell_if_profit
 load_dotenv()
 
 DEBUG = True
-BUY_AMOUNT_SOL = 0.027
+BUY_AMOUNT_SOL = 0.2  # ⬅️ updated from 0.027 to 0.2
 heartbeat_interval = timedelta(minutes=30)
 
 # Helius RPC WebSocket URL
@@ -33,7 +33,6 @@ async def handle_log(message, listener_name):
         data = json.loads(message)
         result = data.get("result")
 
-        # 🔒 Filter out non-log responses (e.g., subscription acks)
         if not isinstance(result, dict):
             return
 
@@ -74,7 +73,6 @@ async def mempool_listener_jupiter():
     while True:
         try:
             async with websockets.connect(HELIUS_WS, ping_interval=30, ping_timeout=10) as ws:
-                # Subscribe to Jupiter logs
                 sub_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
@@ -103,15 +101,13 @@ async def mempool_listener_jupiter():
                         await ws.ping()
         except Exception as e:
             print(f"[‼️] JUPITER WS error: {e}")
-            await asyncio.sleep(10)  # prevent reconnect spam
-
+            await asyncio.sleep(10)
 
 async def mempool_listener_raydium():
     last_heartbeat = datetime.utcnow()
     while True:
         try:
             async with websockets.connect(HELIUS_WS, ping_interval=30, ping_timeout=10) as ws:
-                # Subscribe to Raydium logs
                 sub_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
