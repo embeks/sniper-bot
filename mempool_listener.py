@@ -82,22 +82,17 @@ async def mempool_listener():
                             continue
 
                         for token_mint in accounts:
-                            # ⬇️ New debug line (logs every single seen address)
-                            if DEBUG:
-                                print(f"[DEBUG] Checking account key: {token_mint}")
+                            # 🔍 Log every address seen from mempool
+                            await send_telegram_alert(f"👀 [SEEN] {token_mint}")
 
                             if len(token_mint) != 44 or token_mint.startswith("So111"):
                                 continue
                             if token_mint in sniped_tokens:
                                 continue
 
-                            if DEBUG:
-                                await send_telegram_alert(f"👀 [DEBUG] Valid mint detected: {token_mint}")
-
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
-                                if DEBUG:
-                                    print(f"[DEBUG] {token_mint} has no price, skipping")
+                                await send_telegram_alert(f"❌ {token_mint}: No price found, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
