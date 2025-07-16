@@ -25,7 +25,8 @@ JUPITER_TOKEN_LIST_URL = "https://cache.jup.ag/tokens"
 
 client = Client(SOLANA_RPC)
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
-wallet_address = str(keypair.pubkey())
+wallet_pubkey = keypair.pubkey()               # ✅ Correct Pubkey object for RPC
+wallet_address = str(wallet_pubkey)            # ✅ For logging/Telegram
 
 # ============================== 🧠 Core Logic ==============================
 
@@ -94,7 +95,7 @@ def confirm_tx(signature: str, max_wait: int = 20):
 
 async def get_sol_balance():
     try:
-        balance = client.get_balance(wallet_address).value
+        balance = client.get_balance(wallet_pubkey).value  # ✅ Use correct pubkey object
         return balance / 1e9
     except Exception as e:
         print(f"[!] Failed to fetch SOL balance: {e}")
