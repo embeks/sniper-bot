@@ -12,7 +12,7 @@ from trade_logic import auto_sell_if_profit
 load_dotenv()
 
 DEBUG = True
-BUY_AMOUNT_SOL = 0.03  
+BUY_AMOUNT_SOL = 0.2  # Adjust based on how much SOL you want to spend
 heartbeat_interval = timedelta(minutes=30)
 
 # Helius RPC WebSocket URL
@@ -24,6 +24,11 @@ RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
 
 # Track already-sniped tokens
 sniped_tokens = set()
+
+# 🔁 Load previously sniped tokens from file
+if os.path.exists("sniped_tokens.txt"):
+    with open("sniped_tokens.txt", "r") as f:
+        sniped_tokens = set(line.strip() for line in f)
 
 # ========================= 🔁 Shared Log Handler =========================
 async def handle_log(message, listener_name):
@@ -50,6 +55,10 @@ async def handle_log(message, listener_name):
             if token_mint in sniped_tokens:
                 continue
 
+            sniped_tokens.add(token_mint)
+            with open("sniped_tokens.txt", "a") as f:
+                f.write(f"{token_mint}\n")
+
             await send_telegram_alert(f"👀 [{listener_name}] Detected mint: {token_mint}")
 
             entry_price = await get_token_price(token_mint)
@@ -58,7 +67,6 @@ async def handle_log(message, listener_name):
                     print(f"[DEBUG] {token_mint} has no price, skipping")
                 continue
 
-            sniped_tokens.add(token_mint)
             await send_telegram_alert(f"🚨 [{listener_name}] Attempting buy: {token_mint}")
             await buy_token(token_mint, BUY_AMOUNT_SOL)
             await auto_sell_if_profit(token_mint, entry_price)
