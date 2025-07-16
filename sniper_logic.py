@@ -29,7 +29,6 @@ wallet_address = str(keypair.pubkey())
 
 # ============================== 🧠 Core Logic ==============================
 
-# ✅ Check if token is supported by Jupiter
 async def is_token_supported_by_jupiter(mint: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=10) as session:
@@ -40,7 +39,6 @@ async def is_token_supported_by_jupiter(mint: str) -> bool:
         print(f"[!] Jupiter token list fetch error: {e}")
         return False
 
-# ✅ Get best route quote from Jupiter
 async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 5.0):
     try:
         lamports = int(amount_sol * 1_000_000_000)
@@ -58,7 +56,6 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
         print(f"[!] Jupiter quote error: {e}")
         return None
 
-# 🧱 Build swap transaction
 async def build_jupiter_swap_tx(route):
     try:
         payload = {
@@ -77,21 +74,39 @@ async def build_jupiter_swap_tx(route):
         print(f"[!] Build TX error: {e}")
         return None
 
-# 🚀 Sign and send transaction
 def sign_and_send_tx(raw_tx: bytes):
     try:
         tx = VersionedTransaction.deserialize(raw_tx)
         tx.sign([keypair])
-        serialized = tx.serialize()
-        signature = client.send_raw_transaction(serialized, opts=TxOpts(skip_preflight=True))
-        return signature.get('result')
+        sig = client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True))
+        return sig.get('result')
     except Exception as e:
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪙 Buy token with SOL
+def confirm_tx(signature: str, max_wait: int = 20):
+    for _ in range(max_wait):
+        res = client.get_confirmed_transaction(signature)
+        if res.value:
+            return True
+        asyncio.run(asyncio.sleep(1))
+    return False
+
+async def get_sol_balance():
+    try:
+        balance = client.get_balance(wallet_address).value
+        return balance / 1e9
+    except Exception as e:
+        print(f"[!] Failed to fetch SOL balance: {e}")
+        return 0
+
 async def buy_token(token_address: str, amount_sol: float = 0.06):
     try:
+        balance = await get_sol_balance()
+        if balance < amount_sol:
+            await send_telegram_alert(f"❌ Not enough SOL to snipe. Balance: {balance:.2f} SOL")
+            return
+
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
         supported = await is_token_supported_by_jupiter(token_address)
@@ -108,33 +123,30 @@ async def buy_token(token_address: str, amount_sol: float = 0.06):
             await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
             return
 
-        print("[DEBUG] Route preview:")
-        print(json.dumps(route, indent=2))
-
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
 
-        print("[DEBUG] Sending transaction...")
-
         signature = sign_and_send_tx(raw_tx)
         if signature:
-            await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
-            log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
+            await send_telegram_alert(f"✅ TX sent: https://solscan.io/tx/{signature}")
+            confirmed = confirm_tx(signature)
+            if confirmed:
+                await send_telegram_alert(f"✅ TX confirmed on chain!")
+                log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
+            else:
+                await send_telegram_alert(f"⚠️ TX not confirmed after waiting")
         else:
-            await send_telegram_alert(f"‼️ TX failed or no signature for {token_address}")
-            print("[DEBUG] TX failed — no signature returned.")
+            await send_telegram_alert(f"‼️ TX failed for {token_address}")
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
 
-# 💰 Placeholder for selling
 async def sell_token(token_address: str, amount_token: int):
-    await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
+    await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}")
 
-# ✅ Main entry point (Dual Socket Integration)
 async def start_sniper():
     await send_telegram_alert("✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
     await asyncio.gather(
