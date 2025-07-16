@@ -56,7 +56,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
         print(f"[!] Jupiter quote error: {e}")
         return None
 
-# 🧠 Build swap transaction
+# 🧐 Build swap transaction
 async def build_jupiter_swap_tx(route):
     try:
         payload = {
@@ -85,7 +85,7 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪙 Buy token with SOL (LIVE)
+# 💹 Buy token with SOL (LIVE)
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
@@ -129,6 +129,52 @@ async def buy_token(token_address: str, amount_sol: float = 0.01):
         print(f"[!] Live buy failed: {e}")
         await send_telegram_alert(f"[!] Buy error: {e}")
 
-# 💰 Placeholder Sell Logic (used by trade_logic.py)
+# 💰 Real Sell Logic
 async def sell_token(token_address: str, amount_token: int):
-    await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
+    try:
+        await send_telegram_alert(f"🔻 Initiating sell of {amount_token} units from {token_address}")
+
+        # Step 1: Get Jupiter Quote
+        params = {
+            "inputMint": token_address,
+            "outputMint": "So11111111111111111111111111111111111111112",  # SOL
+            "amount": amount_token,
+            "slippageBps": 500  # 5% slippage
+        }
+        async with httpx.AsyncClient() as session:
+            res = await session.get(JUPITER_QUOTE_URL, params=params)
+            data = res.json().get("data", [None])[0]
+            if not data:
+                await send_telegram_alert(f"❌ No quote found to sell {token_address}")
+                return
+
+        # Step 2: Build TX
+        payload = {
+            "route": data,
+            "userPublicKey": wallet_address,
+            "wrapUnwrapSOL": True,
+            "feeAccount": None,
+            "computeUnitPriceMicroLamports": 5000
+        }
+        async with httpx.AsyncClient() as session:
+            swap_res = await session.post(JUPITER_SWAP_URL, json=payload)
+            tx_data = swap_res.json().get("swapTransaction")
+            if not tx_data:
+                await send_telegram_alert(f"❌ Couldn't build TX for selling {token_address}")
+                return
+
+        # Step 3: Sign + Send
+        raw_tx = base64.b64decode(tx_data)
+        tx = VersionedTransaction.deserialize(raw_tx)
+        tx.sign([keypair])
+        sig = client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True)).get("result")
+
+        if sig:
+            await send_telegram_alert(f"✅ Sell TX sent! \n🔗 https://solscan.io/tx/{sig}")
+            log_trade_to_csv(token_address, "sell", amount_token, data['outAmount'] / 1e9)
+        else:
+            await send_telegram_alert(f"‼️ TX failed for selling {token_address}")
+
+    except Exception as e:
+        print(f"[‼️] Sell TX error: {e}")
+        await send_telegram_alert(f"[‼️] Sell error: {e}")
