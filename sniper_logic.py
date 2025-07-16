@@ -10,7 +10,7 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 
-from utils import send_telegram_alert, log_trade_to_csv, get_sol_balance
+from utils import send_telegram_alert, log_trade_to_csv
 from mempool_listener import mempool_listener_jupiter, mempool_listener_raydium
 
 # ============================== 🔧 Config ==============================
@@ -92,7 +92,15 @@ def confirm_tx(signature: str, max_wait: int = 20):
         asyncio.run(asyncio.sleep(1))
     return False
 
-async def buy_token(token_address: str, amount_sol: float = 0.03):  # 👈 Default is now 0.03 SOL
+async def get_sol_balance():
+    try:
+        balance = client.get_balance(wallet_address).value
+        return balance / 1e9
+    except Exception as e:
+        print(f"[!] Failed to fetch SOL balance: {e}")
+        return 0
+
+async def buy_token(token_address: str, amount_sol: float = 0.03):
     try:
         balance = await get_sol_balance()
         if balance < amount_sol:
@@ -125,12 +133,13 @@ async def buy_token(token_address: str, amount_sol: float = 0.03):  # 👈 Defau
             await send_telegram_alert(f"✅ TX sent: https://solscan.io/tx/{signature}")
             confirmed = confirm_tx(signature)
             if confirmed:
-                await send_telegram_alert("✅ TX confirmed on chain!")
+                await send_telegram_alert(f"✅ TX confirmed on chain!")
                 log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
             else:
-                await send_telegram_alert("⚠️ TX not confirmed after waiting")
+                await send_telegram_alert(f"⚠️ TX not confirmed after waiting")
         else:
             await send_telegram_alert(f"‼️ TX failed for {token_address}")
+
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
