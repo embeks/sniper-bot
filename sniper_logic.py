@@ -27,8 +27,9 @@ client = Client(SOLANA_RPC)
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_address = str(keypair.pubkey())
 
-# ============================== 🧠 Core Logic ==============================
+# ============================== 🧐 Core Logic ==============================
 
+# ✅ Check if token is supported by Jupiter
 async def is_token_supported_by_jupiter(mint: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=10) as session:
@@ -39,6 +40,7 @@ async def is_token_supported_by_jupiter(mint: str) -> bool:
         print(f"[!] Jupiter token list fetch error: {e}")
         return False
 
+# ✅ Get best route quote from Jupiter
 async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 5.0):
     try:
         lamports = int(amount_sol * 1_000_000_000)
@@ -56,6 +58,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
         print(f"[!] Jupiter quote error: {e}")
         return None
 
+# 🧱 Build swap transaction
 async def build_jupiter_swap_tx(route):
     try:
         payload = {
@@ -74,61 +77,64 @@ async def build_jupiter_swap_tx(route):
         print(f"[!] Build TX error: {e}")
         return None
 
+# 🚀 Sign and send transaction
 def sign_and_send_tx(raw_tx: bytes):
     try:
         tx = VersionedTransaction.deserialize(raw_tx)
         tx.sign([keypair])
-        response = client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True))
-        signature = response.get("result")
-        return signature
+        signature = client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True))
+        print(f"[DEBUG] RPC Response: {signature}")
+        return signature.get('result')
     except Exception as e:
         print(f"[‼️] TX signing error: {e}")
         return None
 
-async def buy_token(token_address: str, amount_sol: float = 0.01):
+# 🪹 Buy token with SOL
+async def buy_token(token_address: str, amount_sol: float = 0.015):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
         supported = await is_token_supported_by_jupiter(token_address)
         if not supported:
             await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
-            return False
+            return
 
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
             await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
-            return False
+            return
 
         if route.get('outAmount', 0) < 1:
             await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
-            return False
+            return
 
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
-            return False
+            return
+
+        print("[DEBUG] Sending transaction...")
 
         signature = sign_and_send_tx(raw_tx)
         if signature:
-            solscan_url = f"https://solscan.io/tx/{signature}"
-            await send_telegram_alert(f"✅ Buy TX confirmed for {token_address}\n🔗 {solscan_url}")
+            await send_telegram_alert(f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
             log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
-            return True
         else:
-            await send_telegram_alert(f"‼️ TX failed for {token_address}")
-            return False
+            await send_telegram_alert(f"‼️ TX failed for {token_address} (check logs)")
 
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
-        await send_telegram_alert(f"[‼️] Sniping error: {e}")
-        return False
+        await send_telegram_alert(f"[!] Sniping error: {e}")
 
+# 💰 Placeholder for selling
 async def sell_token(token_address: str, amount_token: int):
     await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}. Holding tokens.")
 
+# ✅ Main entry point (Dual Socket Integration)
 async def start_sniper():
     await send_telegram_alert("✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
     await asyncio.gather(
         mempool_listener_jupiter(),
         mempool_listener_raydium()
     )
+
