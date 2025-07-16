@@ -12,7 +12,7 @@ from trade_logic import auto_sell_if_profit
 load_dotenv()
 
 DEBUG = True
-BUY_AMOUNT_SOL = 0.2  # ⬅️ updated from 0.027 to 0.2
+BUY_AMOUNT_SOL = 0.03  
 heartbeat_interval = timedelta(minutes=30)
 
 # Helius RPC WebSocket URL
