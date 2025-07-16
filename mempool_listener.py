@@ -13,19 +13,23 @@ load_dotenv()
 
 DEBUG = True
 BUY_AMOUNT_SOL = 0.027
-sniped_tokens = set()
 heartbeat_interval = timedelta(minutes=30)
-last_heartbeat = datetime.utcnow()
+sniped_tokens = set()
 
-HELIUS_URL = f"wss://mainnet.helius-rpc.com/?api-key={os.getenv('HELIUS_API_KEY')}"
-JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
-RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
+# Helius WS
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+JUPITER_ID = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
+RAYDIUM_ID = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
 
-async def run_listener(program_name, program_id):
-    global last_heartbeat
+# ------------------ Base Listener ------------------ #
+async def run_listener(program_id, label):
+    uri = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+    last_heartbeat = datetime.utcnow()
+    first_connection = True
+
     while True:
         try:
-            async with websockets.connect(HELIUS_URL, ping_interval=30, ping_timeout=10) as ws:
+            async with websockets.connect(uri, ping_interval=30, ping_timeout=10) as ws:
                 sub_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
@@ -36,23 +40,26 @@ async def run_listener(program_name, program_id):
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
-                await send_telegram_alert(f"📡 {program_name} listener live...")
-                print(f"[📡] {program_name} listener active...")
+
+                if first_connection:
+                    await send_telegram_alert(f"📡 {label} listener live...")
+                    print(f"[{label}] Listener connected")
+                    first_connection = False
 
                 while True:
                     now = datetime.utcnow()
                     if now - last_heartbeat >= heartbeat_interval:
                         await send_telegram_alert(
-                            f"❤️ {program_name} Heartbeat [{now.strftime('%H:%M:%S')} UTC]"
+                            f"❤️ {label} heartbeat @ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC"
                         )
                         last_heartbeat = now
 
                     try:
-                        message = await asyncio.wait_for(ws.recv(), timeout=60)
+                        msg = await asyncio.wait_for(ws.recv(), timeout=60)
                         timestamp = datetime.utcnow().strftime('%H:%M:%S')
-                        print(f"[{timestamp}] {program_name} Raw log: {message}")
+                        print(f"[{timestamp}] [{label}] Raw log: {msg}")
 
-                        data = json.loads(message)
+                        data = json.loads(msg)
                         result = data.get("result", {})
                         log = result.get("value", {})
                         accounts = log.get("accountKeys", [])
@@ -67,35 +74,35 @@ async def run_listener(program_name, program_id):
                                 continue
 
                             if DEBUG:
-                                await send_telegram_alert(f"👀 {program_name} mint: {token_mint}")
+                                await send_telegram_alert(f"👀 [{label}] Detected mint: {token_mint}")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
                                 if DEBUG:
-                                    print(f"[DEBUG] {token_mint} has no price, skipping")
+                                    print(f"[{label}] No price for {token_mint}, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
-                            await send_telegram_alert(f"🚨 {program_name} snipe: {token_mint}")
+                            await send_telegram_alert(f"🚨 [{label}] Token seen: {token_mint} — attempting buy")
                             await buy_token(token_mint, BUY_AMOUNT_SOL)
                             await auto_sell_if_profit(token_mint, entry_price)
 
                     except asyncio.TimeoutError:
-                        print(f"[⚠️] {program_name} recv timeout — pinging")
+                        print(f"[{label}] Timeout — pinging server...")
                         await ws.ping()
 
-                    except Exception as err:
-                        print(f"[‼️] {program_name} error: {err}")
+                    except Exception as inner_err:
+                        print(f"[‼️] {label} error: {inner_err}")
                         await asyncio.sleep(2)
                         break
 
-        except Exception as outer:
-            print(f"[‼️] {program_name} connection failed: {outer}")
+        except Exception as outer_err:
+            print(f"[‼️] {label} WS reconnecting: {outer_err}")
             await asyncio.sleep(5)
 
-# Dual-socket exposed functions
+# ------------------ Entry Points ------------------ #
 async def mempool_listener_jupiter():
-    await run_listener("JUPITER", JUPITER_PROGRAM)
+    await run_listener(JUPITER_ID, "JUPITER")
 
 async def mempool_listener_raydium():
-    await run_listener("RAYDIUM", RAYDIUM_PROGRAM)
+    await run_listener(RAYDIUM_ID, "RAYDIUM")
