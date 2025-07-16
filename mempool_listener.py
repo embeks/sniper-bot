@@ -41,14 +41,19 @@ async def mempool_listener():
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
-                        {},  # Catch all logs (RAW MODE)
+                        {
+                            "mentions": [
+                                "5quBfV1nZt3PbRLCDBZzjHzpmoxQ4bxugF78ReBEeXiW",  # Raydium
+                                "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"   # Jupiter
+                            ]
+                        },
                         {"commitment": "processed", "encoding": "jsonParsed"}
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
 
-                await send_telegram_alert("📡 Mempool listener active (RAW MODE)...")
-                print("[INFO] Subscribed to logs (raw mode)...")
+                await send_telegram_alert("📡 Mempool listener active (JUPITER + RAYDIUM MODE)...")
+                print("[INFO] Subscribed to Jupiter + Raydium logs")
                 mempool_announced = True
 
                 # Optional simulated test buy
@@ -72,35 +77,30 @@ async def mempool_listener():
 
                     try:
                         message = await asyncio.wait_for(ws.recv(), timeout=60)
-                        
-                        # 🔍 DEBUG LOG: Print the full raw message
-                        print("[DEBUG] Raw log message:", message[:500])
-
+                        print("[DEBUG] Got new log message from ws")  # <- confirms any activity
                         data = json.loads(message)
+
                         result = data.get("result", {})
                         log = result.get("value", {})
                         accounts = log.get("accountKeys", [])
 
                         if not isinstance(accounts, list):
+                            print("[DEBUG] No accountKeys found in message")
                             continue
 
                         for token_mint in accounts:
-                            # Optional detailed debug
-                            if DEBUG:
-                                print(f"[DEBUG] Checking account key: {token_mint}")
+                            print(f"[DEBUG] Checking account key: {token_mint}")
 
                             if len(token_mint) != 44 or token_mint.startswith("So111"):
                                 continue
                             if token_mint in sniped_tokens:
                                 continue
 
-                            if DEBUG:
-                                await send_telegram_alert(f"👀 [DEBUG] Valid mint detected: {token_mint}")
+                            print(f"[DEBUG] Valid mint detected: {token_mint}")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
-                                if DEBUG:
-                                    print(f"[DEBUG] {token_mint} has no price, skipping")
+                                print(f"[DEBUG] {token_mint} has no price, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
