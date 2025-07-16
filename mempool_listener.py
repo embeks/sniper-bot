@@ -21,7 +21,7 @@ sniped_tokens = set()
 mempool_announced = False
 heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
-FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")  # Optional test mode
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")  # Optional: test token to simulate buy
 
 async def mempool_listener():
     global mempool_announced, last_heartbeat
@@ -51,6 +51,7 @@ async def mempool_listener():
                 print("[INFO] Subscribed to logs (raw mode)...")
                 mempool_announced = True
 
+                # Optional simulated test buy
                 if FORCE_TEST_MINT and FORCE_TEST_MINT not in sniped_tokens:
                     await send_telegram_alert(f"🧪 Simulating snipe attempt on {FORCE_TEST_MINT}")
                     entry_price = await get_token_price(FORCE_TEST_MINT)
@@ -71,12 +72,11 @@ async def mempool_listener():
 
                     try:
                         message = await asyncio.wait_for(ws.recv(), timeout=60)
+                        
+                        # 🔍 DEBUG LOG: Print the full raw message
+                        print("[DEBUG] Raw log message:", message[:500])
+
                         data = json.loads(message)
-
-                        if DEBUG:
-                            print("[DEBUG] Raw message received")
-                            print(json.dumps(data, indent=2)[:800])
-
                         result = data.get("result", {})
                         log = result.get("value", {})
                         accounts = log.get("accountKeys", [])
@@ -85,20 +85,22 @@ async def mempool_listener():
                             continue
 
                         for token_mint in accounts:
+                            # Optional detailed debug
                             if DEBUG:
-                                print(f"[DEBUG] Checking: {token_mint}")
+                                print(f"[DEBUG] Checking account key: {token_mint}")
 
                             if len(token_mint) != 44 or token_mint.startswith("So111"):
                                 continue
                             if token_mint in sniped_tokens:
                                 continue
 
-                            await send_telegram_alert(f"👀 [DEBUG] Valid mint seen: {token_mint}")
+                            if DEBUG:
+                                await send_telegram_alert(f"👀 [DEBUG] Valid mint detected: {token_mint}")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
                                 if DEBUG:
-                                    print(f"[DEBUG] {token_mint}: No price found, skipping")
+                                    print(f"[DEBUG] {token_mint} has no price, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
