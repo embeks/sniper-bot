@@ -5,10 +5,7 @@ import websockets
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-from utils import (
-    send_telegram_alert,
-    get_token_price
-)
+from utils import send_telegram_alert, get_token_price
 from jupiter_trade import buy_token
 from trade_logic import auto_sell_if_profit
 
@@ -18,19 +15,17 @@ load_dotenv()
 DEBUG = True
 BUY_AMOUNT_SOL = 0.027
 sniped_tokens = set()
-mempool_announced = False
 heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
-FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")  # Optional: test token to simulate buy
 
-# Jupiter and Raydium Program IDs
-PROGRAM_IDS = {
-    "JUPITER": "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",
-    "RAYDIUM": "RVKd61ztZW9C8c5xDJ8j8JCYg6uXJ2aTKeVb5xvjB6t"
-}
+# Jupiter and Raydium Program IDs (verified for new token launches)
+PROGRAM_IDS = [
+    "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",  # Jupiter
+    "RVKd61ztZW9gPjYdwDZBdTz7C9h9QzZrVJkYhBm5vwj"   # Raydium
+]
 
 async def mempool_listener():
-    global mempool_announced, last_heartbeat
+    global last_heartbeat
 
     helius_api_key = os.getenv("HELIUS_API_KEY")
     if not helius_api_key:
@@ -42,30 +37,21 @@ async def mempool_listener():
     while True:
         try:
             async with websockets.connect(uri, ping_interval=30, ping_timeout=10) as ws:
-                sub_msg = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "logsSubscribe",
-                    "params": [
-                        {"mentions": list(PROGRAM_IDS.values())},
-                        {"commitment": "processed", "encoding": "jsonParsed"}
-                    ]
-                }
-                await ws.send(json.dumps(sub_msg))
+                # Subscribe to Jupiter and Raydium logs
+                for program_id in PROGRAM_IDS:
+                    sub_msg = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "logsSubscribe",
+                        "params": [
+                            {"mentions": [program_id]},
+                            {"commitment": "processed", "encoding": "jsonParsed"}
+                        ]
+                    }
+                    await ws.send(json.dumps(sub_msg))
 
                 await send_telegram_alert("📡 Mempool listener active (JUPITER + RAYDIUM MODE)...")
-                print("[INFO] Subscribed to Jupiter + Raydium logs...")
-                mempool_announced = True
-
-                if FORCE_TEST_MINT and FORCE_TEST_MINT not in sniped_tokens:
-                    await send_telegram_alert(f"🧪 Simulating snipe attempt on {FORCE_TEST_MINT}")
-                    entry_price = await get_token_price(FORCE_TEST_MINT)
-                    if entry_price:
-                        sniped_tokens.add(FORCE_TEST_MINT)
-                        await buy_token(FORCE_TEST_MINT, BUY_AMOUNT_SOL)
-                        await auto_sell_if_profit(FORCE_TEST_MINT, entry_price)
-                    else:
-                        await send_telegram_alert(f"❌ {FORCE_TEST_MINT}: No price found, skipping test")
+                print("[INFO] Subscribed to Jupiter & Raydium logs...")
 
                 while True:
                     now = datetime.utcnow()
@@ -77,11 +63,10 @@ async def mempool_listener():
 
                     try:
                         message = await asyncio.wait_for(ws.recv(), timeout=60)
+                        timestamp = datetime.utcnow().strftime("%H:%M:%S")
+                        print(f"[{timestamp}] Raw log: {message[:200]}...")
+
                         data = json.loads(message)
-
-                        # Print raw debug
-                        print(f"[DEBUG] Raw msg received @ {datetime.utcnow().isoformat()} UTC: {str(data)[:250]}")
-
                         result = data.get("result", {})
                         log = result.get("value", {})
                         accounts = log.get("accountKeys", [])
@@ -97,9 +82,6 @@ async def mempool_listener():
                                 continue
                             if token_mint in sniped_tokens:
                                 continue
-
-                            if DEBUG:
-                                await send_telegram_alert(f"👀 [DEBUG] Valid mint detected: {token_mint}")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
@@ -124,5 +106,4 @@ async def mempool_listener():
 
         except Exception as outer_e:
             print(f"[‼️] Mempool connection failed: {outer_e}")
-            mempool_announced = False
             await asyncio.sleep(5)
