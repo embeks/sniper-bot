@@ -19,7 +19,8 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 # 🔐 Wallet
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
-WALLET_ADDRESS = str(keypair.pubkey())
+WALLET_PUBKEY = keypair.pubkey()          # ✅ use this in client functions
+WALLET_ADDRESS = str(WALLET_PUBKEY)       # ✅ use this for logging/display
 client = Client(SOLANA_RPC)
 
 # 📤 Send Telegram Alert (Async)
@@ -35,16 +36,6 @@ async def send_telegram_alert(message):
             )
     except Exception as e:
         print(f"[‼️] Telegram alert failed: {e}")
-
-# 💰 Get SOL Balance (handles Pubkey conversion)
-def get_sol_balance(pubkey_str=None):
-    try:
-        pubkey = Pubkey.from_string(pubkey_str) if pubkey_str else keypair.pubkey()
-        result = client.get_balance(pubkey)
-        return result['result']['value'] / 1e9  # Convert lamports to SOL
-    except Exception as e:
-        print(f"[!] Failed to fetch SOL balance: {e}")
-        return 0
 
 # 🔍 Honeypot Filter
 async def check_token_safety(token_address):
@@ -122,7 +113,7 @@ async def get_token_balance(token_mint):
             mint=token_mint,
             program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         )
-        accounts = client.get_token_accounts_by_owner(WALLET_ADDRESS, opts)
+        accounts = client.get_token_accounts_by_owner(WALLET_PUBKEY, opts)
 
         results = accounts.get("result", {}).get("value", [])
         for acc in results:
