@@ -23,6 +23,12 @@ heartbeat_interval = timedelta(minutes=30)
 last_heartbeat = datetime.utcnow()
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")  # Optional: test token to simulate buy
 
+# Jupiter and Raydium Program IDs
+PROGRAM_IDS = {
+    "JUPITER": "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",
+    "RAYDIUM": "RVKd61ztZW9C8c5xDJ8j8JCYg6uXJ2aTKeVb5xvjB6t"
+}
+
 async def mempool_listener():
     global mempool_announced, last_heartbeat
 
@@ -41,22 +47,16 @@ async def mempool_listener():
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
-                        {
-                            "mentions": [
-                                "5quBfV1nZt3PbRLCDBZzjHzpmoxQ4bxugF78ReBEeXiW",  # Raydium
-                                "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"   # Jupiter
-                            ]
-                        },
+                        {"mentions": list(PROGRAM_IDS.values())},
                         {"commitment": "processed", "encoding": "jsonParsed"}
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
 
                 await send_telegram_alert("📡 Mempool listener active (JUPITER + RAYDIUM MODE)...")
-                print("[INFO] Subscribed to Jupiter + Raydium logs")
+                print("[INFO] Subscribed to Jupiter + Raydium logs...")
                 mempool_announced = True
 
-                # Optional simulated test buy
                 if FORCE_TEST_MINT and FORCE_TEST_MINT not in sniped_tokens:
                     await send_telegram_alert(f"🧪 Simulating snipe attempt on {FORCE_TEST_MINT}")
                     entry_price = await get_token_price(FORCE_TEST_MINT)
@@ -77,34 +77,38 @@ async def mempool_listener():
 
                     try:
                         message = await asyncio.wait_for(ws.recv(), timeout=60)
-                        print("[DEBUG] Got new log message from ws")  # <- confirms any activity
                         data = json.loads(message)
+
+                        # Print raw debug
+                        print(f"[DEBUG] Raw msg received @ {datetime.utcnow().isoformat()} UTC: {str(data)[:250]}")
 
                         result = data.get("result", {})
                         log = result.get("value", {})
                         accounts = log.get("accountKeys", [])
 
                         if not isinstance(accounts, list):
-                            print("[DEBUG] No accountKeys found in message")
                             continue
 
                         for token_mint in accounts:
-                            print(f"[DEBUG] Checking account key: {token_mint}")
+                            if DEBUG:
+                                print(f"[DEBUG] Checking account key: {token_mint}")
 
                             if len(token_mint) != 44 or token_mint.startswith("So111"):
                                 continue
                             if token_mint in sniped_tokens:
                                 continue
 
-                            print(f"[DEBUG] Valid mint detected: {token_mint}")
+                            if DEBUG:
+                                await send_telegram_alert(f"👀 [DEBUG] Valid mint detected: {token_mint}")
 
                             entry_price = await get_token_price(token_mint)
                             if not entry_price:
-                                print(f"[DEBUG] {token_mint} has no price, skipping")
+                                if DEBUG:
+                                    print(f"[DEBUG] {token_mint} has no price, skipping")
                                 continue
 
                             sniped_tokens.add(token_mint)
-                            await send_telegram_alert(f"🚨 Raw token seen: {token_mint} — attempting buy")
+                            await send_telegram_alert(f"🚨 Token seen: {token_mint} — attempting buy")
                             await buy_token(token_mint, BUY_AMOUNT_SOL)
                             await auto_sell_if_profit(token_mint, entry_price)
 
