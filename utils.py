@@ -156,3 +156,58 @@ async def get_token_data(token_address):
     except Exception as e:
         print(f"[!] Token data fetch failed: {e}")
         return {}
+# ⬆️ All your existing code stays untouched above this point
+
+# ➕ Blacklist Filter
+BLACKLISTED_CREATORS = {"Fg6PaFpoGXkYsidMpWxTWqYw84fi5GZzvynV2GF3u4gN"}
+BLACKLISTED_WALLETS = {"So11111111111111111111111111111111111111112"}
+
+async def is_blacklisted(token_address):
+    try:
+        async with httpx.AsyncClient() as session:
+            url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
+            headers = {"X-API-KEY": BIRDEYE_API_KEY}
+            res = await session.get(url, headers=headers)
+            data = res.json().get("data", {})
+            creator = data.get("creatorAddress", "")
+            owner = data.get("ownerAddress", "")
+            if creator in BLACKLISTED_CREATORS or owner in BLACKLISTED_WALLETS:
+                print(f"[✖] Token {token_address} blacklisted by {creator or owner}")
+                return True
+        return False
+    except Exception as e:
+        print(f"[!] Blacklist check failed: {e}")
+        return True  # Fail-safe = block
+
+# ⚡ Triton / Geyser RPC support
+from solana.rpc.async_api import AsyncClient
+
+def get_rpc_client(use_triton=False) -> AsyncClient:
+    url = os.getenv("RPC_URL_TRITON") if use_triton else os.getenv("RPC_URL")
+    return AsyncClient(url)
+
+# ✅ Pre-approval TX (for speeding up swaps)
+from solana.transaction import Transaction
+from spl.token.instructions import approve
+from solana.rpc.commitment import Confirmed
+
+async def approve_token_transfer(client: AsyncClient, source, delegate, wallet, amount: int):
+    try:
+        tx = Transaction()
+        tx.add(approve(
+            source=source,
+            delegate=delegate,
+            owner=wallet.public_key(),
+            amount=amount
+        ))
+        sig = await client.send_transaction(tx, wallet)
+        await client.confirm_transaction(sig.value, commitment=Confirmed)
+        print(f"[✔] Approved {amount} for {delegate}")
+    except Exception as e:
+        print(f"[!] Pre-approval failed: {e}")
+
+# 🧠 Raydium fallback stub
+async def buy_on_raydium(client: AsyncClient, wallet, mint_address: str, amount: float):
+    # Stub: Expand with actual Raydium router logic or fallback call
+    print(f"[⚡] Direct Raydium buy: {mint_address} with {amount} SOL")
+    return True
