@@ -5,7 +5,15 @@ import websockets
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-from utils import send_telegram_alert, get_token_price
+from utils import (
+    send_telegram_alert,
+    get_token_price,
+    get_token_data,
+    is_blacklisted,
+    check_token_safety,
+    has_blacklist_or_mint_functions,
+    is_lp_locked_or_burned
+)
 from jupiter_trade import buy_token
 from trade_logic import auto_sell_if_profit
 
@@ -14,7 +22,6 @@ load_dotenv()
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.2))
 
-# WebSocket setup
 HELIUS_WS = f"wss://mainnet.helius-rpc.com/v1/ws?api-key={HELIUS_API_KEY}"
 JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
@@ -22,13 +29,13 @@ RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
 sniped_tokens = set()
 heartbeat_interval = timedelta(hours=4)
 
-# Load already-sniped tokens
 if os.path.exists("sniped_tokens.txt"):
     with open("sniped_tokens.txt", "r") as f:
         sniped_tokens = set(line.strip() for line in f)
 
-# 🔁 Handle incoming log data
+# ========================= 🔁 Shared Log Handler =========================
 async def handle_log(message, listener_name):
+    global sniped_tokens
     try:
         data = json.loads(message)
         result = data.get("result")
@@ -46,26 +53,45 @@ async def handle_log(message, listener_name):
             if token_mint in sniped_tokens:
                 continue
 
+            # Mark token as processed
             sniped_tokens.add(token_mint)
             with open("sniped_tokens.txt", "a") as f:
                 f.write(f"{token_mint}\n")
 
             await send_telegram_alert(f"👀 [{listener_name}] Detected mint: {token_mint}")
 
+            # 1. Blacklist and honeypot protection
+            if await is_blacklisted(token_mint):
+                await send_telegram_alert(f"⛔ {token_mint} is blacklisted. Skipping.")
+                return
+            if await has_blacklist_or_mint_functions(token_mint):
+                await send_telegram_alert(f"⚠️ Suspicious contract functions found in {token_mint}. Skipping.")
+                return
+            if not await is_lp_locked_or_burned(token_mint):
+                await send_telegram_alert(f"🔓 LP not locked for {token_mint}. Skipping.")
+                return
+
+            # 2. Basic safety checks
+            safety_result = await check_token_safety(token_mint)
+            if "❌" in safety_result or "⚠️" in safety_result:
+                await send_telegram_alert(f"{safety_result}\nToken: {token_mint}\nSkipped.")
+                return
+
+            # 3. Attempt to buy
             entry_price = await get_token_price(token_mint)
             if not entry_price:
-                await send_telegram_alert(f"⚠️ [{listener_name}] Couldn't fetch price, skipping buy")
-                continue
+                await send_telegram_alert(f"❌ No price found for {token_mint}, skipping.")
+                return
 
-            await send_telegram_alert(f"🚨 [{listener_name}] Attempting snipe: {token_mint}")
+            await send_telegram_alert(f"🚨 [{listener_name}] Attempting to buy {token_mint} at {entry_price:.6f} SOL")
             await buy_token(token_mint, BUY_AMOUNT_SOL)
             await auto_sell_if_profit(token_mint, entry_price)
 
     except Exception as e:
         print(f"[‼️] {listener_name} error: {e}")
-        await send_telegram_alert(f"[‼️] {listener_name} log error:\n{e}")
+        await send_telegram_alert(f"[‼️] {listener_name} log handling error:\n{e}")
 
-# 🌐 Listener function with heartbeat + reconnect
+# ========================= 🌐 Listener =========================
 async def listen_to_program(program_id, listener_name):
     last_heartbeat = datetime.utcnow()
     while True:
@@ -81,8 +107,8 @@ async def listen_to_program(program_id, listener_name):
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
-                await send_telegram_alert(f"📡 {listener_name} connected — ✅ Starting sniper bot with dual sockets...")
-                print(f"[📡] Subscribed to {listener_name}")
+                await send_telegram_alert(f"📡 {listener_name} listener active... ✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
+                print(f"[📡] Subscribed to {listener_name} logs")
 
                 while True:
                     now = datetime.utcnow()
@@ -98,10 +124,9 @@ async def listen_to_program(program_id, listener_name):
                         await ws.ping()
         except Exception as e:
             print(f"[‼️] {listener_name} WS error: {e}")
-            await send_telegram_alert(f"[‼️] {listener_name} WS crashed. Retrying in 10s...\n{e}")
             await asyncio.sleep(10)
 
-# 🎯 Entry points
+# ========================= 🚀 Entry Points =========================
 async def mempool_listener_jupiter():
     await listen_to_program(JUPITER_PROGRAM, "JUPITER")
 
