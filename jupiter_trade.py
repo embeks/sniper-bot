@@ -98,6 +98,7 @@ async def buy_token(token_address: str, amount_sol: float = 0.03):
             await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
             return
 
+        await asyncio.sleep(0.2)
         await send_telegram_alert("🔍 Step 2: Fetching Jupiter route quote...")
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
@@ -108,12 +109,14 @@ async def buy_token(token_address: str, amount_sol: float = 0.03):
             await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
             return
 
+        await asyncio.sleep(0.2)
         await send_telegram_alert("🔍 Step 3: Building transaction...")
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
             return
 
+        await asyncio.sleep(0.2)
         await send_telegram_alert("🚀 Step 4: Sending transaction to blockchain...")
         signature = sign_and_send_tx(raw_tx)
         if signature:
@@ -131,9 +134,9 @@ async def sell_token(token_address: str, amount_token: int):
     try:
         await send_telegram_alert(f"💸 Attempting to sell {amount_token} of {token_address}")
 
-        # Step 1: Check route
+        # Step 1: Check route (reverse sell)
         route = await get_jupiter_quote(
-            output_mint="So11111111111111111111111111111111111111112",  # selling to SOL
+            output_mint="So11111111111111111111111111111111111111112",  # to SOL
             amount_sol=amount_token / 1e9,
             slippage=5.0
         )
@@ -141,13 +144,12 @@ async def sell_token(token_address: str, amount_token: int):
             await send_telegram_alert(f"❌ No sell route found for {token_address}")
             return
 
-        # Step 2: Build TX
+        await asyncio.sleep(0.2)
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
             await send_telegram_alert(f"❌ Failed to build sell TX for {token_address}")
             return
 
-        # Step 3: Sign & Send
         signature = sign_and_send_tx(raw_tx)
         if signature:
             await send_telegram_alert(f"✅ Sell TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}")
