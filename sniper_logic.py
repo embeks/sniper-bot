@@ -5,8 +5,7 @@ import asyncio
 import json
 import websockets
 from utils import send_telegram_alert
-from sniper_logic import buy_token
-
+from jupiter_trade import buy_token
 # Replace with actual Jupiter and Raydium program IDs
 JUPITER_PROGRAM_ID = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 RAYDIUM_PROGRAM_ID = "RVKd61ztZW9DQzGwVZvzESLZDJrdP9mYDTu7EieiqfF"
