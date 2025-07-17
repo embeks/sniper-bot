@@ -1,3 +1,6 @@
+# =========================
+# utils.py
+# =========================
 import os
 import json
 import time
@@ -6,24 +9,35 @@ from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
+from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
+from solana.transaction import Transaction
+from spl.token.instructions import approve
+from solana.rpc.commitment import Confirmed
 
 load_dotenv()
 
-# 🔧 Environment + Config
+# 🔧 Environment
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+RPC_URL = os.getenv("RPC_URL")
+RPC_URL_TRITON = os.getenv("RPC_URL_TRITON")
 
 # 🔐 Wallet
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
-WALLET_PUBKEY = keypair.pubkey()          # ✅ use this in client functions
-WALLET_ADDRESS = str(WALLET_PUBKEY)       # ✅ use this for logging/display
-client = Client(SOLANA_RPC)
+WALLET_PUBKEY = keypair.pubkey()
+WALLET_ADDRESS = str(WALLET_PUBKEY)
+client = Client(RPC_URL)
 
-# 📤 Send Telegram Alert (Async)
+# ✅ RPC client
+
+def get_rpc_client(use_triton=False) -> AsyncClient:
+    return AsyncClient(RPC_URL_TRITON if use_triton else RPC_URL)
+
+# 📤 Telegram Alerts
+
 async def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[⚠️] Telegram not configured")
@@ -37,7 +51,8 @@ async def send_telegram_alert(message):
     except Exception as e:
         print(f"[‼️] Telegram alert failed: {e}")
 
-# 🔍 Honeypot Filter
+# 🧪 Token Safety Checks
+
 async def check_token_safety(token_address):
     try:
         async with httpx.AsyncClient() as session:
@@ -62,7 +77,6 @@ async def check_token_safety(token_address):
     except Exception as e:
         return f"[!] Safety check error: {e}"
 
-# 🚫 Blacklist or Mint Authority Present
 async def has_blacklist_or_mint_functions(token_address):
     try:
         async with httpx.AsyncClient() as session:
@@ -73,9 +87,8 @@ async def has_blacklist_or_mint_functions(token_address):
             return data.get("hasBlacklist", False) or data.get("hasMintAuthority", True)
     except Exception as e:
         print(f"[!] Authority check error: {e}")
-        return True  # Assume dangerous if failed
+        return True
 
-# 🔒 LP Locked or Burned
 async def is_lp_locked_or_burned(token_address):
     try:
         async with httpx.AsyncClient() as session:
@@ -88,77 +101,26 @@ async def is_lp_locked_or_burned(token_address):
         print(f"[!] LP check failed: {e}")
         return False
 
-# 📈 Get Token Price
-async def get_token_price(token_address):
+# 🐳 Whale Holder Filter
+
+async def has_whales(token_address):
     try:
         async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+            url = f"https://public-api.birdeye.so/public/token/{token_address}/holders"
             headers = {"X-API-KEY": BIRDEYE_API_KEY}
             res = await session.get(url, headers=headers)
-
-            if res.status_code != 200:
-                print(f"[!] Birdeye response error: {res.status_code}")
-                return None
-
-            data = res.json().get("data", {})
-            return float(data.get("value", 0))
+            holders = res.json().get("data", [])
+            for h in holders:
+                pct = float(h.get("percent", 0))
+                if pct > 30:
+                    return True
+            return False
     except Exception as e:
-        print(f"[!] Price fetch failed: {e}")
-        return None
+        print(f"[!] Whale check failed: {e}")
+        return True
 
-# 🧾 Token Balance
-async def get_token_balance(token_mint):
-    try:
-        opts = TokenAccountOpts(
-            mint=token_mint,
-            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        )
-        accounts = client.get_token_accounts_by_owner(WALLET_PUBKEY, opts)
+# 🚫 Blacklist
 
-        results = accounts.get("result", {}).get("value", [])
-        for acc in results:
-            amount = int(acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
-            return amount
-
-        return 0
-    except Exception as e:
-        print(f"[!] Balance fetch failed: {e}")
-        return 0
-
-# ⚠️ Rug Condition Logic (Optional usage)
-def detect_rug_conditions(token_data):
-    try:
-        return (
-            token_data.get("liquidity", 0) < 1000 or
-            token_data.get("volume24h", 0) < 100 or
-            token_data.get("sellTax", 0) > 25
-        )
-    except Exception as e:
-        print(f"[!] Rug detection error: {e}")
-        return False
-
-# 📉 Trade Logger
-def log_trade_to_csv(token_address, action, amount, price):
-    try:
-        with open("trade_log.csv", "a") as f:
-            f.write(f"{time.time()},{token_address},{action},{amount},{price}\n")
-    except Exception as e:
-        print(f"[‼️] CSV log error: {e}")
-
-# 🧪 Get full token data (for rug detection, price, liquidity)
-async def get_token_data(token_address):
-    try:
-        async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
-            headers = {"X-API-KEY": BIRDEYE_API_KEY}
-            res = await session.get(url, headers=headers)
-            return res.json().get("data", {})
-    except Exception as e:
-        print(f"[!] Token data fetch failed: {e}")
-        return {}
-# ⬆️ All your existing code stays untouched above this point
-
-# ➕ Blacklist Filter
 BLACKLISTED_CREATORS = {"Fg6PaFpoGXkYsidMpWxTWqYw84fi5GZzvynV2GF3u4gN"}
 BLACKLISTED_WALLETS = {"So11111111111111111111111111111111111111112"}
 
@@ -171,43 +133,80 @@ async def is_blacklisted(token_address):
             data = res.json().get("data", {})
             creator = data.get("creatorAddress", "")
             owner = data.get("ownerAddress", "")
-            if creator in BLACKLISTED_CREATORS or owner in BLACKLISTED_WALLETS:
-                print(f"[✖] Token {token_address} blacklisted by {creator or owner}")
-                return True
-        return False
+            return creator in BLACKLISTED_CREATORS or owner in BLACKLISTED_WALLETS
     except Exception as e:
         print(f"[!] Blacklist check failed: {e}")
-        return True  # Fail-safe = block
+        return True
 
-# ⚡ Triton / Geyser RPC support
-from solana.rpc.async_api import AsyncClient
+# 📈 Token Price
 
-def get_rpc_client(use_triton=False) -> AsyncClient:
-    url = os.getenv("RPC_URL_TRITON") if use_triton else os.getenv("RPC_URL")
-    return AsyncClient(url)
-
-# ✅ Pre-approval TX (for speeding up swaps)
-from solana.transaction import Transaction
-from spl.token.instructions import approve
-from solana.rpc.commitment import Confirmed
-
-async def approve_token_transfer(client: AsyncClient, source, delegate, wallet, amount: int):
+async def get_token_price(token_address):
     try:
-        tx = Transaction()
-        tx.add(approve(
-            source=source,
-            delegate=delegate,
-            owner=wallet.public_key(),
-            amount=amount
-        ))
-        sig = await client.send_transaction(tx, wallet)
-        await client.confirm_transaction(sig.value, commitment=Confirmed)
-        print(f"[✔] Approved {amount} for {delegate}")
+        async with httpx.AsyncClient() as session:
+            url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+            headers = {"X-API-KEY": BIRDEYE_API_KEY}
+            res = await session.get(url, headers=headers)
+            data = res.json().get("data", {})
+            return float(data.get("value", 0))
     except Exception as e:
-        print(f"[!] Pre-approval failed: {e}")
+        print(f"[!] Price fetch failed: {e}")
+        return None
 
-# 🧠 Raydium fallback stub
+# 🧾 Token Balance
+
+async def get_token_balance(token_mint):
+    try:
+        opts = TokenAccountOpts(
+            mint=token_mint,
+            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        )
+        accounts = client.get_token_accounts_by_owner(WALLET_PUBKEY, opts)
+        results = accounts.get("result", {}).get("value", [])
+        for acc in results:
+            amount = int(acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
+            return amount
+        return 0
+    except Exception as e:
+        print(f"[!] Balance fetch failed: {e}")
+        return 0
+
+# ⚠️ Rug Detection
+
+def detect_rug_conditions(token_data):
+    try:
+        return (
+            token_data.get("liquidity", 0) < 1000 or
+            token_data.get("volume24h", 0) < 100 or
+            token_data.get("sellTax", 0) > 25
+        )
+    except Exception as e:
+        print(f"[!] Rug detection error: {e}")
+        return False
+
+# 🧠 Token Meta
+
+async def get_token_data(token_address):
+    try:
+        async with httpx.AsyncClient() as session:
+            url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
+            headers = {"X-API-KEY": BIRDEYE_API_KEY}
+            res = await session.get(url, headers=headers)
+            return res.json().get("data", {})
+    except Exception as e:
+        print(f"[!] Token data fetch failed: {e}")
+        return {}
+
+# 📉 Logger
+
+def log_trade_to_csv(token_address, action, amount, price):
+    try:
+        with open("trade_log.csv", "a") as f:
+            f.write(f"{time.time()},{token_address},{action},{amount},{price}\n")
+    except Exception as e:
+        print(f"[‼️] CSV log error: {e}")
+
+# 💸 Raydium Fallback Stub
+
 async def buy_on_raydium(client: AsyncClient, wallet, mint_address: str, amount: float):
-    # Stub: Expand with actual Raydium router logic or fallback call
     print(f"[⚡] Direct Raydium buy: {mint_address} with {amount} SOL")
     return True
