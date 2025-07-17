@@ -1,5 +1,5 @@
 httpx==0.27.0
 websockets==12.0
 python-dotenv==1.0.1
-solana-py==0.29.0
+solana==0.28.1
 solders==0.18.0
