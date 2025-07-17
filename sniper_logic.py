@@ -14,21 +14,21 @@ load_dotenv()
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.2))
 
-# Use updated Helius WebSocket endpoint
+# WebSocket setup
 HELIUS_WS = f"wss://mainnet.helius-rpc.com/v1/ws?api-key={HELIUS_API_KEY}"
 JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
 
 sniped_tokens = set()
-heartbeat_interval = timedelta(minutes=30)
+heartbeat_interval = timedelta(hours=4)
 
+# Load already-sniped tokens
 if os.path.exists("sniped_tokens.txt"):
     with open("sniped_tokens.txt", "r") as f:
         sniped_tokens = set(line.strip() for line in f)
 
-# ========================= 🔁 Shared Log Handler =========================
+# 🔁 Handle incoming log data
 async def handle_log(message, listener_name):
-    global sniped_tokens
     try:
         data = json.loads(message)
         result = data.get("result")
@@ -51,18 +51,21 @@ async def handle_log(message, listener_name):
                 f.write(f"{token_mint}\n")
 
             await send_telegram_alert(f"👀 [{listener_name}] Detected mint: {token_mint}")
+
             entry_price = await get_token_price(token_mint)
             if not entry_price:
+                await send_telegram_alert(f"⚠️ [{listener_name}] Couldn't fetch price, skipping buy")
                 continue
 
-            await send_telegram_alert(f"🚨 [{listener_name}] Attempting buy: {token_mint}")
+            await send_telegram_alert(f"🚨 [{listener_name}] Attempting snipe: {token_mint}")
             await buy_token(token_mint, BUY_AMOUNT_SOL)
             await auto_sell_if_profit(token_mint, entry_price)
 
     except Exception as e:
         print(f"[‼️] {listener_name} error: {e}")
+        await send_telegram_alert(f"[‼️] {listener_name} log error:\n{e}")
 
-# ========================= 🌐 Listener =========================
+# 🌐 Listener function with heartbeat + reconnect
 async def listen_to_program(program_id, listener_name):
     last_heartbeat = datetime.utcnow()
     while True:
@@ -78,8 +81,8 @@ async def listen_to_program(program_id, listener_name):
                     ]
                 }
                 await ws.send(json.dumps(sub_msg))
-                await send_telegram_alert(f"📡 {listener_name} listener active... ✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
-                print(f"[📡] Subscribed to {listener_name} logs")
+                await send_telegram_alert(f"📡 {listener_name} connected — ✅ Starting sniper bot with dual sockets...")
+                print(f"[📡] Subscribed to {listener_name}")
 
                 while True:
                     now = datetime.utcnow()
@@ -95,9 +98,10 @@ async def listen_to_program(program_id, listener_name):
                         await ws.ping()
         except Exception as e:
             print(f"[‼️] {listener_name} WS error: {e}")
+            await send_telegram_alert(f"[‼️] {listener_name} WS crashed. Retrying in 10s...\n{e}")
             await asyncio.sleep(10)
 
-# ========================= 🚀 Entry Point =========================
+# 🎯 Entry points
 async def mempool_listener_jupiter():
     await listen_to_program(JUPITER_PROGRAM, "JUPITER")
 
