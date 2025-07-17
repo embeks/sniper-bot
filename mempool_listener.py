@@ -148,18 +148,3 @@ async def mempool_listener_raydium():
         except Exception as e:
             print(f"[‼️] RAYDIUM WS error: {e}")
             await asyncio.sleep(10)
-# ========================= 🧪 Manual Trigger (Direct Buy) =========================
-async def manual_trigger(token_mint: str):
-    from jupiter_trade import buy_token
-    from trade_logic import auto_sell_if_profit
-    from utils import get_token_price, send_telegram_alert
-
-    await send_telegram_alert(f"🧪 Manual snipe triggered for {token_mint}")
-    entry_price = await get_token_price(token_mint)
-
-    if not entry_price:
-        await send_telegram_alert(f"❌ No price data for {token_mint}, skipping.")
-        return
-
-    await buy_token(token_mint, 0.03)
-    await auto_sell_if_profit(token_mint, entry_price)
