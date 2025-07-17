@@ -12,20 +12,15 @@ from trade_logic import auto_sell_if_profit
 load_dotenv()
 
 DEBUG = True
-BUY_AMOUNT_SOL = 0.2  # Adjust based on how much SOL you want to spend
+BUY_AMOUNT_SOL = 0.2
 heartbeat_interval = timedelta(minutes=30)
 
-# Helius RPC WebSocket URL
 HELIUS_WS = f"wss://mainnet.helius-rpc.com/?api-key={os.getenv('HELIUS_API_KEY')}"
-
-# Jupiter and Raydium Program IDs
 JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
 
-# Track already-sniped tokens
 sniped_tokens = set()
 
-# 🔁 Load previously sniped tokens from file
 if os.path.exists("sniped_tokens.txt"):
     with open("sniped_tokens.txt", "r") as f:
         sniped_tokens = set(line.strip() for line in f)
@@ -48,6 +43,7 @@ async def handle_log(message, listener_name):
 
         timestamp = datetime.utcnow().strftime('%H:%M:%S')
         print(f"[{timestamp}] {listener_name} Raw log: {message}")
+        print(f"[DEBUG] Detected accounts: {accounts}")  # ✅ added debug log
 
         for token_mint in accounts:
             if len(token_mint) != 44 or token_mint.startswith("So111"):
@@ -63,8 +59,7 @@ async def handle_log(message, listener_name):
 
             entry_price = await get_token_price(token_mint)
             if not entry_price:
-                if DEBUG:
-                    print(f"[DEBUG] {token_mint} has no price, skipping")
+                print(f"[DEBUG] {token_mint} has no price, skipping")
                 continue
 
             await send_telegram_alert(f"🚨 [{listener_name}] Attempting buy: {token_mint}")
@@ -74,8 +69,18 @@ async def handle_log(message, listener_name):
     except Exception as e:
         print(f"[‼️] {listener_name} error: {e}")
 
-# ========================= 🌐 Dual WebSocket Listeners =========================
+# ========================= 🧪 Manual Trigger (Optional) =========================
+async def manual_trigger():
+    known_mint = "So11111111111111111111111111111111111111112"  # Replace with valid token address
+    if known_mint not in sniped_tokens:
+        sniped_tokens.add(known_mint)
+        await send_telegram_alert(f"🧪 Manual test trigger: {known_mint}")
+        entry_price = await get_token_price(known_mint)
+        if entry_price:
+            await buy_token(known_mint, BUY_AMOUNT_SOL)
+            await auto_sell_if_profit(known_mint, entry_price)
 
+# ========================= 🌐 Dual WebSocket Listeners =========================
 async def mempool_listener_jupiter():
     last_heartbeat = datetime.utcnow()
     while True:
@@ -92,8 +97,7 @@ async def mempool_listener_jupiter():
                 }
                 await ws.send(json.dumps(sub_msg))
                 await send_telegram_alert("📡 JUPITER listener active...")
-                if DEBUG:
-                    print("[📡] Subscribed to Jupiter logs")
+                print("[📡] Subscribed to Jupiter logs")
 
                 while True:
                     now = datetime.utcnow()
@@ -127,8 +131,7 @@ async def mempool_listener_raydium():
                 }
                 await ws.send(json.dumps(sub_msg))
                 await send_telegram_alert("📡 RAYDIUM listener active...")
-                if DEBUG:
-                    print("[📡] Subscribed to Raydium logs")
+                print("[📡] Subscribed to Raydium logs")
 
                 while True:
                     now = datetime.utcnow()
