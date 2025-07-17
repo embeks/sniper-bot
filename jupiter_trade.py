@@ -1,3 +1,5 @@
+# jupiter_trade.py (FULL VERSION with buy + sell)
+
 import os
 import json
 import base64
@@ -39,11 +41,11 @@ async def is_token_supported_by_jupiter(mint: str) -> bool:
         return False
 
 # ✅ Get best route quote from Jupiter
-async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float = 5.0):
+async def get_jupiter_quote(input_mint: str, output_mint: str, amount: float, slippage: float = 5.0):
     try:
-        lamports = int(amount_sol * 1_000_000_000)
+        lamports = int(amount * 1_000_000_000)
         params = {
-            "inputMint": "So11111111111111111111111111111111111111112",
+            "inputMint": input_mint,
             "outputMint": output_mint,
             "amount": lamports,
             "slippageBps": int(slippage * 100)
@@ -56,7 +58,7 @@ async def get_jupiter_quote(output_mint: str, amount_sol: float, slippage: float
         print(f"[!] Jupiter quote error: {e}")
         return None
 
-# 🧐 Build swap transaction
+# 🧠 Build swap transaction
 async def build_jupiter_swap_tx(route):
     try:
         payload = {
@@ -85,96 +87,72 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 💹 Buy token with SOL (LIVE)
+# 🟢 BUY token with SOL
 async def buy_token(token_address: str, amount_sol: float = 0.01):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
-        await send_telegram_alert(f"🔍 Step 1: Checking if token is supported by Jupiter...")
 
         supported = await is_token_supported_by_jupiter(token_address)
         if not supported:
             await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
             return
 
-        await send_telegram_alert(f"🔍 Step 2: Fetching Jupiter route quote...")
-
-        route = await get_jupiter_quote(token_address, amount_sol)
-        if not route:
-            await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
+        route = await get_jupiter_quote(
+            input_mint="So11111111111111111111111111111111111111112",
+            output_mint=token_address,
+            amount=amount_sol
+        )
+        if not route or route.get('outAmount', 0) < 1:
+            await send_telegram_alert(f"❌ Invalid route for {token_address}, skipping")
             return
-
-        if route.get('outAmount', 0) < 1:
-            await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
-            return
-
-        await send_telegram_alert(f"🔍 Step 3: Building transaction...")
 
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
-            await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
+            await send_telegram_alert(f"❌ Could not build TX for {token_address}")
             return
-
-        await send_telegram_alert(f"🚀 Step 4: Sending transaction to blockchain...")
 
         signature = sign_and_send_tx(raw_tx)
         if signature:
-            await send_telegram_alert(
-                f"✅ Buy TX sent for {token_address}\n🔗 https://solscan.io/tx/{signature}"
-            )
+            await send_telegram_alert(f"✅ BUY TX: https://solscan.io/tx/{signature}")
             log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
         else:
             await send_telegram_alert(f"‼️ TX failed for {token_address}")
 
     except Exception as e:
-        print(f"[!] Live buy failed: {e}")
+        print(f"[!] Buy failed: {e}")
         await send_telegram_alert(f"[!] Buy error: {e}")
 
-# 💰 Real Sell Logic
+# 🔴 SELL token back to SOL
 async def sell_token(token_address: str, amount_token: int):
     try:
-        await send_telegram_alert(f"🔻 Initiating sell of {amount_token} units from {token_address}")
+        amount_in_token_units = amount_token / 1_000_000_000
 
-        # Step 1: Get Jupiter Quote
-        params = {
-            "inputMint": token_address,
-            "outputMint": "So11111111111111111111111111111111111111112",  # SOL
-            "amount": amount_token,
-            "slippageBps": 500  # 5% slippage
-        }
-        async with httpx.AsyncClient() as session:
-            res = await session.get(JUPITER_QUOTE_URL, params=params)
-            data = res.json().get("data", [None])[0]
-            if not data:
-                await send_telegram_alert(f"❌ No quote found to sell {token_address}")
-                return
+        supported = await is_token_supported_by_jupiter(token_address)
+        if not supported:
+            await send_telegram_alert(f"❌ Sell failed: {token_address} not supported by Jupiter")
+            return
 
-        # Step 2: Build TX
-        payload = {
-            "route": data,
-            "userPublicKey": wallet_address,
-            "wrapUnwrapSOL": True,
-            "feeAccount": None,
-            "computeUnitPriceMicroLamports": 5000
-        }
-        async with httpx.AsyncClient() as session:
-            swap_res = await session.post(JUPITER_SWAP_URL, json=payload)
-            tx_data = swap_res.json().get("swapTransaction")
-            if not tx_data:
-                await send_telegram_alert(f"❌ Couldn't build TX for selling {token_address}")
-                return
+        route = await get_jupiter_quote(
+            input_mint=token_address,
+            output_mint="So11111111111111111111111111111111111111112",
+            amount=amount_in_token_units
+        )
+        if not route or route.get('outAmount', 0) < 1:
+            await send_telegram_alert(f"❌ No route found for selling {token_address}")
+            return
 
-        # Step 3: Sign + Send
-        raw_tx = base64.b64decode(tx_data)
-        tx = VersionedTransaction.deserialize(raw_tx)
-        tx.sign([keypair])
-        sig = client.send_raw_transaction(tx.serialize(), opts=TxOpts(skip_preflight=True)).get("result")
+        raw_tx = await build_jupiter_swap_tx(route)
+        if not raw_tx:
+            await send_telegram_alert(f"❌ Could not build sell TX for {token_address}")
+            return
 
-        if sig:
-            await send_telegram_alert(f"✅ Sell TX sent! \n🔗 https://solscan.io/tx/{sig}")
-            log_trade_to_csv(token_address, "sell", amount_token, data['outAmount'] / 1e9)
+        signature = sign_and_send_tx(raw_tx)
+        if signature:
+            await send_telegram_alert(f"✅ SELL TX: https://solscan.io/tx/{signature}")
+            log_trade_to_csv(token_address, "sell", amount_token / 1e9, route['outAmount'] / 1e9)
         else:
-            await send_telegram_alert(f"‼️ TX failed for selling {token_address}")
+            await send_telegram_alert(f"‼️ Sell TX failed for {token_address}")
 
     except Exception as e:
-        print(f"[‼️] Sell TX error: {e}")
-        await send_telegram_alert(f"[‼️] Sell error: {e}")
+        print(f"[!] Sell failed: {e}")
+        await send_telegram_alert(f"[!] Sell error: {e}")
