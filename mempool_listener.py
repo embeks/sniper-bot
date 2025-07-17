@@ -1,119 +1,107 @@
+# ====================================
+# mempool_listener.py (FINAL VERSION)
+# ====================================
+
 import os
 import asyncio
 import json
 import websockets
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
-
-from utils import send_telegram_alert, get_token_price
-from jupiter_trade import buy_token
-from trade_logic import auto_sell_if_profit
+from utils import (
+    is_token_blacklisted,
+    check_token_validity,
+    already_sniped,
+    log_sniped_token,
+    send_telegram_message,
+    buy_token
+)
 
 load_dotenv()
 
-DEBUG = True
-BUY_AMOUNT_SOL = 0.2
-heartbeat_interval = timedelta(minutes=30)
+WS_URL = os.getenv("SOLANA_MEMPOOL_WS")
 
-HELIUS_WS = f"wss://mainnet.helius-rpc.com/?api-key={os.getenv('HELIUS_API_KEY')}"
-JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
-RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
+if not WS_URL:
+    raise ValueError("❌ Missing SOLANA_MEMPOOL_WS in .env file")
 
-sniped_tokens = set()
-if os.path.exists("sniped_tokens.txt"):
-    with open("sniped_tokens.txt", "r") as f:
-        sniped_tokens = set(line.strip() for line in f)
+# Program IDs
+RAYDIUM_PROGRAM_ID = "RVKd61ztZW9GdKzYcJ1RMzUWx3o6SLFdBq3v5uQDPmD"
+JUPITER_PROGRAM_ID = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 
-# ==================== 🔍 Token Sniper Core ====================
-async def handle_log(message, listener_name):
+async def handle_mempool_log(log):
     try:
-        data = json.loads(message)
-        result = data.get("result", {})
-        log = result.get("value", {})
-        accounts = log.get("accountKeys", [])
-        if not isinstance(accounts, list):
+        if log.get("type") != "log":
             return
 
-        timestamp = datetime.utcnow().strftime('%H:%M:%S')
-        print(f"[{timestamp}] [{listener_name}] Raw log triggered.")
-        print(f"[DEBUG] {listener_name} log accounts: {accounts}")
+        inner = log.get("innerInstructions", [])
+        if not inner:
+            return
 
-        for token_mint in accounts:
-            if not token_mint or len(token_mint) != 44 or token_mint.startswith("So111"):
-                continue
-            if token_mint in sniped_tokens:
-                continue
+        account_keys = log.get("accountKeys", [])
+        instructions = inner[0].get("instructions", [])
 
-            sniped_tokens.add(token_mint)
-            with open("sniped_tokens.txt", "a") as f:
-                f.write(f"{token_mint}\n")
-
-            await send_telegram_alert(f"👀 [{listener_name}] Detected token mint: {token_mint}")
-
-            entry_price = await get_token_price(token_mint)
-            if not entry_price:
-                print(f"[DEBUG] {token_mint} has no price — skipping.")
+        for ix in instructions:
+            program_id_index = ix.get("programIdIndex")
+            if program_id_index is None or program_id_index >= len(account_keys):
                 continue
 
-            await send_telegram_alert(f"🚨 Attempting to BUY {token_mint}")
-            await buy_token(token_mint, BUY_AMOUNT_SOL)
-            await auto_sell_if_profit(token_mint, entry_price)
+            program_id = account_keys[program_id_index]
+            if program_id not in [RAYDIUM_PROGRAM_ID, JUPITER_PROGRAM_ID]:
+                continue
+
+            data = ix.get("data")
+            if not data:
+                continue
+
+            token_address = account_keys[-1]  # Most often last key is token
+
+            if already_sniped(token_address):
+                return
+
+            if is_token_blacklisted(token_address):
+                print(f"❌ Skipped blacklisted token: {token_address}")
+                return
+
+            is_valid, reason = await check_token_validity(token_address)
+            if not is_valid:
+                print(f"❌ Invalid token ({reason}): {token_address}")
+                return
+
+            send_telegram_message(f"🎯 Sniping detected token: {token_address}")
+            tx_sig = await buy_token(token_address)
+            print(f"✅ Buy tx sent: {tx_sig}")
+            log_sniped_token(token_address)
 
     except Exception as e:
-        print(f"[‼️] Error in {listener_name} handle_log: {e}")
+        print(f"❌ Error processing log: {e}")
 
-# ==================== 🔁 Jupiter & Raydium WS ====================
-async def mempool_listener(program_name: str, label: str):
-    last_heartbeat = datetime.utcnow()
-    backoff = 5
-    while True:
-        try:
-            async with websockets.connect(HELIUS_WS, ping_interval=30, ping_timeout=10) as ws:
-                sub_msg = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "logsSubscribe",
-                    "params": [
-                        {"mentions": [program_name]},
-                        {"commitment": "processed", "encoding": "jsonParsed"}
-                    ]
-                }
-                await ws.send(json.dumps(sub_msg))
-                await send_telegram_alert(f"📡 {label} listener active...")
-                print(f"[📡] Subscribed to {label} logs.")
+async def listen():
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            print("✅ Connected to Helius WebSocket")
+            sub_msg = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "logsSubscribe",
+                "params": [
+                    {"mentions": [RAYDIUM_PROGRAM_ID, JUPITER_PROGRAM_ID]},
+                    {"commitment": "confirmed"}
+                ]
+            }
+            await ws.send(json.dumps(sub_msg))
+            print("📡 Subscribed to Jupiter + Raydium logs")
 
-                while True:
-                    now = datetime.utcnow()
-                    if now - last_heartbeat >= heartbeat_interval:
-                        await send_telegram_alert(f"❤️ {label} heartbeat @ {now.strftime('%H:%M:%S')} UTC")
-                        last_heartbeat = now
+            while True:
+                msg = await ws.recv()
+                event = json.loads(msg)
+                if "result" in event:
+                    continue  # subscription ack
+                log_data = event.get("params", {}).get("result", {}).get("value", {})
+                await handle_mempool_log(log_data)
 
-                    try:
-                        message = await asyncio.wait_for(ws.recv(), timeout=60)
-                        await handle_log(message, label)
-                    except asyncio.TimeoutError:
-                        print(f"[{label}] Timeout, pinging server...")
-                        await ws.ping()
-        except Exception as e:
-            print(f"[‼️] {label} WS error: {e}")
-            print(f"[↩️] Reconnecting to {label} in {backoff} sec...")
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60)  # exponential up to 60s
+    except websockets.exceptions.InvalidStatusCode as e:
+        print(f"❌ WebSocket rejected: {e.status_code} — check your Helius key")
+    except Exception as e:
+        print(f"❌ WebSocket error: {e}")
 
-# ==================== 🧪 Manual Trigger (optional) ====================
-async def manual_trigger():
-    known_mint = "So11111111111111111111111111111111111111112"  # Replace with valid token address
-    if known_mint not in sniped_tokens:
-        sniped_tokens.add(known_mint)
-        await send_telegram_alert(f"🧪 Manual test trigger: {known_mint}")
-        entry_price = await get_token_price(known_mint)
-        if entry_price:
-            await buy_token(known_mint, BUY_AMOUNT_SOL)
-            await auto_sell_if_profit(known_mint, entry_price)
-
-# ==================== 🚀 Launch Listeners ====================
-async def mempool_listener_jupiter():
-    await mempool_listener(JUPITER_PROGRAM, "JUPITER")
-
-async def mempool_listener_raydium():
-    await mempool_listener(RAYDIUM_PROGRAM, "RAYDIUM")
+if __name__ == "__main__":
+    asyncio.run(listen())
