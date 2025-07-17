@@ -1,12 +1,11 @@
 import asyncio
-from sniper_logic import start_sniper
+from sniper_logic import mempool_listener_jupiter, mempool_listener_raydium
 
-async def main():
-    try:
-        await start_sniper()
-    except Exception as e:
-        print(f"[🔥] Sniper crashed: {e}")
-        # Optional: add restart logic or alert to Telegram here
+async def start_sniper():
+    await asyncio.gather(
+        mempool_listener_jupiter(),
+        mempool_listener_raydium()
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(start_sniper())
