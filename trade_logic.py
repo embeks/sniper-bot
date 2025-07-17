@@ -5,7 +5,7 @@ from utils import (
     send_telegram_alert,
     get_token_price,
     get_token_balance,
-    get_token_data  # ✅ Make sure this exists in utils.py
+    get_token_data  # ✅ Ensure this is defined in utils.py
 )
 from jupiter_trade import sell_token
 
@@ -53,10 +53,10 @@ async def auto_sell_if_profit(token_mint: str, entry_price: float):
                             await send_telegram_alert(f"⚠️ No tokens found for {token_mint}, skipping sell")
                             return
 
+                        last_multiplier_hit = mult
                         await send_telegram_alert(f"🚀 {mult}x target hit ({current_price:.6f} SOL)! Selling {amount_token} of {token_mint}")
                         await sell_token(token_mint, amount_token)
                         return  # Exit after selling
-                        last_multiplier_hit = mult
             else:
                 print(f"[!] Could not fetch price for {token_mint}")
 
