@@ -11,13 +11,10 @@ from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
-from solana.transaction import Transaction
-from spl.token.instructions import approve
-from solana.rpc.commitment import Confirmed
 
 load_dotenv()
 
-# 🔧 Environment
+# 🔧 Environment Variables
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -25,20 +22,18 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 RPC_URL = os.getenv("RPC_URL")
 RPC_URL_TRITON = os.getenv("RPC_URL_TRITON")
 
-# 🔐 Wallet
+# 🔐 Wallet Setup
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 WALLET_PUBKEY = keypair.pubkey()
 WALLET_ADDRESS = str(WALLET_PUBKEY)
 client = Client(RPC_URL)
 
-# ✅ RPC client
-
+# ✅ Async RPC Client Getter
 def get_rpc_client(use_triton=False) -> AsyncClient:
     return AsyncClient(RPC_URL_TRITON if use_triton else RPC_URL)
 
 # 📤 Telegram Alerts
-
-async def send_telegram_alert(message):
+async def send_telegram_alert(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[⚠️] Telegram not configured")
         return
@@ -51,8 +46,7 @@ async def send_telegram_alert(message):
     except Exception as e:
         print(f"[‼️] Telegram alert failed: {e}")
 
-# 🧪 Token Safety Checks
-
+# 🧪 Token Safety Filter
 async def check_token_safety(token_address):
     try:
         async with httpx.AsyncClient() as session:
@@ -77,32 +71,61 @@ async def check_token_safety(token_address):
     except Exception as e:
         return f"[!] Safety check error: {e}"
 
-async def has_blacklist_or_mint_functions(token_address):
+# 🧠 Token Meta
+async def get_token_data(token_address):
     try:
         async with httpx.AsyncClient() as session:
             url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
             headers = {"X-API-KEY": BIRDEYE_API_KEY}
             res = await session.get(url, headers=headers)
+            return res.json().get("data", {})
+    except Exception as e:
+        print(f"[!] Token data fetch failed: {e}")
+        return {}
+
+# 📈 Token Price
+async def get_token_price(token_address):
+    try:
+        async with httpx.AsyncClient() as session:
+            url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+            headers = {"X-API-KEY": BIRDEYE_API_KEY}
+            res = await session.get(url, headers=headers)
             data = res.json().get("data", {})
-            return data.get("hasBlacklist", False) or data.get("hasMintAuthority", True)
+            return float(data.get("value", 0))
+    except Exception as e:
+        print(f"[!] Price fetch failed: {e}")
+        return None
+
+# 🚫 Blacklist, Authority, LP Lock Checks
+async def is_blacklisted(token_address):
+    BLACKLISTED_CREATORS = {"Fg6PaFpoGXkYsidMpWxTWqYw84fi5GZzvynV2GF3u4gN"}
+    BLACKLISTED_WALLETS = {"So11111111111111111111111111111111111111112"}
+    try:
+        data = await get_token_data(token_address)
+        creator = data.get("creatorAddress", "")
+        owner = data.get("ownerAddress", "")
+        return creator in BLACKLISTED_CREATORS or owner in BLACKLISTED_WALLETS
+    except Exception as e:
+        print(f"[!] Blacklist check failed: {e}")
+        return True
+
+async def has_blacklist_or_mint_functions(token_address):
+    try:
+        data = await get_token_data(token_address)
+        return data.get("hasBlacklist", False) or data.get("hasMintAuthority", True)
     except Exception as e:
         print(f"[!] Authority check error: {e}")
         return True
 
 async def is_lp_locked_or_burned(token_address):
     try:
-        async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
-            headers = {"X-API-KEY": BIRDEYE_API_KEY}
-            res = await session.get(url, headers=headers)
-            data = res.json().get("data", {})
-            return data.get("lpIsBurned", False) or data.get("lpLocked", False)
+        data = await get_token_data(token_address)
+        return data.get("lpIsBurned", False) or data.get("lpLocked", False)
     except Exception as e:
-        print(f"[!] LP check failed: {e}")
+        print(f"[!] LP lock check failed: {e}")
         return False
 
-# 🐳 Whale Holder Filter
-
+# 🐋 Whale Protection
 async def has_whales(token_address):
     try:
         async with httpx.AsyncClient() as session:
@@ -119,41 +142,7 @@ async def has_whales(token_address):
         print(f"[!] Whale check failed: {e}")
         return True
 
-# 🚫 Blacklist
-
-BLACKLISTED_CREATORS = {"Fg6PaFpoGXkYsidMpWxTWqYw84fi5GZzvynV2GF3u4gN"}
-BLACKLISTED_WALLETS = {"So11111111111111111111111111111111111111112"}
-
-async def is_blacklisted(token_address):
-    try:
-        async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
-            headers = {"X-API-KEY": BIRDEYE_API_KEY}
-            res = await session.get(url, headers=headers)
-            data = res.json().get("data", {})
-            creator = data.get("creatorAddress", "")
-            owner = data.get("ownerAddress", "")
-            return creator in BLACKLISTED_CREATORS or owner in BLACKLISTED_WALLETS
-    except Exception as e:
-        print(f"[!] Blacklist check failed: {e}")
-        return True
-
-# 📈 Token Price
-
-async def get_token_price(token_address):
-    try:
-        async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
-            headers = {"X-API-KEY": BIRDEYE_API_KEY}
-            res = await session.get(url, headers=headers)
-            data = res.json().get("data", {})
-            return float(data.get("value", 0))
-    except Exception as e:
-        print(f"[!] Price fetch failed: {e}")
-        return None
-
 # 🧾 Token Balance
-
 async def get_token_balance(token_mint):
     try:
         opts = TokenAccountOpts(
@@ -171,7 +160,6 @@ async def get_token_balance(token_mint):
         return 0
 
 # ⚠️ Rug Detection
-
 def detect_rug_conditions(token_data):
     try:
         return (
@@ -183,21 +171,7 @@ def detect_rug_conditions(token_data):
         print(f"[!] Rug detection error: {e}")
         return False
 
-# 🧠 Token Meta
-
-async def get_token_data(token_address):
-    try:
-        async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/public/token/{token_address}/info"
-            headers = {"X-API-KEY": BIRDEYE_API_KEY}
-            res = await session.get(url, headers=headers)
-            return res.json().get("data", {})
-    except Exception as e:
-        print(f"[!] Token data fetch failed: {e}")
-        return {}
-
-# 📉 Logger
-
+# 📉 Trade Log Writer
 def log_trade_to_csv(token_address, action, amount, price):
     try:
         with open("trade_log.csv", "a") as f:
@@ -205,8 +179,7 @@ def log_trade_to_csv(token_address, action, amount, price):
     except Exception as e:
         print(f"[‼️] CSV log error: {e}")
 
-# 💸 Raydium Fallback Stub
-
+# 🧪 Raydium Fallback Stub
 async def buy_on_raydium(client: AsyncClient, wallet, mint_address: str, amount: float):
     print(f"[⚡] Direct Raydium buy: {mint_address} with {amount} SOL")
     return True
