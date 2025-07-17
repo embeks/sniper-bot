@@ -2,6 +2,7 @@ import asyncio
 import os
 import json
 import base64
+import time
 import httpx
 from dotenv import load_dotenv
 
@@ -10,14 +11,21 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 
-from utils import send_telegram_alert, log_trade_to_csv
+from utils import (
+    send_telegram_alert, log_trade_to_csv,
+    is_blacklisted, is_lp_locked_or_burned,
+    check_token_safety, has_blacklist_or_mint_functions,
+    buy_on_raydium, get_rpc_client,
+    get_token_price, detect_rug_conditions
+)
 from mempool_listener import mempool_listener_jupiter, mempool_listener_raydium
 
 # ============================== 🔧 Config ==============================
 load_dotenv()
 
-SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+SOLANA_RPC = os.getenv("RPC_URL")
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
 
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
@@ -27,7 +35,10 @@ client = Client(SOLANA_RPC)
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_address = str(keypair.pubkey())
 
-# ============================== 🧠 Core Logic ==============================
+# ============================== 📦 Memory ==============================
+open_positions = {}  # token_address -> {"buy_price": float, "buy_time": time.time()}
+
+# ============================== 🔄 Buy Logic ==============================
 
 async def is_token_supported_by_jupiter(mint: str) -> bool:
     try:
@@ -100,7 +111,7 @@ async def get_sol_balance():
         print(f"[!] Failed to fetch SOL balance: {e}")
         return 0
 
-async def buy_token(token_address: str, amount_sol: float = 0.03):
+async def buy_token(token_address: str, amount_sol: float = BUY_AMOUNT_SOL):
     try:
         balance = await get_sol_balance()
         if balance < amount_sol:
@@ -109,27 +120,44 @@ async def buy_token(token_address: str, amount_sol: float = 0.03):
 
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
 
-        await send_telegram_alert("✅ Step 1: Checking token support")
+        if await is_blacklisted(token_address):
+            await send_telegram_alert(f"❌ Blacklisted: {token_address}")
+            return
+
+        if not await is_lp_locked_or_burned(token_address):
+            await send_telegram_alert(f"❌ LP not locked or burned: {token_address}")
+            return
+
+        if await has_blacklist_or_mint_functions(token_address):
+            await send_telegram_alert(f"⚠️ Token has blacklist/mint authority")
+            return
+
+        safety = await check_token_safety(token_address)
+        await send_telegram_alert(f"🛡️ Safety: {safety}")
+        if "❌" in safety:
+            return
+
         supported = await is_token_supported_by_jupiter(token_address)
         if not supported:
-            await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
+            await send_telegram_alert(f"❌ Not supported by Jupiter")
             return
 
-        await send_telegram_alert("✅ Step 2: Fetching Jupiter quote")
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
-            await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
+            await send_telegram_alert(f"❌ No route — fallback to Raydium")
+            rpc = get_rpc_client(use_triton=True)
+            await buy_on_raydium(rpc, keypair, token_address, amount_sol)
             return
 
-        await send_telegram_alert("✅ Step 3: Jupiter route fetched")
-
         if route.get('outAmount', 0) < 1:
-            await send_telegram_alert(f"❌ Output too low for {token_address}, skipping")
+            await send_telegram_alert(f"❌ OutAmount too low")
             return
 
         raw_tx = await build_jupiter_swap_tx(route)
         if not raw_tx:
-            await send_telegram_alert(f"❌ Could not build transaction for {token_address}")
+            await send_telegram_alert(f"❌ TX build failed — fallback to Raydium")
+            rpc = get_rpc_client(use_triton=True)
+            await buy_on_raydium(rpc, keypair, token_address, amount_sol)
             return
 
         signature = sign_and_send_tx(raw_tx)
@@ -137,19 +165,56 @@ async def buy_token(token_address: str, amount_sol: float = 0.03):
             await send_telegram_alert(f"✅ TX sent: https://solscan.io/tx/{signature}")
             confirmed = confirm_tx(signature)
             if confirmed:
-                await send_telegram_alert(f"✅ TX confirmed on chain!")
-                log_trade_to_csv(token_address, "buy", amount_sol, route['outAmount'] / 1e9)
+                price = await get_token_price(token_address)
+                await send_telegram_alert(f"✅ Buy confirmed. Price: {price:.9f} SOL")
+                open_positions[token_address] = {"buy_price": price, "buy_time": time.time()}
+                log_trade_to_csv(token_address, "buy", amount_sol, price)
             else:
-                await send_telegram_alert(f"⚠️ TX not confirmed after waiting")
+                await send_telegram_alert(f"⚠️ TX not confirmed")
         else:
-            await send_telegram_alert(f"‼️ TX failed for {token_address}")
-
+            await send_telegram_alert(f"‼️ TX failed")
     except Exception as e:
         print(f"[!] Sniping failed: {e}")
         await send_telegram_alert(f"[!] Sniping error: {e}")
 
-async def sell_token(token_address: str, amount_token: int):
-    await send_telegram_alert(f"⚠️ Sell logic not implemented for {token_address}")
+# ============================== 💰 Sell Logic ==============================
+
+async def sell_token(token_address: str, amount_token: int = 0):
+    try:
+        price = await get_token_price(token_address)
+        entry = open_positions.get(token_address)
+
+        if not entry:
+            await send_telegram_alert(f"❌ No entry found for {token_address}")
+            return
+
+        buy_price = entry["buy_price"]
+        buy_time = entry["buy_time"]
+        profit = price / buy_price if buy_price > 0 else 0
+        age = time.time() - buy_time
+
+        if detect_rug_conditions(await get_token_data(token_address)):
+            await send_telegram_alert(f"🚨 Rug detected on {token_address}! Selling...")
+        elif profit >= 10:
+            await send_telegram_alert(f"💰 10x profit! Selling {token_address}")
+        elif profit >= 5:
+            await send_telegram_alert(f"💸 5x profit. Selling {token_address}")
+        elif profit >= 2:
+            await send_telegram_alert(f"📈 2x reached. Selling {token_address}")
+        elif age > 300:
+            await send_telegram_alert(f"⌛ Timeout hit. Selling {token_address}")
+        else:
+            return  # Not ready to sell yet
+
+        # Placeholder: implement actual sell TX
+        log_trade_to_csv(token_address, "sell", amount_token, price)
+        await send_telegram_alert(f"✅ Sold {token_address} at {price:.9f} SOL")
+
+    except Exception as e:
+        print(f"[!] Sell error: {e}")
+        await send_telegram_alert(f"[!] Sell error: {e}")
+
+# ============================== 🚀 Start ==============================
 
 async def start_sniper():
     await send_telegram_alert("✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
