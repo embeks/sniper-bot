@@ -20,33 +20,26 @@ JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
 
 sniped_tokens = set()
-
 if os.path.exists("sniped_tokens.txt"):
     with open("sniped_tokens.txt", "r") as f:
         sniped_tokens = set(line.strip() for line in f)
 
-# ========================= 🔁 Shared Log Handler =========================
+# ==================== 🔍 Token Sniper Core ====================
 async def handle_log(message, listener_name):
-    global sniped_tokens
-
     try:
         data = json.loads(message)
-        result = data.get("result")
-
-        if not isinstance(result, dict):
-            return
-
+        result = data.get("result", {})
         log = result.get("value", {})
         accounts = log.get("accountKeys", [])
         if not isinstance(accounts, list):
             return
 
         timestamp = datetime.utcnow().strftime('%H:%M:%S')
-        print(f"[{timestamp}] {listener_name} Raw log: {message}")
-        print(f"[DEBUG] Detected accounts: {accounts}")  # ✅ added debug log
+        print(f"[{timestamp}] [{listener_name}] Raw log triggered.")
+        print(f"[DEBUG] {listener_name} log accounts: {accounts}")
 
         for token_mint in accounts:
-            if len(token_mint) != 44 or token_mint.startswith("So111"):
+            if not token_mint or len(token_mint) != 44 or token_mint.startswith("So111"):
                 continue
             if token_mint in sniped_tokens:
                 continue
@@ -55,21 +48,59 @@ async def handle_log(message, listener_name):
             with open("sniped_tokens.txt", "a") as f:
                 f.write(f"{token_mint}\n")
 
-            await send_telegram_alert(f"👀 [{listener_name}] Detected mint: {token_mint}")
+            await send_telegram_alert(f"👀 [{listener_name}] Detected token mint: {token_mint}")
 
             entry_price = await get_token_price(token_mint)
             if not entry_price:
-                print(f"[DEBUG] {token_mint} has no price, skipping")
+                print(f"[DEBUG] {token_mint} has no price — skipping.")
                 continue
 
-            await send_telegram_alert(f"🚨 [{listener_name}] Attempting buy: {token_mint}")
+            await send_telegram_alert(f"🚨 Attempting to BUY {token_mint}")
             await buy_token(token_mint, BUY_AMOUNT_SOL)
             await auto_sell_if_profit(token_mint, entry_price)
 
     except Exception as e:
-        print(f"[‼️] {listener_name} error: {e}")
+        print(f"[‼️] Error in {listener_name} handle_log: {e}")
 
-# ========================= 🧪 Manual Trigger (Optional) =========================
+# ==================== 🔁 Jupiter & Raydium WS ====================
+async def mempool_listener(program_name: str, label: str):
+    last_heartbeat = datetime.utcnow()
+    backoff = 5
+    while True:
+        try:
+            async with websockets.connect(HELIUS_WS, ping_interval=30, ping_timeout=10) as ws:
+                sub_msg = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "logsSubscribe",
+                    "params": [
+                        {"mentions": [program_name]},
+                        {"commitment": "processed", "encoding": "jsonParsed"}
+                    ]
+                }
+                await ws.send(json.dumps(sub_msg))
+                await send_telegram_alert(f"📡 {label} listener active...")
+                print(f"[📡] Subscribed to {label} logs.")
+
+                while True:
+                    now = datetime.utcnow()
+                    if now - last_heartbeat >= heartbeat_interval:
+                        await send_telegram_alert(f"❤️ {label} heartbeat @ {now.strftime('%H:%M:%S')} UTC")
+                        last_heartbeat = now
+
+                    try:
+                        message = await asyncio.wait_for(ws.recv(), timeout=60)
+                        await handle_log(message, label)
+                    except asyncio.TimeoutError:
+                        print(f"[{label}] Timeout, pinging server...")
+                        await ws.ping()
+        except Exception as e:
+            print(f"[‼️] {label} WS error: {e}")
+            print(f"[↩️] Reconnecting to {label} in {backoff} sec...")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)  # exponential up to 60s
+
+# ==================== 🧪 Manual Trigger (optional) ====================
 async def manual_trigger():
     known_mint = "So11111111111111111111111111111111111111112"  # Replace with valid token address
     if known_mint not in sniped_tokens:
@@ -80,71 +111,9 @@ async def manual_trigger():
             await buy_token(known_mint, BUY_AMOUNT_SOL)
             await auto_sell_if_profit(known_mint, entry_price)
 
-# ========================= 🌐 Dual WebSocket Listeners =========================
+# ==================== 🚀 Launch Listeners ====================
 async def mempool_listener_jupiter():
-    last_heartbeat = datetime.utcnow()
-    while True:
-        try:
-            async with websockets.connect(HELIUS_WS, ping_interval=30, ping_timeout=10) as ws:
-                sub_msg = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "logsSubscribe",
-                    "params": [
-                        {"mentions": [JUPITER_PROGRAM]},
-                        {"commitment": "processed", "encoding": "jsonParsed"}
-                    ]
-                }
-                await ws.send(json.dumps(sub_msg))
-                await send_telegram_alert("📡 JUPITER listener active...")
-                print("[📡] Subscribed to Jupiter logs")
-
-                while True:
-                    now = datetime.utcnow()
-                    if now - last_heartbeat >= heartbeat_interval:
-                        await send_telegram_alert(f"❤️ JUPITER heartbeat @ {now.strftime('%H:%M:%S')} UTC")
-                        last_heartbeat = now
-
-                    try:
-                        message = await asyncio.wait_for(ws.recv(), timeout=60)
-                        await handle_log(message, "JUPITER")
-                    except asyncio.TimeoutError:
-                        print("[JUPITER] Timeout, pinging server...")
-                        await ws.ping()
-        except Exception as e:
-            print(f"[‼️] JUPITER WS error: {e}")
-            await asyncio.sleep(10)
+    await mempool_listener(JUPITER_PROGRAM, "JUPITER")
 
 async def mempool_listener_raydium():
-    last_heartbeat = datetime.utcnow()
-    while True:
-        try:
-            async with websockets.connect(HELIUS_WS, ping_interval=30, ping_timeout=10) as ws:
-                sub_msg = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "logsSubscribe",
-                    "params": [
-                        {"mentions": [RAYDIUM_PROGRAM]},
-                        {"commitment": "processed", "encoding": "jsonParsed"}
-                    ]
-                }
-                await ws.send(json.dumps(sub_msg))
-                await send_telegram_alert("📡 RAYDIUM listener active...")
-                print("[📡] Subscribed to Raydium logs")
-
-                while True:
-                    now = datetime.utcnow()
-                    if now - last_heartbeat >= heartbeat_interval:
-                        await send_telegram_alert(f"❤️ RAYDIUM heartbeat @ {now.strftime('%H:%M:%S')} UTC")
-                        last_heartbeat = now
-
-                    try:
-                        message = await asyncio.wait_for(ws.recv(), timeout=60)
-                        await handle_log(message, "RAYDIUM")
-                    except asyncio.TimeoutError:
-                        print("[RAYDIUM] Timeout, pinging server...")
-                        await ws.ping()
-        except Exception as e:
-            print(f"[‼️] RAYDIUM WS error: {e}")
-            await asyncio.sleep(10)
+    await mempool_listener(RAYDIUM_PROGRAM, "RAYDIUM")
