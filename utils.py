@@ -1,9 +1,8 @@
 # =========================
-# utils.py (Elite Upgraded)
+# utils.py (Final – Cleaned & Functional)
 # =========================
 import os
 import json
-import requests
 import httpx
 import asyncio
 import csv
@@ -12,11 +11,6 @@ from dotenv import load_dotenv
 from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from solders.rpc.requests import GetTokenAccountsByOwner
-from solders.rpc.config import RpcAccountInfoConfig, RpcProgramAccountsConfig
-from solders.rpc.responses import GetTokenAccountsByOwnerResp
-from solders.rpc.config import RpcSendTransactionConfig
-from solana.rpc.commitment import Confirmed
 
 load_dotenv()
 
@@ -85,12 +79,10 @@ async def get_holder_delta(mint: str, delay=60):
     later = (await get_token_data(mint)).get("holders", 0)
     return later - initial
 
-# 🔒 Pre-Approve Token Transfer
+# 🔒 Pre-Approve Token Transfer (placeholder)
 async def preapprove_token(token_address: str) -> bool:
     try:
-        url = f"https://api.dexscreener.com/latest/dex/pair/solana/{token_address}"
-        async with httpx.AsyncClient() as client:
-            await client.get(url)  # Placeholder for actual approval logic
+        await asyncio.sleep(0.1)  # Simulate real approval logic
         return True
     except:
         return False
