@@ -1,5 +1,5 @@
 # =========================
-# utils.py (Elite Upgraded)
+# utils.py (Elite Upgraded - Patched)
 # =========================
 import os
 import json
@@ -12,11 +12,6 @@ from dotenv import load_dotenv
 from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from solana.rpc.types import TokenAccountsFilter
-from solders.rpc.config import RpcAccountInfoConfig, RpcProgramAccountsConfig
-from solders.rpc.responses import GetTokenAccountsByOwnerResp
-from solders.rpc.config import RpcSendTransactionConfig
-from solana.rpc.commitment import Confirmed
 
 load_dotenv()
 
@@ -85,18 +80,14 @@ async def get_holder_delta(mint: str, delay=60):
     later = (await get_token_data(mint)).get("holders", 0)
     return later - initial
 
-# 💰 Get Token Balance
+# 💰 Get Token Balance (Compatible with solana 0.28.1)
 async def get_token_balance(token_mint: str) -> float:
     try:
         rpc = get_rpc_client()
-        accounts = rpc.get_token_accounts_by_owner(
-            wallet_pubkey,
-            TokenAccountsFilter.mint(Pubkey.from_string(token_mint)),
-            encoding="jsonParsed"
-        )
+        resp = rpc.get_token_accounts_by_owner(wallet_pubkey, {"mint": token_mint}, "jsonParsed")
         balances = [
             int(acc['account']['data']['parsed']['info']['tokenAmount']['amount'])
-            for acc in accounts.value
+            for acc in resp['result']['value']
         ]
         return sum(balances)
     except Exception as e:
@@ -157,3 +148,4 @@ async def buy_on_raydium(rpc_client, kp, token, amount):
 # 🧠 Alpha Feed Scanner Stub
 async def scan_alpha_feeds():
     return ["token_mint_example_1", "token_mint_example_2"]
+
