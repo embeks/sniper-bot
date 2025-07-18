@@ -13,7 +13,7 @@ from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.rpc.requests import GetTokenAccountsByOwner
-from solders.rpc.config import RpcAccountInfoConfig, RpcProgramAccountsConfig, TokenAccountsFilter
+from solders.rpc.config import RpcAccountInfoConfig, RpcProgramAccountsConfig
 from solders.rpc.responses import GetTokenAccountsByOwnerResp
 from solders.rpc.config import RpcSendTransactionConfig
 from solana.rpc.commitment import Confirmed
