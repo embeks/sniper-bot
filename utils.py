@@ -1,111 +1,124 @@
 # =========================
-# utils.py (Final Version)
+# utils.py (Final with Advanced Logic)
 # =========================
 import os
 import json
 import csv
-import base64
-import asyncio
-import aiohttp
+import requests
 from datetime import datetime
 from dotenv import load_dotenv
-
 from solana.rpc.api import Client
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
-from solders.transaction import VersionedTransaction
-from solders.instruction import Instruction
-from solders.message import MessageV0
-from solders.message import LoadedMessageV0
-from solders.hash import Hash
+from telegram import Bot
 
+# ============ 🔧 Load Environment ============
 load_dotenv()
-
-# ========================= 🔐 ENV & Setup =========================
-RPC_URL = os.getenv("RPC_URL") or "https://api.mainnet-beta.solana.com"
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+RPC_URL = os.getenv("RPC_URL")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
-# ========================= 📡 Client Helpers =========================
+bot = Bot(token=TELEGRAM_TOKEN)
+
+# ============ 📩 Telegram Alert ============
+def send_telegram_alert(message):
+    try:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        print(f"[‼️] Telegram send error: {e}")
+
+# ============ 🔌 Client ============
 def get_rpc_client():
     return Client(RPC_URL)
 
-# ========================= 📢 Telegram Alerts =========================
-async def send_telegram_alert(message: str):
+# ============ 💹 Get Price ============
+def get_token_price(mint):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, data=payload)
-    except Exception as e:
-        print(f"[!] Telegram alert failed: {e}")
-
-# ========================= 💾 Trade Logger =========================
-def log_trade_to_csv(token_address, action, amount_in, amount_out):
-    file = "trade_log.csv"
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    pnl = amount_out - amount_in
-    row = [now, token_address, action, amount_in, amount_out, pnl]
-    with open(file, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(row)
-
-# ========================= 🧠 Token Data =========================
-async def get_token_price(token_address: str) -> float:
-    try:
-        url = f"https://public-api.birdeye.so/public/price?address={token_address}"
+        url = f"https://public-api.birdeye.so/public/price?address={mint}"
         headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as res:
-                data = await res.json()
-                return float(data['data']['value']) if data.get('data') else None
+        res = requests.get(url, headers=headers)
+        data = res.json()
+        return data['data']['value'] if data.get('data') else None
     except:
         return None
 
-async def get_token_data(token_address: str):
+# ============ 📊 Token Data (LP, Holders, etc.) ============
+def get_token_data(mint):
     try:
-        url = f"https://public-api.birdeye.so/public/token/{token_address}"
+        url = f"https://public-api.birdeye.so/public/token/{mint}/metrics"
         headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as res:
-                data = await res.json()
-                return data.get("data", {})
+        res = requests.get(url, headers=headers)
+        return res.json().get("data", {})
     except:
         return {}
 
-async def get_token_balance(token_address: str) -> int:
+# ============ 🧠 Holder Count ============
+def get_holder_count(mint):
     try:
-        keypair = Keypair.from_bytes(bytes(json.loads(os.getenv("SOLANA_PRIVATE_KEY"))))
-        wallet = str(keypair.pubkey())
-        client = get_rpc_client()
-        resp = client.get_token_accounts_by_owner(wallet, {"mint": token_address})
-        for acc in resp.value:
-            amount = int(acc.account.data.parsed['info']['tokenAmount']['amount'])
-            return amount
-        return 0
-    except:
-        return 0
-
-# ========================= 📦 Raydium Direct Fallback =========================
-async def buy_on_raydium(client: Client, keypair: Keypair, token_mint: str, amount_sol: float):
-    try:
-        # This is a placeholder until a proper Raydium buy TX is constructed
-        # Here you'd encode a swap instruction using the Raydium swap pool info
-        print(f"[⏳] Raydium fallback buy for {token_mint} @ {amount_sol} SOL")
-        return False
-    except Exception as e:
-        print(f"[‼️] Raydium buy failed: {e}")
-        return False
-
-# ========================= 📊 Token Holder Delta Tracker =========================
-async def get_token_holder_count(token_address: str):
-    try:
-        url = f"https://public-api.birdeye.so/public/token/{token_address}"
+        url = f"https://public-api.birdeye.so/public/token/{mint}/holders"
         headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as res:
-                data = await res.json()
-                return int(data["data"].get("holders", 0))
+        res = requests.get(url, headers=headers)
+        return res.json().get("data", {}).get("holders", 0)
     except:
         return 0
+
+# ============ 📥 Token Balance ============
+def get_token_balance(mint):
+    try:
+        client = get_rpc_client()
+        accs = client.get_token_accounts_by_owner(os.getenv("WALLET_ADDRESS"), {"mint": mint})
+        if accs and accs['result']['value']:
+            amt = accs['result']['value'][0]['account']['data']['parsed']['info']['tokenAmount']['amount']
+            return int(amt)
+        return 0
+    except:
+        return 0
+
+# ============ 📈 Log Trades to CSV ============
+def log_trade_to_csv(token, side, size_in, size_out):
+    try:
+        with open("trade_log.csv", "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([datetime.now().isoformat(), token, side, size_in, size_out])
+    except Exception as e:
+        print(f"[‼️] CSV Logging Error: {e}")
+
+# ============ ✅ Filters ============
+def is_blacklisted(mint):
+    blacklist = ["9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E"]
+    return mint in blacklist
+
+def has_locked_lp(mint):
+    try:
+        url = f"https://public-api.birdeye.so/public/token/{mint}/pool"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        res = requests.get(url, headers=headers)
+        lock = res.json().get("data", {}).get("lp_locked")
+        return lock and int(lock) > 15552000  # 6 months in seconds
+    except:
+        return False
+
+def is_renounced_or_multisig(mint):
+    try:
+        url = f"https://public-api.birdeye.so/public/token/{mint}/info"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY}
+        res = requests.get(url, headers=headers)
+        ownership = res.json().get("data", {}).get("ownership")
+        return ownership in ["renounced", "multisig"]
+    except:
+        return False
+
+# ============ ⚡ Raydium Fallback (Stub) ============
+def buy_on_raydium(client, keypair, token, amount):
+    print(f"[Fallback] Would buy {token} via Raydium with {amount} SOL")
+    return False  # Placeholder
+
+# ============ 🔐 Pre-Approval (Stub) ============
+def preapprove_token(token):
+    print(f"[Pre-Approval] Would pre-approve token: {token}")
+    return True  # Simulated success
+
+# ============ 🧠 Multi-Wallet Rotation ============
+wallet_keypairs = [
+    Keypair.from_bytes(bytes(json.loads(os.getenv("SOLANA_PRIVATE_KEY"))))  # Add more if needed
+]
