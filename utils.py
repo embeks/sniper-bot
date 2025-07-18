@@ -1,5 +1,5 @@
 # =========================
-# utils.py
+# utils.py (FINAL UPGRADE)
 # =========================
 import os
 import json
@@ -11,10 +11,13 @@ from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
+from solana.transaction import Transaction
+from spl.token.instructions import approve
+from solana.rpc.commitment import Confirmed
 
 load_dotenv()
 
-# 🔧 Environment Variables
+# 🔧 Environment
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -22,18 +25,18 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 RPC_URL = os.getenv("RPC_URL")
 RPC_URL_TRITON = os.getenv("RPC_URL_TRITON")
 
-# 🔐 Wallet Setup
+# 🔐 Wallet
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 WALLET_PUBKEY = keypair.pubkey()
 WALLET_ADDRESS = str(WALLET_PUBKEY)
 client = Client(RPC_URL)
 
-# ✅ Async RPC Client Getter
+# ✅ RPC client
 def get_rpc_client(use_triton=False) -> AsyncClient:
     return AsyncClient(RPC_URL_TRITON if use_triton else RPC_URL)
 
 # 📤 Telegram Alerts
-async def send_telegram_alert(message: str):
+async def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[⚠️] Telegram not configured")
         return
@@ -46,7 +49,7 @@ async def send_telegram_alert(message: str):
     except Exception as e:
         print(f"[‼️] Telegram alert failed: {e}")
 
-# 🧪 Token Safety Filter
+# 🧪 Token Safety Checks
 async def check_token_safety(token_address):
     try:
         async with httpx.AsyncClient() as session:
@@ -59,6 +62,13 @@ async def check_token_safety(token_address):
             buy_tax = data.get("buyTax", 0)
             sell_tax = data.get("sellTax", 0)
             holders = data.get("holders", 0)
+            transfer_fee = data.get("transferFeeBasisPoints", 0)
+            has_blacklist = data.get("hasBlacklist", False)
+            has_mint = data.get("hasMintAuthority", True)
+            renounced = data.get("isOwnershipRenounced", False)
+            multisig = data.get("isMultisig", False)
+            lp_locked = data.get("lpLocked", False)
+            lp_lock_time = data.get("lpLockDuration", 0)  # New field (if supported)
 
             if liquidity < 10000:
                 return "❌ Rug Risk: Low Liquidity"
@@ -66,10 +76,31 @@ async def check_token_safety(token_address):
                 return f"⚠️ Honeypot Risk: High Tax ({buy_tax}% / {sell_tax}%)"
             if holders < 20:
                 return "⚠️ Low Holders"
+            if transfer_fee > 100:
+                return "❌ High transfer fee detected"
+            if has_blacklist:
+                return "❌ Blacklist function detected"
+            if has_mint:
+                return "❌ Mint authority not revoked"
+            if not (renounced or multisig):
+                return "❌ Token not renounced or multisig-controlled"
+            if not lp_locked or lp_lock_time < 15552000:  # ~6 months
+                return "❌ LP not locked long enough"
 
-            return "✅ Passed basic safety"
+            return "✅ Passed all safety checks"
     except Exception as e:
         return f"[!] Safety check error: {e}"
+
+# 📉 Logger + Enhanced CSV
+
+def log_trade_to_csv(token_address, action, amount, price):
+    try:
+        pnl = "N/A"
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+        with open("trade_log.csv", "a") as f:
+            f.write(f"{timestamp},{token_address},{action},{amount},{price},{pnl}\n")
+    except Exception as e:
+        print(f"[‼️] CSV log error: {e}")
 
 # 🧠 Token Meta
 async def get_token_data(token_address):
@@ -96,52 +127,6 @@ async def get_token_price(token_address):
         print(f"[!] Price fetch failed: {e}")
         return None
 
-# 🚫 Blacklist, Authority, LP Lock Checks
-async def is_blacklisted(token_address):
-    BLACKLISTED_CREATORS = {"Fg6PaFpoGXkYsidMpWxTWqYw84fi5GZzvynV2GF3u4gN"}
-    BLACKLISTED_WALLETS = {"So11111111111111111111111111111111111111112"}
-    try:
-        data = await get_token_data(token_address)
-        creator = data.get("creatorAddress", "")
-        owner = data.get("ownerAddress", "")
-        return creator in BLACKLISTED_CREATORS or owner in BLACKLISTED_WALLETS
-    except Exception as e:
-        print(f"[!] Blacklist check failed: {e}")
-        return True
-
-async def has_blacklist_or_mint_functions(token_address):
-    try:
-        data = await get_token_data(token_address)
-        return data.get("hasBlacklist", False) or data.get("hasMintAuthority", True)
-    except Exception as e:
-        print(f"[!] Authority check error: {e}")
-        return True
-
-async def is_lp_locked_or_burned(token_address):
-    try:
-        data = await get_token_data(token_address)
-        return data.get("lpIsBurned", False) or data.get("lpLocked", False)
-    except Exception as e:
-        print(f"[!] LP lock check failed: {e}")
-        return False
-
-# 🐋 Whale Protection
-async def has_whales(token_address):
-    try:
-        async with httpx.AsyncClient() as session:
-            url = f"https://public-api.birdeye.so/public/token/{token_address}/holders"
-            headers = {"X-API-KEY": BIRDEYE_API_KEY}
-            res = await session.get(url, headers=headers)
-            holders = res.json().get("data", [])
-            for h in holders:
-                pct = float(h.get("percent", 0))
-                if pct > 30:
-                    return True
-            return False
-    except Exception as e:
-        print(f"[!] Whale check failed: {e}")
-        return True
-
 # 🧾 Token Balance
 async def get_token_balance(token_mint):
     try:
@@ -158,28 +143,3 @@ async def get_token_balance(token_mint):
     except Exception as e:
         print(f"[!] Balance fetch failed: {e}")
         return 0
-
-# ⚠️ Rug Detection
-def detect_rug_conditions(token_data):
-    try:
-        return (
-            token_data.get("liquidity", 0) < 1000 or
-            token_data.get("volume24h", 0) < 100 or
-            token_data.get("sellTax", 0) > 25
-        )
-    except Exception as e:
-        print(f"[!] Rug detection error: {e}")
-        return False
-
-# 📉 Trade Log Writer
-def log_trade_to_csv(token_address, action, amount, price):
-    try:
-        with open("trade_log.csv", "a") as f:
-            f.write(f"{time.time()},{token_address},{action},{amount},{price}\n")
-    except Exception as e:
-        print(f"[‼️] CSV log error: {e}")
-
-# 🧪 Raydium Fallback Stub
-async def buy_on_raydium(client: AsyncClient, wallet, mint_address: str, amount: float):
-    print(f"[⚡] Direct Raydium buy: {mint_address} with {amount} SOL")
-    return True
