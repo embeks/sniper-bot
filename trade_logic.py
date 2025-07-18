@@ -1,15 +1,17 @@
 # =========================
-# trade_logic.py (Final with Volume Spike Detection & Auto-Sell)
+# trade_logic.py (Final Version with Volume Spike + Delta Tracker + Filters)
 # =========================
 import asyncio
 import time
-
 from utils import (
     send_telegram_alert,
     get_token_price,
     get_token_balance,
     get_token_data,
-    get_recent_candles,
+    get_1m_volume_spike,
+    get_holder_delta,
+    is_safe_token,
+    preapprove_token
 )
 from jupiter_trade import sell_token
 
@@ -17,49 +19,54 @@ from jupiter_trade import sell_token
 TARGET_MULTIPLIERS = [2, 5, 10]     # Profit checkpoints
 TIMEOUT_SECONDS = 300              # Max hold time (in seconds)
 RUG_THRESHOLD = 0.75               # Trigger sell if liquidity drops by 25%
-VOLUME_SPIKE_MULTIPLIER = 5        # 500% volume increase triggers exit
-PRICE_SPIKE_MULTIPLIER = 3         # 3x price increase triggers exit
+VOLUME_SPIKE_MULTIPLIER = 5.0      # 500% spike triggers early exit
 
 # ✅ Optional: Startup notifier
 async def startup():
     await send_telegram_alert("✅ Sniper bot is now live and scanning the mempool...")
 
-# 🚨 Auto-sell logic with rug protection + volume spike detection
+# 🚨 Auto-sell logic with all protection + early exits
+def get_dynamic_buy_size(liquidity, holders):
+    if liquidity < 10_000 or holders < 10:
+        return 0.2
+    elif liquidity < 50_000 or holders < 30:
+        return 0.4
+    else:
+        return 0.6
+
 async def auto_sell_if_profit(token_mint: str, entry_price: float):
     try:
         await send_telegram_alert(f"🧠 Auto-sell activated for {token_mint} @ {entry_price:.6f} SOL")
-
         start_time = time.time()
         last_multiplier_hit = None
-
         token_data_start = await get_token_data(token_mint)
         initial_liquidity = token_data_start.get("liquidity", 0)
+
+        await preapprove_token(token_mint)  # ✅ Pre-approval to avoid failure
 
         while time.time() - start_time < TIMEOUT_SECONDS:
             current_price = await get_token_price(token_mint)
             token_data = await get_token_data(token_mint)
             current_liquidity = token_data.get("liquidity", 0)
 
-            # 🛑 Rug protection
+            # 🛑 Rug detection
             if current_liquidity and initial_liquidity and current_liquidity < initial_liquidity * RUG_THRESHOLD:
-                await send_telegram_alert(f"🛑 Rug Alert: Liquidity dropped >25%.\n{token_mint}\nInitial: {initial_liquidity}\nNow: {current_liquidity}")
+                await send_telegram_alert(f"🛑 Rug Alert: Liquidity dropped >25%\n{token_mint}\nInitial: {initial_liquidity}\nNow: {current_liquidity}")
                 amount_token = await get_token_balance(token_mint)
                 if amount_token > 0:
                     await sell_token(token_mint, amount_token)
                 return
 
-            # 📈 Pre-pump exit (volume spike logic)
-            candles = await get_recent_candles(token_mint)
-            if candles and len(candles) >= 2:
-                prev, current = candles[-2], candles[-1]
-                if current["volume"] > VOLUME_SPIKE_MULTIPLIER * prev["volume"] and current["close"] > PRICE_SPIKE_MULTIPLIER * prev["open"]:
-                    await send_telegram_alert(f"📈 Pre-pump spike detected! Selling {token_mint} early to secure gains")
-                    amount_token = await get_token_balance(token_mint)
-                    if amount_token > 0:
-                        await sell_token(token_mint, amount_token)
-                    return
+            # 📈 Volume spike exit
+            volume_spike = await get_1m_volume_spike(token_mint)
+            if volume_spike >= VOLUME_SPIKE_MULTIPLIER:
+                amount_token = await get_token_balance(token_mint)
+                await send_telegram_alert(f"📊 Volume Surge Detected (+{volume_spike:.1f}x in 1m), exiting early...")
+                if amount_token > 0:
+                    await sell_token(token_mint, amount_token)
+                return
 
-            # ✅ Profit-based sell
+            # ✅ Multiplier targets
             if current_price is not None:
                 for mult in TARGET_MULTIPLIERS:
                     target_price = entry_price * mult
@@ -89,4 +96,3 @@ async def auto_sell_if_profit(token_mint: str, entry_price: float):
     except Exception as e:
         await send_telegram_alert(f"[‼️] Auto-sell error for {token_mint}:\n{str(e)}")
         print(f"[‼️] Auto-sell error for {token_mint}:", e)
-
