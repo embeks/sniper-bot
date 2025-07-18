@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py (Optimized)
+# sniper_logic.py (Elite Upgraded)
 # =========================
 import os
 import json
@@ -11,13 +11,10 @@ from dotenv import load_dotenv
 from utils import (
     send_telegram_alert,
     get_token_price,
-    check_token_safety,
-    has_blacklist_or_mint_functions,
-    is_lp_locked_or_burned,
-    is_renounced_or_multisig,
-    is_blacklisted,
-    get_token_data,
-    get_token_balance,
+    is_token_safe,
+    is_volume_spike,
+    get_holder_delta,
+    get_rpc_client
 )
 from jupiter_trade import buy_token
 from trade_logic import auto_sell_if_profit
@@ -64,30 +61,25 @@ async def handle_log(message, listener_name):
 
             await send_telegram_alert(f"👀 [{listener_name}] Detected mint: {token_mint}")
 
-            # Token Safety Filtering
-            if await is_blacklisted(token_mint):
-                await send_telegram_alert(f"🚫 Blacklisted token skipped: {token_mint}")
+            is_safe = await is_token_safe(token_mint)
+            if not is_safe:
+                await send_telegram_alert(f"⚠️ Token {token_mint} failed safety checks. Skipping...")
                 return
-            if await has_blacklist_or_mint_functions(token_mint):
-                await send_telegram_alert(f"🚫 Suspicious functions detected: {token_mint}")
-                return
-            if not await is_renounced_or_multisig(token_mint):
-                await send_telegram_alert(f"🚫 Ownership not renounced or multisig: {token_mint}")
-                return
-            if not await is_lp_locked_or_burned(token_mint):
-                await send_telegram_alert(f"🚫 LP not locked or burned: {token_mint}")
-                return
-            safety_status = await check_token_safety(token_mint)
-            if not safety_status.startswith("✅"):
-                await send_telegram_alert(f"❌ Token failed safety check: {token_mint}\n{safety_status}")
-                return
+
+            spike = await is_volume_spike(token_mint)
+            if spike:
+                await send_telegram_alert(f"📈 Volume spike detected for {token_mint}")
+
+            holder_delta = await get_holder_delta(token_mint, delay=60)
+            await send_telegram_alert(f"👥 Holder delta after 60s: {holder_delta}")
+
+            # TODO: Adjust buy amount based on holder_delta or liquidity in buy_token
 
             entry_price = await get_token_price(token_mint)
             if not entry_price:
-                await send_telegram_alert(f"⚠️ No price data for {token_mint}, skipping")
                 return
 
-            await send_telegram_alert(f"🚨 [{listener_name}] Attempting snipe: {token_mint}")
+            await send_telegram_alert(f"🚨 [{listener_name}] Attempting buy: {token_mint}")
             await buy_token(token_mint, BUY_AMOUNT_SOL)
             await auto_sell_if_profit(token_mint, entry_price)
 
