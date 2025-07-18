@@ -8,7 +8,7 @@ from utils import (
     get_token_price,
     get_token_balance,
     get_token_data,
-    get_1m_volume_spike,
+    is_volume_spike
     get_holder_delta,
     is_safe_token,
     preapprove_token
