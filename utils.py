@@ -1,8 +1,9 @@
 # =========================
-# utils.py (Final – Cleaned & Functional)
+# utils.py (Elite Upgraded)
 # =========================
 import os
 import json
+import requests
 import httpx
 import asyncio
 import csv
@@ -11,6 +12,11 @@ from dotenv import load_dotenv
 from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
+from solana.rpc.types import TokenAccountsFilter
+from solders.rpc.config import RpcAccountInfoConfig, RpcProgramAccountsConfig
+from solders.rpc.responses import GetTokenAccountsByOwnerResp
+from solders.rpc.config import RpcSendTransactionConfig
+from solana.rpc.commitment import Confirmed
 
 load_dotenv()
 
@@ -79,10 +85,30 @@ async def get_holder_delta(mint: str, delay=60):
     later = (await get_token_data(mint)).get("holders", 0)
     return later - initial
 
-# 🔒 Pre-Approve Token Transfer (placeholder)
+# 💰 Get Token Balance
+async def get_token_balance(token_mint: str) -> float:
+    try:
+        rpc = get_rpc_client()
+        accounts = rpc.get_token_accounts_by_owner(
+            wallet_pubkey,
+            TokenAccountsFilter.mint(Pubkey.from_string(token_mint)),
+            encoding="jsonParsed"
+        )
+        balances = [
+            int(acc['account']['data']['parsed']['info']['tokenAmount']['amount'])
+            for acc in accounts.value
+        ]
+        return sum(balances)
+    except Exception as e:
+        print(f"[‼️] Failed to fetch token balance: {e}")
+        return 0
+
+# 🔒 Pre-Approve Token Transfer
 async def preapprove_token(token_address: str) -> bool:
     try:
-        await asyncio.sleep(0.1)  # Simulate real approval logic
+        url = f"https://api.dexscreener.com/latest/dex/pair/solana/{token_address}"
+        async with httpx.AsyncClient() as client:
+            await client.get(url)  # Placeholder for actual approval logic
         return True
     except:
         return False
