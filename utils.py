@@ -1,124 +1,141 @@
 # =========================
-# utils.py (Final with Advanced Logic)
+# utils.py (Elite Upgraded)
 # =========================
 import os
 import json
-import csv
 import requests
+import httpx
+import asyncio
+import csv
 from datetime import datetime
 from dotenv import load_dotenv
 from solana.rpc.api import Client
 from solders.keypair import Keypair
-from telegram import Bot
+from solders.pubkey import Pubkey
+from solders.rpc.requests import GetTokenAccountsByOwner
+from solders.rpc.config import RpcAccountInfoConfig, RpcProgramAccountsConfig, TokenAccountsFilter
+from solders.rpc.responses import GetTokenAccountsByOwnerResp
+from solders.rpc.config import RpcSendTransactionConfig
+from solana.rpc.commitment import Confirmed
 
-# ============ 🔧 Load Environment ============
 load_dotenv()
+
+# 🌐 Telegram Setup
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# ✅ Solana RPC & Client
 RPC_URL = os.getenv("RPC_URL")
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-
-bot = Bot(token=TELEGRAM_TOKEN)
-
-# ============ 📩 Telegram Alert ============
-def send_telegram_alert(message):
-    try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception as e:
-        print(f"[‼️] Telegram send error: {e}")
-
-# ============ 🔌 Client ============
 def get_rpc_client():
     return Client(RPC_URL)
 
-# ============ 💹 Get Price ============
-def get_token_price(mint):
+# ✅ Wallet Setup
+SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
+wallet_pubkey = str(keypair.pubkey())
+
+# 🔔 Telegram Alert
+async def send_telegram_alert(message: str):
     try:
-        url = f"https://public-api.birdeye.so/public/price?address={mint}"
-        headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        res = requests.get(url, headers=headers)
-        data = res.json()
-        return data['data']['value'] if data.get('data') else None
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=payload)
+    except Exception as e:
+        print(f"[‼️] Telegram alert failed: {e}")
+
+# 📊 CSV Logger
+def log_trade_to_csv(token, action, amount_in, amount_out):
+    with open("trade_log.csv", "a", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow([datetime.utcnow().isoformat(), token, action, amount_in, amount_out])
+
+# 📉 Get Token Price
+async def get_token_price(token_mint: str) -> float:
+    try:
+        url = f"https://public-api.birdeye.so/public/price?address={token_mint}"
+        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, headers=headers)
+            return r.json().get("data", {}).get("value")
     except:
         return None
 
-# ============ 📊 Token Data (LP, Holders, etc.) ============
-def get_token_data(mint):
+# 📦 Token Data: liquidity, holders, LP status
+async def get_token_data(mint: str) -> dict:
     try:
-        url = f"https://public-api.birdeye.so/public/token/{mint}/metrics"
-        headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        res = requests.get(url, headers=headers)
-        return res.json().get("data", {})
+        url = f"https://public-api.birdeye.so/public/token/{mint}"
+        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, headers=headers)
+            data = r.json().get("data", {})
+            return {
+                "liquidity": data.get("liquidity", 0),
+                "holders": data.get("holder_count", 0),
+                "renounced": data.get("is_renounced", False),
+                "lp_locked": data.get("is_lp_locked", False)
+            }
     except:
         return {}
 
-# ============ 🧠 Holder Count ============
-def get_holder_count(mint):
-    try:
-        url = f"https://public-api.birdeye.so/public/token/{mint}/holders"
-        headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        res = requests.get(url, headers=headers)
-        return res.json().get("data", {}).get("holders", 0)
-    except:
-        return 0
+# 🧠 Holder Delta (for dynamic buy size)
+async def get_holder_delta(mint: str, delay=60):
+    initial = (await get_token_data(mint)).get("holders", 0)
+    await asyncio.sleep(delay)
+    later = (await get_token_data(mint)).get("holders", 0)
+    return later - initial
 
-# ============ 📥 Token Balance ============
-def get_token_balance(mint):
+# 🔒 Pre-Approve Token Transfer
+async def preapprove_token(token_address: str) -> bool:
     try:
-        client = get_rpc_client()
-        accs = client.get_token_accounts_by_owner(os.getenv("WALLET_ADDRESS"), {"mint": mint})
-        if accs and accs['result']['value']:
-            amt = accs['result']['value'][0]['account']['data']['parsed']['info']['tokenAmount']['amount']
-            return int(amt)
-        return 0
-    except:
-        return 0
-
-# ============ 📈 Log Trades to CSV ============
-def log_trade_to_csv(token, side, size_in, size_out):
-    try:
-        with open("trade_log.csv", "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([datetime.now().isoformat(), token, side, size_in, size_out])
-    except Exception as e:
-        print(f"[‼️] CSV Logging Error: {e}")
-
-# ============ ✅ Filters ============
-def is_blacklisted(mint):
-    blacklist = ["9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E"]
-    return mint in blacklist
-
-def has_locked_lp(mint):
-    try:
-        url = f"https://public-api.birdeye.so/public/token/{mint}/pool"
-        headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        res = requests.get(url, headers=headers)
-        lock = res.json().get("data", {}).get("lp_locked")
-        return lock and int(lock) > 15552000  # 6 months in seconds
+        url = f"https://api.dexscreener.com/latest/dex/pair/solana/{token_address}"
+        async with httpx.AsyncClient() as client:
+            await client.get(url)  # Placeholder for actual approval logic
+        return True
     except:
         return False
 
-def is_renounced_or_multisig(mint):
+# ⚠️ Token Safety Filter
+async def is_token_safe(mint: str) -> bool:
     try:
-        url = f"https://public-api.birdeye.so/public/token/{mint}/info"
-        headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        res = requests.get(url, headers=headers)
-        ownership = res.json().get("data", {}).get("ownership")
-        return ownership in ["renounced", "multisig"]
+        data = await get_token_data(mint)
+        if not data.get("lp_locked", False):
+            return False
+        if not data.get("renounced", False):
+            return False
+        return True
     except:
         return False
 
-# ============ ⚡ Raydium Fallback (Stub) ============
-def buy_on_raydium(client, keypair, token, amount):
-    print(f"[Fallback] Would buy {token} via Raydium with {amount} SOL")
-    return False  # Placeholder
+# 💥 Rug Detection (Liquidity drop by 25%)
+def is_rug(initial_lp, current_lp, threshold=0.75):
+    return current_lp < (initial_lp * threshold)
 
-# ============ 🔐 Pre-Approval (Stub) ============
-def preapprove_token(token):
-    print(f"[Pre-Approval] Would pre-approve token: {token}")
-    return True  # Simulated success
+# 📈 1-min Volume Spike Detection
+async def is_volume_spike(mint: str, threshold: float = 5.0):
+    try:
+        url = f"https://public-api.birdeye.so/public/token/{mint}/chart?time=1m"
+        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, headers=headers)
+            data = r.json().get("data", [])
+            if len(data) < 2:
+                return False
+            open_vol = data[-2].get("volume", 1)
+            close_vol = data[-1].get("volume", 1)
+            return (close_vol / open_vol) >= threshold
+    except:
+        return False
 
-# ============ 🧠 Multi-Wallet Rotation ============
-wallet_keypairs = [
-    Keypair.from_bytes(bytes(json.loads(os.getenv("SOLANA_PRIVATE_KEY"))))  # Add more if needed
-]
+# 🧪 Multi-Wallet Stub (for future rotation)
+def get_next_wallet():
+    return keypair, wallet_pubkey
+
+# 📦 Raydium Fallback Stub (integrated in jupiter_trade)
+async def buy_on_raydium(rpc_client, kp, token, amount):
+    await asyncio.sleep(0.3)  # Simulated TX logic
+    return False
+
+# 🧠 Alpha Feed Scanner Stub
+async def scan_alpha_feeds():
+    return ["token_mint_example_1", "token_mint_example_2"]
