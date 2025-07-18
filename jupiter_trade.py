@@ -1,18 +1,14 @@
-# =========================
-# jupiter_trade.py (Final Upgraded with Raydium Fallback)
-# =========================
-
 import os
 import json
 import base64
 import httpx
 import asyncio
+
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
-
 from utils import (
     send_telegram_alert,
     log_trade_to_csv,
@@ -93,7 +89,7 @@ def sign_and_send_tx(raw_tx: bytes):
         print(f"[‼️] TX signing error: {e}")
         return None
 
-# 🪙 Buy token with SOL (with Raydium Fallback)
+# 💰 Buy token with SOL (LIVE)
 async def buy_token(token_address: str, amount_sol: float = 0.03):
     try:
         await send_telegram_alert(f"🟡 Trying to snipe {token_address} with {amount_sol} SOL")
@@ -101,28 +97,26 @@ async def buy_token(token_address: str, amount_sol: float = 0.03):
         await send_telegram_alert("🔍 Step 1: Checking if token is supported by Jupiter...")
         supported = await is_token_supported_by_jupiter(token_address)
         if not supported:
-            await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter. Trying Raydium fallback...")
-            client_alt = await get_rpc_client(use_triton=True)
-            success = await buy_on_raydium(client_alt, keypair, token_address, amount_sol)
-            if success:
-                await send_telegram_alert(f"✅ Raydium fallback buy succeeded for {token_address}")
-                log_trade_to_csv(token_address, "buy-raydium", amount_sol, 0)
+            await send_telegram_alert(f"❌ Token {token_address} not supported by Jupiter")
+            await send_telegram_alert(f"📦 Trying Raydium fallback for {token_address}...")
+            raydium_success = await buy_on_raydium(get_rpc_client(), keypair, token_address, amount_sol)
+            if raydium_success:
+                await send_telegram_alert(f"✅ Raydium buy success for {token_address}")
             else:
-                await send_telegram_alert(f"❌ Raydium fallback failed for {token_address}")
+                await send_telegram_alert(f"‼️ Raydium buy failed for {token_address}")
             return
 
         await asyncio.sleep(0.2)
         await send_telegram_alert("🔍 Step 2: Fetching Jupiter route quote...")
         route = await get_jupiter_quote(token_address, amount_sol)
         if not route:
-            await send_telegram_alert(f"❌ No Jupiter route found for {token_address}. Trying Raydium fallback...")
-            client_alt = await get_rpc_client(use_triton=True)
-            success = await buy_on_raydium(client_alt, keypair, token_address, amount_sol)
-            if success:
-                await send_telegram_alert(f"✅ Raydium fallback buy succeeded for {token_address}")
-                log_trade_to_csv(token_address, "buy-raydium", amount_sol, 0)
+            await send_telegram_alert(f"❌ No Jupiter route found for {token_address}")
+            await send_telegram_alert(f"📦 Trying Raydium fallback for {token_address}...")
+            raydium_success = await buy_on_raydium(get_rpc_client(), keypair, token_address, amount_sol)
+            if raydium_success:
+                await send_telegram_alert(f"✅ Raydium buy success for {token_address}")
             else:
-                await send_telegram_alert(f"❌ Raydium fallback failed for {token_address}")
+                await send_telegram_alert(f"‼️ Raydium buy failed for {token_address}")
             return
 
         if route.get('outAmount', 0) < 1:
