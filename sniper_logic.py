@@ -27,6 +27,7 @@ BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.2))
 HELIUS_WS = f"wss://mainnet.helius-rpc.com/v1/ws?api-key={HELIUS_API_KEY}"
 JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 sniped_tokens = set()
 heartbeat_interval = timedelta(hours=4)
@@ -35,10 +36,11 @@ if os.path.exists("sniped_tokens.txt"):
     with open("sniped_tokens.txt", "r") as f:
         sniped_tokens = set(line.strip() for line in f)
 
-# ========================= 🔁 Enhanced Log Handler (Debug Version) =========================
+# ========================= 🔁 Log Handler =========================
 async def handle_log(message, listener_name):
     global sniped_tokens
     try:
+        print(f"[📨] Raw log: {message}")  # ✅ Debug log for raw messages
         data = json.loads(message)
         result = data.get("result")
         if not isinstance(result, dict):
@@ -47,6 +49,11 @@ async def handle_log(message, listener_name):
         log = result.get("value", {})
         accounts = log.get("accountKeys", [])
         if not isinstance(accounts, list):
+            return
+
+        # ✅ Filter logs without Token Program
+        if TOKEN_PROGRAM_ID not in accounts:
+            print(f"[⚠️] Ignored log – TOKEN_PROGRAM_ID not in accountKeys")
             return
 
         detected = False
@@ -67,22 +74,18 @@ async def handle_log(message, listener_name):
 
             await send_telegram_alert(f"🟡 [{listener_name}] Detected new token mint: {token_mint}")
 
-            # ✅ Safety Checks
             is_safe = await is_safe_token(token_mint)
             if not is_safe:
                 await send_telegram_alert(f"⚠️ Token {token_mint} failed safety checks. Skipping...")
                 return
 
-            # 📈 Volume spike (optional)
             spike = await is_volume_spike(token_mint)
             if spike:
                 await send_telegram_alert(f"📈 Volume spike detected for {token_mint}")
 
-            # ⏳ Holder momentum
             holder_delta = await get_holder_delta(token_mint, delay=60)
             await send_telegram_alert(f"👥 Holder delta after 60s: {holder_delta}")
 
-            # 🛒 Buy
             entry_price = await get_token_price(token_mint)
             if not entry_price:
                 return
