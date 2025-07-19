@@ -73,7 +73,7 @@ async def get_token_data(mint: str) -> dict:
     except:
         return {}
 
-# 🧠 Holder Delta (for dynamic buy size)
+# 🧐 Holder Delta (for dynamic buy size)
 async def get_holder_delta(mint: str, delay=60):
     initial = (await get_token_data(mint)).get("holders", 0)
     await asyncio.sleep(delay)
@@ -91,7 +91,7 @@ async def preapprove_token(token_address: str) -> bool:
         return False
 
 # ⚠️ Token Safety Filter
-async def is_safe_token(mint: str) -> bool:
+async def is_token_safe(mint: str) -> bool:
     try:
         data = await get_token_data(mint)
         if not data.get("lp_locked", False):
@@ -131,7 +131,6 @@ async def buy_on_raydium(rpc_client, kp, token, amount):
     await asyncio.sleep(0.3)  # Simulated TX logic
     return False
 
-# 🧠 Alpha Feed Scanner Stub
+# 🧐 Alpha Feed Scanner Stub
 async def scan_alpha_feeds():
     return ["token_mint_example_1", "token_mint_example_2"]
-
