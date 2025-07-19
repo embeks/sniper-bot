@@ -1,9 +1,8 @@
 # =========================
-# utils.py (Elite Upgraded - Patched)
+# utils.py (Elite Upgraded with Fixed Imports)
 # =========================
 import os
 import json
-import requests
 import httpx
 import asyncio
 import csv
@@ -11,7 +10,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from solana.rpc.api import Client
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
+from solders.rpc.config import RpcSendTransactionConfig
+from solana.rpc.commitment import Confirmed
 
 load_dotenv()
 
@@ -80,20 +80,6 @@ async def get_holder_delta(mint: str, delay=60):
     later = (await get_token_data(mint)).get("holders", 0)
     return later - initial
 
-# 💰 Get Token Balance (Compatible with solana 0.28.1)
-async def get_token_balance(token_mint: str) -> float:
-    try:
-        rpc = get_rpc_client()
-        resp = rpc.get_token_accounts_by_owner(wallet_pubkey, {"mint": token_mint}, "jsonParsed")
-        balances = [
-            int(acc['account']['data']['parsed']['info']['tokenAmount']['amount'])
-            for acc in resp['result']['value']
-        ]
-        return sum(balances)
-    except Exception as e:
-        print(f"[‼️] Failed to fetch token balance: {e}")
-        return 0
-
 # 🔒 Pre-Approve Token Transfer
 async def preapprove_token(token_address: str) -> bool:
     try:
@@ -105,7 +91,7 @@ async def preapprove_token(token_address: str) -> bool:
         return False
 
 # ⚠️ Token Safety Filter
-async def is_token_safe(mint: str) -> bool:
+async def is_safe_token(mint: str) -> bool:
     try:
         data = await get_token_data(mint)
         if not data.get("lp_locked", False):
