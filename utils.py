@@ -91,7 +91,7 @@ async def preapprove_token(token_address: str) -> bool:
         return False
 
 # ⚠️ Token Safety Filter
-async def is_token_safe(mint: str) -> bool:
+async def is_safe_token(mint: str) -> bool:
     try:
         data = await get_token_data(mint)
         if not data.get("lp_locked", False):
