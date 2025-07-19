@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py (Elite Upgraded)
+# sniper_logic.py (Elite Upgraded – with Debug + /tmp Fix)
 # =========================
 import os
 import json
@@ -29,16 +29,20 @@ JUPITER_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 RAYDIUM_PROGRAM = "RVKd61ztZW9GdKzvXxkzRhK21Z4LzStfgzj31EKXdYv"
 
 sniped_tokens = set()
+sniped_file = "/tmp/sniped_tokens.txt"
 heartbeat_interval = timedelta(hours=4)
 
-if os.path.exists("sniped_tokens.txt"):
-    with open("sniped_tokens.txt", "r") as f:
+if os.path.exists(sniped_file):
+    with open(sniped_file, "r") as f:
         sniped_tokens = set(line.strip() for line in f)
 
 # ========================= 🔁 Shared Log Handler =========================
 async def handle_log(message, listener_name):
     global sniped_tokens
     try:
+        print("📦 Raw log:", message)
+        await send_telegram_alert(f"📥 Log received in handle_log() from {listener_name}")
+
         data = json.loads(message)
         result = data.get("result")
         if not isinstance(result, dict):
@@ -56,7 +60,7 @@ async def handle_log(message, listener_name):
                 continue
 
             sniped_tokens.add(token_mint)
-            with open("sniped_tokens.txt", "a") as f:
+            with open(sniped_file, "a") as f:
                 f.write(f"{token_mint}\n")
 
             await send_telegram_alert(f"👀 [{listener_name}] Detected mint: {token_mint}")
