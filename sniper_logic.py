@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from utils import (
     send_telegram_alert,
     get_token_price,
-    is_token_safe,
+    is_safe_token,
     is_volume_spike,
     get_holder_delta,
     get_rpc_client
@@ -61,7 +61,7 @@ async def handle_log(message, listener_name):
 
             await send_telegram_alert(f"👀 [{listener_name}] Detected mint: {token_mint}")
 
-            is_safe = await is_token_safe(token_mint)
+            is_safe = await is_safe_token(token_mint)
             if not is_safe:
                 await send_telegram_alert(f"⚠️ Token {token_mint} failed safety checks. Skipping...")
                 return
@@ -72,8 +72,6 @@ async def handle_log(message, listener_name):
 
             holder_delta = await get_holder_delta(token_mint, delay=60)
             await send_telegram_alert(f"👥 Holder delta after 60s: {holder_delta}")
-
-            # TODO: Adjust buy amount based on holder_delta or liquidity in buy_token
 
             entry_price = await get_token_price(token_mint)
             if not entry_price:
