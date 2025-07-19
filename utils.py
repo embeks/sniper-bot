@@ -1,5 +1,5 @@
 # =========================
-# utils.py (Elite Upgraded with Fixed Imports)
+# utils.py (Elite Upgraded with get_token_balance)
 # =========================
 import os
 import json
@@ -73,7 +73,7 @@ async def get_token_data(mint: str) -> dict:
     except:
         return {}
 
-# 🧐 Holder Delta (for dynamic buy size)
+# 🧠 Holder Delta (for dynamic buy size)
 async def get_holder_delta(mint: str, delay=60):
     initial = (await get_token_data(mint)).get("holders", 0)
     await asyncio.sleep(delay)
@@ -122,6 +122,18 @@ async def is_volume_spike(mint: str, threshold: float = 5.0):
     except:
         return False
 
+# 🧮 Get Token Balance (for specific token)
+async def get_token_balance(wallet_address: str, token_mint: str) -> float:
+    try:
+        url = f"https://public-api.birdeye.so/public/holder_token_amount?wallet={wallet_address}&token={token_mint}"
+        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers)
+            data = res.json().get("data", {})
+            return float(data.get("amount", 0))
+    except:
+        return 0.0
+
 # 🧪 Multi-Wallet Stub (for future rotation)
 def get_next_wallet():
     return keypair, wallet_pubkey
@@ -131,6 +143,6 @@ async def buy_on_raydium(rpc_client, kp, token, amount):
     await asyncio.sleep(0.3)  # Simulated TX logic
     return False
 
-# 🧐 Alpha Feed Scanner Stub
+# 🧠 Alpha Feed Scanner Stub
 async def scan_alpha_feeds():
     return ["token_mint_example_1", "token_mint_example_2"]
