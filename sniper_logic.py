@@ -40,7 +40,7 @@ if os.path.exists("sniped_tokens.txt"):
 async def handle_log(message, listener_name):
     global sniped_tokens
     try:
-        print(f"[📨] Raw log: {message}")  # ✅ Debug log for raw messages
+        await send_telegram_alert(f"📨 [{listener_name}] Raw log received.")  # ✅ Telegram debug log
         data = json.loads(message)
         result = data.get("result")
         if not isinstance(result, dict):
@@ -53,7 +53,7 @@ async def handle_log(message, listener_name):
 
         # ✅ Filter logs without Token Program
         if TOKEN_PROGRAM_ID not in accounts:
-            print(f"[⚠️] Ignored log – TOKEN_PROGRAM_ID not in accountKeys")
+            await send_telegram_alert(f"⚠️ [{listener_name}] Ignored log — no TOKEN_PROGRAM_ID in accountKeys.")
             return
 
         detected = False
@@ -95,7 +95,7 @@ async def handle_log(message, listener_name):
             await auto_sell_if_profit(token_mint, entry_price)
 
         if not detected:
-            await send_telegram_alert(f"🔎 [{listener_name}] No 44-char token mints in log")
+            await send_telegram_alert(f"🔎 [{listener_name}] No valid 44-char token mints in log")
 
     except Exception as e:
         print(f"[‼️] {listener_name} error: {e}")
