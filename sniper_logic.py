@@ -40,7 +40,7 @@ if os.path.exists("sniped_tokens.txt"):
 async def handle_log(message, listener_name):
     global sniped_tokens
     try:
-        await send_telegram_alert(f"📨 [{listener_name}] Raw log received.")  # ✅ Telegram debug log
+        # await send_telegram_alert(f"📨 [{listener_name}] Raw log received.")  # ❌ Disabled debug spam
         data = json.loads(message)
         result = data.get("result")
         if not isinstance(result, dict):
