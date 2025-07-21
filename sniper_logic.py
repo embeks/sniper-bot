@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Final Version with Real Buy/Sell SDK + PnL
+# sniper_logic.py — Final Version (Buy + Sell Live)
 # =========================
 
 import asyncio
@@ -12,7 +12,8 @@ import websockets
 from utils import (
     send_telegram_alert,
     is_valid_mint,
-    snipe_token,
+    buy_token,
+    sell_token,
     start_command_bot
 )
 
@@ -52,7 +53,9 @@ async def raydium_listener():
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
-                                await snipe_token(key)
+                                success = await buy_token(key)
+                                if success:
+                                    await sell_token(key)
             except Exception as e:
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
@@ -88,7 +91,9 @@ async def jupiter_listener():
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
-                                await snipe_token(key)
+                                success = await buy_token(key)
+                                if success:
+                                    await sell_token(key)
             except Exception as e:
                 print(f"[JUPITER ERROR] {e}")
                 await asyncio.sleep(1)
