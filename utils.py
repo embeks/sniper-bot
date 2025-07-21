@@ -143,3 +143,54 @@ def is_valid_mint(keys):
             if k.get("pubkey") == TOKEN_PROGRAM_ID:
                 return True
     return False
+
+# =========================
+# 🤖 Telegram Command Bot
+# =========================
+
+import telegram
+from telegram.ext import Application, CommandHandler
+
+async def status(update, context):
+    sol = await get_token_balance(wallet_pubkey, "So11111111111111111111111111111111111111112")
+    await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`\nSOL: {sol:.4f}")
+
+async def holdings(update, context):
+    try:
+        with open("sniped_tokens.txt", "r") as f:
+            tokens = f.read().splitlines()
+        if tokens:
+            reply = "📦 Current sniped tokens:\n" + "\n".join(tokens[-10:])
+        else:
+            reply = "📦 No sniped tokens yet."
+        await update.message.reply_text(reply)
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error: {e}")
+
+async def logs(update, context):
+    try:
+        with open("trade_log.csv", "r") as f:
+            lines = f.readlines()[-10:]
+        if lines:
+            await update.message.reply_text("📝 Last trades:\n" + "".join(lines))
+        else:
+            await update.message.reply_text("📝 No trades logged yet.")
+    except Exception:
+        await update.message.reply_text("📝 No logs found.")
+
+async def wallet(update, context):
+    await update.message.reply_text(f"💼 Current wallet: `{wallet_pubkey}`")
+
+async def reset(update, context):
+    open("sniped_tokens.txt", "w").close()
+    await update.message.reply_text("♻️ Sniped token list reset.")
+
+def start_command_bot():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("holdings", holdings))
+    app.add_handler(CommandHandler("logs", logs))
+    app.add_handler(CommandHandler("wallet", wallet))
+    app.add_handler(CommandHandler("reset", reset))
+    print("🤖 Telegram command bot ready.")
+    return app.run_polling()
