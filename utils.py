@@ -125,3 +125,13 @@ async def snipe_token(mint: str) -> bool:
         await send_telegram_alert(f"[‼️] Snipe error: {e}")
         print(f"[‼️] Snipe token error: {e}")
         return False
+        # ✅ Final Buy Logic (Simulated for now – replace with Jupiter SDK if needed)
+async def buy_token(token_address: str, amount_sol: float):
+    try:
+        # Replace this with actual Jupiter logic later
+        print(f"[LIVE] Buying {amount_sol} SOL of {token_address} (simulated)")
+        await send_telegram_alert(f"✅ Simulated buy of {amount_sol} SOL for `{token_address}`")
+        return True
+    except Exception as e:
+        await send_telegram_alert(f"❌ Buy failed for {token_address}: {e}")
+        return False
