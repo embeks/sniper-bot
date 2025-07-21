@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Final Version (Buy + Partial Sell Logic)
+# sniper_logic.py — Final Version (Smart Auto-Sell by Profit)
 # =========================
 
 import asyncio
@@ -13,7 +13,7 @@ from utils import (
     send_telegram_alert,
     is_valid_mint,
     buy_token,
-    partial_sell,
+    auto_sell_if_profit,
     start_command_bot
 )
 
@@ -53,9 +53,9 @@ async def raydium_listener():
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
-                                success = await buy_token(key)
+                                success, buy_price = await buy_token(key)
                                 if success:
-                                    await partial_sell(key)
+                                    await auto_sell_if_profit(key, buy_price)
             except Exception as e:
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
@@ -91,9 +91,9 @@ async def jupiter_listener():
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
-                                success = await buy_token(key)
+                                success, buy_price = await buy_token(key)
                                 if success:
-                                    await partial_sell(key)
+                                    await auto_sell_if_profit(key, buy_price)
             except Exception as e:
                 print(f"[JUPITER ERROR] {e}")
                 await asyncio.sleep(1)
