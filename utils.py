@@ -7,6 +7,7 @@ import json
 import httpx
 import asyncio
 import csv
+from jupiter_aggregator import JupiterAggregatorClient
 from datetime import datetime
 from dotenv import load_dotenv
 from solana.rpc.api import Client
