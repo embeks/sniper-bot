@@ -1,5 +1,5 @@
 # =========================
-# utils.py — Final Real BUY Version
+# utils.py — Final Version (with async snipe_token, buy logic external)
 # =========================
 
 import os
@@ -14,7 +14,6 @@ from solders.keypair import Keypair
 from solders.rpc.config import RpcSendTransactionConfig
 from solana.rpc.commitment import Confirmed
 from solana.publickey import PublicKey
-from jupiter_trade import buy_token  # ✅ live buy function
 
 load_dotenv()
 
@@ -63,7 +62,7 @@ async def get_token_price(token_mint: str) -> float:
     except:
         return None
 
-# 🔎 Get Token Data
+# 🔎 Get Token Data (LP, holders, renounced, locked)
 async def get_token_data(mint: str) -> dict:
     try:
         url = f"https://public-api.birdeye.so/public/token/{mint}"
@@ -80,7 +79,7 @@ async def get_token_data(mint: str) -> dict:
     except:
         return {}
 
-# 🧠 Holder Delta
+# 🧠 Holder Delta (momentum metric)
 async def get_holder_delta(mint: str, delay=60):
     initial = (await get_token_data(mint)).get("holders", 0)
     await asyncio.sleep(delay)
@@ -89,8 +88,11 @@ async def get_holder_delta(mint: str, delay=60):
 
 # 📦 Pre-Approve Stub
 async def preapprove_token(token_address: str) -> bool:
-    await asyncio.sleep(0.1)
-    return True
+    try:
+        await asyncio.sleep(0.1)
+        return True
+    except:
+        return False
 
 # 🛡️ Safety Check
 async def is_safe_token(mint: str) -> bool:
@@ -120,7 +122,7 @@ async def is_volume_spike(mint: str, threshold: float = 5.0):
     except:
         return False
 
-# 💼 Token Balance
+# 💼 Balance Check
 async def get_token_balance(wallet_address: str, token_mint: str) -> float:
     try:
         url = f"https://public-api.birdeye.so/public/holder_token_amount?wallet={wallet_address}&token={token_mint}"
@@ -141,7 +143,7 @@ async def buy_on_raydium(rpc_client, kp, token, amount):
     await asyncio.sleep(0.3)
     return False
 
-# 🧠 Alpha Feed Stub
+# 🧠 Alpha Feed Scanner Stub
 async def scan_alpha_feeds():
     return ["token_mint_example_1", "token_mint_example_2"]
 
@@ -154,7 +156,7 @@ def is_valid_mint(account_keys):
                 return True
     return False
 
-# 🧬 snipe_token — Triggers real BUY and logs
+# 🧬 Sniped Tokens Tracker Only (external buy logic handles TX)
 async def snipe_token(mint: str) -> bool:
     try:
         if not os.path.exists("sniped_tokens.txt"):
@@ -164,10 +166,7 @@ async def snipe_token(mint: str) -> bool:
                 return False
         with open("sniped_tokens.txt", "a") as f:
             f.write(mint + "\n")
-
-        await send_telegram_alert(f"🚀 Sniping token: `{mint}`")
-        await buy_token(mint, amount_sol=0.03)
-        return True
+        return True  # ✅ Tracked successfully
     except Exception as e:
         await send_telegram_alert(f"[‼️] Snipe error: {e}")
         print(f"[‼️] Snipe token error: {e}")
