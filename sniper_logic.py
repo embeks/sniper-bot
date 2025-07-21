@@ -19,17 +19,24 @@ load_dotenv()
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 seen_tokens = set()
 
+from solders.pubkey import Pubkey  # add at the top if not already
+
 # ✅ One-time forced test buy
 async def force_test_buy_if_present():
     mint = os.getenv("FORCE_TEST_MINT")
     if mint:
         await send_telegram_alert(f"[TEST MODE] 🧪 FORCE_TEST_MINT detected: {mint}")
-        if is_valid_mint([{ 'pubkey': mint }]):
-            await send_telegram_alert(f"[TEST MODE] ✅ Mint is valid. Attempting forced buy...")
-            await snipe_token(mint)
-            await send_telegram_alert(f"[TEST MODE] 🟢 Forced buy attempt complete.")
-        else:
+        
+        try:
+            # Checks if it’s a real Pubkey
+            _ = Pubkey.from_string(mint)
+        except Exception:
             await send_telegram_alert("❌ Invalid FORCE_TEST_MINT format.")
+            return
+        
+        await send_telegram_alert(f"[TEST MODE] ✅ Mint is valid. Attempting forced buy...")
+        await snipe_token(mint)
+        await send_telegram_alert(f"[TEST MODE] 🟢 Forced buy attempt complete.")
 
 # ✅ Jupiter mempool listener
 async def mempool_listener_jupiter():
