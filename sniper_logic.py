@@ -1,12 +1,12 @@
 # =========================
-# sniper_logic.py — Final Version (Live Buys via Jupiter with Telegram Alerts)
+# sniper_logic.py — Final Version (Live Buys via Jupiter with Simulation + Telegram Alerts)
 # =========================
 
 import asyncio
 import json
 import os
-from solders.pubkey import Pubkey
 from dotenv import load_dotenv
+from solders.pubkey import Pubkey
 
 from utils import (
     send_telegram_alert,
@@ -19,24 +19,24 @@ load_dotenv()
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 seen_tokens = set()
 
-from solders.pubkey import Pubkey  # add at the top if not already
-
 # ✅ One-time forced test buy
 async def force_test_buy_if_present():
     mint = os.getenv("FORCE_TEST_MINT")
     if mint:
-        await send_telegram_alert(f"[TEST MODE] 🧪 FORCE_TEST_MINT detected: {mint}")
-        
+        await send_telegram_alert(f"[TEST MODE] 🦢 FORCE_TEST_MINT detected: {mint}")
+
         try:
-            # Checks if it’s a real Pubkey
             _ = Pubkey.from_string(mint)
         except Exception:
             await send_telegram_alert("❌ Invalid FORCE_TEST_MINT format.")
             return
-        
+
         await send_telegram_alert(f"[TEST MODE] ✅ Mint is valid. Attempting forced buy...")
-        await snipe_token(mint)
-        await send_telegram_alert(f"[TEST MODE] 🟢 Forced buy attempt complete.")
+        success = await snipe_token(mint)
+        if success:
+            await send_telegram_alert(f"[TEST MODE] 🟢 Forced buy successful!")
+        else:
+            await send_telegram_alert(f"[TEST MODE] ❌ Forced buy failed or skipped.")
 
 # ✅ Jupiter mempool listener
 async def mempool_listener_jupiter():
@@ -69,7 +69,7 @@ async def mempool_listener_jupiter():
                                 continue
                             seen_tokens.add(key)
                             print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint([{ 'pubkey': key }]):
+                            if is_valid_mint([{ 'pubkey': key }] ):
                                 await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
                                 await snipe_token(key)
             except Exception as e:
@@ -107,7 +107,7 @@ async def mempool_listener_raydium():
                                 continue
                             seen_tokens.add(key)
                             print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint([{ 'pubkey': key }]):
+                            if is_valid_mint([{ 'pubkey': key }] ):
                                 await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
                                 await snipe_token(key)
             except Exception as e:
@@ -125,3 +125,4 @@ async def start_sniper():
 
 if __name__ == "__main__":
     asyncio.run(start_sniper())
+
