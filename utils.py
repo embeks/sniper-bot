@@ -1,5 +1,5 @@
 # =========================
-# utils.py — Full Elite Version (2025-07-21)
+# utils.py — Full Elite Version (Updated with async snipe_token)
 # =========================
 
 import os
@@ -27,7 +27,7 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 # 💰 Constants
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
-# 🪪 Wallet Setup
+# 💪 Wallet Setup
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 
@@ -35,7 +35,7 @@ wallet_pubkey = str(keypair.pubkey())
 def get_rpc_client():
     return Client(RPC_URL)
 
-# 📩 Telegram Alerts
+# 📬 Telegram Alerts
 async def send_telegram_alert(message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -138,7 +138,7 @@ async def get_token_balance(wallet_address: str, token_mint: str) -> float:
 def get_next_wallet():
     return keypair, wallet_pubkey
 
-# 🔁 Raydium Fallback Stub
+# ♻ Raydium Fallback Stub
 async def buy_on_raydium(rpc_client, kp, token, amount):
     await asyncio.sleep(0.3)
     return False
@@ -156,8 +156,8 @@ def is_valid_mint(account_keys):
                 return True
     return False
 
-# 🧠 Sniped Tokens Log
-def snipe_token(mint: str) -> bool:
+# 🧬 Sniped Tokens Log + BUY Trigger
+async def snipe_token(mint: str) -> bool:
     try:
         if not os.path.exists("sniped_tokens.txt"):
             with open("sniped_tokens.txt", "w") as f:
@@ -167,6 +167,10 @@ def snipe_token(mint: str) -> bool:
                 return False
         with open("sniped_tokens.txt", "a") as f:
             f.write(mint + "\n")
+
+        # TODO: Add actual buy logic or integration
+        await send_telegram_alert(f"[BUY TEST] ✅ Attempted to snipe {mint} (forced test call)")
+        print(f"[BUY TEST] ✅ Attempted to snipe {mint} (forced test call)")
         return True
     except Exception as e:
         print(f"[‼️] Snipe token tracking error: {e}")
