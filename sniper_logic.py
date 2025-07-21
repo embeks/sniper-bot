@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Final Version (Buy + Sell Live)
+# sniper_logic.py — Final Version (Buy + Partial Sell Logic)
 # =========================
 
 import asyncio
@@ -13,7 +13,7 @@ from utils import (
     send_telegram_alert,
     is_valid_mint,
     buy_token,
-    sell_token,
+    partial_sell,
     start_command_bot
 )
 
@@ -55,7 +55,7 @@ async def raydium_listener():
                                 await send_telegram_alert(f"[🟡] New token: {key}")
                                 success = await buy_token(key)
                                 if success:
-                                    await sell_token(key)
+                                    await partial_sell(key)
             except Exception as e:
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
@@ -93,7 +93,7 @@ async def jupiter_listener():
                                 await send_telegram_alert(f"[🟡] New token: {key}")
                                 success = await buy_token(key)
                                 if success:
-                                    await sell_token(key)
+                                    await partial_sell(key)
             except Exception as e:
                 print(f"[JUPITER ERROR] {e}")
                 await asyncio.sleep(1)
