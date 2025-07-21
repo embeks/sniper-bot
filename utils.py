@@ -1,5 +1,5 @@
 # =========================
-# utils.py — Final Version (with async snipe_token, buy logic external)
+# utils.py — FINAL VERSION (All-in-One)
 # =========================
 
 import os
@@ -7,8 +7,6 @@ import json
 import httpx
 import asyncio
 import csv
-from jupiter_trade import buy_token
-from alerts import send_telegram_alert
 from datetime import datetime
 from dotenv import load_dotenv
 from solana.rpc.api import Client
@@ -64,7 +62,7 @@ async def get_token_price(token_mint: str) -> float:
     except:
         return None
 
-# 🔎 Get Token Data (LP, holders, renounced, locked)
+# 🔎 Get Token Data
 async def get_token_data(mint: str) -> dict:
     try:
         url = f"https://public-api.birdeye.so/public/token/{mint}"
@@ -81,73 +79,9 @@ async def get_token_data(mint: str) -> dict:
     except:
         return {}
 
-# 🧠 Holder Delta (momentum metric)
-async def get_holder_delta(mint: str, delay=60):
-    initial = (await get_token_data(mint)).get("holders", 0)
-    await asyncio.sleep(delay)
-    later = (await get_token_data(mint)).get("holders", 0)
-    return later - initial
-
-# 📦 Pre-Approve Stub
-async def preapprove_token(token_address: str) -> bool:
-    try:
-        await asyncio.sleep(0.1)
-        return True
-    except:
-        return False
-
-# 🛡️ Safety Check
-async def is_safe_token(mint: str) -> bool:
-    try:
-        data = await get_token_data(mint)
-        return data.get("lp_locked", False) and data.get("renounced", False)
-    except:
-        return False
-
 # 💥 Rug Detection
 def is_rug(initial_lp, current_lp, threshold=0.75):
     return current_lp < (initial_lp * threshold)
-
-# ⚡ Volume Spike Check
-async def is_volume_spike(mint: str, threshold: float = 5.0):
-    try:
-        url = f"https://public-api.birdeye.so/public/token/{mint}/chart?time=1m"
-        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url, headers=headers)
-            data = r.json().get("data", [])
-            if len(data) < 2:
-                return False
-            open_vol = data[-2].get("volume", 1)
-            close_vol = data[-1].get("volume", 1)
-            return (close_vol / open_vol) >= threshold
-    except:
-        return False
-
-# 💼 Balance Check
-async def get_token_balance(wallet_address: str, token_mint: str) -> float:
-    try:
-        url = f"https://public-api.birdeye.so/public/holder_token_amount?wallet={wallet_address}&token={token_mint}"
-        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
-        async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers)
-            data = res.json().get("data", {})
-            return float(data.get("amount", 0))
-    except:
-        return 0.0
-
-# 🧪 Multi-Wallet Stub
-def get_next_wallet():
-    return keypair, wallet_pubkey
-
-# ♻ Raydium Fallback Stub
-async def buy_on_raydium(rpc_client, kp, token, amount):
-    await asyncio.sleep(0.3)
-    return False
-
-# 🧠 Alpha Feed Scanner Stub
-async def scan_alpha_feeds():
-    return ["token_mint_example_1", "token_mint_example_2"]
 
 # ✅ Valid Mint Checker
 def is_valid_mint(account_keys):
@@ -158,7 +92,21 @@ def is_valid_mint(account_keys):
                 return True
     return False
 
-# 🧬 Sniped Tokens Tracker + Buy Trigger
+# 🔐 Buy Token
+async def buy_token(token_address: str, amount_sol: float):
+    try:
+        client = get_rpc_client()
+        lamports = int(amount_sol * 1_000_000_000)
+        tx = client.request_airdrop(PublicKey(wallet_pubkey), lamports)  # TEMP MOCK
+        sig = tx.get("result")
+        await send_telegram_alert(f"✅ Simulated buy: {amount_sol} SOL into {token_address}\nTX: {sig}")
+        log_trade_to_csv(token_address, "BUY", amount_sol, 0)
+        return True
+    except Exception as e:
+        await send_telegram_alert(f"❌ Buy failed for {token_address}: {e}")
+        return False
+
+# 🧬 Snipe Token
 async def snipe_token(mint: str) -> bool:
     try:
         if not os.path.exists("sniped_tokens.txt"):
@@ -171,7 +119,7 @@ async def snipe_token(mint: str) -> bool:
             f.write(mint + "\n")
 
         await send_telegram_alert(f"🛒 Buying token: {mint}")
-        await buy_token(token_address=mint, amount_sol=0.03)  # real buy logic
+        await buy_token(token_address=mint, amount_sol=0.03)
         return True
     except Exception as e:
         await send_telegram_alert(f"[‼️] Snipe error: {e}")
