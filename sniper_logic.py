@@ -1,11 +1,10 @@
 # =========================
-# sniper_logic.py — Final Version (Buy + Wait + Auto Sell)
+# sniper_logic.py — Final (Auto-Sell, Live Watch, Full PnL)
 # =========================
 
 import asyncio
 import json
 import os
-from solders.pubkey import Pubkey
 from dotenv import load_dotenv
 import websockets
 
@@ -53,9 +52,9 @@ async def raydium_listener():
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
-                                success, buy_price = await buy_token(key)
+                                success = await buy_token(key)
                                 if success:
-                                    await wait_and_auto_sell(key, buy_price)
+                                    await wait_and_auto_sell(key)
             except Exception as e:
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
@@ -91,9 +90,9 @@ async def jupiter_listener():
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
-                                success, buy_price = await buy_token(key)
+                                success = await buy_token(key)
                                 if success:
-                                    await wait_and_auto_sell(key, buy_price)
+                                    await wait_and_auto_sell(key)
             except Exception as e:
                 print(f"[JUPITER ERROR] {e}")
                 await asyncio.sleep(1)
