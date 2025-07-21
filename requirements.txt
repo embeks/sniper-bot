@@ -1,7 +1,6 @@
 httpx==0.23.3
 websockets==10.4
 python-dotenv==1.0.1
-solana==0.28.1
 solders==0.15.0
 requests
 python-telegram-bot==20.2
