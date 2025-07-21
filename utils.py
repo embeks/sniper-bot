@@ -7,6 +7,7 @@ import json
 import httpx
 import asyncio
 import csv
+from jupiter_trade import buy_token
 from datetime import datetime
 from dotenv import load_dotenv
 from solana.rpc.api import Client
@@ -156,17 +157,21 @@ def is_valid_mint(account_keys):
                 return True
     return False
 
-# 🧬 Sniped Tokens Tracker Only (external buy logic handles TX)
+# 🧬 Sniped Tokens Tracker + Buy Trigger
 async def snipe_token(mint: str) -> bool:
     try:
         if not os.path.exists("sniped_tokens.txt"):
             open("sniped_tokens.txt", "w").close()
         with open("sniped_tokens.txt", "r") as f:
             if mint in f.read():
+                await send_telegram_alert(f"⚠️ Token already sniped: {mint}")
                 return False
         with open("sniped_tokens.txt", "a") as f:
             f.write(mint + "\n")
-        return True  # ✅ Tracked successfully
+
+        await send_telegram_alert(f"🛒 Buying token: {mint}")
+        await buy_token(token_address=mint, amount_sol=0.03)  # real buy logic
+        return True
     except Exception as e:
         await send_telegram_alert(f"[‼️] Snipe error: {e}")
         print(f"[‼️] Snipe token error: {e}")
