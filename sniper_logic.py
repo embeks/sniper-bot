@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Final Version (Live Buys, Telegram Alerts, Elite Safety)
+# sniper_logic.py — Final Version with Real Buy/Sell SDK + PnL
 # =========================
 
 import asyncio
