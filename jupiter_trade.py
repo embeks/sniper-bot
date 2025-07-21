@@ -10,11 +10,11 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from utils import (
-    send_telegram_alert,
     log_trade_to_csv,
     get_rpc_client,
-    buy_on_raydium
+    buy_on_raydium,
 )
+from alerts import send_telegram_alert
 
 # 🔐 Load environment
 load_dotenv()
