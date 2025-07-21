@@ -1,6 +1,6 @@
-# =========================
-# utils.py — Final Elite Version (Full Features: Buy/Sell/Alerts/PnL)
-# =========================
+# =============================
+# utils.py — Final (Async Command Bot Fixed)
+# =============================
 
 import os
 import json
@@ -11,7 +11,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from solana.rpc.api import Client
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
+from solana.publickey import PublicKey
+
 from telegram.ext import Application, CommandHandler
 
 load_dotenv()
@@ -26,7 +27,7 @@ BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
 
 # 💰 Constants
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-BLACKLIST_FILE = "blacklist.txt"
+BLACKLISTED_TOKENS = ["BADTOKEN1", "BADTOKEN2"]
 
 # 💪 Wallet Setup
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
@@ -42,8 +43,8 @@ async def send_telegram_alert(message: str):
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
         async with httpx.AsyncClient() as client:
             await client.post(url, json=payload)
-    except Exception as e:
-        print(f"[‼️] Telegram alert failed: {e}")
+    except:
+        pass
 
 # 📊 Trade Logger
 def log_trade(token, action, sol_in, token_out):
@@ -95,6 +96,44 @@ async def is_volume_spike(mint, threshold=5.0):
     except:
         return False
 
+# 🚀 Auto-Partial Selling (Stub)
+async def partial_sell(mint):
+    await send_telegram_alert(f"📉 Triggered auto partial sell for {mint} (placeholder logic)")
+    log_trade(mint, "SELL", 0, 0)
+
+# 🧬 Main Sniping Logic
+async def snipe_token(mint: str) -> bool:
+    try:
+        if mint in BLACKLISTED_TOKENS:
+            await send_telegram_alert(f"🚫 Skipping blacklisted token: {mint}")
+            return False
+
+        if not os.path.exists("sniped_tokens.txt"):
+            open("sniped_tokens.txt", "w").close()
+
+        with open("sniped_tokens.txt", "r") as f:
+            if mint in f.read():
+                return False
+
+        with open("sniped_tokens.txt", "a") as f:
+            f.write(mint + "\n")
+
+        token_data = await get_token_data(mint)
+        if token_data["liquidity"] < 1000 or not token_data["lp_locked"]:
+            await send_telegram_alert(f"🛑 Safety check failed for {mint}")
+            return False
+
+        await send_telegram_alert(f"🛒 Buying {mint} now using {BUY_AMOUNT_SOL} SOL...")
+        await asyncio.sleep(0.5)  # Simulate delay
+        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
+        await asyncio.sleep(5)
+        await partial_sell(mint)
+        return True
+
+    except Exception as e:
+        await send_telegram_alert(f"[‼️] Snipe failed for {mint}: {e}")
+        return False
+
 # ✅ Is Valid Mint
 def is_valid_mint(keys):
     for k in keys:
@@ -103,69 +142,12 @@ def is_valid_mint(keys):
                 return True
     return False
 
-# ✅ Sniped Token Tracker + Buy Logic
-async def snipe_token(mint):
-    try:
-        if not os.path.exists("sniped_tokens.txt"):
-            open("sniped_tokens.txt", "w").close()
-        with open("sniped_tokens.txt", "r") as f:
-            if mint in f.read():
-                return False
-        with open("sniped_tokens.txt", "a") as f:
-            f.write(mint + "\n")
+# =========================
+# 🤖 Telegram Command Bot
+# =========================
 
-        # Blacklist check
-        if os.path.exists(BLACKLIST_FILE):
-            with open(BLACKLIST_FILE, "r") as b:
-                if mint in b.read():
-                    await send_telegram_alert(f"🚫 Blacklisted token: {mint}")
-                    return False
-
-        data = await get_token_data(mint)
-        if data["liquidity"] < 1000 or not data["lp_locked"]:
-            await send_telegram_alert(f"🛑 Safety check failed for {mint}")
-            return False
-
-        if await is_volume_spike(mint):
-            await send_telegram_alert(f"📉 Volume spike detected. Skipping {mint}")
-            return False
-
-        await send_telegram_alert(f"🛒 Buying {mint} with {BUY_AMOUNT_SOL} SOL...")
-
-        # Placeholder for actual Jupiter swap logic
-        await asyncio.sleep(0.3)  # Simulate delay
-
-        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
-        await asyncio.sleep(3)
-        await send_telegram_alert(f"✅ Buy complete. Monitoring for profit on {mint}...")
-
-        # Placeholder for partial sells
-        await asyncio.sleep(10)
-        await send_telegram_alert(f"🔁 Auto-partial sell executed for {mint}")
-        log_trade(mint, "SELL", 0, 0)
-
-        return True
-
-    except Exception as e:
-        await send_telegram_alert(f"[‼️] Snipe error: {e}")
-        return False
-
-# ✅ Balance Check
-async def get_token_balance(wallet: str, token_mint: str):
-    try:
-        url = f"https://public-api.birdeye.so/public/holder_token_amount?wallet={wallet}&token={token_mint}"
-        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
-        async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers)
-            data = res.json().get("data", {})
-            return float(data.get("amount", 0))
-    except:
-        return 0.0
-
-# ✅ Telegram Bot Commands
 async def status(update, context):
-    sol = await get_token_balance(wallet_pubkey, "So11111111111111111111111111111111111111112")
-    await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`\nSOL: {sol:.4f}")
+    await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
 async def holdings(update, context):
     try:
@@ -173,26 +155,25 @@ async def holdings(update, context):
             tokens = f.read().splitlines()
         reply = "📦 Current sniped tokens:\n" + "\n".join(tokens[-10:]) if tokens else "📦 No sniped tokens yet."
         await update.message.reply_text(reply)
-    except:
-        await update.message.reply_text("⚠️ Could not load holdings.")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error: {e}")
 
 async def logs(update, context):
     try:
         with open("trade_log.csv", "r") as f:
             lines = f.readlines()[-10:]
-        reply = "📝 Last trades:\n" + "".join(lines) if lines else "📝 No trades yet."
-        await update.message.reply_text(reply)
+        await update.message.reply_text("📝 Last trades:\n" + "".join(lines) if lines else "📝 No trades logged yet.")
     except:
-        await update.message.reply_text("📝 Could not read log file.")
+        await update.message.reply_text("📝 No logs found.")
 
 async def wallet(update, context):
-    await update.message.reply_text(f"💼 Current wallet: `{wallet_pubkey}`")
+    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`")
 
 async def reset(update, context):
     open("sniped_tokens.txt", "w").close()
-    await update.message.reply_text("♻️ Sniped list reset.")
+    await update.message.reply_text("♻️ Sniped token list reset.")
 
-def start_command_bot():
+async def start_command_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("holdings", holdings))
@@ -200,4 +181,6 @@ def start_command_bot():
     app.add_handler(CommandHandler("wallet", wallet))
     app.add_handler(CommandHandler("reset", reset))
     print("🤖 Telegram command bot ready.")
-    return app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
