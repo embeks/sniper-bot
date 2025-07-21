@@ -1,4 +1,5 @@
 # sniper_logic.py (with forced test snipe)
+import os
 import asyncio
 import json
 from utils import send_telegram_alert, is_valid_mint, snipe_token
