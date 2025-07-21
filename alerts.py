@@ -1,12 +1,6 @@
-# =========================
-# alerts.py — Telegram Alerts (moved out to avoid circular import)
-# =========================
-
+# alerts.py
 import os
 import httpx
-from dotenv import load_dotenv
-
-load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
