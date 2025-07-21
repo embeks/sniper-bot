@@ -8,6 +8,7 @@ import httpx
 import asyncio
 import csv
 from jupiter_trade import buy_token
+from alerts import send_telegram_alert
 from datetime import datetime
 from dotenv import load_dotenv
 from solana.rpc.api import Client
