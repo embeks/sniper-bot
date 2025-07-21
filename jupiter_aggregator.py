@@ -8,7 +8,6 @@ import httpx
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
-from solana.rpc.api import Client
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
