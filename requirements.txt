@@ -4,4 +4,4 @@ python-dotenv==1.0.1
 solana==0.28.1
 solders==0.10.0
 requests
-python-telegram-bot==20.3
+python-telegram-bot==20.2
