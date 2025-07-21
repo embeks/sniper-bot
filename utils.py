@@ -1,5 +1,5 @@
 # =========================
-# utils.py — Full Elite Version (with buy+simulate snipe_token)
+# utils.py — Final Real BUY Version
 # =========================
 
 import os
@@ -14,13 +14,7 @@ from solders.keypair import Keypair
 from solders.rpc.config import RpcSendTransactionConfig
 from solana.rpc.commitment import Confirmed
 from solana.publickey import PublicKey
-
-from jupiter_trade import (
-    is_token_supported_by_jupiter,
-    get_jupiter_quote,
-    build_jupiter_swap_tx,
-    sign_and_send_tx
-)
+from jupiter_trade import buy_token  # ✅ live buy function
 
 load_dotenv()
 
@@ -69,7 +63,7 @@ async def get_token_price(token_mint: str) -> float:
     except:
         return None
 
-# 🔎 Get Token Data (LP, holders, renounced, locked)
+# 🔎 Get Token Data
 async def get_token_data(mint: str) -> dict:
     try:
         url = f"https://public-api.birdeye.so/public/token/{mint}"
@@ -86,7 +80,7 @@ async def get_token_data(mint: str) -> dict:
     except:
         return {}
 
-# 🧠 Holder Delta (momentum metric)
+# 🧠 Holder Delta
 async def get_holder_delta(mint: str, delay=60):
     initial = (await get_token_data(mint)).get("holders", 0)
     await asyncio.sleep(delay)
@@ -95,11 +89,8 @@ async def get_holder_delta(mint: str, delay=60):
 
 # 📦 Pre-Approve Stub
 async def preapprove_token(token_address: str) -> bool:
-    try:
-        await asyncio.sleep(0.1)
-        return True
-    except:
-        return False
+    await asyncio.sleep(0.1)
+    return True
 
 # 🛡️ Safety Check
 async def is_safe_token(mint: str) -> bool:
@@ -129,7 +120,7 @@ async def is_volume_spike(mint: str, threshold: float = 5.0):
     except:
         return False
 
-# 💼 Balance Check
+# 💼 Token Balance
 async def get_token_balance(wallet_address: str, token_mint: str) -> float:
     try:
         url = f"https://public-api.birdeye.so/public/holder_token_amount?wallet={wallet_address}&token={token_mint}"
@@ -150,7 +141,7 @@ async def buy_on_raydium(rpc_client, kp, token, amount):
     await asyncio.sleep(0.3)
     return False
 
-# 🧠 Alpha Feed Scanner Stub
+# 🧠 Alpha Feed Stub
 async def scan_alpha_feeds():
     return ["token_mint_example_1", "token_mint_example_2"]
 
@@ -163,57 +154,21 @@ def is_valid_mint(account_keys):
                 return True
     return False
 
-# 🧬 Sniped Tokens Log + Full Buy Logic
+# 🧬 snipe_token — Triggers real BUY and logs
 async def snipe_token(mint: str) -> bool:
     try:
         if not os.path.exists("sniped_tokens.txt"):
-            with open("sniped_tokens.txt", "w") as f:
-                pass
+            open("sniped_tokens.txt", "w").close()
         with open("sniped_tokens.txt", "r") as f:
             if mint in f.read():
                 return False
         with open("sniped_tokens.txt", "a") as f:
             f.write(mint + "\n")
 
-        await send_telegram_alert(f"🎯 New token detected: `{mint}`")
-        amount_sol = 0.03
-
-        supported = await is_token_supported_by_jupiter(mint)
-        if not supported:
-            await send_telegram_alert("❌ Not supported by Jupiter. Trying Raydium...")
-            result = await buy_on_raydium(get_rpc_client(), keypair, mint, amount_sol)
-            if result:
-                await send_telegram_alert("✅ Bought on Raydium fallback.")
-            else:
-                await send_telegram_alert("‼️ Raydium fallback failed.")
-            return result
-
-        await asyncio.sleep(0.1)
-        await send_telegram_alert("🔍 Getting Jupiter route...")
-        route = await get_jupiter_quote(mint, amount_sol)
-        if not route:
-            await send_telegram_alert("❌ No route from Jupiter.")
-            return False
-
-        await asyncio.sleep(0.1)
-        await send_telegram_alert("🧠 Building TX for simulation...")
-        raw_tx = await build_jupiter_swap_tx(route)
-        if not raw_tx:
-            await send_telegram_alert("❌ Failed to build TX.")
-            return False
-
-        await asyncio.sleep(0.1)
-        await send_telegram_alert("🚀 Sending TX...")
-        tx_sig = sign_and_send_tx(raw_tx)
-        if tx_sig:
-            await send_telegram_alert(f"✅ TX sent: https://solscan.io/tx/{tx_sig}")
-            log_trade_to_csv(mint, "buy", amount_sol, route['outAmount'] / 1e9)
-            return True
-        else:
-            await send_telegram_alert("‼️ TX failed to send.")
-            return False
-
+        await send_telegram_alert(f"🚀 Sniping token: `{mint}`")
+        await buy_token(mint, amount_sol=0.03)
+        return True
     except Exception as e:
-        print(f"[‼️] Snipe error: {e}")
         await send_telegram_alert(f"[‼️] Snipe error: {e}")
+        print(f"[‼️] Snipe token error: {e}")
         return False
