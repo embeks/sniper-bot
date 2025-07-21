@@ -1,16 +1,8 @@
-# =========================
-# main.py
-# =========================
 import asyncio
-from sniper_logic import mempool_listener_jupiter, mempool_listener_raydium
-from trade_logic import startup
+from utils import snipe_token
 
-async def start_sniper():
-    await startup()  # ✅ Telegram alert when bot starts
-    await asyncio.gather(
-        mempool_listener_jupiter(),
-        mempool_listener_raydium()
-    )
+# Direct call bypassing env logic
+async def manual_test():
+    await snipe_token("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
 
-if __name__ == "__main__":
-    asyncio.run(start_sniper())
+asyncio.run(manual_test())
