@@ -2,124 +2,126 @@
 # sniper_logic.py — Final Elite Version
 # =========================
 
+import os
 import asyncio
 import json
-import os
-from dotenv import load_dotenv
-
+import time
+from datetime import datetime
 from utils import (
     send_telegram_alert,
-    is_valid_mint,
     snipe_token,
-    start_command_bot
+    is_valid_mint,
+    wallet_pubkey,
+    BUY_AMOUNT_SOL,
+    get_token_price,
+    log_trade,
 )
+
+from solders.signature import Signature
+from solana.rpc.api import Client
+from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-seen_tokens = set()
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
+RPC_URL = os.getenv("RPC_URL")
+rpc_client = Client(RPC_URL)
 
-# ✅ One-time forced test buy
-async def force_test_buy_if_present():
-    mint = os.getenv("FORCE_TEST_MINT")
-    if mint:
-        await send_telegram_alert(f"[TEST MODE] 🧪 FORCE_TEST_MINT detected: {mint}")
-        try:
-            from solders.pubkey import Pubkey
-            _ = Pubkey.from_string(mint)
-        except Exception:
-            await send_telegram_alert("❌ Invalid FORCE_TEST_MINT format.")
+# ✅ Real Sell Function (Jupiter Placeholder)
+async def sell_token(mint, amount_out):
+    try:
+        await send_telegram_alert(f"📤 Selling {mint}... [placeholder]")
+        log_trade(mint, "SELL", 0, amount_out)
+        return True
+    except Exception as e:
+        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
+        return False
+
+# 📈 Price Monitor for 2x/5x/10x Profit Taking
+async def monitor_price_and_sell(mint, entry_price):
+    try:
+        checkpoints = [2, 5, 10]
+        hit = set()
+        start = time.time()
+        timeout = 300  # 5 min fallback
+
+        while True:
+            await asyncio.sleep(5)
+            current_price = await get_token_price(mint)
+            if not current_price:
+                continue
+
+            for x in checkpoints:
+                if x not in hit and current_price >= entry_price * x:
+                    await send_telegram_alert(f"💰 {x}x profit hit for {mint} — selling!")
+                    await sell_token(mint, current_price * BUY_AMOUNT_SOL)
+                    hit.add(x)
+
+            if time.time() - start > timeout:
+                await send_telegram_alert(f"⏱ Timeout hit for {mint}, selling...")
+                await sell_token(mint, current_price * BUY_AMOUNT_SOL)
+                return
+    except Exception as e:
+        await send_telegram_alert(f"⚠️ Monitor error for {mint}: {e}")
+
+# 🧠 Live Forced Buy for Testing
+async def force_test_buy():
+    try:
+        if not FORCE_TEST_MINT or len(FORCE_TEST_MINT) != 44:
+            await send_telegram_alert("❌ Invalid *FORCETESTMINT* format.")
             return
-        await send_telegram_alert(f"[TEST MODE] ✅ Mint is valid. Attempting forced buy...")
-        await snipe_token(mint)
-        await send_telegram_alert(f"[TEST MODE] 🟢 Forced buy attempt complete.")
 
-# ✅ Jupiter mempool listener
-async def mempool_listener_jupiter():
+        await send_telegram_alert(f"TEST MODE 🧪 FORCETESTMINT detected: {FORCE_TEST_MINT}")
+        await asyncio.sleep(1)
+
+        await send_telegram_alert("TEST MODE ✅ Mint is valid. Attempting forced buy...")
+        success = await snipe_token(FORCE_TEST_MINT)
+
+        if success:
+            price = await get_token_price(FORCE_TEST_MINT)
+            await monitor_price_and_sell(FORCE_TEST_MINT, price)
+        else:
+            await send_telegram_alert("❌ Forced buy failed.")
+
+    except Exception as e:
+        await send_telegram_alert(f"‼️ Forced buy error: {e}")
+
+# 🚀 WebSocket Listeners (Raydium + Jupiter)
+async def raydium_listener():
     import websockets
-
-    url = os.getenv("SOLANA_MEMPOOL_WS")
+    url = "wss://api.helius.xyz/v0/addresses/raydium/logs?api-key=" + os.getenv("HELIUS_API")
     async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "logsSubscribe",
-            "params": [
-                {"mentions": [TOKEN_PROGRAM_ID]},
-                {"commitment": "processed"}
-            ]
-        }))
-        print("[🔁] Jupiter listener subscribed.")
-        await send_telegram_alert("📡 JUPITER listener active.")
-
-        while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
-                for log in logs:
-                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
-                        account_keys = data["params"]["result"]["value"].get("accountKeys", [])
-                        for key in account_keys:
-                            if key in seen_tokens:
-                                continue
-                            seen_tokens.add(key)
-                            print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint([{ 'pubkey': key }]):
-                                await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
-                                await snipe_token(key)
-            except Exception as e:
-                print(f"[JUPITER ERROR] {e}")
-                await asyncio.sleep(1)
-
-# ✅ Raydium mempool listener
-async def mempool_listener_raydium():
-    import websockets
-
-    url = os.getenv("SOLANA_MEMPOOL_WS")
-    async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "logsSubscribe",
-            "params": [
-                {"mentions": [TOKEN_PROGRAM_ID]},
-                {"commitment": "processed"}
-            ]
-        }))
-        print("[🔁] Raydium listener subscribed.")
         await send_telegram_alert("📡 RAYDIUM listener active.")
-
         while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
-                for log in logs:
-                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
-                        account_keys = data["params"]["result"]["value"].get("accountKeys", [])
-                        for key in account_keys:
-                            if key in seen_tokens:
-                                continue
-                            seen_tokens.add(key)
-                            print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint([{ 'pubkey': key }]):
-                                await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
-                                await snipe_token(key)
-            except Exception as e:
-                print(f"[RAYDIUM ERROR] {e}")
-                await asyncio.sleep(1)
+            data = json.loads(await ws.recv())
+            if is_valid_mint(data.get("logs", [])):
+                mint = data.get("mint", "")
+                if await snipe_token(mint):
+                    price = await get_token_price(mint)
+                    await monitor_price_and_sell(mint, price)
 
-# ✅ Combined runner
+async def jupiter_listener():
+    import websockets
+    url = "wss://api.helius.xyz/v0/addresses/jupiter/logs?api-key=" + os.getenv("HELIUS_API")
+    async with websockets.connect(url) as ws:
+        await send_telegram_alert("📡 JUPITER listener active.")
+        while True:
+            data = json.loads(await ws.recv())
+            if is_valid_mint(data.get("logs", [])):
+                mint = data.get("mint", "")
+                if await snipe_token(mint):
+                    price = await get_token_price(mint)
+                    await monitor_price_and_sell(mint, price)
+
+# 🧠 Main Entrypoint
 async def start_sniper():
-    await force_test_buy_if_present()
     await send_telegram_alert("✅ Sniper bot is now live and scanning the mempool...")
-    command_bot_task = asyncio.create_task(asyncio.to_thread(start_command_bot))
+
     await asyncio.gather(
-        mempool_listener_jupiter(),
-        mempool_listener_raydium(),
-        command_bot_task
+        force_test_buy(),
+        raydium_listener(),
+        jupiter_listener(),
+        asyncio.to_thread(start_command_bot)
     )
 
-if __name__ == "__main__":
-    asyncio.run(start_sniper())
+from utils import start_command_bot
