@@ -4,18 +4,17 @@ import os
 from utils import send_telegram_alert, is_valid_mint, snipe_token
 from solders.pubkey import Pubkey
 
-# Constants
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 seen_tokens = set()
 
-# ✅ FORCE TEST ON LAUNCH
-FORCE_TEST_MINT = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"
+# ✅ Load forced mint for testing
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 
 # ✅ Jupiter mempool listener
 async def mempool_listener_jupiter():
     import websockets
-    url = os.getenv("SOLANA_MEMPOOL_WS")
 
+    url = os.getenv("SOLANA_MEMPOOL_WS")
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -52,8 +51,8 @@ async def mempool_listener_jupiter():
 # ✅ Raydium mempool listener
 async def mempool_listener_raydium():
     import websockets
-    url = os.getenv("SOLANA_MEMPOOL_WS")
 
+    url = os.getenv("SOLANA_MEMPOOL_WS")
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -87,13 +86,14 @@ async def mempool_listener_raydium():
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Run both listeners + force test
+# ✅ Run both listeners in parallel
 async def run_sniper():
     await send_telegram_alert("✅ Sniper bot is now live and scanning the mempool...")
+    print("[🔥] FORCED MINT VALUE:", FORCE_TEST_MINT)
 
-    # 🔥 FORCE TEST HERE
-    await send_telegram_alert(f"🚨 FORCED TEST: Sniping test token {FORCE_TEST_MINT}")
-    await snipe_token(FORCE_TEST_MINT)
+    if FORCE_TEST_MINT:
+        await send_telegram_alert(f"🚨 FORCED TEST: Sniping test token {FORCE_TEST_MINT}")
+        await snipe_token(FORCE_TEST_MINT)
 
     await asyncio.gather(
         mempool_listener_jupiter(),
