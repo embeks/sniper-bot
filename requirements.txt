@@ -6,3 +6,4 @@ solders==0.10.0
 requests
 python-telegram-bot==20.2
 jup-ag==0.1.2
+jupiter-aggregator==0.1.1
