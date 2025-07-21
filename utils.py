@@ -1,6 +1,7 @@
 # =========================
-# utils.py (Elite Upgraded with get_token_balance)
+# utils.py — Full Elite Version (2025-07-21)
 # =========================
+
 import os
 import json
 import httpx
@@ -12,24 +13,29 @@ from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.rpc.config import RpcSendTransactionConfig
 from solana.rpc.commitment import Confirmed
+from solana.publickey import PublicKey
 
 load_dotenv()
 
-# 🌐 Telegram Setup
+# 🔐 ENV + Wallet
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# ✅ Solana RPC & Client
 RPC_URL = os.getenv("RPC_URL")
-def get_rpc_client():
-    return Client(RPC_URL)
-
-# ✅ Wallet Setup
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+
+# 💰 Constants
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+# 🪪 Wallet Setup
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 
-# 🔔 Telegram Alert
+# 🌐 Solana RPC
+def get_rpc_client():
+    return Client(RPC_URL)
+
+# 📩 Telegram Alerts
 async def send_telegram_alert(message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -39,28 +45,28 @@ async def send_telegram_alert(message: str):
     except Exception as e:
         print(f"[‼️] Telegram alert failed: {e}")
 
-# 📊 CSV Logger
+# 📊 Trade Logger
 def log_trade_to_csv(token, action, amount_in, amount_out):
     with open("trade_log.csv", "a", newline="") as file:
         writer = csv.writer(file)
         writer.writerow([datetime.utcnow().isoformat(), token, action, amount_in, amount_out])
 
-# 📉 Get Token Price
+# 📈 Get Token Price
 async def get_token_price(token_mint: str) -> float:
     try:
         url = f"https://public-api.birdeye.so/public/price?address={token_mint}"
-        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
         async with httpx.AsyncClient() as client:
             r = await client.get(url, headers=headers)
             return r.json().get("data", {}).get("value")
     except:
         return None
 
-# 📦 Token Data: liquidity, holders, LP status
+# 🔎 Get Token Data (LP, holders, renounced, locked)
 async def get_token_data(mint: str) -> dict:
     try:
         url = f"https://public-api.birdeye.so/public/token/{mint}"
-        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
         async with httpx.AsyncClient() as client:
             r = await client.get(url, headers=headers)
             data = r.json().get("data", {})
@@ -73,44 +79,38 @@ async def get_token_data(mint: str) -> dict:
     except:
         return {}
 
-# 🧠 Holder Delta (for dynamic buy size)
+# 🧠 Holder Delta (momentum metric)
 async def get_holder_delta(mint: str, delay=60):
     initial = (await get_token_data(mint)).get("holders", 0)
     await asyncio.sleep(delay)
     later = (await get_token_data(mint)).get("holders", 0)
     return later - initial
 
-# 🔒 Pre-Approve Token Transfer
+# 📦 Pre-Approve Stub
 async def preapprove_token(token_address: str) -> bool:
     try:
-        url = f"https://api.dexscreener.com/latest/dex/pair/solana/{token_address}"
-        async with httpx.AsyncClient() as client:
-            await client.get(url)  # Placeholder for actual approval logic
+        await asyncio.sleep(0.1)
         return True
     except:
         return False
 
-# ⚠️ Token Safety Filter
+# 🛡️ Safety Check
 async def is_safe_token(mint: str) -> bool:
     try:
         data = await get_token_data(mint)
-        if not data.get("lp_locked", False):
-            return False
-        if not data.get("renounced", False):
-            return False
-        return True
+        return data.get("lp_locked", False) and data.get("renounced", False)
     except:
         return False
 
-# 💥 Rug Detection (Liquidity drop by 25%)
+# 💥 Rug Detection
 def is_rug(initial_lp, current_lp, threshold=0.75):
     return current_lp < (initial_lp * threshold)
 
-# 📈 1-min Volume Spike Detection
+# ⚡ Volume Spike Check
 async def is_volume_spike(mint: str, threshold: float = 5.0):
     try:
         url = f"https://public-api.birdeye.so/public/token/{mint}/chart?time=1m"
-        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
         async with httpx.AsyncClient() as client:
             r = await client.get(url, headers=headers)
             data = r.json().get("data", [])
@@ -122,11 +122,11 @@ async def is_volume_spike(mint: str, threshold: float = 5.0):
     except:
         return False
 
-# 🧮 Get Token Balance (for specific token)
+# 💼 Balance Check
 async def get_token_balance(wallet_address: str, token_mint: str) -> float:
     try:
         url = f"https://public-api.birdeye.so/public/holder_token_amount?wallet={wallet_address}&token={token_mint}"
-        headers = {"x-chain": "solana", "X-API-KEY": os.getenv("BIRDEYE_API_KEY")}
+        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
         async with httpx.AsyncClient() as client:
             res = await client.get(url, headers=headers)
             data = res.json().get("data", {})
@@ -134,15 +134,40 @@ async def get_token_balance(wallet_address: str, token_mint: str) -> float:
     except:
         return 0.0
 
-# 🧪 Multi-Wallet Stub (for future rotation)
+# 🧪 Multi-Wallet Stub
 def get_next_wallet():
     return keypair, wallet_pubkey
 
-# 📦 Raydium Fallback Stub (integrated in jupiter_trade)
+# 🔁 Raydium Fallback Stub
 async def buy_on_raydium(rpc_client, kp, token, amount):
-    await asyncio.sleep(0.3)  # Simulated TX logic
+    await asyncio.sleep(0.3)
     return False
 
 # 🧠 Alpha Feed Scanner Stub
 async def scan_alpha_feeds():
     return ["token_mint_example_1", "token_mint_example_2"]
+
+# ✅ Valid Mint Checker
+def is_valid_mint(account_keys):
+    for key in account_keys:
+        if isinstance(key, dict):
+            pubkey = key.get("pubkey", "")
+            if pubkey == TOKEN_PROGRAM_ID:
+                return True
+    return False
+
+# 🧠 Sniped Tokens Log
+def snipe_token(mint: str) -> bool:
+    try:
+        if not os.path.exists("sniped_tokens.txt"):
+            with open("sniped_tokens.txt", "w") as f:
+                pass
+        with open("sniped_tokens.txt", "r") as f:
+            if mint in f.read():
+                return False
+        with open("sniped_tokens.txt", "a") as f:
+            f.write(mint + "\n")
+        return True
+    except Exception as e:
+        print(f"[‼️] Snipe token tracking error: {e}")
+        return False
