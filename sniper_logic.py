@@ -1,31 +1,29 @@
-import os
 import asyncio
 import json
+import os
 from utils import send_telegram_alert, is_valid_mint, snipe_token
 from solders.pubkey import Pubkey
 
-# ✅ Token program ID (needed for log filters)
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-
-# ✅ Store tokens to avoid duplicates
 seen_tokens = set()
 
-# ✅ Forced test snipe if env var is present
-async def check_force_test_mint():
-    test_mint = os.getenv("FORCE_TEST_MINT")
-    if test_mint:
-        await send_telegram_alert(f"[TEST MODE] 🔫 Forcing test snipe on mint: {test_mint}")
-        if is_valid_mint(test_mint):
-            await snipe_token(test_mint)
+# ✅ One-time forced test buy
+async def force_test_buy_if_present():
+    mint = os.getenv("FORCE_TEST_MINT")
+    if mint:
+        await send_telegram_alert(f"[TEST MODE] 🧪 FORCE_TEST_MINT detected: {mint}")
+        if is_valid_mint(mint):
+            await send_telegram_alert(f"[TEST MODE] ✅ Mint is valid. Attempting forced buy...")
+            await snipe_token(mint)
+            await send_telegram_alert(f"[TEST MODE] 🟢 Forced buy attempt complete.")
         else:
-            await send_telegram_alert("❌ Invalid test mint format.")
-        await asyncio.sleep(3)
+            await send_telegram_alert("❌ Invalid FORCE_TEST_MINT format.")
 
-# ✅ Jupiter listener
+# ✅ Jupiter mempool listener
 async def mempool_listener_jupiter():
     import websockets
-    url = os.getenv("SOLANA_MEMPOOL_WS")
 
+    url = os.getenv("SOLANA_MEMPOOL_WS")
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -59,11 +57,11 @@ async def mempool_listener_jupiter():
                 print(f"[JUPITER ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Raydium listener
+# ✅ Raydium mempool listener
 async def mempool_listener_raydium():
     import websockets
-    url = os.getenv("SOLANA_MEMPOOL_WS")
 
+    url = os.getenv("SOLANA_MEMPOOL_WS")
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -97,18 +95,14 @@ async def mempool_listener_raydium():
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Main function
-async def run_sniper():
+# ✅ Combined runner
+async def start_sniper():
+    await force_test_buy_if_present()  # ← this runs BEFORE listeners
     await send_telegram_alert("✅ Sniper bot is now live and scanning the mempool...")
-
-    # ✅ Trigger force test logic if test mint is set
-    await check_force_test_mint()
-
-    # ✅ Start mempool listeners
     await asyncio.gather(
         mempool_listener_jupiter(),
         mempool_listener_raydium()
     )
 
 if __name__ == "__main__":
-    asyncio.run(run_sniper())
+    asyncio.run(start_sniper())
