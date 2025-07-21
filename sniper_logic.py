@@ -1,9 +1,10 @@
 import asyncio
 import json
+import os
 from utils import send_telegram_alert, is_valid_mint, snipe_token
 from solders.pubkey import Pubkey
 
-# ✅ Define TOKEN_PROGRAM_ID directly (fixes your import error)
+# ✅ Define TOKEN_PROGRAM_ID directly
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 # ✅ Track seen tokens to prevent duplicate snipes
@@ -13,7 +14,7 @@ seen_tokens = set()
 async def mempool_listener_jupiter():
     import websockets
 
-    url = "wss://helius-rpc.com/?api-key=YOUR_API_KEY"
+    url = os.getenv("SOLANA_MEMPOOL_WS")
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -51,7 +52,7 @@ async def mempool_listener_jupiter():
 async def mempool_listener_raydium():
     import websockets
 
-    url = "wss://helius-rpc.com/?api-key=YOUR_API_KEY"
+    url = os.getenv("SOLANA_MEMPOOL_WS")
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
