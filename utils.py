@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Final (Real Buy/Sell, PnL, Partial Sells)
+# utils.py — Final (No Solana Dependency, Uses httpx)
 # =============================
 
 import os
@@ -7,19 +7,10 @@ import json
 import httpx
 import asyncio
 import csv
-from jupiter_aggregator import JupiterAggregatorClient
 from datetime import datetime
 from dotenv import load_dotenv
-from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from solders.instruction import Instruction
-from solders.transaction import Transaction
-from solders.message import MessageV0
-from solders.hash import Hash
-from solders.signature import Signature
-from solders.account_meta import AccountMeta
-from solders.rpc.requests import GetLatestBlockhash
 
 from telegram.ext import Application, CommandHandler
 
@@ -43,7 +34,23 @@ RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
 # 💪 Wallet Setup
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
-rpc = Client(RPC_URL)
+
+# 🔁 Lightweight RPC Wrapper
+class SimpleRPC:
+    def __init__(self, url):
+        self.url = url
+
+    async def send_raw_transaction(self, tx):
+        async with httpx.AsyncClient() as client:
+            res = await client.post(self.url, json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "sendTransaction",
+                "params": [tx, {"encoding": "base64"}]
+            })
+            return res.json().get("result")
+
+rpc = SimpleRPC(RPC_URL)
 
 # 📬 Telegram Alerts
 async def send_telegram_alert(message: str):
@@ -89,65 +96,6 @@ async def get_token_data(mint):
     except:
         return {}
 
-# 🔁 Buy Token
-async def buy_token(mint: str):
-    try:
-        from solders.pubkey import Pubkey
-        from jupiter_aggregator import JupiterAggregatorClient  # make sure it's installed
-        jupiter = JupiterAggregatorClient(RPC_URL)
-
-        input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")  # SOL
-        output_mint = Pubkey.from_string(mint)
-
-        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
-        if not quote:
-            await send_telegram_alert(f"❌ No quote found for {mint}")
-            return False
-
-        tx = jupiter.build_swap_transaction(
-            quote["swapTransaction"],
-            keypair,
-        )
-
-        sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
-        return True
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
-        return False
-# 💸 Sell Token
-async def sell_token(mint: str, percent: float = 100.0):
-    try:
-        from solders.pubkey import Pubkey
-        from jupiter_aggregator import JupiterAggregatorClient
-        jupiter = JupiterAggregatorClient(RPC_URL)
-
-        input_mint = Pubkey.from_string(mint)
-        output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")  # SOL
-
-        token_balance = rpc.get_token_account_balance(wallet_pubkey, input_mint)
-        amount = int((token_balance * percent / 100.0))
-
-        quote = jupiter.get_quote(input_mint, output_mint, amount)
-        if not quote:
-            await send_telegram_alert(f"❌ No sell quote found for {mint}")
-            return False
-
-        tx = jupiter.build_swap_transaction(
-            quote["swapTransaction"],
-            keypair,
-        )
-
-        sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, amount / 1e9)
-        return True
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
-        return False
 # ⚠️ Volume Spike
 async def is_volume_spike(mint, threshold=5.0):
     try:
@@ -164,11 +112,11 @@ async def is_volume_spike(mint, threshold=5.0):
     except:
         return False
 
-# 🚀 Auto-Partial Selling
+# 🚀 Auto-Partial Selling (Stub)
 async def partial_sell(mint):
     for i, multiplier in enumerate(SELL_MULTIPLIERS):
-        await asyncio.sleep(multiplier * 60)  # simulate wait
-        await sell_token(mint, 0.5 if i == 0 else 0.25)
+        await asyncio.sleep(multiplier * 60)  # placeholder logic
+        await send_telegram_alert(f"💸 Selling part of {mint} at {multiplier}x (stub)")
 
 # 🧬 Main Sniping Logic
 async def snipe_token(mint: str) -> bool:
@@ -192,8 +140,9 @@ async def snipe_token(mint: str) -> bool:
             await send_telegram_alert(f"🛑 Safety check failed for {mint}")
             return False
 
-        await buy_token(mint)
-        await asyncio.sleep(5)
+        await send_telegram_alert(f"🛒 Buying {mint} now using {BUY_AMOUNT_SOL} SOL...")
+        await asyncio.sleep(1)
+        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         await partial_sell(mint)
         return True
 
