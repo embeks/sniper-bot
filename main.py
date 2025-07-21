@@ -1,12 +1,13 @@
+# =========================
+# main.py — Final
+# =========================
+
 import asyncio
 from sniper_logic import start_sniper
-from utils import start_command_bot  # make sure this is defined
-
-async def main():
-    await asyncio.gather(
-        start_sniper(),
-        start_command_bot()
-    )
+from utils import start_command_bot
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_sniper())
+    loop.run_in_executor(None, start_command_bot)
+    loop.run_forever()
