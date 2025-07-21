@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py (Elite Debug Patched)
+# sniper_logic.py (Full Debug Patched – Transparent Mint Logging)
 # =========================
 import os
 import json
@@ -40,7 +40,7 @@ if os.path.exists("sniped_tokens.txt"):
 async def handle_log(message, listener_name):
     global sniped_tokens
     try:
-        # await send_telegram_alert(f"📨 [{listener_name}] Raw log received.")  # ❌ Disabled debug spam
+        print(f"[📨] Raw log: {message}")
         data = json.loads(message)
         result = data.get("result")
         if not isinstance(result, dict):
@@ -51,51 +51,68 @@ async def handle_log(message, listener_name):
         if not isinstance(accounts, list):
             return
 
-        # ✅ Filter logs without Token Program
         if TOKEN_PROGRAM_ID not in accounts:
-            await send_telegram_alert(f"⚠️ [{listener_name}] Ignored log — no TOKEN_PROGRAM_ID in accountKeys.")
+            print(f"[⚠️] Ignored log – TOKEN_PROGRAM_ID not found")
             return
 
-        detected = False
+        valid_44s = []
+        ignored = {"short": [], "so111": [], "already": []}
 
         for token_mint in accounts:
-            if len(token_mint) == 44:
-                detected = True
-                await send_telegram_alert(f"👀 {listener_name} found token: `{token_mint}`")
-
-            if len(token_mint) != 44 or token_mint.startswith("So111"):
+            if len(token_mint) != 44:
+                ignored["short"].append(token_mint)
+                continue
+            if token_mint.startswith("So111"):
+                ignored["so111"].append(token_mint)
                 continue
             if token_mint in sniped_tokens:
+                ignored["already"].append(token_mint)
                 continue
 
+            # Passed filters
+            valid_44s.append(token_mint)
             sniped_tokens.add(token_mint)
             with open("sniped_tokens.txt", "a") as f:
                 f.write(f"{token_mint}\n")
 
             await send_telegram_alert(f"🟡 [{listener_name}] Detected new token mint: {token_mint}")
 
+            # Safety checks
             is_safe = await is_safe_token(token_mint)
             if not is_safe:
                 await send_telegram_alert(f"⚠️ Token {token_mint} failed safety checks. Skipping...")
-                return
+                continue
 
-            spike = await is_volume_spike(token_mint)
-            if spike:
+            # Spike + delta
+            if await is_volume_spike(token_mint):
                 await send_telegram_alert(f"📈 Volume spike detected for {token_mint}")
-
             holder_delta = await get_holder_delta(token_mint, delay=60)
             await send_telegram_alert(f"👥 Holder delta after 60s: {holder_delta}")
 
+            # Buy and manage
             entry_price = await get_token_price(token_mint)
             if not entry_price:
-                return
-
+                continue
             await send_telegram_alert(f"🚨 [{listener_name}] Attempting buy: {token_mint}")
             await buy_token(token_mint, BUY_AMOUNT_SOL)
             await auto_sell_if_profit(token_mint, entry_price)
 
-        if not detected:
-            await send_telegram_alert(f"🔎 [{listener_name}] No valid 44-char token mints in log")
+        # Summary alerts
+        if valid_44s:
+            await send_telegram_alert(f"👀 [{listener_name}] 44-char tokens: {len(valid_44s)} detected")
+        else:
+            await send_telegram_alert(f"🔎 [{listener_name}] No mint-worthy tokens detected in log")
+
+        # Debug: List ignored
+        if any(ignored.values()):
+            lines = []
+            if ignored["short"]:
+                lines.append(f"⛔ Not 44-char: {len(ignored['short'])}")
+            if ignored["so111"]:
+                lines.append(f"🚫 Starts with So111: {len(ignored['so111'])}")
+            if ignored["already"]:
+                lines.append(f"🕒 Already sniped: {len(ignored['already'])}")
+            await send_telegram_alert(f"🧾 [{listener_name}] Ignored keys: " + " | ".join(lines))
 
     except Exception as e:
         print(f"[‼️] {listener_name} error: {e}")
