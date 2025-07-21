@@ -1,17 +1,31 @@
+import os
 import asyncio
 import json
-import os
 from utils import send_telegram_alert, is_valid_mint, snipe_token
 from solders.pubkey import Pubkey
 
+# ✅ Token program ID (needed for log filters)
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+# ✅ Store tokens to avoid duplicates
 seen_tokens = set()
+
+# ✅ Forced test snipe if env var is present
+async def check_force_test_mint():
+    test_mint = os.getenv("FORCE_TEST_MINT")
+    if test_mint:
+        await send_telegram_alert(f"[TEST MODE] 🔫 Forcing test snipe on mint: {test_mint}")
+        if is_valid_mint(test_mint):
+            await snipe_token(test_mint)
+        else:
+            await send_telegram_alert("❌ Invalid test mint format.")
+        await asyncio.sleep(3)
 
 # ✅ Jupiter listener
 async def mempool_listener_jupiter():
     import websockets
-
     url = os.getenv("SOLANA_MEMPOOL_WS")
+
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -48,8 +62,8 @@ async def mempool_listener_jupiter():
 # ✅ Raydium listener
 async def mempool_listener_raydium():
     import websockets
-
     url = os.getenv("SOLANA_MEMPOOL_WS")
+
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -83,17 +97,14 @@ async def mempool_listener_raydium():
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Startup + optional forced test
+# ✅ Main function
 async def run_sniper():
     await send_telegram_alert("✅ Sniper bot is now live and scanning the mempool...")
 
-    force_test_mint = os.getenv("FORCE_TEST_MINT")
-    if force_test_mint:
-        print(f"[TEST MODE] Detected FORCE_TEST_MINT: {force_test_mint}")
-        await send_telegram_alert(f"[TEST MODE] 🔫 Forcing test snipe on: {force_test_mint}")
-        await snipe_token(force_test_mint)
-        return  # Remove this line if you want to resume live scanning after test
+    # ✅ Trigger force test logic if test mint is set
+    await check_force_test_mint()
 
+    # ✅ Start mempool listeners
     await asyncio.gather(
         mempool_listener_jupiter(),
         mempool_listener_raydium()
