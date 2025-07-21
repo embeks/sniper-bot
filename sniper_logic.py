@@ -1,8 +1,20 @@
+# =========================
+# sniper_logic.py — Final Version (Live Buys via Jupiter with Telegram Alerts)
+# =========================
+
 import asyncio
 import json
 import os
-from utils import send_telegram_alert, is_valid_mint, snipe_token
 from solders.pubkey import Pubkey
+from dotenv import load_dotenv
+
+from utils import (
+    send_telegram_alert,
+    is_valid_mint,
+    snipe_token
+)
+
+load_dotenv()
 
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 seen_tokens = set()
@@ -12,7 +24,7 @@ async def force_test_buy_if_present():
     mint = os.getenv("FORCE_TEST_MINT")
     if mint:
         await send_telegram_alert(f"[TEST MODE] 🧪 FORCE_TEST_MINT detected: {mint}")
-        if is_valid_mint(mint):
+        if is_valid_mint([{ 'pubkey': mint }]):
             await send_telegram_alert(f"[TEST MODE] ✅ Mint is valid. Attempting forced buy...")
             await snipe_token(mint)
             await send_telegram_alert(f"[TEST MODE] 🟢 Forced buy attempt complete.")
@@ -50,7 +62,7 @@ async def mempool_listener_jupiter():
                                 continue
                             seen_tokens.add(key)
                             print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint(key):
+                            if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
                                 await snipe_token(key)
             except Exception as e:
@@ -88,7 +100,7 @@ async def mempool_listener_raydium():
                                 continue
                             seen_tokens.add(key)
                             print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint(key):
+                            if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
                                 await snipe_token(key)
             except Exception as e:
