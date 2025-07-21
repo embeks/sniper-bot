@@ -1,61 +1,97 @@
+import asyncio
 import json
-import os
-from datetime import datetime, timedelta
-from utils import send_telegram_alert, TOKEN_PROGRAM_ID, is_valid_mint, snipe_token
+from utils import send_telegram_alert, is_valid_mint, snipe_token
+from solders.pubkey import Pubkey
 
-sniped_tokens = set()
-heartbeat_interval = timedelta(hours=4)
-last_heartbeat = datetime.utcnow()
+# ✅ Define TOKEN_PROGRAM_ID directly (fixes your import error)
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
-# Load sniped tokens
-if os.path.exists("sniped_tokens.txt"):
-    with open("sniped_tokens.txt", "r") as f:
-        sniped_tokens = set(line.strip() for line in f)
+# ✅ Track seen tokens to prevent duplicate snipes
+seen_tokens = set()
 
-async def handle_log(message, listener_name):
-    global sniped_tokens, last_heartbeat
-    try:
-        data = json.loads(message)
-        result = data.get("result")
-        if not isinstance(result, dict):
-            return
+# ✅ Jupiter mempool listener
+async def mempool_listener_jupiter():
+    import websockets
 
-        log = result.get("value", {})
-        accounts = log.get("accountKeys", [])
-        if not isinstance(accounts, list):
-            return
+    url = "wss://helius-rpc.com/?api-key=YOUR_API_KEY"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": [TOKEN_PROGRAM_ID]},
+                {"commitment": "processed"}
+            ]
+        }))
+        print("[🔁] Jupiter listener subscribed.")
+        await send_telegram_alert("📡 JUPITER listener active... ✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
 
-        # Print accounts to Render logs for dev visibility
-        print(f"[{listener_name}] Scanning log with accounts: {accounts}")
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                for log in logs:
+                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
+                        account_keys = data["params"]["result"]["value"].get("accountKeys", [])
+                        for key in account_keys:
+                            if key in seen_tokens:
+                                continue
+                            seen_tokens.add(key)
+                            print(f"[🔍] Scanning token: {key}")
+                            if is_valid_mint(key):
+                                await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
+                                await snipe_token(key)
+            except Exception as e:
+                print(f"[JUPITER ERROR] {e}")
+                await asyncio.sleep(1)
 
-        # Check if log contains a Token Program ID (usually at index 0–3)
-        if TOKEN_PROGRAM_ID not in accounts:
-            return
+# ✅ Raydium mempool listener
+async def mempool_listener_raydium():
+    import websockets
 
-        # Detect mint address
-        possible_mints = [acc for acc in accounts if acc != TOKEN_PROGRAM_ID and acc not in sniped_tokens]
+    url = "wss://helius-rpc.com/?api-key=YOUR_API_KEY"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": [TOKEN_PROGRAM_ID]},
+                {"commitment": "processed"}
+            ]
+        }))
+        print("[🔁] Raydium listener subscribed.")
+        await send_telegram_alert("📡 RAYDIUM listener active... ✅ Starting sniper bot with dual sockets (Jupiter + Raydium)...")
 
-        for mint in possible_mints:
-            if mint in sniped_tokens:
-                continue
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                for log in logs:
+                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
+                        account_keys = data["params"]["result"]["value"].get("accountKeys", [])
+                        for key in account_keys:
+                            if key in seen_tokens:
+                                continue
+                            seen_tokens.add(key)
+                            print(f"[🔍] Scanning token: {key}")
+                            if is_valid_mint(key):
+                                await send_telegram_alert(f"[🟡] Detected new token mint: {key}")
+                                await snipe_token(key)
+            except Exception as e:
+                print(f"[RAYDIUM ERROR] {e}")
+                await asyncio.sleep(1)
 
-            # Check if valid mint
-            is_mint = await is_valid_mint(mint)
-            if is_mint:
-                sniped_tokens.add(mint)
-                with open("sniped_tokens.txt", "a") as f:
-                    f.write(mint + "\n")
+# ✅ Run both listeners in parallel
+async def run_sniper():
+    await send_telegram_alert("✅ Sniper bot is now live and scanning the mempool...")
+    await asyncio.gather(
+        mempool_listener_jupiter(),
+        mempool_listener_raydium()
+    )
 
-                await send_telegram_alert(f"🎯 Valid mint detected: `{mint}`\nSniping now...")
-                await snipe_token(mint)
-            else:
-                print(f"❌ Not a valid mint: {mint}")
-
-        # Send heartbeat every 4 hours
-        now = datetime.utcnow()
-        if now - last_heartbeat > heartbeat_interval:
-            await send_telegram_alert(f"❤️ {listener_name} heartbeat @ {now.strftime('%H:%M:%S UTC')}")
-            last_heartbeat = now
-
-    except Exception as e:
-        print(f"⚠️ Error in handle_log: {e}")
+if __name__ == "__main__":
+    asyncio.run(run_sniper())
