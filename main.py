@@ -1,6 +1,6 @@
-# =============================
-# main.py — Start Sniper Bot
-# =============================
+# =========================
+# main.py — Launch Bot
+# =========================
 
 import asyncio
 from sniper_logic import start_sniper
