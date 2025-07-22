@@ -1,6 +1,6 @@
-# ============================
-# utils.py — Elite Version (Live Buy/Sell, Auto Profit-Taking, Rug & Timeout Logic)
-# ============================
+# =============================
+# utils.py — Final (Auto-Sell If Profit, Real Trades, Full PnL)
+# =============================
 
 import os
 import json
@@ -12,7 +12,9 @@ from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
+
 from telegram.ext import Application, CommandHandler
+
 from jupiter_aggregator import JupiterAggregatorClient
 
 load_dotenv()
@@ -86,17 +88,17 @@ async def buy_token(mint: str):
         quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
         if not quote:
             await send_telegram_alert(f"❌ No quote found for {mint}")
-            return None
+            return False
 
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
-        return buy_token.__globals__["BUY_AMOUNT_SOL"] / quote["outAmount"]
+        return True
 
     except Exception as e:
         await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
-        return None
+        return False
 
 # 💸 Sell Token
 async def sell_token(mint: str, percent: float = 100.0):
@@ -104,9 +106,8 @@ async def sell_token(mint: str, percent: float = 100.0):
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
-        # Placeholder: Fetch actual balance using TokenAccounts
-        balance = 1e9  # Replace with real fetch
-        amount = int(balance * percent / 100.0)
+        token_balance = rpc.get_token_account_balance(wallet_pubkey, input_mint)
+        amount = int((token_balance * percent / 100.0))
 
         quote = jupiter.get_quote(input_mint, output_mint, amount)
         if not quote:
@@ -123,45 +124,50 @@ async def sell_token(mint: str, percent: float = 100.0):
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
 
-# 🎯 Profit-Taking Logic
-async def auto_sell_if_profit(mint, buy_price):
+# 📈 Wait & Auto-Sell Logic
+async def wait_and_auto_sell(mint):
     try:
-        sold = {"50": False, "25a": False, "25b": False}
-        start_time = datetime.utcnow()
+        buy_price = await get_token_price(mint)
+        if not buy_price:
+            await send_telegram_alert(f"❌ No buy price found for {mint}")
+            return
 
-        while (datetime.utcnow() - start_time).total_seconds() < SELL_TIMEOUT_SEC:
-            price = await get_token_price(mint)
-            if not price:
+        start_time = datetime.utcnow()
+        sold = set()
+
+        while (datetime.utcnow() - start_time).seconds < SELL_TIMEOUT_SEC:
+            current_price = await get_token_price(mint)
+            if not current_price:
                 await asyncio.sleep(3)
                 continue
 
-            ratio = price / buy_price
-            if ratio >= 2 and not sold["50"]:
-                await send_telegram_alert(f"💰 2x profit hit for {mint}. Selling 50%...")
+            ratio = current_price / buy_price
+            if ratio >= 2 and 2 not in sold:
+                await send_telegram_alert(f"💰 2x profit reached. Selling 50%...")
                 await sell_token(mint, 50)
-                sold["50"] = True
-            elif ratio >= 5 and not sold["25a"]:
-                await send_telegram_alert(f"🚀 5x profit hit. Selling 25%...")
+                sold.add(2)
+            if ratio >= 5 and 5 not in sold:
+                await send_telegram_alert(f"🚀 5x profit reached. Selling 25%...")
                 await sell_token(mint, 25)
-                sold["25a"] = True
-            elif ratio >= 10 and not sold["25b"]:
-                await send_telegram_alert(f"🌕 10x hit. Selling final 25%...")
+                sold.add(5)
+            if ratio >= 10 and 10 not in sold:
+                await send_telegram_alert(f"🌕 10x profit reached. Selling final 25%...")
                 await sell_token(mint, 25)
                 return
 
-            data = await get_token_data(mint)
-            if data and data["liquidity"] < RUG_LP_THRESHOLD:
-                await send_telegram_alert(f"⚠️ LP dropped. Rug suspected. Selling ALL!")
+            token_data = await get_token_data(mint)
+            if token_data and token_data["liquidity"] < RUG_LP_THRESHOLD:
+                await send_telegram_alert(f"⚠️ LP dropped. Rug suspected. Selling all.")
                 await sell_token(mint, 100)
                 return
 
             await asyncio.sleep(3)
 
-        await send_telegram_alert(f"⌛ Timeout. Selling ALL {mint}.")
+        await send_telegram_alert(f"⌛ Timeout hit. Selling all.")
         await sell_token(mint, 100)
 
     except Exception as e:
-        await send_telegram_alert(f"❌ Auto-sell error: {e}")
+        await send_telegram_alert(f"❌ Auto-sell failed for {mint}: {e}")
 
 # ✅ Is Valid Mint
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
