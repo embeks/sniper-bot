@@ -1,14 +1,18 @@
+# =============================
+# utils.py — Log Skipped Tokens + Alert (Fixed Telegram Bot Conflict)
+# =============================
+
 import os
 import json
 import httpx
 import asyncio
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
-from telegram.ext import Application, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from jupiter_aggregator import JupiterAggregatorClient
 
 load_dotenv()
@@ -107,6 +111,8 @@ async def sell_token(mint: str, percent: float = 100.0):
     try:
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+
+        # Dummy logic for example (replace with token balance check)
         quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
         if not quote:
             await send_telegram_alert(f"❌ No sell quote found for {mint}")
@@ -133,9 +139,12 @@ def is_valid_mint(keys):
         if isinstance(k, dict):
             if k.get("pubkey") == TOKEN_PROGRAM_ID:
                 return True
+        elif isinstance(k, str):
+            if k == TOKEN_PROGRAM_ID:
+                return True
     return False
 
-# 🤖 Telegram Bot
+# 🤖 Telegram Command Bot (Async, Non-Conflicting)
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
@@ -164,7 +173,7 @@ async def reset(update, context):
     await update.message.reply_text("♻️ Sniped token list reset.")
 
 async def start_command_bot():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("holdings", holdings))
     app.add_handler(CommandHandler("logs", logs))
@@ -173,4 +182,4 @@ async def start_command_bot():
     print("🤖 Telegram command bot ready.")
     await app.initialize()
     await app.start()
-    await app.updater.start_polling()
+    await asyncio.Event().wait()  # Keeps the bot alive
