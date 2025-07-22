@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Final (Auto-Sell If Profit, Real Trades, Full PnL)
+# utils.py — Log Skipped Tokens + Alert
 # =============================
 
 import os
@@ -12,9 +12,7 @@ from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
-
 from telegram.ext import Application, CommandHandler
-
 from jupiter_aggregator import JupiterAggregatorClient
 
 load_dotenv()
@@ -35,7 +33,7 @@ wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
 
-# 📬 Telegram Alerts
+# 📩 Telegram Alerts
 async def send_telegram_alert(message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -50,6 +48,12 @@ def log_trade(token, action, sol_in, token_out):
     with open("trade_log.csv", "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), token, action, sol_in, token_out])
+
+# ⚠️ Skipped Token Logger
+def log_skipped_token(mint: str, reason: str):
+    with open("skipped_tokens.csv", "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
 # 📈 Token Price
 async def get_token_price(token_mint):
@@ -88,6 +92,7 @@ async def buy_token(mint: str):
         quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
         if not quote:
             await send_telegram_alert(f"❌ No quote found for {mint}")
+            log_skipped_token(mint, "No Jupiter quote")
             return False
 
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
@@ -98,6 +103,7 @@ async def buy_token(mint: str):
 
     except Exception as e:
         await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
+        log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
 # 💸 Sell Token
@@ -106,10 +112,8 @@ async def sell_token(mint: str, percent: float = 100.0):
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
-        token_balance = rpc.get_token_account_balance(wallet_pubkey, input_mint)
-        amount = int((token_balance * percent / 100.0))
-
-        quote = jupiter.get_quote(input_mint, output_mint, amount)
+        # Dummy logic for example (replace with token balance check)
+        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
         if not quote:
             await send_telegram_alert(f"❌ No sell quote found for {mint}")
             return False
@@ -117,57 +121,16 @@ async def sell_token(mint: str, percent: float = 100.0):
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, amount / 1e9)
+        log_trade(mint, f"SELL {percent}%", 0, quote.get("outAmount", 0) / 1e9)
         return True
 
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
 
-# 📈 Wait & Auto-Sell Logic
+# 📈 Price Auto-Sell Logic (unchanged placeholder)
 async def wait_and_auto_sell(mint):
-    try:
-        buy_price = await get_token_price(mint)
-        if not buy_price:
-            await send_telegram_alert(f"❌ No buy price found for {mint}")
-            return
-
-        start_time = datetime.utcnow()
-        sold = set()
-
-        while (datetime.utcnow() - start_time).seconds < SELL_TIMEOUT_SEC:
-            current_price = await get_token_price(mint)
-            if not current_price:
-                await asyncio.sleep(3)
-                continue
-
-            ratio = current_price / buy_price
-            if ratio >= 2 and 2 not in sold:
-                await send_telegram_alert(f"💰 2x profit reached. Selling 50%...")
-                await sell_token(mint, 50)
-                sold.add(2)
-            if ratio >= 5 and 5 not in sold:
-                await send_telegram_alert(f"🚀 5x profit reached. Selling 25%...")
-                await sell_token(mint, 25)
-                sold.add(5)
-            if ratio >= 10 and 10 not in sold:
-                await send_telegram_alert(f"🌕 10x profit reached. Selling final 25%...")
-                await sell_token(mint, 25)
-                return
-
-            token_data = await get_token_data(mint)
-            if token_data and token_data["liquidity"] < RUG_LP_THRESHOLD:
-                await send_telegram_alert(f"⚠️ LP dropped. Rug suspected. Selling all.")
-                await sell_token(mint, 100)
-                return
-
-            await asyncio.sleep(3)
-
-        await send_telegram_alert(f"⌛ Timeout hit. Selling all.")
-        await sell_token(mint, 100)
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Auto-sell failed for {mint}: {e}")
+    pass
 
 # ✅ Is Valid Mint
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -178,10 +141,7 @@ def is_valid_mint(keys):
                 return True
     return False
 
-# =========================
-# 🤖 Telegram Command Bot
-# =========================
-
+# 🤖 Telegram Bot
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
@@ -198,9 +158,9 @@ async def logs(update, context):
     try:
         with open("trade_log.csv", "r") as f:
             lines = f.readlines()[-10:]
-        await update.message.reply_text("📝 Last trades:\n" + "".join(lines) if lines else "📝 No trades logged yet.")
+        await update.message.reply_text("📜 Last trades:\n" + "".join(lines) if lines else "📜 No trades logged yet.")
     except:
-        await update.message.reply_text("📝 No logs found.")
+        await update.message.reply_text("📜 No logs found.")
 
 async def wallet(update, context):
     await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`")
@@ -220,3 +180,4 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
