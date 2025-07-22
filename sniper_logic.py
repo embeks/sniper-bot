@@ -107,7 +107,8 @@ async def jupiter_listener():
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
     await asyncio.gather(
-        asyncio.to_thread(start_command_bot),
+        start_command_bot(),  # <- this line is now CORRECT
         jupiter_listener(),
         raydium_listener()
+    )
     )
