@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Log Skipped Tokens + Alert (Fixed Telegram Bot Conflict)
+# utils.py — Log Skipped Tokens + Alert
 # =============================
 
 import os
@@ -12,8 +12,7 @@ from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from jupiter_aggregator import JupiterAggregatorClient
+from telegram.ext import Application, CommandHandler
 
 load_dotenv()
 
@@ -31,7 +30,6 @@ RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
-jupiter = JupiterAggregatorClient(RPC_URL)
 
 # 📩 Telegram Alerts
 async def send_telegram_alert(message: str):
@@ -86,19 +84,22 @@ async def get_token_data(mint):
 # 🔁 Buy Token
 async def buy_token(mint: str):
     try:
-        input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-        output_mint = Pubkey.from_string(mint)
+        input_mint = "So11111111111111111111111111111111111111112"  # SOL
+        output_mint = mint
+        amount = int(BUY_AMOUNT_SOL * 1e9)
+        url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&slippageBps=100"
 
-        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
-        if not quote:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            data = response.json()
+
+        if "data" not in data or not data["data"]:
             await send_telegram_alert(f"❌ No quote found for {mint}")
-            log_skipped_token(mint, "No Jupiter quote")
+            log_skipped_token(mint, "No Jupiter quote (REST API)")
             return False
 
-        tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
-        sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
+        await send_telegram_alert(f"🧠 Quote OK for {mint}, simulating buy only (not executing tx)")
+        log_trade(mint, "BUY (SIMULATED)", BUY_AMOUNT_SOL, 0)
         return True
 
     except Exception as e:
@@ -106,27 +107,9 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# 💸 Sell Token
+# 💸 Sell Token (placeholder logic)
 async def sell_token(mint: str, percent: float = 100.0):
-    try:
-        input_mint = Pubkey.from_string(mint)
-        output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-
-        # Dummy logic for example (replace with token balance check)
-        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
-        if not quote:
-            await send_telegram_alert(f"❌ No sell quote found for {mint}")
-            return False
-
-        tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
-        sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, quote.get("outAmount", 0) / 1e9)
-        return True
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
-        return False
+    pass
 
 # 📈 Price Auto-Sell Logic (unchanged placeholder)
 async def wait_and_auto_sell(mint):
@@ -139,12 +122,9 @@ def is_valid_mint(keys):
         if isinstance(k, dict):
             if k.get("pubkey") == TOKEN_PROGRAM_ID:
                 return True
-        elif isinstance(k, str):
-            if k == TOKEN_PROGRAM_ID:
-                return True
     return False
 
-# 🤖 Telegram Command Bot (Async, Non-Conflicting)
+# 🤖 Telegram Bot
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
@@ -173,7 +153,7 @@ async def reset(update, context):
     await update.message.reply_text("♻️ Sniped token list reset.")
 
 async def start_command_bot():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("holdings", holdings))
     app.add_handler(CommandHandler("logs", logs))
@@ -182,4 +162,5 @@ async def start_command_bot():
     print("🤖 Telegram command bot ready.")
     await app.initialize()
     await app.start()
-    await asyncio.Event().wait()  # Keeps the bot alive
+    await app.updater.start_polling()
+
