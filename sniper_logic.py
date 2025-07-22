@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Elite (w/ FORCE_TEST_MINT Buy Logic)
+# sniper_logic.py — Helius Free Plan (Stable)
 # =========================
 
 import asyncio
@@ -22,9 +22,9 @@ HELIUS_API = os.getenv("HELIUS_API")
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 seen_tokens = set()
 
-# ✅ Raydium Listener
+# ✅ Free Plan-compatible Raydium Listener
 async def raydium_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/raydium/logs?api-key={HELIUS_API}"
+    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -52,7 +52,7 @@ async def raydium_listener():
                             seen_tokens.add(key)
                             print(f"[🔍] Token found: {key}")
 
-                            if is_valid_mint([{ 'pubkey': key }] ):
+                            if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] Valid token found: {key}")
                                 success = await buy_token(key)
                                 if success:
@@ -63,60 +63,22 @@ async def raydium_listener():
                 print(f"[RAYDIUM ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Jupiter Listener
-async def jupiter_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/jupiter/logs?api-key={HELIUS_API}"
-    async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "logsSubscribe",
-            "params": [
-                {"mentions": [TOKEN_PROGRAM_ID]},
-                {"commitment": "processed"}
-            ]
-        }))
-        print("[🔁] Jupiter listener subscribed.")
-        await send_telegram_alert("📡 Jupiter listener live.")
-
-        while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
-                for log in logs:
-                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
-                        keys = data["params"]["result"]["value"].get("accountKeys", [])
-                        for key in keys:
-                            if key in seen_tokens:
-                                continue
-                            seen_tokens.add(key)
-                            print(f"[🔍] Token found: {key}")
-
-                            if is_valid_mint([{ 'pubkey': key }] ):
-                                await send_telegram_alert(f"[🟡] Valid token found: {key}")
-                                success = await buy_token(key)
-                                if success:
-                                    await wait_and_auto_sell(key)
-                            else:
-                                await send_telegram_alert(f"⛔ Skipped token (invalid mint): {key}")
-            except Exception as e:
-                print(f"[JUPITER ERROR] {e}")
-                await asyncio.sleep(1)
+# ✅ FORCE TEST MODE (bypasses mempool)
+async def force_test_sniper():
+    if FORCE_TEST_MINT:
+        await send_telegram_alert(f"🚨 FORCED TEST MODE: Buying test mint\n{FORCE_TEST_MINT}")
+        if is_valid_mint([{ 'pubkey': FORCE_TEST_MINT }]):
+            success = await buy_token(FORCE_TEST_MINT)
+            if success:
+                await wait_and_auto_sell(FORCE_TEST_MINT)
+        else:
+            await send_telegram_alert(f"❌ Invalid test token: {FORCE_TEST_MINT}")
 
 # ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
-
-    # 🚨 Forced Test Buy Mode
-    if FORCE_TEST_MINT:
-        await send_telegram_alert(f"🚨 FORCED TEST MODE: Buying test mint {FORCE_TEST_MINT}")
-        success = await buy_token(FORCE_TEST_MINT)
-        if success:
-            await wait_and_auto_sell(FORCE_TEST_MINT)
-
     await asyncio.gather(
-        start_command_bot(),
-        jupiter_listener(),
-        raydium_listener()
+        asyncio.to_thread(start_command_bot),
+        raydium_listener(),
+        force_test_sniper()
     )
