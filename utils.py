@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Log Skipped Tokens + Alert
+# utils.py — PRE FORCE-TEST VERSION
 # =============================
 
 import os
@@ -13,6 +13,7 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from telegram.ext import Application, CommandHandler
+from jupiter_aggregator import JupiterAggregatorClient
 
 load_dotenv()
 
@@ -30,6 +31,7 @@ RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
+jupiter = JupiterAggregatorClient(RPC_URL)
 
 # 📩 Telegram Alerts
 async def send_telegram_alert(message: str):
@@ -84,22 +86,19 @@ async def get_token_data(mint):
 # 🔁 Buy Token
 async def buy_token(mint: str):
     try:
-        input_mint = "So11111111111111111111111111111111111111112"  # SOL
-        output_mint = mint
-        amount = int(BUY_AMOUNT_SOL * 1e9)
-        url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&slippageBps=100"
+        input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+        output_mint = Pubkey.from_string(mint)
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-            data = response.json()
-
-        if "data" not in data or not data["data"]:
+        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
+        if not quote:
             await send_telegram_alert(f"❌ No quote found for {mint}")
-            log_skipped_token(mint, "No Jupiter quote (REST API)")
+            log_skipped_token(mint, "No Jupiter quote")
             return False
 
-        await send_telegram_alert(f"🧠 Quote OK for {mint}, simulating buy only (not executing tx)")
-        log_trade(mint, "BUY (SIMULATED)", BUY_AMOUNT_SOL, 0)
+        tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
+        sig = rpc.send_raw_transaction(tx)
+        await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
+        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
 
     except Exception as e:
@@ -107,11 +106,11 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# 💸 Sell Token (placeholder logic)
+# 💸 Sell Token (placeholder)
 async def sell_token(mint: str, percent: float = 100.0):
     pass
 
-# 📈 Price Auto-Sell Logic (unchanged placeholder)
+# 📈 Price Auto-Sell Logic (placeholder)
 async def wait_and_auto_sell(mint):
     pass
 
@@ -124,7 +123,7 @@ def is_valid_mint(keys):
                 return True
     return False
 
-# 🤖 Telegram Bot
+# 🤖 Telegram Bot Commands
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
@@ -163,4 +162,3 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-
