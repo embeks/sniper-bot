@@ -1,10 +1,11 @@
 # =========================
-# sniper_logic.py — Final (Elite Version)
+# sniper_logic.py — Elite Version (Fixed WebSocket + Awaited Command Bot)
 # =========================
 
 import asyncio
 import json
 import os
+from solders.pubkey import Pubkey
 from dotenv import load_dotenv
 import websockets
 
@@ -23,7 +24,7 @@ seen_tokens = set()
 
 # ✅ Raydium Listener
 async def raydium_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/raydium/logs?api-key={os.getenv('HELIUS_API')}"
+    url = f"wss://rpc.helius.xyz/?api-key={os.getenv('HELIUS_API')}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -61,7 +62,7 @@ async def raydium_listener():
 
 # ✅ Jupiter Listener
 async def jupiter_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/jupiter/logs?api-key={os.getenv('HELIUS_API')}"
+    url = f"wss://rpc.helius.xyz/?api-key={os.getenv('HELIUS_API')}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -101,7 +102,7 @@ async def jupiter_listener():
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot starting with Raydium + Jupiter...")
     await asyncio.gather(
-        asyncio.to_thread(start_command_bot),
+        start_command_bot(),  # ✅ Properly awaited
         jupiter_listener(),
         raydium_listener()
     )
