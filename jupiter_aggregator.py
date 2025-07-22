@@ -1,39 +1,107 @@
-# =============================
-# jupiter_aggregator.py — Final Revert (Pre-Testing Version)
-# =============================
+# =========================
+# sniper_logic.py — Elite Version (Buy + Auto-Sell Logic, Live)
+# =========================
 
-import base64
+import asyncio
 import json
-import httpx
-from solders.keypair import Keypair
-from solders.pubkey import Pubkey
-from solders.transaction import VersionedTransaction
-from solana.rpc.api import Client
+import os
+import websockets
+from dotenv import load_dotenv
 
-class JupiterAggregatorClient:
-    def __init__(self, rpc_url):
-        self.rpc = Client(rpc_url)
-        self.headers = {"Content-Type": "application/json"}
+from utils import (
+    is_valid_mint,
+    send_telegram_alert,
+    buy_token,
+    wait_and_auto_sell,
+    start_command_bot
+)
 
-    def get_quote(self, input_mint, output_mint, amount):
-        url = (
-            f"https://quote-api.jup.ag/v6/quote"
-            f"?inputMint={input_mint}"
-            f"&outputMint={output_mint}"
-            f"&amount={amount}"
-            f"&slippageBps=100"
-        )
-        try:
-            response = httpx.get(url, timeout=10)
-            return response.json()
-        except:
-            return None
+load_dotenv()
 
-    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
-        try:
-            tx_bytes = base64.b64decode(swap_tx_base64)
-            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-            versioned_tx.sign([keypair])
-            return versioned_tx.serialize()
-        except:
-            return None
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+SEEN = set()
+
+# ✅ Raydium Listener
+async def raydium_listener():
+    url = f"wss://api.helius.xyz/v0/addresses/raydium/logs?api-key={os.getenv('HELIUS_API')}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": [TOKEN_PROGRAM_ID]},
+                {"commitment": "processed"}
+            ]
+        }))
+        print("[🔁] Raydium listener subscribed.")
+        await send_telegram_alert("📡 Raydium listener live.")
+
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                for log in logs:
+                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
+                        keys = data["params"]["result"]["value"].get("accountKeys", [])
+                        for key in keys:
+                            if key in SEEN:
+                                continue
+                            SEEN.add(key)
+                            print(f"[🔍] Scanning token: {key}")
+                            if is_valid_mint([{ 'pubkey': key }]):
+                                await send_telegram_alert(f"[🟡] New token: {key}")
+                                success = await buy_token(key)
+                                if success:
+                                    await wait_and_auto_sell(key)
+            except Exception as e:
+                print(f"[RAYDIUM ERROR] {e}")
+                await asyncio.sleep(1)
+
+# ✅ Jupiter Listener
+async def jupiter_listener():
+    url = f"wss://api.helius.xyz/v0/addresses/jupiter/logs?api-key={os.getenv('HELIUS_API')}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": [TOKEN_PROGRAM_ID]},
+                {"commitment": "processed"}
+            ]
+        }))
+        print("[🔁] Jupiter listener subscribed.")
+        await send_telegram_alert("📡 Jupiter listener live.")
+
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                for log in logs:
+                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
+                        keys = data["params"]["result"]["value"].get("accountKeys", [])
+                        for key in keys:
+                            if key in SEEN:
+                                continue
+                            SEEN.add(key)
+                            print(f"[🔍] Scanning token: {key}")
+                            if is_valid_mint([{ 'pubkey': key }]):
+                                await send_telegram_alert(f"[🟡] New token: {key}")
+                                success = await buy_token(key)
+                                if success:
+                                    await wait_and_auto_sell(key)
+            except Exception as e:
+                print(f"[JUPITER ERROR] {e}")
+                await asyncio.sleep(1)
+
+# ✅ Main Runner
+async def start_sniper():
+    await send_telegram_alert("✅ Sniper bot starting with Raydium + Jupiter...")
+    await asyncio.gather(
+        asyncio.to_thread(start_command_bot),
+        jupiter_listener(),
+        raydium_listener()
+    )
