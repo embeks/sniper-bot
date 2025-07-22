@@ -1,6 +1,6 @@
-# ============================
-# sniper_logic.py — Elite Version (Auto Sell at 2x/5x/10x)
-# ============================
+# =========================
+# sniper_logic.py — Final (Elite Version)
+# =========================
 
 import asyncio
 import json
