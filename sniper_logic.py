@@ -1,116 +1,113 @@
-# =============================
-# sniper_logic.py — Final with Free Helius Support (Reverted)
-# =============================
+# =========================
+# sniper_logic.py — Elite (w/ Skip Logging + Alerts)
+# =========================
 
-import os
 import asyncio
 import json
+import os
 import websockets
 from dotenv import load_dotenv
 
 from utils import (
-    send_telegram_alert,
     is_valid_mint,
+    wait_and_auto_sell,
     buy_token,
-    start_command_bot,
-    log_skipped_token
+    send_telegram_alert,
+    start_command_bot
 )
 
 load_dotenv()
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+HELIUS_API = os.getenv("HELIUS_API")
+seen_tokens = set()
 
-# ENV
-FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT", "").strip()
-
-# Helius Endpoints (Free Plan)
-JUPITER_URL = f"wss://rpc.helius.xyz/v0/transactions/?api-key={os.getenv('HELIUS_API_KEY')}"
-RAYDIUM_URL = f"wss://rpc.helius.xyz/v0/transactions/?api-key={os.getenv('HELIUS_API_KEY')}"
-
-# Jupiter Listener
-async def jupiter_listener():
-    url = JUPITER_URL
-    await asyncio.sleep(1)
-    try:
-        async with websockets.connect(url) as ws:
-            await send_telegram_alert("📡 Jupiter listener live.")
-            await ws.send(json.dumps({
-                "type": "subscribe",
-                "programId": "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",
-                "commitment": "confirmed"
-            }))
-
-            while True:
-                try:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
-                    if data.get("type") != "transaction": continue
-
-                    account_keys = data.get("accountKeys", [])
-                    if not is_valid_mint(account_keys): continue
-
-                    mint = data["events"].get("mint")
-                    if mint:
-                        await send_telegram_alert(f"🚀 New Jupiter token: `{mint}`")
-                        await buy_token(mint)
-
-                except Exception as e:
-                    print(f"[JUPITER ERROR] {e}")
-                    await asyncio.sleep(1)
-    except Exception as e:
-        print(f"[JUPITER CONNECT ERROR] {e}")
-        await asyncio.sleep(5)
-        await jupiter_listener()
-
-# Raydium Listener
+# ✅ Raydium Listener
 async def raydium_listener():
-    url = RAYDIUM_URL
-    await asyncio.sleep(1)
-    try:
-        async with websockets.connect(url) as ws:
-            await send_telegram_alert("📡 Raydium listener live.")
-            await ws.send(json.dumps({
-                "type": "subscribe",
-                "programId": "RVKd61ztZW9GdKzH1fGzWJoqQ9N8mk8h7usqf9cGzKy",
-                "commitment": "confirmed"
-            }))
+    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": [TOKEN_PROGRAM_ID]},
+                {"commitment": "processed"}
+            ]
+        }))
+        print("[🔁] Raydium listener subscribed.")
+        await send_telegram_alert("📡 Raydium listener live.")
 
-            while True:
-                try:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
-                    if data.get("type") != "transaction": continue
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                for log in logs:
+                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
+                        keys = data["params"]["result"]["value"].get("accountKeys", [])
+                        for key in keys:
+                            if key in seen_tokens:
+                                continue
+                            seen_tokens.add(key)
+                            print(f"[🔍] Token found: {key}")
 
-                    account_keys = data.get("accountKeys", [])
-                    if not is_valid_mint(account_keys): continue
+                            if is_valid_mint([{ 'pubkey': key }]):
+                                await send_telegram_alert(f"[🟡] Valid token found: {key}")
+                                success = await buy_token(key)
+                                if success:
+                                    await wait_and_auto_sell(key)
+                            else:
+                                await send_telegram_alert(f"⛔ Skipped token (invalid mint): {key}")
+            except Exception as e:
+                print(f"[RAYDIUM ERROR] {e}")
+                await asyncio.sleep(1)
 
-                    mint = data["events"].get("mint")
-                    if mint:
-                        await send_telegram_alert(f"🚀 New Raydium token: `{mint}`")
-                        await buy_token(mint)
+# ✅ Jupiter Listener
+async def jupiter_listener():
+    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": [TOKEN_PROGRAM_ID]},
+                {"commitment": "processed"}
+            ]
+        }))
+        print("[🔁] Jupiter listener subscribed.")
+        await send_telegram_alert("📡 Jupiter listener live.")
 
-                except Exception as e:
-                    print(f"[RAYDIUM ERROR] {e}")
-                    await asyncio.sleep(1)
-    except Exception as e:
-        print(f"[RAYDIUM CONNECT ERROR] {e}")
-        await asyncio.sleep(5)
-        await raydium_listener()
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                for log in logs:
+                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
+                        keys = data["params"]["result"]["value"].get("accountKeys", [])
+                        for key in keys:
+                            if key in seen_tokens:
+                                continue
+                            seen_tokens.add(key)
+                            print(f"[🔍] Token found: {key}")
 
-# 🔁 Optional Forced Test
-async def test_force_token():
-    if FORCE_TEST_MINT:
-        await send_telegram_alert(f"🚨 FORCED TEST MODE: Buying test mint\n`{FORCE_TEST_MINT}`")
-        success = await buy_token(FORCE_TEST_MINT)
-        if not success:
-            await send_telegram_alert(f"❌ Buy failed for test mint:\n`{FORCE_TEST_MINT}`")
-            log_skipped_token(FORCE_TEST_MINT, "Forced test mint buy failed")
-        await asyncio.sleep(2)
+                            if is_valid_mint([{ 'pubkey': key }]):
+                                await send_telegram_alert(f"[🟡] Valid token found: {key}")
+                                success = await buy_token(key)
+                                if success:
+                                    await wait_and_auto_sell(key)
+                            else:
+                                await send_telegram_alert(f"⛔ Skipped token (invalid mint): {key}")
+            except Exception as e:
+                print(f"[JUPITER ERROR] {e}")
+                await asyncio.sleep(1)
 
-# ✅ Entry Point
+# ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
     await asyncio.gather(
         start_command_bot(),
-        test_force_token(),
         jupiter_listener(),
         raydium_listener()
     )
