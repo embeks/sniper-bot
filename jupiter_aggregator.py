@@ -1,107 +1,58 @@
-# =========================
-# sniper_logic.py — Elite Version (Buy + Auto-Sell Logic, Live)
-# =========================
+# =============================
+# jupiter_aggregator.py — REST Jupiter Buy/Sell SDK
+# =============================
 
-import asyncio
+import base64
+import httpx
 import json
-import os
-import websockets
-from dotenv import load_dotenv
+from solders.pubkey import Pubkey
+from solders.keypair import Keypair
+from solders.transaction import VersionedTransaction
+from solders.signature import Signature
+from solana.rpc.api import Client
 
-from utils import (
-    is_valid_mint,
-    send_telegram_alert,
-    buy_token,
-    wait_and_auto_sell,
-    start_command_bot
-)
+class JupiterAggregatorClient:
+    def __init__(self, rpc_url):
+        self.rpc_url = rpc_url
+        self.client = Client(rpc_url)
 
-load_dotenv()
+    def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100):
+        url = (
+            f"https://quote-api.jup.ag/v6/quote"
+            f"?inputMint={str(input_mint)}"
+            f"&outputMint={str(output_mint)}"
+            f"&amount={amount}"
+            f"&slippageBps={slippage_bps}"
+        )
+        try:
+            response = httpx.get(url)
+            data = response.json()
+            if data.get("data"):
+                return data["data"][0]  # Top route
+            return None
+        except Exception as e:
+            print(f"[JupiterAggregatorClient] Quote Error: {e}")
+            return None
 
-TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-SEEN = set()
+    def build_swap_transaction(self, swap_tx_b64: str, keypair: Keypair) -> bytes:
+        try:
+            # Decode base64 Jupiter transaction string
+            tx_bytes = base64.b64decode(swap_tx_b64)
+            tx = VersionedTransaction.from_bytes(tx_bytes)
 
-# ✅ Raydium Listener
-async def raydium_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/raydium/logs?api-key={os.getenv('HELIUS_API')}"
-    async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "logsSubscribe",
-            "params": [
-                {"mentions": [TOKEN_PROGRAM_ID]},
-                {"commitment": "processed"}
-            ]
-        }))
-        print("[🔁] Raydium listener subscribed.")
-        await send_telegram_alert("📡 Raydium listener live.")
+            # Sign transaction with provided keypair
+            tx.sign([keypair])
 
-        while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
-                for log in logs:
-                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
-                        keys = data["params"]["result"]["value"].get("accountKeys", [])
-                        for key in keys:
-                            if key in SEEN:
-                                continue
-                            SEEN.add(key)
-                            print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint([{ 'pubkey': key }]):
-                                await send_telegram_alert(f"[🟡] New token: {key}")
-                                success = await buy_token(key)
-                                if success:
-                                    await wait_and_auto_sell(key)
-            except Exception as e:
-                print(f"[RAYDIUM ERROR] {e}")
-                await asyncio.sleep(1)
+            # Return signed transaction in raw bytes for send_raw_transaction()
+            return tx.serialize()
+        except Exception as e:
+            print(f"[JupiterAggregatorClient] Build TX Error: {e}")
+            return None
 
-# ✅ Jupiter Listener
-async def jupiter_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/jupiter/logs?api-key={os.getenv('HELIUS_API')}"
-    async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "logsSubscribe",
-            "params": [
-                {"mentions": [TOKEN_PROGRAM_ID]},
-                {"commitment": "processed"}
-            ]
-        }))
-        print("[🔁] Jupiter listener subscribed.")
-        await send_telegram_alert("📡 Jupiter listener live.")
-
-        while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
-                for log in logs:
-                    if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
-                        keys = data["params"]["result"]["value"].get("accountKeys", [])
-                        for key in keys:
-                            if key in SEEN:
-                                continue
-                            SEEN.add(key)
-                            print(f"[🔍] Scanning token: {key}")
-                            if is_valid_mint([{ 'pubkey': key }]):
-                                await send_telegram_alert(f"[🟡] New token: {key}")
-                                success = await buy_token(key)
-                                if success:
-                                    await wait_and_auto_sell(key)
-            except Exception as e:
-                print(f"[JUPITER ERROR] {e}")
-                await asyncio.sleep(1)
-
-# ✅ Main Runner
-async def start_sniper():
-    await send_telegram_alert("✅ Sniper bot starting with Raydium + Jupiter...")
-    await asyncio.gather(
-        asyncio.to_thread(start_command_bot),
-        jupiter_listener(),
-        raydium_listener()
-    )
+    def send_transaction(self, signed_tx: bytes) -> str:
+        try:
+            result = self.client.send_raw_transaction(signed_tx)
+            return str(result.value) if result else None
+        except Exception as e:
+            print(f"[JupiterAggregatorClient] Send TX Error: {e}")
+            return None
