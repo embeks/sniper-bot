@@ -1,14 +1,9 @@
-
-# =============================
-# utils.py — Updated with Reliable Jupiter Quote
-# =============================
-
 import os
 import json
 import httpx
 import asyncio
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -90,15 +85,8 @@ async def buy_token(mint: str):
         input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
         output_mint = Pubkey.from_string(mint)
 
-        quote = jupiter.get_quote(
-            input_mint=input_mint,
-            output_mint=output_mint,
-            amount=int(BUY_AMOUNT_SOL * 1e9),
-            slippage_bps=100,
-            only_direct_routes=False
-        )
-
-        if not quote or not quote.get("swapTransaction"):
+        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
+        if not quote:
             await send_telegram_alert(f"❌ No quote found for {mint}")
             log_skipped_token(mint, "No Jupiter quote")
             return False
@@ -119,7 +107,6 @@ async def sell_token(mint: str, percent: float = 100.0):
     try:
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-
         quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
         if not quote:
             await send_telegram_alert(f"❌ No sell quote found for {mint}")
@@ -148,7 +135,7 @@ def is_valid_mint(keys):
                 return True
     return False
 
-# 🧐 Telegram Bot
+# 🤖 Telegram Bot
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
