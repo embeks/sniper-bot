@@ -1,5 +1,5 @@
 # =============================
-# utils.py — PRE FORCE-TEST VERSION
+# utils.py — Log Skipped Tokens + Alert
 # =============================
 
 import os
@@ -106,11 +106,29 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# 💸 Sell Token (placeholder)
+# 💸 Sell Token
 async def sell_token(mint: str, percent: float = 100.0):
-    pass
+    try:
+        input_mint = Pubkey.from_string(mint)
+        output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
-# 📈 Price Auto-Sell Logic (placeholder)
+        # Dummy logic for example (replace with token balance check)
+        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
+        if not quote:
+            await send_telegram_alert(f"❌ No sell quote found for {mint}")
+            return False
+
+        tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
+        sig = rpc.send_raw_transaction(tx)
+        await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
+        log_trade(mint, f"SELL {percent}%", 0, quote.get("outAmount", 0) / 1e9)
+        return True
+
+    except Exception as e:
+        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
+        return False
+
+# 📈 Price Auto-Sell Logic (unchanged placeholder)
 async def wait_and_auto_sell(mint):
     pass
 
@@ -123,7 +141,7 @@ def is_valid_mint(keys):
                 return True
     return False
 
-# 🤖 Telegram Bot Commands
+# 🤖 Telegram Bot
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
@@ -162,3 +180,4 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
