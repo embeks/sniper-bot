@@ -1,5 +1,5 @@
 # =============================
-# sniper_logic.py — Final with Free Helius Support
+# sniper_logic.py — Final with Free Helius + Test Fixes
 # =============================
 
 import os
@@ -22,8 +22,9 @@ load_dotenv()
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT", "").strip()
 
 # Helius Endpoints (Free Plan)
-JUPITER_URL = f"wss://rpc.helius.xyz/v0/transactions/?api-key={os.getenv('HELIUS_API_KEY')}"
-RAYDIUM_URL = f"wss://rpc.helius.xyz/v0/transactions/?api-key={os.getenv('HELIUS_API_KEY')}"
+HELIUS_KEY = os.getenv("HELIUS_API_KEY")
+JUPITER_URL = f"wss://rpc.helius.xyz/v0/transactions/?api-key={HELIUS_KEY}"
+RAYDIUM_URL = f"wss://rpc.helius.xyz/v0/transactions/?api-key={HELIUS_KEY}"
 
 # Jupiter Listener
 async def jupiter_listener():
@@ -31,7 +32,7 @@ async def jupiter_listener():
     await asyncio.sleep(1)
     try:
         async with websockets.connect(url) as ws:
-            await send_telegram_alert("📡 Jupiter listener live.")
+            await send_telegram_alert("🛡️ Jupiter listener live.")
             await ws.send(json.dumps({
                 "type": "subscribe",
                 "programId": "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",
@@ -47,7 +48,7 @@ async def jupiter_listener():
                     account_keys = data.get("accountKeys", [])
                     if not is_valid_mint(account_keys): continue
 
-                    mint = data["events"]["mint"]
+                    mint = data.get("events", {}).get("mint")
                     if mint:
                         await send_telegram_alert(f"🚀 New Jupiter token: `{mint}`")
                         await buy_token(mint)
@@ -66,7 +67,7 @@ async def raydium_listener():
     await asyncio.sleep(1)
     try:
         async with websockets.connect(url) as ws:
-            await send_telegram_alert("📡 Raydium listener live.")
+            await send_telegram_alert("🛡️ Raydium listener live.")
             await ws.send(json.dumps({
                 "type": "subscribe",
                 "programId": "RVKd61ztZW9GdKzH1fGzWJoqQ9N8mk8h7usqf9cGzKy",
@@ -82,7 +83,7 @@ async def raydium_listener():
                     account_keys = data.get("accountKeys", [])
                     if not is_valid_mint(account_keys): continue
 
-                    mint = data["events"]["mint"]
+                    mint = data.get("events", {}).get("mint")
                     if mint:
                         await send_telegram_alert(f"🚀 New Raydium token: `{mint}`")
                         await buy_token(mint)
@@ -99,10 +100,14 @@ async def raydium_listener():
 async def test_force_token():
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 FORCED TEST MODE: Buying test mint\n`{FORCE_TEST_MINT}`")
-        success = await buy_token(FORCE_TEST_MINT)
-        if not success:
-            await send_telegram_alert(f"❌ Buy failed for test mint:\n`{FORCE_TEST_MINT}`")
-            log_skipped_token(FORCE_TEST_MINT, "Forced test mint buy failed")
+        try:
+            success = await buy_token(FORCE_TEST_MINT)
+            if not success:
+                await send_telegram_alert(f"❌ Buy failed for test mint:\n`{FORCE_TEST_MINT}`")
+                log_skipped_token(FORCE_TEST_MINT, "Forced test mint buy failed")
+        except Exception as e:
+            await send_telegram_alert(f"❌ Buy failed for test mint:\n`{FORCE_TEST_MINT}`: {e}")
+            log_skipped_token(FORCE_TEST_MINT, f"Exception: {e}")
         await asyncio.sleep(2)
 
 # ✅ Entry Point
