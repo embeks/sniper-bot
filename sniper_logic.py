@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Elite (Free Helius WebSocket)
+# sniper_logic.py — Elite (w/ Skip Logging + Alerts)
 # =========================
 
 import asyncio
@@ -23,7 +23,7 @@ seen_tokens = set()
 
 # ✅ Raydium Listener
 async def raydium_listener():
-    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"  # Free-tier compatible
+    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -64,7 +64,7 @@ async def raydium_listener():
 
 # ✅ Jupiter Listener
 async def jupiter_listener():
-    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"  # Free-tier compatible
+    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -107,8 +107,7 @@ async def jupiter_listener():
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
     await asyncio.gather(
-        start_command_bot(),  # <- this line is now CORRECT
+        start_command_bot(),
         jupiter_listener(),
         raydium_listener()
-    )
     )
