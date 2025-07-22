@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Elite (w/ Skip Logging + Alerts)
+# sniper_logic.py — Elite (w/ FORCE_TEST_MINT Buy Logic)
 # =========================
 
 import asyncio
@@ -19,11 +19,12 @@ from utils import (
 load_dotenv()
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 seen_tokens = set()
 
 # ✅ Raydium Listener
 async def raydium_listener():
-    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+    url = f"wss://api.helius.xyz/v0/addresses/raydium/logs?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -51,7 +52,7 @@ async def raydium_listener():
                             seen_tokens.add(key)
                             print(f"[🔍] Token found: {key}")
 
-                            if is_valid_mint([{ 'pubkey': key }]):
+                            if is_valid_mint([{ 'pubkey': key }] ):
                                 await send_telegram_alert(f"[🟡] Valid token found: {key}")
                                 success = await buy_token(key)
                                 if success:
@@ -64,7 +65,7 @@ async def raydium_listener():
 
 # ✅ Jupiter Listener
 async def jupiter_listener():
-    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+    url = f"wss://api.helius.xyz/v0/addresses/jupiter/logs?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -92,7 +93,7 @@ async def jupiter_listener():
                             seen_tokens.add(key)
                             print(f"[🔍] Token found: {key}")
 
-                            if is_valid_mint([{ 'pubkey': key }]):
+                            if is_valid_mint([{ 'pubkey': key }] ):
                                 await send_telegram_alert(f"[🟡] Valid token found: {key}")
                                 success = await buy_token(key)
                                 if success:
@@ -106,6 +107,14 @@ async def jupiter_listener():
 # ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
+
+    # 🚨 Forced Test Buy Mode
+    if FORCE_TEST_MINT:
+        await send_telegram_alert(f"🚨 FORCED TEST MODE: Buying test mint {FORCE_TEST_MINT}")
+        success = await buy_token(FORCE_TEST_MINT)
+        if success:
+            await wait_and_auto_sell(FORCE_TEST_MINT)
+
     await asyncio.gather(
         start_command_bot(),
         jupiter_listener(),
