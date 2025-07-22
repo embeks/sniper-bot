@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — Elite (w/ Skip Logging + Alerts)
+# sniper_logic.py — Elite (Free Helius WebSocket)
 # =========================
 
 import asyncio
@@ -23,7 +23,7 @@ seen_tokens = set()
 
 # ✅ Raydium Listener
 async def raydium_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/raydium/logs?api-key={HELIUS_API}"
+    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"  # Free-tier compatible
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
@@ -64,7 +64,7 @@ async def raydium_listener():
 
 # ✅ Jupiter Listener
 async def jupiter_listener():
-    url = f"wss://api.helius.xyz/v0/addresses/jupiter/logs?api-key={HELIUS_API}"
+    url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"  # Free-tier compatible
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
