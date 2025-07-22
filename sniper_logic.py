@@ -1,16 +1,16 @@
-# =========================
-# sniper_logic.py — Elite Version (Buy + Auto-Sell Logic, Live)
-# =========================
+# ============================
+# sniper_logic.py — Elite Version (Auto Sell at 2x/5x/10x)
+# ============================
 
 import asyncio
 import json
 import os
-import websockets
 from dotenv import load_dotenv
+import websockets
 
 from utils import (
-    is_valid_mint,
     send_telegram_alert,
+    is_valid_mint,
     buy_token,
     wait_and_auto_sell,
     start_command_bot
@@ -19,7 +19,7 @@ from utils import (
 load_dotenv()
 
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-SEEN = set()
+seen_tokens = set()
 
 # ✅ Raydium Listener
 async def raydium_listener():
@@ -46,9 +46,9 @@ async def raydium_listener():
                     if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
                         keys = data["params"]["result"]["value"].get("accountKeys", [])
                         for key in keys:
-                            if key in SEEN:
+                            if key in seen_tokens:
                                 continue
-                            SEEN.add(key)
+                            seen_tokens.add(key)
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
@@ -84,9 +84,9 @@ async def jupiter_listener():
                     if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
                         keys = data["params"]["result"]["value"].get("accountKeys", [])
                         for key in keys:
-                            if key in SEEN:
+                            if key in seen_tokens:
                                 continue
-                            SEEN.add(key)
+                            seen_tokens.add(key)
                             print(f"[🔍] Scanning token: {key}")
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] New token: {key}")
@@ -105,4 +105,3 @@ async def start_sniper():
         jupiter_listener(),
         raydium_listener()
     )
-
