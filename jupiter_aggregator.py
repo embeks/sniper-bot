@@ -16,7 +16,7 @@ class JupiterAggregatorClient:
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
 
-    def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100):
+    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100):
         url = (
             f"https://quote-api.jup.ag/v6/quote"
             f"?inputMint={str(input_mint)}"
@@ -25,25 +25,21 @@ class JupiterAggregatorClient:
             f"&slippageBps={slippage_bps}"
         )
         try:
-            response = httpx.get(url)
-            data = response.json()
-            if data.get("data"):
-                return data["data"][0]  # Top route
-            return None
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url)
+                data = response.json()
+                if data.get("data"):
+                    return data["data"][0]  # Top route
+                return None
         except Exception as e:
             print(f"[JupiterAggregatorClient] Quote Error: {e}")
             return None
 
     def build_swap_transaction(self, swap_tx_b64: str, keypair: Keypair) -> bytes:
         try:
-            # Decode base64 Jupiter transaction string
             tx_bytes = base64.b64decode(swap_tx_b64)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-
-            # Sign transaction with provided keypair
             tx.sign([keypair])
-
-            # Return signed transaction in raw bytes for send_raw_transaction()
             return tx.serialize()
         except Exception as e:
             print(f"[JupiterAggregatorClient] Build TX Error: {e}")
