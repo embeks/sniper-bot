@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Log Skipped Tokens + Alert (Raw LP Version)
+# utils.py — Raw LP Check + Jupiter-Based Auto Sell
 # =============================
 
 import os
@@ -54,31 +54,6 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# 🔍 Raw LP Check (Raydium only)
-def get_lp_token_balance(mint: str) -> float:
-    try:
-        filters = [
-            {"memcmp": {"offset": 0, "bytes": mint}},  # token mint
-            {"dataSize": 165}
-        ]
-        res = rpc.get_program_accounts("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", filters=filters)
-        balances = [int(x["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]) for x in res.get("result", []) if x]
-        return sum(balances) / 1e9 if balances else 0.0
-    except:
-        return 0.0
-
-# 📈 Token Price
-async def get_token_price(_):
-    return None  # Disabled without BirdEye
-
-# 🔎 Token Safety Data (LP only)
-async def get_token_data(mint):
-    try:
-        liquidity = get_lp_token_balance(mint)
-        return {"liquidity": liquidity, "holders": 0, "renounced": True, "lp_locked": True}
-    except:
-        return {}
-
 # 🔁 Buy Token
 async def buy_token(mint: str):
     try:
@@ -96,7 +71,9 @@ async def buy_token(mint: str):
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
 
-        await wait_and_auto_sell(mint)
+        # Store entry price
+        entry_price = quote.get("outAmount", 0) / quote.get("inAmount", 1)
+        await wait_and_auto_sell(mint, entry_price)
         return True
 
     except Exception as e:
@@ -110,6 +87,7 @@ async def sell_token(mint: str, percent: float = 100.0):
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
+        # You will sell a portion of the original amount
         quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
         if not quote or "swapTransaction" not in quote:
             await send_telegram_alert(f"❌ No sell quote found for {mint}")
@@ -125,11 +103,43 @@ async def sell_token(mint: str, percent: float = 100.0):
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
 
-# 🧠 Auto-Sell
-async def wait_and_auto_sell(mint):
-    await send_telegram_alert(f"⌛ Auto-sell not supported (no price tracking).")
-    await asyncio.sleep(SELL_TIMEOUT_SEC)
-    await sell_token(mint, percent=100)
+# 📈 Price Auto-Sell Logic (Jupiter-Based)
+async def wait_and_auto_sell(mint, entry_price):
+    try:
+        await send_telegram_alert(f"📈 Watching `{mint}` — Entry price via Jupiter: {entry_price:.6f}")
+        timeout = datetime.utcnow() + timedelta(seconds=SELL_TIMEOUT_SEC)
+        sold_2x = sold_5x = sold_10x = False
+
+        while datetime.utcnow() < timeout:
+            await asyncio.sleep(10)
+            input_mint = Pubkey.from_string(mint)
+            output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+            quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
+            if not quote:
+                continue
+            current_price = quote.get("outAmount", 0) / quote.get("inAmount", 1)
+            pnl = current_price / entry_price
+
+            if not sold_2x and pnl >= 2:
+                await send_telegram_alert(f"🎯 Selling 50% at 2x for `{mint}` (${current_price:.6f})")
+                await sell_token(mint, percent=50)
+                sold_2x = True
+            elif not sold_5x and pnl >= 5:
+                await send_telegram_alert(f"🎯 Selling 25% at 5x for `{mint}` (${current_price:.6f})")
+                await sell_token(mint, percent=25)
+                sold_5x = True
+            elif not sold_10x and pnl >= 10:
+                await send_telegram_alert(f"🎯 Selling final 25% at 10x for `{mint}` (${current_price:.6f})")
+                await sell_token(mint, percent=25)
+                sold_10x = True
+                break
+
+        if not (sold_2x and sold_5x and sold_10x):
+            await send_telegram_alert(f"⌛ Timeout reached. Selling all remaining `{mint}`.")
+            await sell_token(mint, percent=100)
+
+    except Exception as e:
+        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
 # ✅ Is Valid Mint
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -179,3 +189,4 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
