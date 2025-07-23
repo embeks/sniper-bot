@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Log Skipped Tokens + Alert
+# utils.py — Log Skipped Tokens + Alert (Raw LP Version)
 # =============================
 
 import os
@@ -22,7 +22,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RPC_URL = os.getenv("RPC_URL")
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
@@ -55,31 +54,28 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# 📈 Token Price
-async def get_token_price(token_mint):
+# 🔍 Raw LP Check (Raydium only)
+def get_lp_token_balance(mint: str) -> float:
     try:
-        url = f"https://public-api.birdeye.so/public/price?address={token_mint}"
-        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url, headers=headers)
-            return r.json().get("data", {}).get("value")
+        filters = [
+            {"memcmp": {"offset": 0, "bytes": mint}},  # token mint
+            {"dataSize": 165}
+        ]
+        res = rpc.get_program_accounts("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", filters=filters)
+        balances = [int(x["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]) for x in res.get("result", []) if x]
+        return sum(balances) / 1e9 if balances else 0.0
     except:
-        return None
+        return 0.0
 
-# 🔎 Token Safety Data
+# 📈 Token Price
+async def get_token_price(_):
+    return None  # Disabled without BirdEye
+
+# 🔎 Token Safety Data (LP only)
 async def get_token_data(mint):
     try:
-        url = f"https://public-api.birdeye.so/public/token/{mint}"
-        headers = {"x-chain": "solana", "X-API-KEY": BIRDEYE_API_KEY}
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url, headers=headers)
-            d = r.json().get("data", {})
-            return {
-                "liquidity": d.get("liquidity", 0),
-                "holders": d.get("holder_count", 0),
-                "renounced": d.get("is_renounced", False),
-                "lp_locked": d.get("is_lp_locked", False)
-            }
+        liquidity = get_lp_token_balance(mint)
+        return {"liquidity": liquidity, "holders": 0, "renounced": True, "lp_locked": True}
     except:
         return {}
 
@@ -129,47 +125,11 @@ async def sell_token(mint: str, percent: float = 100.0):
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
 
-# 📈 Price Auto-Sell Logic
+# 🧠 Auto-Sell
 async def wait_and_auto_sell(mint):
-    try:
-        entry_price = await get_token_price(mint)
-        if not entry_price:
-            await send_telegram_alert(f"❌ Entry price not found for {mint}, skipping auto-sell.")
-            return
-
-        await send_telegram_alert(f"📈 Watching `{mint}` — Entry price: ${entry_price:.6f}")
-        timeout = datetime.utcnow() + timedelta(seconds=SELL_TIMEOUT_SEC)
-        sold_2x = sold_5x = sold_10x = False
-
-        while datetime.utcnow() < timeout:
-            await asyncio.sleep(10)
-            current_price = await get_token_price(mint)
-            if not current_price:
-                continue
-
-            pnl = current_price / entry_price
-            if not sold_2x and pnl >= 2:
-                await send_telegram_alert(f"🎯 Selling 50% at 2x for `{mint}` (${current_price:.6f})")
-                await sell_token(mint, percent=50)
-                sold_2x = True
-
-            elif not sold_5x and pnl >= 5:
-                await send_telegram_alert(f"🎯 Selling 25% at 5x for `{mint}` (${current_price:.6f})")
-                await sell_token(mint, percent=25)
-                sold_5x = True
-
-            elif not sold_10x and pnl >= 10:
-                await send_telegram_alert(f"🎯 Selling final 25% at 10x for `{mint}` (${current_price:.6f})")
-                await sell_token(mint, percent=25)
-                sold_10x = True
-                break  # All sold, exit early
-
-        if not (sold_2x and sold_5x and sold_10x):
-            await send_telegram_alert(f"⌛ Timeout reached. Selling all remaining `{mint}`.")
-            await sell_token(mint, percent=100)
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
+    await send_telegram_alert(f"⌛ Auto-sell not supported (no price tracking).")
+    await asyncio.sleep(SELL_TIMEOUT_SEC)
+    await sell_token(mint, percent=100)
 
 # ✅ Is Valid Mint
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
