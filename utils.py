@@ -89,7 +89,7 @@ async def buy_token(mint: str):
         input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
         output_mint = Pubkey.from_string(mint)
 
-        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
+        quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
         if not quote:
             await send_telegram_alert(f"❌ No quote found for {mint}")
             log_skipped_token(mint, "No Jupiter quote")
@@ -100,9 +100,7 @@ async def buy_token(mint: str):
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
 
-        # 🔁 Begin monitoring for auto-sell
         await wait_and_auto_sell(mint)
-
         return True
 
     except Exception as e:
@@ -110,14 +108,14 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
+
 # 💸 Sell Token
 async def sell_token(mint: str, percent: float = 100.0):
     try:
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
-        # Dummy logic for example (replace with token balance check)
-        quote = jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
+        quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
         if not quote:
             await send_telegram_alert(f"❌ No sell quote found for {mint}")
             return False
@@ -131,7 +129,6 @@ async def sell_token(mint: str, percent: float = 100.0):
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
-
 # 📈 Price Auto-Sell Logic
 async def wait_and_auto_sell(mint):
     try:
