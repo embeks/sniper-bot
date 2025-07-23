@@ -1,5 +1,5 @@
 # =============================
-# jupiter_aggregator.py — REST Jupiter Buy/Sell SDK
+# jupiter_aggregator.py — REST Jupiter Buy/Sell SDK (FINAL FIXED)
 # =============================
 
 import base64
@@ -27,7 +27,7 @@ class JupiterAggregatorClient:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url)
-                data = response.json()
+                data = await response.json()  # ✅ FIXED: await the coroutine
                 if data.get("data"):
                     return data["data"][0]  # Top route
                 return None
