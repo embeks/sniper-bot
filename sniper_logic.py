@@ -102,10 +102,12 @@ async def mempool_listener(name):
                 print(f"[{name} ERROR] {e}")
                 await asyncio.sleep(1)
 
+# ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
     # 🔴 Forced Test Mode
+    FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
         safe = await rug_filter_passes(FORCE_TEST_MINT)
@@ -120,5 +122,4 @@ async def start_sniper():
         start_command_bot(),
         mempool_listener("Raydium"),
         mempool_listener("Jupiter")
-    )
     )
