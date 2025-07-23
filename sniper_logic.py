@@ -104,6 +104,14 @@ async def mempool_listener(name):
 # ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
+
+    if FORCE_TEST_MINT:
+        await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
+        success = await buy_token(FORCE_TEST_MINT)
+        if success:
+            await wait_and_auto_sell(FORCE_TEST_MINT)
+        return  # Skip mempool listeners if force test is active
+
     await asyncio.gather(
         start_command_bot(),
         mempool_listener("Raydium"),
