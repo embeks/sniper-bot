@@ -7,6 +7,7 @@ import json
 import os
 import websockets
 from dotenv import load_dotenv
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 
 from utils import (
     is_valid_mint,
@@ -101,11 +102,23 @@ async def mempool_listener(name):
                 print(f"[{name} ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
+
+    # 🔴 Forced Test Mode
+    if FORCE_TEST_MINT:
+        await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
+        safe = await rug_filter_passes(FORCE_TEST_MINT)
+        if safe:
+            success = await buy_token(FORCE_TEST_MINT)
+            if success:
+                await wait_and_auto_sell(FORCE_TEST_MINT)
+        else:
+            await send_telegram_alert(f"❌ Forced test mint {FORCE_TEST_MINT} failed rug check.")
+
     await asyncio.gather(
         start_command_bot(),
         mempool_listener("Raydium"),
         mempool_listener("Jupiter")
+    )
     )
