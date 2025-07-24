@@ -24,13 +24,16 @@ class JupiterAggregatorClient:
             f"&onlyDirectRoutes=false"
         )
         try:
-            async with httpx.AsyncClient(timeout=3) as client:
+            async with httpx.AsyncClient(timeout=5) as client:
                 response = await client.get(url)
+                response.raise_for_status()
+                await response.aread()  # ensure content is read before .json()
                 data = response.json()
                 routes = data.get("data", [])
-                if routes:
-                    return routes[0]  # Best route
-                return None
+                if not routes:
+                    print(f"[JupiterAggregator] ⚠️ No routes found for {output_mint}")
+                    return None
+                return routes[0]  # Best route
         except Exception as e:
             print(f"[JupiterAggregator] ❌ get_quote error: {e}")
             return None
