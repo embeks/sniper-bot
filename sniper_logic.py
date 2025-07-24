@@ -130,6 +130,10 @@ async def trending_scanner():
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
+    # Start Telegram command bot in background to avoid Conflict errors
+    asyncio.create_task(start_command_bot())
+
+    # Run Forced Mint Test (if enabled)
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
         safe = await rug_filter_passes(FORCE_TEST_MINT)
@@ -140,8 +144,8 @@ async def start_sniper():
         else:
             await send_telegram_alert(f"❌ Forced test mint {FORCE_TEST_MINT} failed rug check.")
 
+    # Start listeners + scanner
     await asyncio.gather(
-        start_command_bot(),
         mempool_listener("Raydium"),
         mempool_listener("Jupiter"),
         trending_scanner()
