@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 from utils import (
     is_valid_mint,
     buy_token,
-    get_token_data,
     log_skipped_token,
     send_telegram_alert,
     start_command_bot,
