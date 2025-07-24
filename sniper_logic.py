@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — ELITE VERSION
+# sniper_logic.py — ELITE VERSION with Trending Scanner + Pre-Approval
 # =========================
 
 import asyncio
@@ -7,7 +7,6 @@ import json
 import os
 import websockets
 from dotenv import load_dotenv
-FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 
 from utils import (
     is_valid_mint,
@@ -16,13 +15,17 @@ from utils import (
     get_token_data,
     log_skipped_token,
     send_telegram_alert,
-    start_command_bot
+    start_command_bot,
+    get_trending_mints
 )
 
 load_dotenv()
+
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))  # seconds
 seen_tokens = set()
 
 # ✅ Rug Check Before Buy
@@ -30,8 +33,8 @@ async def rug_filter_passes(mint):
     try:
         data = await get_token_data(mint)
         if not data:
-            await send_telegram_alert(f"❌ No BirdEye data for {mint}")
-            log_skipped_token(mint, "Missing BirdEye data")
+            await send_telegram_alert(f"❌ No data for {mint}")
+            log_skipped_token(mint, "Missing data")
             return False
 
         lp = data.get("liquidity", 0)
@@ -87,12 +90,10 @@ async def mempool_listener(name):
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] Valid token found: {key}")
 
-                                # ✅ Apply Rug Filter
                                 safe = await rug_filter_passes(key)
                                 if not safe:
                                     continue
 
-                                # ✅ Real Buy
                                 success = await buy_token(key)
                                 if success:
                                     await wait_and_auto_sell(key)
@@ -102,11 +103,35 @@ async def mempool_listener(name):
                 print(f"[{name} ERROR] {e}")
                 await asyncio.sleep(1)
 
+# ✅ Trending Token Scanner
+async def trending_scanner():
+    while True:
+        try:
+            mints = await get_trending_mints()
+            for mint in mints:
+                if mint in seen_tokens:
+                    continue
+                seen_tokens.add(mint)
+                print(f"[🔥] Trending token: {mint}")
+                await send_telegram_alert(f"[🔥] Trending token: {mint}")
+
+                safe = await rug_filter_passes(mint)
+                if not safe:
+                    continue
+
+                success = await buy_token(mint)
+                if success:
+                    await wait_and_auto_sell(mint)
+
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
+        except Exception as e:
+            print(f"[Scanner ERROR] {e}")
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
+
 # ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
-    # 🔴 Forced Test Mode
     FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
@@ -121,5 +146,6 @@ async def start_sniper():
     await asyncio.gather(
         start_command_bot(),
         mempool_listener("Raydium"),
-        mempool_listener("Jupiter")
+        mempool_listener("Jupiter"),
+        trending_scanner()
     )
