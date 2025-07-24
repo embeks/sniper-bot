@@ -5,3 +5,4 @@ solana==0.28.1
 solders==0.10.0
 requests
 python-telegram-bot==20.2
+gunicorn
