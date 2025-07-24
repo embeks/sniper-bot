@@ -1,37 +1,22 @@
-# telegram_webhook.py
-import os
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
 from fastapi import FastAPI, Request
-from telegram.ext import ApplicationBuilder
+import os
+import telegram
 
-load_dotenv()
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-# FastAPI app
+# Create FastAPI app
 app = FastAPI()
 
-# Create the Telegram bot app (webhook mode)
-bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+# Initialize Telegram Bot using token from env
+bot = telegram.Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 
-# Example /status command handler
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot is alive.")
-
-bot_app.add_handler(CommandHandler("status", status))
-
-# ✅ This route handles incoming Telegram updates (Webhook POSTs)
+# Telegram webhook route
 @app.post("/webhook")
-async def telegram_webhook(request: Request):
+async def handle_webhook(request: Request):
     data = await request.json()
-    update = Update.de_json(data, bot_app.bot)
-    await bot_app.process_update(update)
-    return {"ok": True}
+    update = telegram.Update.de_json(data, bot)
 
-# ✅ Optional test route
-@app.get("/")
-async def root():
-    return {"message": "Bot is running."}
+    if update.message and update.message.chat:
+        chat_id = update.message.chat.id
+        message_text = update.message.text
+        bot.send_message(chat_id=chat_id, text="✅ Webhook received!")
+
+    return {"ok": True}
