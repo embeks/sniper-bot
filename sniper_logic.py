@@ -14,7 +14,9 @@ from utils import (
     log_skipped_token,
     send_telegram_alert,
     start_command_bot,
-    get_trending_mints
+    get_trending_mints,
+    wait_and_auto_sell,
+    get_liquidity_and_ownership
 )
 
 load_dotenv()
@@ -23,16 +25,16 @@ FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))  # seconds
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))
 seen_tokens = set()
 
-# ✅ Rug Check Before Buy
+# ✅ Rug Check Before Buy (Raw On-Chain)
 async def rug_filter_passes(mint):
     try:
-        data = await get_token_data(mint)
+        data = await get_liquidity_and_ownership(mint)
         if not data:
             await send_telegram_alert(f"❌ No data for {mint}")
-            log_skipped_token(mint, "Missing data")
+            log_skipped_token(mint, "Missing LP/ownership data")
             return False
 
         lp = data.get("liquidity", 0)
@@ -54,7 +56,7 @@ async def rug_filter_passes(mint):
         await send_telegram_alert(f"⚠️ Rug filter error for {mint}: {e}")
         return False
 
-# ✅ General Listener (Raydium & Jupiter)
+# ✅ General Listener
 async def mempool_listener(name):
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
@@ -87,11 +89,9 @@ async def mempool_listener(name):
 
                             if is_valid_mint([{ 'pubkey': key }]):
                                 await send_telegram_alert(f"[🟡] Valid token found: {key}")
-
                                 safe = await rug_filter_passes(key)
                                 if not safe:
                                     continue
-
                                 success = await buy_token(key)
                                 if success:
                                     await wait_and_auto_sell(key)
@@ -116,7 +116,6 @@ async def trending_scanner():
                 safe = await rug_filter_passes(mint)
                 if not safe:
                     continue
-
                 success = await buy_token(mint)
                 if success:
                     await wait_and_auto_sell(mint)
@@ -130,7 +129,6 @@ async def trending_scanner():
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
-    FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
         safe = await rug_filter_passes(FORCE_TEST_MINT)
