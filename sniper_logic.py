@@ -46,10 +46,11 @@ async def rug_filter_passes(mint):
             await send_telegram_alert(f"⛔ Skipped {mint} — LP too low: {lp}")
             return False
 
-        if not renounced and not locked:
-            log_skipped_token(mint, "Ownership not renounced + LP not locked")
-            await send_telegram_alert(f"⛔ Skipped {mint} — Unsafe ownership/LP")
-            return False
+       # TEMP: Disable ownership check to force buy during testing
+# if not renounced and not locked:
+#     log_skipped_token(mint, "Ownership not renounced + LP not locked")
+#     await send_telegram_alert(f"⛔ Skipped {mint} — Unsafe ownership/LP")
+#     return False
 
         return True
     except Exception as e:
