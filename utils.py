@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Raw LP Check + Jupiter-Based Auto Sell
+# utils.py — Elite Tools + Trending Feed + Pre-Approve
 # =============================
 
 import os
@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
+from solana.transaction import Transaction
+from solana.system_program import TransferParams, transfer
+from solana.rpc.types import TxOpts
+from spl.token.instructions import approve, get_associated_token_address
 from telegram.ext import Application, CommandHandler
 from jupiter_aggregator import JupiterAggregatorClient
 
@@ -24,7 +28,7 @@ RPC_URL = os.getenv("RPC_URL")
 SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
 
 # 💪 Wallet Setup
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
@@ -66,14 +70,12 @@ async def buy_token(mint: str):
             log_skipped_token(mint, "No Jupiter quote")
             return False
 
+        await approve_token_if_needed(mint)
+
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
-
-        # Store entry price
-        entry_price = quote.get("outAmount", 0) / quote.get("inAmount", 1)
-        await wait_and_auto_sell(mint, entry_price)
         return True
 
     except Exception as e:
@@ -87,7 +89,6 @@ async def sell_token(mint: str, percent: float = 100.0):
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
-        # You will sell a portion of the original amount
         quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
         if not quote or "swapTransaction" not in quote:
             await send_telegram_alert(f"❌ No sell quote found for {mint}")
@@ -103,44 +104,6 @@ async def sell_token(mint: str, percent: float = 100.0):
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
 
-# 📈 Price Auto-Sell Logic (Jupiter-Based)
-async def wait_and_auto_sell(mint, entry_price):
-    try:
-        await send_telegram_alert(f"📈 Watching `{mint}` — Entry price via Jupiter: {entry_price:.6f}")
-        timeout = datetime.utcnow() + timedelta(seconds=SELL_TIMEOUT_SEC)
-        sold_2x = sold_5x = sold_10x = False
-
-        while datetime.utcnow() < timeout:
-            await asyncio.sleep(10)
-            input_mint = Pubkey.from_string(mint)
-            output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-            quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
-            if not quote:
-                continue
-            current_price = quote.get("outAmount", 0) / quote.get("inAmount", 1)
-            pnl = current_price / entry_price
-
-            if not sold_2x and pnl >= 2:
-                await send_telegram_alert(f"🎯 Selling 50% at 2x for `{mint}` (${current_price:.6f})")
-                await sell_token(mint, percent=50)
-                sold_2x = True
-            elif not sold_5x and pnl >= 5:
-                await send_telegram_alert(f"🎯 Selling 25% at 5x for `{mint}` (${current_price:.6f})")
-                await sell_token(mint, percent=25)
-                sold_5x = True
-            elif not sold_10x and pnl >= 10:
-                await send_telegram_alert(f"🎯 Selling final 25% at 10x for `{mint}` (${current_price:.6f})")
-                await sell_token(mint, percent=25)
-                sold_10x = True
-                break
-
-        if not (sold_2x and sold_5x and sold_10x):
-            await send_telegram_alert(f"⌛ Timeout reached. Selling all remaining `{mint}`.")
-            await sell_token(mint, percent=100)
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
-
 # ✅ Is Valid Mint
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 def is_valid_mint(keys):
@@ -150,26 +113,37 @@ def is_valid_mint(keys):
                 return True
     return False
 
+# ✅ Trending Scanner (DEXScreener)
+async def get_trending_mints(limit=5):
+    try:
+        url = "https://api.dexscreener.com/latest/dex/pairs/solana"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url)
+            data = r.json()
+            top = data.get("pairs", [])[:limit]
+            return [pair["baseToken"]["address"] for pair in top if pair.get("baseToken")]
+    except:
+        return []
+
+# ✅ Pre-Approval Batching (fast exit-ready)
+async def approve_token_if_needed(mint):
+    try:
+        mint_pubkey = Pubkey.from_string(mint)
+        ata = get_associated_token_address(keypair.pubkey(), mint_pubkey)
+        tx = Transaction().add(approve(
+            program_id=Pubkey.from_string(TOKEN_PROGRAM_ID),
+            source=ata,
+            delegate=keypair.pubkey(),
+            owner=keypair.pubkey(),
+            amount=9999999999
+        ))
+        rpc.send_transaction(tx, keypair, opts=TxOpts(skip_confirmation=True))
+    except:
+        pass
+
 # 🤖 Telegram Bot
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
-
-async def holdings(update, context):
-    try:
-        with open("sniped_tokens.txt", "r") as f:
-            tokens = f.read().splitlines()
-        reply = "📦 Current sniped tokens:\n" + "\n".join(tokens[-10:]) if tokens else "📦 No sniped tokens yet."
-        await update.message.reply_text(reply)
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Error: {e}")
-
-async def logs(update, context):
-    try:
-        with open("trade_log.csv", "r") as f:
-            lines = f.readlines()[-10:]
-        await update.message.reply_text("📜 Last trades:\n" + "".join(lines) if lines else "📜 No trades logged yet.")
-    except:
-        await update.message.reply_text("📜 No logs found.")
 
 async def wallet(update, context):
     await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`")
@@ -181,12 +155,9 @@ async def reset(update, context):
 async def start_command_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("holdings", holdings))
-    app.add_handler(CommandHandler("logs", logs))
     app.add_handler(CommandHandler("wallet", wallet))
     app.add_handler(CommandHandler("reset", reset))
     print("🤖 Telegram command bot ready.")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-
