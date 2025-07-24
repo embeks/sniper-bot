@@ -5,7 +5,7 @@ import asyncio
 
 app = FastAPI()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 @app.get("/")
