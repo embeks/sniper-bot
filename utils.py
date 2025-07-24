@@ -161,3 +161,30 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
+# ✅ Raw On-Chain Token Data (Fast Rug Filter)
+async def get_token_data(mint: str):
+    try:
+        url = f"https://quote-api.jup.ag/v6/token-list"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            data = response.json().get("tokens", [])
+
+        token = next((t for t in data if t["address"] == mint), None)
+        if not token:
+            return None
+
+        # Fallback if Jupiter doesn’t give LP details
+        liquidity = float(token.get("liquidity", 0)) if "liquidity" in token else 0
+        is_renounced = token.get("ownership", {}).get("renounced", False)
+        is_locked = token.get("ownership", {}).get("lp_locked", False)
+
+        return {
+            "liquidity": liquidity,
+            "renounced": is_renounced,
+            "lp_locked": is_locked
+        }
+
+    except Exception as e:
+        await send_telegram_alert(f"⚠️ Error in get_token_data: {e}")
+        return None
