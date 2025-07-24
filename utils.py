@@ -65,13 +65,19 @@ async def buy_token(mint: str):
         output_mint = Pubkey.from_string(mint)
 
         quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
-        if not quote or "swapTransaction" not in quote:
-            await send_telegram_alert(f"❌ No quote found for {mint}")
-            log_skipped_token(mint, "No Jupiter quote")
+
+        if not quote:
+            await send_telegram_alert(f"❌ No quote object for {mint}")
+            log_skipped_token(mint, "No Jupiter quote (null response)")
+            return False
+
+        if "swapTransaction" not in quote:
+            await send_telegram_alert(f"❌ No swapTransaction for {mint}\nQuote:
+{json.dumps(quote, indent=2)}")
+            log_skipped_token(mint, "No swapTransaction key in quote")
             return False
 
         await approve_token_if_needed(mint)
-
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
@@ -90,8 +96,14 @@ async def sell_token(mint: str, percent: float = 100.0):
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
         quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
-        if not quote or "swapTransaction" not in quote:
-            await send_telegram_alert(f"❌ No sell quote found for {mint}")
+
+        if not quote:
+            await send_telegram_alert(f"❌ No sell quote object for {mint}")
+            return False
+
+        if "swapTransaction" not in quote:
+            await send_telegram_alert(f"❌ No swapTransaction in sell quote for {mint}\nQuote:
+{json.dumps(quote, indent=2)}")
             return False
 
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
