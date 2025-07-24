@@ -5,8 +5,8 @@ import asyncio
 
 app = FastAPI()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # <- This matches your .env
+bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 @app.get("/")
 def root():
@@ -24,6 +24,6 @@ async def handle_webhook(request: Request):
         if message_text == "/status":
             await asyncio.to_thread(bot.send_message, chat_id=chat_id, text="✅ Bot is live and responding.")
         else:
-            await asyncio.to_thread(bot.send_message, chat_id=chat_id, text="I only understand /status for now.")
+            await asyncio.to_thread(bot.send_message, chat_id=chat_id, text="⚠️ I only understand /status for now.")
 
     return {"ok": True}
