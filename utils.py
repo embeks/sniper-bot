@@ -188,3 +188,11 @@ async def get_token_data(mint: str):
     except Exception as e:
         await send_telegram_alert(f"⚠️ Error in get_token_data: {e}")
         return None
+
+# 🕒 Auto-Sell Logic After Buy
+async def wait_and_auto_sell(mint: str):
+    try:
+        await asyncio.sleep(SELL_TIMEOUT_SEC)
+        await sell_token(mint)
+    except Exception as e:
+        await send_telegram_alert(f"❌ Auto-sell failed for {mint}: {e}")
