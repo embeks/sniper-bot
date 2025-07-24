@@ -1,5 +1,5 @@
 # =============================
-# jupiter_aggregator.py — REST Jupiter Buy/Sell SDK
+# jupiter_aggregator.py — REST Jupiter Buy/Sell SDK + Raydium Fallback
 # =============================
 
 import base64
@@ -14,26 +14,31 @@ class JupiterAggregatorClient:
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
 
-    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100):
+    async def get_quote(
+        self,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        amount: int,
+        slippage_bps: int = 100,
+        only_direct_routes: bool = False  # ✅ NEW ARG
+    ):
         url = (
             f"https://quote-api.jup.ag/v6/quote"
             f"?inputMint={str(input_mint)}"
             f"&outputMint={str(output_mint)}"
             f"&amount={amount}"
             f"&slippageBps={slippage_bps}"
-            f"&onlyDirectRoutes=false"
+            f"&onlyDirectRoutes={'true' if only_direct_routes else 'false'}"
         )
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=3) as client:
                 response = await client.get(url)
-                response.raise_for_status()
-                await response.aread()  # ensure content is read before .json()
                 data = response.json()
                 routes = data.get("data", [])
-                if not routes:
-                    print(f"[JupiterAggregator] ⚠️ No routes found for {output_mint}")
-                    return None
-                return routes[0]  # Best route
+                if routes:
+                    return routes[0]
+                print(f"[JupiterAggregator] ⚠️ No routes found for {output_mint}")
+                return None
         except Exception as e:
             print(f"[JupiterAggregator] ❌ get_quote error: {e}")
             return None
