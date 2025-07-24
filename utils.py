@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Elite Tools + Trending Feed + Pre-Approve + Auto-Sell + LP Check
+# utils.py — with Raydium Fallback, Real Quotes, Valid Transactions, and Auto-Sell
 # =============================
 
 import os
@@ -13,7 +13,6 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
-from solana.system_program import TransferParams, transfer
 from solana.rpc.types import TxOpts
 from spl.token.instructions import approve, get_associated_token_address
 from telegram.ext import Application, CommandHandler
@@ -58,67 +57,81 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# 🔁 Buy Token
-async def buy_token(mint: str):
+# ✅ Pre-Approval
+async def approve_token_if_needed(mint):
     try:
-        input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-        output_mint = Pubkey.from_string(mint)
+        mint_pubkey = Pubkey.from_string(mint)
+        ata = get_associated_token_address(keypair.pubkey(), mint_pubkey)
+        tx = Transaction().add(approve(
+            program_id=Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+            source=ata,
+            delegate=keypair.pubkey(),
+            owner=keypair.pubkey(),
+            amount=9999999999
+        ))
+        rpc.send_transaction(tx, keypair, opts=TxOpts(skip_confirmation=True))
+    except:
+        pass
 
-        quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
+# ✅ Primary Buy + Raydium Fallback
+async def buy_token(mint: str):
+    input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+    output_mint = Pubkey.from_string(mint)
+    amount = int(BUY_AMOUNT_SOL * 1e9)
 
-        if not quote:
-            await send_telegram_alert(f"❌ No quote object for {mint}")
-            log_skipped_token(mint, "No Jupiter quote (null response)")
-            return False
+    # Try Jupiter first
+    quote = await jupiter.get_quote(input_mint, output_mint, amount)
+    if not quote or "swapTransaction" not in quote:
+        await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
+        quote = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
-        if "swapTransaction" not in quote:
-            await send_telegram_alert(f"❌ No swapTransaction for {mint}\nQuote: {json.dumps(quote, indent=2)}")
-            log_skipped_token(mint, "No swapTransaction key in quote")
-            return False
+    if not quote or "swapTransaction" not in quote:
+        await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
+        log_skipped_token(mint, "No valid quote")
+        return False
 
+    try:
         await approve_token_if_needed(mint)
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
+        if not tx:
+            raise Exception("Swap transaction build failed")
+
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
-
     except Exception as e:
         await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
+# ✅ Sell Token (same fallback logic)
 async def sell_token(mint: str, percent: float = 100.0):
+    input_mint = Pubkey.from_string(mint)
+    output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+    amount = int(BUY_AMOUNT_SOL * 1e9 * percent / 100)
+
+    quote = await jupiter.get_quote(input_mint, output_mint, amount)
+    if not quote or "swapTransaction" not in quote:
+        quote = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
+
+    if not quote or "swapTransaction" not in quote:
+        await send_telegram_alert(f"❌ No sell quote for {mint}")
+        log_skipped_token(mint, "No sell quote")
+        return False
+
     try:
-        input_mint = Pubkey.from_string(mint)
-        output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-
-        # For selling, assume we want to sell all current token balance — this is a placeholder
-        # Adjust this logic based on real token balance in the future
-        amount = int(BUY_AMOUNT_SOL * 1e9 * percent / 100)
-
-        quote = await jupiter.get_quote(input_mint, output_mint, amount)
-        if not quote or "swapTransaction" not in quote:
-            await send_telegram_alert(f"❌ No sell quote found for {mint}")
-            log_skipped_token(mint, "No sell quote")
-            return False
-
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
-        if not tx:
-            await send_telegram_alert(f"❌ Failed to build sell tx for {mint}")
-            return False
-
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
         log_trade(mint, f"SELL {percent}%", 0, quote.get("outAmount", 0) / 1e9)
         return True
-
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
-        
-# 🔁 Auto-Sell Logic
+
+# ✅ Auto-Sell Logic
 async def wait_and_auto_sell(mint):
     try:
         await asyncio.sleep(1)
@@ -130,16 +143,11 @@ async def wait_and_auto_sell(mint):
     except Exception as e:
         await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
-# ✅ Is Valid Mint
+# ✅ Other Helpers
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 def is_valid_mint(keys):
-    for k in keys:
-        if isinstance(k, dict):
-            if k.get("pubkey") == TOKEN_PROGRAM_ID:
-                return True
-    return False
+    return any(k.get("pubkey") == TOKEN_PROGRAM_ID for k in keys if isinstance(k, dict))
 
-# ✅ Trending Scanner (DEXScreener)
 async def get_trending_mints(limit=5):
     try:
         url = "https://api.dexscreener.com/latest/dex/pairs/solana"
@@ -151,23 +159,6 @@ async def get_trending_mints(limit=5):
     except:
         return []
 
-# ✅ Pre-Approval Batching
-async def approve_token_if_needed(mint):
-    try:
-        mint_pubkey = Pubkey.from_string(mint)
-        ata = get_associated_token_address(keypair.pubkey(), mint_pubkey)
-        tx = Transaction().add(approve(
-            program_id=Pubkey.from_string(TOKEN_PROGRAM_ID),
-            source=ata,
-            delegate=keypair.pubkey(),
-            owner=keypair.pubkey(),
-            amount=9999999999
-        ))
-        rpc.send_transaction(tx, keypair, opts=TxOpts(skip_confirmation=True))
-    except:
-        pass
-
-# ✅ Liquidity + Ownership Check
 async def get_liquidity_and_ownership(mint):
     try:
         url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{mint}"
@@ -175,16 +166,16 @@ async def get_liquidity_and_ownership(mint):
             res = await client.get(url)
             if res.status_code != 200:
                 return None
-            data = res.json()
-            attributes = data.get("data", {}).get("attributes", {})
-            liquidity = float(attributes.get("liquidity_usd", 0))
-            renounced = attributes.get("ownership_renounced", False)
-            lp_locked = attributes.get("lp_honeycheck", {}).get("lp_locked", False)
-            return {"liquidity": liquidity, "renounced": renounced, "lp_locked": lp_locked}
+            attributes = res.json().get("data", {}).get("attributes", {})
+            return {
+                "liquidity": float(attributes.get("liquidity_usd", 0)),
+                "renounced": attributes.get("ownership_renounced", False),
+                "lp_locked": attributes.get("lp_honeycheck", {}).get("lp_locked", False)
+            }
     except:
         return None
 
-# 🤖 Telegram Bot
+# ✅ Telegram Command Bot
 async def status(update, context):
     await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`")
 
@@ -204,3 +195,4 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
