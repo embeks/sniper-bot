@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 
 from utils import (
     is_valid_mint,
-    wait_and_auto_sell,
     buy_token,
     get_token_data,
     log_skipped_token,
