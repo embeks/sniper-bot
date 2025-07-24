@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Elite Tools + Trending Feed + Pre-Approve
+# utils.py — Elite Tools + Trending Feed + Pre-Approve + PnL + Rug Check
 # =============================
 
 import os
@@ -7,13 +7,12 @@ import json
 import httpx
 import asyncio
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
-from solana.system_program import TransferParams, transfer
 from solana.rpc.types import TxOpts
 from spl.token.instructions import approve, get_associated_token_address
 from telegram.ext import Application, CommandHandler
@@ -29,6 +28,7 @@ SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
+HELIUS_API = os.getenv("HELIUS_API")
 
 # 💪 Wallet Setup
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
@@ -58,7 +58,7 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# 🔁 Buy Token
+# ✅ Buy Token
 async def buy_token(mint: str):
     try:
         input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
@@ -104,6 +104,20 @@ async def sell_token(mint: str, percent: float = 100.0):
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
 
+# 🧠 Auto-Sell Logic
+async def wait_and_auto_sell(mint: str):
+    try:
+        await asyncio.sleep(10)  # optional buffer
+        await sell_token(mint, 50.0)  # 50% at 2x (placeholder, no price check yet)
+        await asyncio.sleep(5)
+        await sell_token(mint, 25.0)  # 25% at 5x
+        await asyncio.sleep(5)
+        await sell_token(mint, 25.0)  # 25% at 10x
+        await asyncio.sleep(SELL_TIMEOUT_SEC)
+        await sell_token(mint, 100.0)  # fallback
+    except Exception as e:
+        await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
+
 # ✅ Is Valid Mint
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 def is_valid_mint(keys):
@@ -113,7 +127,7 @@ def is_valid_mint(keys):
                 return True
     return False
 
-# ✅ Trending Scanner (DEXScreener)
+# 🔍 Trending Mints
 async def get_trending_mints(limit=5):
     try:
         url = "https://api.dexscreener.com/latest/dex/pairs/solana"
@@ -125,7 +139,7 @@ async def get_trending_mints(limit=5):
     except:
         return []
 
-# ✅ Pre-Approval Batching (fast exit-ready)
+# ⚠️ Pre-Approval
 async def approve_token_if_needed(mint):
     try:
         mint_pubkey = Pubkey.from_string(mint)
@@ -140,6 +154,27 @@ async def approve_token_if_needed(mint):
         rpc.send_transaction(tx, keypair, opts=TxOpts(skip_confirmation=True))
     except:
         pass
+
+# 🚨 Rug Check via Helius
+async def get_liquidity_and_ownership(mint: str):
+    try:
+        url = f"https://api.helius.xyz/v0/token-metadata?api-key={HELIUS_API}"
+        headers = { "Content-Type": "application/json" }
+        payload = { "mintAccounts": [mint] }
+
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, json=payload)
+            result = res.json()[0]
+
+            lp = float(result.get("liquidity", 0))
+            ownership = result.get("tokenInfo", {}).get("ownership", {})
+            renounced = ownership.get("isOwnershipRenounced", False)
+            locked = ownership.get("isLiquidityLocked", False)
+
+            return lp, renounced, locked
+    except Exception as e:
+        await send_telegram_alert(f"⚠️ Ownership/LP check failed for {mint}: {e}")
+        return 0.0, False, False
 
 # 🤖 Telegram Bot
 async def status(update, context):
@@ -161,38 +196,3 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-
-# ✅ Raw On-Chain Token Data (Fast Rug Filter)
-async def get_token_data(mint: str):
-    try:
-        url = f"https://quote-api.jup.ag/v6/token-list"
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-            data = response.json().get("tokens", [])
-
-        token = next((t for t in data if t["address"] == mint), None)
-        if not token:
-            return None
-
-        # Fallback if Jupiter doesn’t give LP details
-        liquidity = float(token.get("liquidity", 0)) if "liquidity" in token else 0
-        is_renounced = token.get("ownership", {}).get("renounced", False)
-        is_locked = token.get("ownership", {}).get("lp_locked", False)
-
-        return {
-            "liquidity": liquidity,
-            "renounced": is_renounced,
-            "lp_locked": is_locked
-        }
-
-    except Exception as e:
-        await send_telegram_alert(f"⚠️ Error in get_token_data: {e}")
-        return None
-
-# 🕒 Auto-Sell Logic After Buy
-async def wait_and_auto_sell(mint: str):
-    try:
-        await asyncio.sleep(SELL_TIMEOUT_SEC)
-        await sell_token(mint)
-    except Exception as e:
-        await send_telegram_alert(f"❌ Auto-sell failed for {mint}: {e}")
