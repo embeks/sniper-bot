@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 import os
 import telegram
 import logging
+from telegram import Update
 
 app = FastAPI()
 
