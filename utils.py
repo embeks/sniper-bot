@@ -89,24 +89,26 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# 💸 Sell Token
 async def sell_token(mint: str, percent: float = 100.0):
     try:
         input_mint = Pubkey.from_string(mint)
         output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
-        quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9 * percent / 100))
+        # For selling, assume we want to sell all current token balance — this is a placeholder
+        # Adjust this logic based on real token balance in the future
+        amount = int(BUY_AMOUNT_SOL * 1e9 * percent / 100)
 
-        if not quote:
-            await send_telegram_alert(f"❌ No sell quote object for {mint}")
-            return False
-
-        if "swapTransaction" not in quote:
-            await send_telegram_alert(f"❌ No swapTransaction in sell quote for {mint}\nQuote:
-{json.dumps(quote, indent=2)}")
+        quote = await jupiter.get_quote(input_mint, output_mint, amount)
+        if not quote or "swapTransaction" not in quote:
+            await send_telegram_alert(f"❌ No sell quote found for {mint}")
+            log_skipped_token(mint, "No sell quote")
             return False
 
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
+        if not tx:
+            await send_telegram_alert(f"❌ Failed to build sell tx for {mint}")
+            return False
+
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
         log_trade(mint, f"SELL {percent}%", 0, quote.get("outAmount", 0) / 1e9)
@@ -114,8 +116,9 @@ async def sell_token(mint: str, percent: float = 100.0):
 
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
+        log_skipped_token(mint, f"Sell failed: {e}")
         return False
-
+        
 # 🔁 Auto-Sell Logic
 async def wait_and_auto_sell(mint):
     try:
