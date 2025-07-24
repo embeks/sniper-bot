@@ -28,7 +28,7 @@ async def webhook(request: Request):
             text = update.message.text
             logger.info(f"👤 From: {chat_id}, Message: {text}")
             if text == "/status":
-                bot.send_message(chat_id=chat_id, text="✅ Bot is live and responding.")
+                await bot.send_message(chat_id=chat_id, text="✅ Bot is live and responding.")
 
         return {"ok": True}
     except Exception as e:
