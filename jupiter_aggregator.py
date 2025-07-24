@@ -4,11 +4,9 @@
 
 import base64
 import httpx
-import json
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solders.signature import Signature
 from solana.rpc.api import Client
 
 class JupiterAggregatorClient:
@@ -23,16 +21,18 @@ class JupiterAggregatorClient:
             f"&outputMint={str(output_mint)}"
             f"&amount={amount}"
             f"&slippageBps={slippage_bps}"
+            f"&onlyDirectRoutes=false"
         )
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=3) as client:
                 response = await client.get(url)
                 data = response.json()
-                if data.get("data"):
-                    return data["data"][0]  # Top route
+                routes = data.get("data", [])
+                if routes:
+                    return routes[0]  # Best route
                 return None
         except Exception as e:
-            print(f"[JupiterAggregatorClient] Quote Error: {e}")
+            print(f"[JupiterAggregator] ❌ get_quote error: {e}")
             return None
 
     def build_swap_transaction(self, swap_tx_b64: str, keypair: Keypair) -> bytes:
@@ -42,13 +42,13 @@ class JupiterAggregatorClient:
             tx.sign([keypair])
             return tx.serialize()
         except Exception as e:
-            print(f"[JupiterAggregatorClient] Build TX Error: {e}")
+            print(f"[JupiterAggregator] ❌ build_tx error: {e}")
             return None
 
     def send_transaction(self, signed_tx: bytes) -> str:
         try:
             result = self.client.send_raw_transaction(signed_tx)
-            return str(result.value) if result else None
+            return str(result.value)
         except Exception as e:
-            print(f"[JupiterAggregatorClient] Send TX Error: {e}")
+            print(f"[JupiterAggregator] ❌ send_tx error: {e}")
             return None
