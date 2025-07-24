@@ -72,8 +72,7 @@ async def buy_token(mint: str):
             return False
 
         if "swapTransaction" not in quote:
-            await send_telegram_alert(f"❌ No swapTransaction for {mint}\nQuote: {quote}")
-{json.dumps(quote, indent=2)}")
+            await send_telegram_alert(f"❌ No swapTransaction for {mint}\nQuote: {json.dumps(quote, indent=2)}")
             log_skipped_token(mint, "No swapTransaction key in quote")
             return False
 
