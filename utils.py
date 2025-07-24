@@ -1,5 +1,5 @@
 # =============================
-# utils.py — Elite Tools + Trending Feed + Pre-Approve + 2x/5x/10x Logic
+# utils.py — Elite Tools + Trending Feed + Pre-Approve + Auto-Sell + LP Check
 # =============================
 
 import os
@@ -7,7 +7,7 @@ import json
 import httpx
 import asyncio
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -104,6 +104,18 @@ async def sell_token(mint: str, percent: float = 100.0):
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         return False
 
+# 🔁 Auto-Sell Logic
+async def wait_and_auto_sell(mint):
+    try:
+        await asyncio.sleep(1)
+        await sell_token(mint, percent=50)
+        await asyncio.sleep(2)
+        await sell_token(mint, percent=25)
+        await asyncio.sleep(2)
+        await sell_token(mint, percent=25)
+    except Exception as e:
+        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
+
 # ✅ Is Valid Mint
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 def is_valid_mint(keys):
@@ -125,7 +137,7 @@ async def get_trending_mints(limit=5):
     except:
         return []
 
-# ✅ Pre-Approval Batching (fast exit-ready)
+# ✅ Pre-Approval Batching
 async def approve_token_if_needed(mint):
     try:
         mint_pubkey = Pubkey.from_string(mint)
@@ -140,6 +152,23 @@ async def approve_token_if_needed(mint):
         rpc.send_transaction(tx, keypair, opts=TxOpts(skip_confirmation=True))
     except:
         pass
+
+# ✅ Liquidity + Ownership Check
+async def get_liquidity_and_ownership(mint):
+    try:
+        url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{mint}"
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url)
+            if res.status_code != 200:
+                return None
+            data = res.json()
+            attributes = data.get("data", {}).get("attributes", {})
+            liquidity = float(attributes.get("liquidity_usd", 0))
+            renounced = attributes.get("ownership_renounced", False)
+            lp_locked = attributes.get("lp_honeycheck", {}).get("lp_locked", False)
+            return {"liquidity": liquidity, "renounced": renounced, "lp_locked": lp_locked}
+    except:
+        return None
 
 # 🤖 Telegram Bot
 async def status(update, context):
@@ -161,60 +190,3 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-
-# 🚀 True 2x / 5x / 10x Auto-Sell Logic with Logging and Fallback
-async def wait_and_auto_sell(mint):
-    try:
-        buy_price_sol = BUY_AMOUNT_SOL
-        check_interval = 15  # seconds
-        deadline = datetime.utcnow() + timedelta(seconds=SELL_TIMEOUT_SEC)
-        sold_2x = sold_5x = sold_10x = False
-
-        while datetime.utcnow() < deadline:
-            try:
-                input_mint = Pubkey.from_string(mint)
-                output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-
-                quote = await jupiter.get_quote(input_mint, output_mint, int(BUY_AMOUNT_SOL * 1e9))
-                if quote and "outAmount" in quote:
-                    current_value_sol = quote["outAmount"] / 1e9
-                    multiplier = current_value_sol / buy_price_sol
-
-                    if multiplier >= 2 and not sold_2x:
-                        await send_telegram_alert(f"💰 2x reached for {mint}. Selling 50%...")
-                        await sell_token(mint, 50)
-                        log_trade(mint, "SELL 50% @ 2x", 0, current_value_sol * 0.5)
-                        sold_2x = True
-
-                    elif multiplier >= 5 and not sold_5x:
-                        await send_telegram_alert(f"💰 5x reached for {mint}. Selling 25%...")
-                        await sell_token(mint, 25)
-                        log_trade(mint, "SELL 25% @ 5x", 0, current_value_sol * 0.25)
-                        sold_5x = True
-
-                    elif multiplier >= 10 and not sold_10x:
-                        await send_telegram_alert(f"💰 10x reached for {mint}. Selling final 25%...")
-                        await sell_token(mint, 25)
-                        log_trade(mint, "SELL 25% @ 10x", 0, current_value_sol * 0.25)
-                        sold_10x = True
-
-                await asyncio.sleep(check_interval)
-            except:
-                await asyncio.sleep(check_interval)
-
-        # Timeout fallback sell
-        remaining = 0
-        if not sold_2x:
-            remaining = 100
-        elif not sold_5x:
-            remaining = 50
-        elif not sold_10x:
-            remaining = 25
-
-        if remaining:
-            await send_telegram_alert(f"⏰ Timeout hit. Selling remaining {remaining}% of {mint}...")
-            await sell_token(mint, remaining)
-            log_trade(mint, f"SELL {remaining}% @ timeout", 0, 0)
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
