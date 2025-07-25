@@ -1,5 +1,5 @@
 # =============================
-# utils.py — ELITE FINAL VERSION for Webhook Telegram Control
+# utils.py — ELITE FINAL VERSION with Raw Quote Debugging Fixes
 # =============================
 
 import os
@@ -83,7 +83,17 @@ async def get_liquidity_and_ownership(mint):
     except:
         return None
 
-# JUPITER BUY
+# JUPITER RAW QUOTE CHECK
+def get_raw_jupiter_quote_url(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 100):
+    return f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&slippageBps={slippage_bps}"
+
+async def is_token_actually_tradable(input_mint: str, output_mint: str, amount: int):
+    url = get_raw_jupiter_quote_url(input_mint, output_mint, amount)
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+        return r.status_code == 200 and 'outAmount' in r.text.lower()
+
+# TOKEN APPROVAL
 async def approve_token_if_needed(mint):
     try:
         mint_pubkey = Pubkey.from_string(mint)
@@ -99,14 +109,17 @@ async def approve_token_if_needed(mint):
     except:
         pass
 
+# BUY LOGIC
 async def buy_token(mint: str):
-    input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+    input_mint_str = "So11111111111111111111111111111111111111112"
+    input_mint = Pubkey.from_string(input_mint_str)
     output_mint = Pubkey.from_string(mint)
     amount = int(BUY_AMOUNT_SOL * 1e9)
 
     quote = await jupiter.get_quote(input_mint, output_mint, amount)
     if not quote or "swapTransaction" not in quote:
-        await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
+        is_tradable = await is_token_actually_tradable(input_mint_str, mint, amount)
+        await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, tradable check: {is_tradable}, trying Raydium fallback")
         quote = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
     if not quote or "swapTransaction" not in quote:
@@ -129,7 +142,7 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# AUTO SELL
+# SELL LOGIC
 async def sell_token(mint: str, percent: float = 100.0):
     input_mint = Pubkey.from_string(mint)
     output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
