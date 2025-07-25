@@ -1,5 +1,5 @@
 # =============================
-# jupiter_aggregator.py — ELITE FINAL VERSION (with working get_swap_transaction)
+# jupiter_aggregator.py — ELITE FINAL VERSION (FIXED: is_token_tradable)
 # =============================
 
 import base64
@@ -32,9 +32,9 @@ class JupiterAggregatorClient:
                     return None
                 json_data = response.json()
                 routes = json_data.get("data", [])
-                if not routes or not isinstance(routes, list):
+                if not routes:
                     return None
-                return routes[0]  # return the actual route object
+                return routes[0]  # contains swapTransaction and outAmount
         except Exception:
             return None
 
@@ -69,8 +69,11 @@ class JupiterAggregatorClient:
                 res = await client.get(url)
                 if res.status_code != 200:
                     return False
-                data = res.json()
-                return "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0
+                json_data = res.json()
+                routes = json_data.get("data", [])
+                if not routes:
+                    return False
+                return int(routes[0].get("outAmount", 0)) > 0
         except Exception:
             return False
 
