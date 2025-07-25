@@ -17,22 +17,26 @@ class JupiterAggregatorClient:
         self.client = Client(rpc_url)
 
     async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100, only_direct_routes: bool = False):
-        url = (
-            f"https://quote-api.jup.ag/v6/quote"
-            f"?inputMint={str(input_mint)}"
-            f"&outputMint={str(output_mint)}"
-            f"&amount={amount}"
-            f"&slippageBps={slippage_bps}"
-            f"&onlyDirectRoutes={'true' if only_direct_routes else 'false'}"
-        )
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url)
-                if response.status_code == 200:
-                    return response.json().get("data", None)
+    url = (
+        f"https://quote-api.jup.ag/v6/quote"
+        f"?inputMint={str(input_mint)}"
+        f"&outputMint={str(output_mint)}"
+        f"&amount={amount}"
+        f"&slippageBps={slippage_bps}"
+        f"&onlyDirectRoutes={'true' if only_direct_routes else 'false'}"
+    )
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            if response.status_code != 200:
                 return None
-        except Exception:
-            return None
+            json_data = response.json()
+            routes = json_data.get("data", [])
+            if not routes:
+                return None
+            return routes[0]  # this contains "swapTransaction"
+    except Exception:
+        return None
 
     async def get_swap_transaction(self, route: dict):
         url = "https://quote-api.jup.ag/v6/swap"
