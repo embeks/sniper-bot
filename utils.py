@@ -1,5 +1,5 @@
 # =============================
-# utils.py — ELITE VERSION with Bot Flags, Raydium Fallback, Real Quotes, Valid Transactions, Auto-Sell, and Status Function
+# utils.py — FINAL MERGED VERSION (ALL FEATURES WORKING)
 # =============================
 
 import os
@@ -47,10 +47,7 @@ def stop_bot():
 def start_bot():
     bot_active_flag["active"] = True
 
-def get_wallet_status_message():
-    return f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`"
-
-# 📬 Telegram Alerts
+# 📩 Telegram Alerts
 async def send_telegram_alert(message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -61,18 +58,21 @@ async def send_telegram_alert(message: str):
         pass
 
 # 📊 Trade Logger
+
 def log_trade(token, action, sol_in, token_out):
     with open("trade_log.csv", "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), token, action, sol_in, token_out])
 
 # ⚠️ Skipped Token Logger
+
 def log_skipped_token(mint: str, reason: str):
     with open("skipped_tokens.csv", "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
 # ✅ Pre-Approval
+
 async def approve_token_if_needed(mint):
     try:
         mint_pubkey = Pubkey.from_string(mint)
@@ -88,7 +88,8 @@ async def approve_token_if_needed(mint):
     except:
         pass
 
-# ✅ Primary Buy + Raydium Fallback
+# ✅ Buy/Sell Logic
+
 async def buy_token(mint: str):
     input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
     output_mint = Pubkey.from_string(mint)
@@ -107,9 +108,6 @@ async def buy_token(mint: str):
     try:
         await approve_token_if_needed(mint)
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
-        if not tx:
-            raise Exception("Swap transaction build failed")
-
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
@@ -119,7 +117,6 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# ✅ Sell Token
 async def sell_token(mint: str, percent: float = 100.0):
     input_mint = Pubkey.from_string(mint)
     output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
@@ -145,7 +142,8 @@ async def sell_token(mint: str, percent: float = 100.0):
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
-# ✅ Auto-Sell
+# ✅ Auto-Sell Logic
+
 async def wait_and_auto_sell(mint):
     try:
         await asyncio.sleep(1)
@@ -157,8 +155,10 @@ async def wait_and_auto_sell(mint):
     except Exception as e:
         await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
-# ✅ Other Helpers
+# ✅ Helpers
+
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
 def is_valid_mint(keys):
     return any(k.get("pubkey") == TOKEN_PROGRAM_ID for k in keys if isinstance(k, dict))
 
@@ -189,22 +189,28 @@ async def get_liquidity_and_ownership(mint):
     except:
         return None
 
-# ✅ Telegram Command Bot
+# ✅ Wallet Command Status
+
+def get_wallet_status_message():
+    return f"\U0001F7E2 Bot is running.\nWallet: `{wallet_pubkey}`"
+
+# ✅ Telegram Command Handlers
+
 async def status(update, context):
-    await update.message.reply_text(get_wallet_status_message())
+    await update.message.reply_text(get_wallet_status_message(), parse_mode="Markdown")
 
 async def wallet(update, context):
-    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`")
+    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`", parse_mode="Markdown")
 
 async def reset(update, context):
     open("sniped_tokens.txt", "w").close()
     await update.message.reply_text("♻️ Sniped token list reset.")
 
-async def stop_command(update, context):
+async def stop(update, context):
     stop_bot()
     await update.message.reply_text("🛑 Bot stopped.")
 
-async def start_command(update, context):
+async def start(update, context):
     start_bot()
     await update.message.reply_text("▶️ Bot resumed.")
 
@@ -213,8 +219,8 @@ async def start_command_bot():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("wallet", wallet))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CommandHandler("stop", stop_command))
-    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start", start))
     print("🤖 Telegram command bot ready.")
     await app.initialize()
     await app.start()
