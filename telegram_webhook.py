@@ -1,13 +1,18 @@
 # =============================
-# telegram_webhook.py — Final Elite Version with Clean Task Handling
+# telegram_webhook.py — Final Version (Slash Command Controlled)
 # =============================
 
 import os
 import asyncio
 from fastapi import FastAPI, Request
-from sniper_logic import start_sniper, start_sniper_with_forced_token, stop_all_tasks
-from utils import is_bot_running, stop_bot, start_bot
 from dotenv import load_dotenv
+
+from sniper_logic import (
+    start_sniper,
+    stop_all_tasks,
+    start_sniper_with_forced_token
+)
+from utils import is_bot_running, stop_bot, start_bot
 
 load_dotenv()
 
@@ -15,7 +20,7 @@ app = FastAPI()
 
 @app.get("/")
 async def root():
-    return {"status": "Bot is running"}
+    return {"status": "Sniper Bot is Live"}
 
 @app.post("/forcebuy")
 async def force_buy(request: Request):
@@ -30,13 +35,13 @@ async def force_buy(request: Request):
 @app.post("/start")
 async def start():
     start_bot()
-    return {"status": "Bot resumed"}
+    return {"status": "Bot resumed. Use /launch to activate sniper."}
 
 @app.post("/stop")
 async def stop():
     stop_bot()
     await stop_all_tasks()
-    return {"status": "Bot stopped"}
+    return {"status": "Bot paused. All tasks canceled."}
 
 @app.post("/launch")
 async def launch():
@@ -44,10 +49,4 @@ async def launch():
         asyncio.create_task(start_sniper())
         return {"status": "Sniper bot launched"}
     else:
-        return {"error": "Bot is inactive. Use /start to activate."}
-
-# ✅ AUTO-LAUNCH SNIPER ON DEPLOY
-@app.on_event("startup")
-async def launch_on_deploy():
-    if is_bot_running():
-        asyncio.create_task(start_sniper())
+        return {"error": "Bot is paused. Use /start to resume first."}
