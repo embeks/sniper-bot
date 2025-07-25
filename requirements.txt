@@ -8,3 +8,4 @@ python-telegram-bot==20.2
 gunicorn
 fastapi
 uvicorn[standard]
+base58
