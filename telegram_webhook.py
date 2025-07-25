@@ -1,12 +1,12 @@
 # =============================
-# telegram_webhook.py — Elite Bot Webhook Entry + Telegram Commands
+# telegram_webhook.py — Final Elite Version
 # =============================
 
 import os
 import asyncio
 from fastapi import FastAPI, Request
 from sniper_logic import start_sniper, start_sniper_with_forced_token
-from utils import is_bot_running, stop_bot, start_bot, start_command_bot
+from utils import is_bot_running, stop_bot, start_bot
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,7 +45,9 @@ async def launch():
     else:
         return {"error": "Bot is inactive. Use /start to activate."}
 
-# ✅ START TELEGRAM COMMAND BOT
+
+# ✅ AUTO-LAUNCH SNIPER ON DEPLOY
 @app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(start_command_bot())
+async def launch_on_deploy():
+    if is_bot_running():
+        asyncio.create_task(start_sniper())
