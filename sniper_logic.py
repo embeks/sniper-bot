@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — ELITE VERSION with Trending Scanner + Pre-Approval
+# sniper_logic.py — ELITE VERSION with Pause/Resume, Trending Scanner + Pre-Approval
 # =========================
 
 import asyncio
@@ -16,7 +16,8 @@ from utils import (
     start_command_bot,
     get_trending_mints,
     wait_and_auto_sell,
-    get_liquidity_and_ownership
+    get_liquidity_and_ownership,
+    is_bot_running
 )
 
 load_dotenv()
@@ -45,12 +46,6 @@ async def rug_filter_passes(mint):
             log_skipped_token(mint, "Low Liquidity")
             await send_telegram_alert(f"⛔ Skipped {mint} — LP too low: {lp}")
             return False
-
-        # Ownership check disabled for test
-        # if not renounced and not locked:
-        #     log_skipped_token(mint, "Ownership not renounced + LP not locked")
-        #     await send_telegram_alert(f"⛔ Skipped {mint} — Unsafe ownership/LP")
-        #     return False
 
         return True
     except Exception as e:
@@ -83,7 +78,7 @@ async def mempool_listener(name):
                     if "Instruction: MintTo" in log or "Instruction: InitializeMint" in log:
                         keys = data["params"]["result"]["value"].get("accountKeys", [])
                         for key in keys:
-                            if key in seen_tokens:
+                            if key in seen_tokens or not is_bot_running():
                                 continue
                             seen_tokens.add(key)
                             print(f"[🔍] Token found: {key}")
@@ -106,6 +101,10 @@ async def mempool_listener(name):
 async def trending_scanner():
     while True:
         try:
+            if not is_bot_running():
+                await asyncio.sleep(5)
+                continue
+
             mints = await get_trending_mints()
             for mint in mints:
                 if mint in seen_tokens:
@@ -153,7 +152,10 @@ async def start_sniper():
 
 # ✅ Force Buy Sniper for Telegram
 async def start_sniper_with_forced_token(mint: str):
-    from utils import buy_token, wait_and_auto_sell
+    from utils import buy_token, wait_and_auto_sell, is_bot_running
+    if not is_bot_running():
+        await send_telegram_alert(f"⛔ Bot is paused. Force buy aborted for {mint}.")
+        return
     bought = await buy_token(mint)
     if bought:
         await wait_and_auto_sell(mint)
