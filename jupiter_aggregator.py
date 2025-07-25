@@ -9,6 +9,7 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 
+
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
         self.rpc_url = rpc_url
@@ -20,7 +21,7 @@ class JupiterAggregatorClient:
         output_mint: Pubkey,
         amount: int,
         slippage_bps: int = 100,
-        only_direct_routes: bool = False
+        only_direct_routes: bool = False,  # ✅ optional flag
     ):
         url = (
             f"https://quote-api.jup.ag/v6/quote"
@@ -30,31 +31,21 @@ class JupiterAggregatorClient:
             f"&slippageBps={slippage_bps}"
             f"&onlyDirectRoutes={'true' if only_direct_routes else 'false'}"
         )
-
-        print(f"[JupiterAggregator] 🛰 Fetching quote:\n{url}")
-
         try:
-            async with httpx.AsyncClient(timeout=3) as client:
+            async with httpx.AsyncClient(timeout=5) as client:
                 response = await client.get(url)
-
                 if response.status_code != 200:
-                    print(f"[JupiterAggregator] ⚠️ Quote failed with status: {response.status_code}")
-                    print(f"[JupiterAggregator] ❌ Response text: {response.text}")
+                    print(f"[JupiterAggregator] ⚠️ Quote failed with status {response.status_code}")
                     return None
-
                 data = response.json()
-                routes = data.get("data")
 
-                if not routes:
-                    print(f"[JupiterAggregator] ⚠️ No valid routes returned for {output_mint}")
-                    print(f"[JupiterAggregator] ❌ Full response: {data}")
+                if not data.get("outAmount"):
+                    print(f"[JupiterAggregator] ❌ No outAmount for {output_mint}")
                     return None
 
-                print(f"[JupiterAggregator] ✅ Quote received with {len(routes)} route(s)")
-                return routes[0]
-
+                return data
         except Exception as e:
-            print(f"[JupiterAggregator] ❌ Exception during get_quote: {e}")
+            print(f"[JupiterAggregator] ❌ get_quote error: {e}")
             return None
 
     def build_swap_transaction(self, swap_tx_b64: str, keypair: Keypair) -> bytes:
