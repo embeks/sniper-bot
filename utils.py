@@ -206,4 +206,4 @@ async def start_command_bot():
     print("🤖 Telegram command bot ready.")
     await app.initialize()
     await app.start()
-    await app.updater.start_polling()
+    
