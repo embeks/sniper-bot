@@ -1,68 +1,63 @@
-from fastapi import FastAPI, Request
 import os
 import asyncio
-import telegram
+from fastapi import FastAPI
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from dotenv import load_dotenv
 
+from utils import send_telegram_alert, get_wallet_status_message
 from sniper_logic import start_sniper, start_sniper_with_forced_token
-from utils import get_wallet_status_message  # Ensure this is implemented in utils.py
 
-app = FastAPI()
-bot = telegram.Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+load_dotenv()
 
-# Global reference to sniper task
+# === State Tracking ===
+running = False
 sniper_task = None
 
-@app.post("/webhook")
-async def handle_webhook(request: Request):
-    global sniper_task
-    data = await request.json()
-    update = telegram.Update.de_json(data, bot)
+# === Command: /start ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global running, sniper_task
+    if not running:
+        await update.message.reply_text("🚀 Sniper bot launching...")
+        running = True
+        sniper_task = asyncio.create_task(start_sniper())
+    else:
+        await update.message.reply_text("⚠️ Sniper already running.")
 
-    if update.message and update.message.chat:
-        chat_id = update.message.chat.id
-        message_text = update.message.text.strip()
+# === Command: /stop ===
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global running, sniper_task
+    if running and sniper_task:
+        sniper_task.cancel()
+        running = False
+        await update.message.reply_text("🛑 Sniper stopped.")
+    else:
+        await update.message.reply_text("⚠️ Sniper is not running.")
 
-        if message_text.startswith("/forcebuy"):
-            try:
-                mint = message_text.split(" ")[1]
-                await start_sniper_with_forced_token(mint)
-                bot.send_message(chat_id=chat_id, text=f"🚀 Forced buy triggered for {mint}")
-            except Exception as e:
-                bot.send_message(chat_id=chat_id, text=f"❌ Error: {e}")
+# === Command: /forcebuy <TOKEN> ===
+async def forcebuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("❌ Usage: /forcebuy <TOKEN_MINT>")
+        return
+    mint = context.args[0]
+    await update.message.reply_text(f"🔫 Buying token: `{mint}`", parse_mode="Markdown")
+    await start_sniper_with_forced_token(mint)
 
-        elif message_text == "/start":
-            if sniper_task and not sniper_task.done():
-                bot.send_message(chat_id=chat_id, text="⚠️ Sniper already running.")
-            else:
-                sniper_task = asyncio.create_task(start_sniper())
-                bot.send_message(chat_id=chat_id, text="🟢 Sniper bot launched.")
+# === Command: /status ===
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = get_wallet_status_message()
+    await update.message.reply_text(msg)
 
-        elif message_text == "/stop":
-            if sniper_task and not sniper_task.done():
-                sniper_task.cancel()
-                bot.send_message(chat_id=chat_id, text="🛑 Sniper bot stopped.")
-            else:
-                bot.send_message(chat_id=chat_id, text="⚠️ Sniper is not running.")
-
-        elif message_text == "/status":
-            try:
-                status = await get_wallet_status_message()
-                bot.send_message(chat_id=chat_id, text=status)
-            except Exception as e:
-                bot.send_message(chat_id=chat_id, text=f"❌ Status check failed: {e}")
-
-        else:
-            bot.send_message(chat_id=chat_id, text=(
-                "🤖 Commands:\n"
-                "/start — Launch sniper\n"
-                "/stop — Stop sniper\n"
-                "/forcebuy <TOKEN_MINT> — Force buy\n"
-                "/status — Wallet + Sniper status"
-            ))
-
-    return {"ok": True}
+# === FastAPI + Telegram App ===
+app = FastAPI()
 
 @app.on_event("startup")
-async def launch_sniper_bot():
-    global sniper_task
-    sniper_task = asyncio.create_task(start_sniper())
+async def startup():
+    telegram_app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("stop", stop))
+    telegram_app.add_handler(CommandHandler("forcebuy", forcebuy))
+    telegram_app.add_handler(CommandHandler("status", status))
+    asyncio.create_task(telegram_app.initialize())
+    asyncio.create_task(telegram_app.start())
+    asyncio.create_task(telegram_app.updater.start_polling())
