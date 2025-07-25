@@ -37,7 +37,7 @@ async def rug_filter_passes(mint):
             log_skipped_token(mint, "Missing LP/ownership data")
             return False
 
-        lp = 1.0  # TEMP: override LP to force pass
+        lp = 1.0  # TEMP override
         renounced = data.get("renounced", False)
         locked = data.get("lp_locked", False)
 
@@ -46,11 +46,11 @@ async def rug_filter_passes(mint):
             await send_telegram_alert(f"⛔ Skipped {mint} — LP too low: {lp}")
             return False
 
-       # TEMP: Disable ownership check to force buy during testing
-# if not renounced and not locked:
-#     log_skipped_token(mint, "Ownership not renounced + LP not locked")
-#     await send_telegram_alert(f"⛔ Skipped {mint} — Unsafe ownership/LP")
-#     return False
+        # Ownership check disabled for test
+        # if not renounced and not locked:
+        #     log_skipped_token(mint, "Ownership not renounced + LP not locked")
+        #     await send_telegram_alert(f"⛔ Skipped {mint} — Unsafe ownership/LP")
+        #     return False
 
         return True
     except Exception as e:
@@ -130,7 +130,7 @@ async def trending_scanner():
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
-    # Start Telegram command bot in background to avoid Conflict errors
+    # Start Telegram command bot in background
     asyncio.create_task(start_command_bot())
 
     # Run Forced Mint Test (if enabled)
@@ -150,7 +150,9 @@ async def start_sniper():
         mempool_listener("Jupiter"),
         trending_scanner()
     )
-    async def start_sniper_with_forced_token(mint: str):
+
+# ✅ Force Buy Sniper for Telegram
+async def start_sniper_with_forced_token(mint: str):
     from utils import buy_token, wait_and_auto_sell
     bought = await buy_token(mint)
     if bought:
