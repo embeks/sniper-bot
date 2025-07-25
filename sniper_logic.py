@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — ELITE VERSION (Updated for new utils + Jupiter v6)
+# sniper_logic.py — ELITE VERSION (Forced Buy skips LP check)
 # =========================
 
 import asyncio
@@ -121,12 +121,9 @@ async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
     if FORCE_TEST_MINT:
-        await send_telegram_alert(f"🚨 Forced Test Buy: {FORCE_TEST_MINT}")
-        if await rug_filter_passes(FORCE_TEST_MINT):
-            if await buy_token(FORCE_TEST_MINT):
-                await wait_and_auto_sell(FORCE_TEST_MINT)
-        else:
-            await send_telegram_alert(f"❌ {FORCE_TEST_MINT} failed rug check.")
+        await send_telegram_alert(f"🚨 Forced Test Buy (LP check skipped): {FORCE_TEST_MINT}")
+        if await buy_token(FORCE_TEST_MINT):
+            await wait_and_auto_sell(FORCE_TEST_MINT)
 
     TASKS.extend([
         asyncio.create_task(mempool_listener("Raydium")),
@@ -139,9 +136,10 @@ async def start_sniper_with_forced_token(mint: str):
     if not is_bot_running():
         await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
         return
-    if await rug_filter_passes(mint):
-        if await buy_token(mint):
-            await wait_and_auto_sell(mint)
+
+    await send_telegram_alert(f"🚨 Force Buy (skipping LP check): {mint}")
+    if await buy_token(mint):
+        await wait_and_auto_sell(mint)
 
 # ✅ Stop All Tasks
 async def stop_all_tasks():
