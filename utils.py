@@ -1,6 +1,6 @@
-# =============================
-# utils.py — ELITE VERSION with Auto Start, Full Telegram Control, and Safety Filters
-# =============================
+# =========================
+# utils.py — FINAL ELITE VERSION with Polling Bot, Full Slash Control, and Clean Task Handling
+# =========================
 
 import os
 import json
@@ -16,7 +16,6 @@ from solana.transaction import Transaction
 from solana.rpc.types import TxOpts
 from spl.token.instructions import approve, get_associated_token_address
 from telegram.ext import Application, CommandHandler
-
 from jupiter_aggregator import JupiterAggregatorClient
 
 load_dotenv()
@@ -179,10 +178,6 @@ async def get_liquidity_and_ownership(mint):
 def get_wallet_status_message():
     return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
-# =============================
-# ✅ Telegram Command Bot Functions
-# =============================
-
 async def status(update, context):
     await update.message.reply_text(get_wallet_status_message())
 
@@ -210,4 +205,4 @@ async def start_command_bot():
     app.add_handler(CommandHandler("start", start))
     print("🤖 Telegram command bot ready.")
     await app.initialize()
-    await app.start()
+    await app.start_polling()
