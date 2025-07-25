@@ -1,5 +1,5 @@
 # =============================
-# utils.py — ELITE FINAL VERSION (Jupiter V6 Fix + Working Swap)
+# utils.py — ELITE FINAL VERSION (Fixed buy_token logic w/ get_swap_transaction)
 # =============================
 
 import os
@@ -104,36 +104,33 @@ async def buy_token(mint: str):
     output_mint = Pubkey.from_string(mint)
     amount = int(BUY_AMOUNT_SOL * 1e9)
 
-    is_tradable = await jupiter.is_token_tradable(input_mint, output_mint, amount)
-    if not is_tradable:
-        await send_telegram_alert(f"❌ Token {mint} is NOT tradable for buy")
-        log_skipped_token(mint, "Not tradable for buy")
-        return False
-
-    route = await jupiter.get_quote(input_mint, output_mint, amount)
-    if not route:
-        await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
-        route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
-
-    if not route:
-        await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
-        log_skipped_token(mint, "No valid quote")
-        return False
-
     try:
-        swap_tx = await jupiter.get_swap_transaction(route)
-        if not swap_tx:
-            raise Exception("No swap transaction returned")
+        route = await jupiter.get_quote(input_mint, output_mint, amount)
+        if not route:
+            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
+            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
+
+        if not route:
+            await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
+            log_skipped_token(mint, "No valid quote")
+            return False
+
+        swap_tx_b64 = await jupiter.get_swap_transaction(route)
+        if not swap_tx_b64:
+            await send_telegram_alert(f"❌ Failed to get swap transaction for {mint}")
+            log_skipped_token(mint, "Swap tx build failed")
+            return False
 
         await approve_token_if_needed(mint)
-        tx = jupiter.build_swap_transaction(swap_tx, keypair)
+        tx = jupiter.build_swap_transaction(swap_tx_b64, keypair)
         if not tx:
-            raise Exception("Swap transaction build failed")
+            raise Exception("Transaction build returned None")
 
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
+
     except Exception as e:
         await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
@@ -145,12 +142,6 @@ async def sell_token(mint: str, percent: float = 100.0):
     output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
     amount = int(BUY_AMOUNT_SOL * 1e9 * percent / 100)
 
-    is_tradable = await jupiter.is_token_tradable(input_mint, output_mint, amount)
-    if not is_tradable:
-        await send_telegram_alert(f"❌ Token {mint} is NOT tradable for sell")
-        log_skipped_token(mint, "Not tradable for sell")
-        return False
-
     route = await jupiter.get_quote(input_mint, output_mint, amount)
     if not route:
         route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
@@ -160,15 +151,17 @@ async def sell_token(mint: str, percent: float = 100.0):
         log_skipped_token(mint, "No sell quote")
         return False
 
-    try:
-        swap_tx = await jupiter.get_swap_transaction(route)
-        if not swap_tx:
-            raise Exception("No sell swap transaction")
+    swap_tx_b64 = await jupiter.get_swap_transaction(route)
+    if not swap_tx_b64:
+        await send_telegram_alert(f"❌ Failed to get sell tx for {mint}")
+        log_skipped_token(mint, "Sell tx build failed")
+        return False
 
-        tx = jupiter.build_swap_transaction(swap_tx, keypair)
+    try:
+        tx = jupiter.build_swap_transaction(swap_tx_b64, keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, route.get("outAmount", 0) / 1e9)
+        log_trade(mint, f"SELL {percent}%", 0, 0)  # real token_out is inside swap, this is placeholder
         return True
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
@@ -204,9 +197,9 @@ async def get_trending_mints(limit=5):
         return []
 
 # TEXT FOR TELEGRAM
+
 def get_wallet_status_message():
     return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
     return f"💼 Wallet: `{wallet_pubkey}`"
-
