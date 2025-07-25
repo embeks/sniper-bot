@@ -32,9 +32,9 @@ class JupiterAggregatorClient:
                     return None
                 json_data = response.json()
                 routes = json_data.get("data", [])
-                if not routes:
+                if not routes or not isinstance(routes, list):
                     return None
-                return routes[0]  # this contains "swapTransaction"
+                return routes[0]  # return the actual route object
         except Exception:
             return None
 
@@ -70,7 +70,7 @@ class JupiterAggregatorClient:
                 if res.status_code != 200:
                     return False
                 data = res.json()
-                return "outAmount" in data and int(data.get("outAmount", 0)) > 0
+                return "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0
         except Exception:
             return False
 
