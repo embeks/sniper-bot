@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — ELITE VERSION with Pause/Resume, Trending Scanner + Pre-Approval
+# sniper_logic.py — ELITE VERSION with Auto-Start, Trending Scanner, Dual Listener, Telegram Commands
 # =========================
 
 import asyncio
@@ -29,7 +29,6 @@ RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
 TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))
 seen_tokens = set()
 
-# ✅ Rug Check Before Buy (Raw On-Chain)
 async def rug_filter_passes(mint):
     try:
         data = await get_liquidity_and_ownership(mint)
@@ -52,7 +51,6 @@ async def rug_filter_passes(mint):
         await send_telegram_alert(f"⚠️ Rug filter error for {mint}: {e}")
         return False
 
-# ✅ General Listener
 async def mempool_listener(name):
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
@@ -97,7 +95,6 @@ async def mempool_listener(name):
                 print(f"[{name} ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Trending Token Scanner
 async def trending_scanner():
     while True:
         try:
@@ -125,14 +122,10 @@ async def trending_scanner():
             print(f"[Scanner ERROR] {e}")
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
-# ✅ Entry
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
-
-    # Start Telegram command bot in background
     asyncio.create_task(start_command_bot())
 
-    # Run Forced Mint Test (if enabled)
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
         safe = await rug_filter_passes(FORCE_TEST_MINT)
@@ -143,19 +136,19 @@ async def start_sniper():
         else:
             await send_telegram_alert(f"❌ Forced test mint {FORCE_TEST_MINT} failed rug check.")
 
-    # Start listeners + scanner
     await asyncio.gather(
         mempool_listener("Raydium"),
         mempool_listener("Jupiter"),
         trending_scanner()
     )
 
-# ✅ Force Buy Sniper for Telegram
 async def start_sniper_with_forced_token(mint: str):
-    from utils import buy_token, wait_and_auto_sell, is_bot_running
     if not is_bot_running():
         await send_telegram_alert(f"⛔ Bot is paused. Force buy aborted for {mint}.")
         return
     bought = await buy_token(mint)
     if bought:
         await wait_and_auto_sell(mint)
+
+# ✅ Auto-launch sniper logic after import
+asyncio.create_task(start_sniper())
