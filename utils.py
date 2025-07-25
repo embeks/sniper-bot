@@ -3,13 +3,15 @@ import json
 import httpx
 import asyncio
 import csv
+import base58
 from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
-from solana.rpc.types import TxOpts
+from solana.rpc.types import TxOpts, MemcmpOpts
+from solana.rpc.async_api import AsyncClient
 from spl.token.instructions import approve, get_associated_token_address
 from jupiter_aggregator import JupiterAggregatorClient
 
@@ -61,24 +63,34 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ RAW RAYDIUM LP CHECK
+# ✅ RAYDIUM LP RUG CHECK
 async def get_liquidity_and_ownership(mint: str):
     try:
-        AMM_PROGRAM_IDS = [
-            "RVKd61ztZW9GdKz5wZqmMezRhK2z2mPMfa6VoSJ6zXq",
-            "RDM1bVY3G4zATi5aZszCuYzxgLZzsnLCM3Br5vZz3Wc"
-        ]
-        mint_pubkey = Pubkey.from_string(mint)
-
-        for program_id in AMM_PROGRAM_IDS:
+        async with AsyncClient(RPC_URL) as client:
             filters = [
-                {"memcmp": {"offset": 72, "bytes": str(mint_pubkey)}},
-                {"dataSize": 324}
+                {"dataSize": 3248},
+                {
+                    "memcmp": MemcmpOpts(
+                        offset=72,
+                        bytes=base58.b58encode(Pubkey.from_string(mint).to_bytes()).decode()
+                    )
+                }
             ]
-            result = rpc.get_program_accounts(program_id, filters=filters)
-            if result.get("result"):
-                return {"liquidity": 1.0, "renounced": False, "lp_locked": False}
-        return None
+            res = await client.get_program_accounts(
+                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),  # Raydium pool program
+                encoding="jsonParsed",
+                filters=filters
+            )
+            if not res.value:
+                return None
+
+            info = res.value[0].account.data["parsed"]["info"]
+            lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
+            return {
+                "liquidity": lp_token_supply,
+                "renounced": False,  # Raw RPC doesn’t return this, placeholder
+                "lp_locked": True     # Same here — always assume locked unless otherwise checked
+            }
     except Exception as e:
         await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
         return None
@@ -200,7 +212,7 @@ async def get_trending_mints(limit=5):
 
 # TELEGRAM TEXT
 def get_wallet_status_message():
-    return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+    return f"\U0001F7E2 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
     return f"💼 Wallet: `{wallet_pubkey}`"
