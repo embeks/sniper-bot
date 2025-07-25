@@ -61,25 +61,30 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ DEBUGGING RAYDIUM POOL LP CHECK
+# ✅ DEBUGGING RAYDIUM LP CHECK
 async def get_liquidity_and_ownership(mint: str):
     try:
-        url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{mint}"
-        async with httpx.AsyncClient() as client:
-            res = await client.get(url)
-            if res.status_code != 200:
-                await send_telegram_alert(f"⚠️ GeckoTerminal error code {res.status_code} for {mint}")
-                return None
-            data = res.json().get("data", {}).get("attributes", {})
-            liquidity = float(data.get("liquidity_usd", 0))
-            await send_telegram_alert(f"🧪 LP debug: Mint {mint}\nLiquidity: {liquidity}\nRenounced: {data.get('ownership_renounced')}\nLocked: {data.get('lp_honeycheck', {}).get('lp_locked')}")
-            return {
-                "liquidity": liquidity,
-                "renounced": data.get("ownership_renounced", False),
-                "lp_locked": data.get("lp_honeycheck", {}).get("lp_locked", False)
-            }
+        # Raydium pool address logic (simple PDA derivation placeholder for now)
+        pool_addr = Pubkey.find_program_address([b"amm", bytes(Pubkey.from_string(mint))], Pubkey.from_string("RVKd61ztZW9GdKzGwcz74hzw1Fz5sGg5E7gKD9cTAiX"))[0]
+        print(f"[LP CHECK] Derived Raydium pool address: {pool_addr}")
+
+        # Fetch raw account data
+        resp = rpc.get_account_info(pool_addr)
+        if not resp or not resp.get("result") or not resp["result"].get("value"):
+            await send_telegram_alert(f"❌ LP pool not found for {mint} — {pool_addr}")
+            return None
+
+        raw_data = resp["result"]["value"]["data"][0]  # base64
+        print(f"[LP RAW] {raw_data[:40]}...")  # print first 40 chars
+
+        # Dummy LP for now — just confirms call works
+        return {
+            "liquidity": -1,  # intentionally obvious dummy
+            "renounced": False,
+            "lp_locked": False
+        }
     except Exception as e:
-        await send_telegram_alert(f"❌ get_liquidity_and_ownership ERROR for {mint}: {e}")
+        await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
         return None
 
 # APPROVE
@@ -202,4 +207,4 @@ def get_wallet_status_message():
     return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"\U0001f4bc Wallet: `{wallet_pubkey}`"
+    return f"💼 Wallet: `{wallet_pubkey}`"
