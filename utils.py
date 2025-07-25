@@ -1,5 +1,5 @@
 # =============================
-# utils.py — ELITE FINAL VERSION for Webhook Telegram Control (Fixed Jupiter Buy Logic)
+# utils.py — ELITE FINAL VERSION (Jupiter V6 Fix + Working Swap)
 # =============================
 
 import os
@@ -110,20 +110,23 @@ async def buy_token(mint: str):
         log_skipped_token(mint, "Not tradable for buy")
         return False
 
-    quote = await jupiter.get_quote(input_mint, output_mint, amount)
-    if not quote:
+    route = await jupiter.get_quote(input_mint, output_mint, amount)
+    if not route:
         await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
-        quote = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
+        route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
-    if not quote:
+    if not route:
         await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
         log_skipped_token(mint, "No valid quote")
         return False
 
     try:
+        swap_tx = await jupiter.get_swap_transaction(route)
+        if not swap_tx:
+            raise Exception("No swap transaction returned")
+
         await approve_token_if_needed(mint)
-        swap_tx_base64 = await jupiter.get_swap_transaction(quote)
-        tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
+        tx = jupiter.build_swap_transaction(swap_tx, keypair)
         if not tx:
             raise Exception("Swap transaction build failed")
 
@@ -148,21 +151,24 @@ async def sell_token(mint: str, percent: float = 100.0):
         log_skipped_token(mint, "Not tradable for sell")
         return False
 
-    quote = await jupiter.get_quote(input_mint, output_mint, amount)
-    if not quote:
-        quote = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
+    route = await jupiter.get_quote(input_mint, output_mint, amount)
+    if not route:
+        route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
-    if not quote:
+    if not route:
         await send_telegram_alert(f"❌ No sell quote for {mint}")
         log_skipped_token(mint, "No sell quote")
         return False
 
     try:
-        swap_tx_base64 = await jupiter.get_swap_transaction(quote)
-        tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
+        swap_tx = await jupiter.get_swap_transaction(route)
+        if not swap_tx:
+            raise Exception("No sell swap transaction")
+
+        tx = jupiter.build_swap_transaction(swap_tx, keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, quote.get("outAmount", 0) / 1e9)
+        log_trade(mint, f"SELL {percent}%", 0, route.get("outAmount", 0) / 1e9)
         return True
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
@@ -203,3 +209,4 @@ def get_wallet_status_message():
 
 def get_wallet_summary():
     return f"💼 Wallet: `{wallet_pubkey}`"
+
