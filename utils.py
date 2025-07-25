@@ -67,15 +67,12 @@ def log_skipped_token(mint: str, reason: str):
 async def get_liquidity_and_ownership(mint: str):
     try:
         async with AsyncClient(RPC_URL) as client:
-            mint_bytes = Pubkey.from_string(str(mint)).to_bytes()
-            debug_b58 = base58.b58encode(mint_bytes).decode()
-            await send_telegram_alert(f"🔍 Debug LP Check: {mint} -> {debug_b58}")
             filters = [
                 {"dataSize": 3248},
                 {
                     "memcmp": MemcmpOpts(
                         offset=72,
-                        bytes=debug_b58
+                        bytes=base58.b58encode(Pubkey.from_string(mint).to_bytes()).decode()
                     )
                 }
             ]
@@ -85,6 +82,10 @@ async def get_liquidity_and_ownership(mint: str):
                 filters=filters
             )
             if not res.value:
+                await send_telegram_alert(
+                    f"📭 No LP accounts found for `{mint}`.\n"
+                    f"Raydium res.value: ```{json.dumps(res.value, indent=2)}```"
+                )
                 return None
 
             info = res.value[0].account.data["parsed"]["info"]
@@ -95,7 +96,7 @@ async def get_liquidity_and_ownership(mint: str):
                 "lp_locked": True
             }
     except Exception as e:
-        await send_telegram_alert(f"⚠️ getliquidityandownership error: {e}")
+        await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: `{e}`")
         return None
 
 # APPROVE
@@ -123,7 +124,7 @@ async def buy_token(mint: str):
     try:
         route = await jupiter.get_quote(input_mint, output_mint, amount)
         if not route:
-            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
+            await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying Raydium fallback")
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
