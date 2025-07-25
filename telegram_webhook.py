@@ -1,11 +1,11 @@
 # =============================
-# telegram_webhook.py — Final Elite Version
+# telegram_webhook.py — Final Elite Version with Clean Task Handling
 # =============================
 
 import os
 import asyncio
 from fastapi import FastAPI, Request
-from sniper_logic import start_sniper, start_sniper_with_forced_token
+from sniper_logic import start_sniper, start_sniper_with_forced_token, stop_all_tasks
 from utils import is_bot_running, stop_bot, start_bot
 from dotenv import load_dotenv
 
@@ -35,6 +35,7 @@ async def start():
 @app.post("/stop")
 async def stop():
     stop_bot()
+    await stop_all_tasks()
     return {"status": "Bot stopped"}
 
 @app.post("/launch")
@@ -44,7 +45,6 @@ async def launch():
         return {"status": "Sniper bot launched"}
     else:
         return {"error": "Bot is inactive. Use /start to activate."}
-
 
 # ✅ AUTO-LAUNCH SNIPER ON DEPLOY
 @app.on_event("startup")
