@@ -20,7 +20,7 @@ class JupiterAggregatorClient:
         output_mint: Pubkey,
         amount: int,
         slippage_bps: int = 100,
-        only_direct_routes: bool = False  # ✅ already defined
+        only_direct_routes: bool = False
     ):
         url = (
             f"https://quote-api.jup.ag/v6/quote"
@@ -43,9 +43,8 @@ class JupiterAggregatorClient:
                     return None
 
                 data = response.json()
-
-                # Safety check for missing or empty route list
                 routes = data.get("data")
+
                 if not routes:
                     print(f"[JupiterAggregator] ⚠️ No valid routes returned for {output_mint}")
                     print(f"[JupiterAggregator] ❌ Full response: {data}")
