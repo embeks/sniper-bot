@@ -63,7 +63,7 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ RAYDIUM LP RUG CHECK
+# ✅ RAYDIUM LP RUG CHECK (with Debug Alert)
 async def get_liquidity_and_ownership(mint: str):
     try:
         async with AsyncClient(RPC_URL) as client:
@@ -81,21 +81,21 @@ async def get_liquidity_and_ownership(mint: str):
                 encoding="jsonParsed",
                 filters=filters
             )
-
-            await send_telegram_alert(f"🔍 Debug LP Check:
-*Mint:* `{mint}`
-*Results:* `{res.value}`")
-
             if not res.value:
+                await send_telegram_alert(f"🔍 Debug LP Check: Pool not found for {mint}")
                 return None
 
             info = res.value[0].account.data["parsed"]["info"]
             lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
+
+            await send_telegram_alert(f"🔍 Debug LP Check:\n• Mint: `{mint}`\n• LP: `{lp_token_supply:.3f}`")
+
             return {
                 "liquidity": lp_token_supply,
                 "renounced": False,
                 "lp_locked": True
             }
+
     except Exception as e:
         await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
         return None
@@ -217,7 +217,7 @@ async def get_trending_mints(limit=5):
 
 # TELEGRAM TEXT
 def get_wallet_status_message():
-    return f"\U0001F7E2 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+    return f"🔲 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"\U0001F4BC Wallet: `{wallet_pubkey}`"
+    return f"💼 Wallet: `{wallet_pubkey}`"
