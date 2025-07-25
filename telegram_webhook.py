@@ -6,7 +6,12 @@ import os
 import asyncio
 from fastapi import FastAPI, Request
 from sniper_logic import start_sniper, start_sniper_with_forced_token
-from utils import is_bot_running, stop_bot, start_bot
+from utils import (
+    is_bot_running,
+    stop_bot,
+    start_bot,
+    get_wallet_status_message  # ✅ ADDED
+)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,3 +49,7 @@ async def launch():
         return {"status": "Sniper bot launched"}
     else:
         return {"error": "Bot is inactive. Use /start to activate."}
+
+@app.get("/status")
+async def status():
+    return {"status": get_wallet_status_message()}  # ✅ RETURNS FORMATTED INFO
