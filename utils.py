@@ -26,16 +26,16 @@ BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
 
+RAYDIUM_AMM = "RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"
+ORCA_AMM = "82yxjeMsjxZxj6xHgwzVXGUMA9aA5YV3uQxWbd7bE92Z"
+METEORA_AMM = "CGdHNLpaExzFicB9nsaKjTWEqUVcsnwFbhmU42c1o9G1"
+
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
 
 bot_active_flag = {"active": True}
-
-RAYDIUM_AMM = "RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"
-ORCA_AMM = "82yxjeMs8T9PtvB9G9JZ3xNdrPyGzPwrvP6L8JcT3CCW"
-METEORA_AMM = "GMGNkAaWZ5Q3uTXp2sEASoQvmFmjX5kKKtdZgZcP8L9C"
 
 def is_bot_running():
     return bot_active_flag["active"]
@@ -77,15 +77,19 @@ async def get_liquidity_and_ownership(mint: str):
                     {
                         "memcmp": MemcmpOpts(
                             offset=72,
-                            bytes=base58.b58encode(Pubkey.from_string(mint).to_bytes()).decode()
+                            bytes=base58.b58encode(
+                                Pubkey.from_string(mint).to_bytes()
+                            ).decode()
                         )
                     }
                 ]
+
                 res = await client.get_program_accounts(
                     Pubkey.from_string(program_id),
                     encoding="jsonParsed",
                     filters=filters
                 )
+
                 if res.value:
                     info = res.value[0].account.data["parsed"]["info"]
                     lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
@@ -93,8 +97,7 @@ async def get_liquidity_and_ownership(mint: str):
                         "liquidity": lp_token_supply,
                         "renounced": False,
                         "lp_locked": True
-                    ]
-        await send_telegram_alert(f"📭 No LP found on any AMM for `{mint}`")
+                    )
         return None
     except Exception as e:
         await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: `{e}`")
@@ -125,7 +128,7 @@ async def buy_token(mint: str):
     try:
         route = await jupiter.get_quote(input_mint, output_mint, amount)
         if not route:
-            await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying Raydium fallback")
+            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
@@ -221,3 +224,4 @@ def get_wallet_status_message():
 
 def get_wallet_summary():
     return f"💼 Wallet: `{wallet_pubkey}`"
+
