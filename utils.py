@@ -1,5 +1,5 @@
 # =============================
-# utils.py — with Start/Stop, Status, and Wallet Reporting
+# utils.py — with Raydium Fallback, Real Quotes, Valid Transactions, Auto-Sell, and Full Telegram Bot
 # =============================
 
 import os
@@ -34,12 +34,6 @@ keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
-
-# ✅ Runtime State
-bot_running = True
-
-def is_bot_running():
-    return bot_running
 
 # 📩 Telegram Alerts
 async def send_telegram_alert(message: str):
@@ -110,7 +104,7 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# ✅ Sell Token
+# ✅ Sell Token (same fallback logic)
 async def sell_token(mint: str, percent: float = 100.0):
     input_mint = Pubkey.from_string(mint)
     output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
@@ -136,7 +130,7 @@ async def sell_token(mint: str, percent: float = 100.0):
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
-# ✅ Auto-Sell
+# ✅ Auto-Sell Logic
 async def wait_and_auto_sell(mint):
     try:
         await asyncio.sleep(1)
@@ -148,7 +142,7 @@ async def wait_and_auto_sell(mint):
     except Exception as e:
         await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
-# ✅ Helper Utils
+# ✅ Other Helpers
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 def is_valid_mint(keys):
     return any(k.get("pubkey") == TOKEN_PROGRAM_ID for k in keys if isinstance(k, dict))
@@ -180,9 +174,13 @@ async def get_liquidity_and_ownership(mint):
     except:
         return None
 
+# ✅ Status Message for Webhook
+def get_wallet_status_message():
+    return f"📈 Sniper bot is *online*\nWallet: `{wallet_pubkey}`\nBuy: {BUY_AMOUNT_SOL} SOL\nTimeout: {SELL_TIMEOUT_SEC}s"
+
 # ✅ Telegram Command Bot
 async def status(update, context):
-    await update.message.reply_text(f"🟢 Bot is running.\nWallet: `{wallet_pubkey}`", parse_mode="Markdown")
+    await update.message.reply_text(get_wallet_status_message(), parse_mode="Markdown")
 
 async def wallet(update, context):
     await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`", parse_mode="Markdown")
@@ -191,23 +189,19 @@ async def reset(update, context):
     open("sniped_tokens.txt", "w").close()
     await update.message.reply_text("♻️ Sniped token list reset.")
 
-async def start(update, context):
-    global bot_running
-    bot_running = True
-    await update.message.reply_text("▶️ Sniper bot *resumed*", parse_mode="Markdown")
+async def start_cmd(update, context):
+    await update.message.reply_text("🚀 Sniper bot already running in background.")
 
-async def stop(update, context):
-    global bot_running
-    bot_running = False
-    await update.message.reply_text("⏹ Sniper bot *paused*", parse_mode="Markdown")
+async def stop_cmd(update, context):
+    await update.message.reply_text("🛑 Cannot stop sniper from Telegram. Use Render dashboard.")
 
 async def start_command_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("wallet", wallet))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("stop", stop_cmd))
     print("🤖 Telegram command bot ready.")
     await app.initialize()
     await app.start()
