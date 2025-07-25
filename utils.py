@@ -3,7 +3,6 @@ import json
 import httpx
 import asyncio
 import csv
-import base64
 from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
@@ -62,51 +61,25 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ ELITE Raydium On-Chain LP Check
+# ✅ DEBUGGING RAYDIUM POOL LP CHECK
 async def get_liquidity_and_ownership(mint: str):
     try:
-        token_pubkey = Pubkey.from_string(mint)
-        filters = [
-            {"memcmp": {"offset": 0, "bytes": str(token_pubkey)}},
-            {"dataSize": 3248}
-        ]
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getProgramAccounts",
-            "params": [
-                "AMM111111111111111111111111111111111111111",  # Raydium AMM program
-                {
-                    "encoding": "base64",
-                    "filters": filters
-                }
-            ]
-        }
-
+        url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{mint}"
         async with httpx.AsyncClient() as client:
-            res = await client.post(RPC_URL, json=payload)
-            data = res.json().get("result", [])
-
-            if not data:
-                await send_telegram_alert(f"\u26a0\ufe0f No Raydium pool found for {mint}")
+            res = await client.get(url)
+            if res.status_code != 200:
+                await send_telegram_alert(f"⚠️ GeckoTerminal error code {res.status_code} for {mint}")
                 return None
-
-            pool_data = data[0]["account"]["data"][0]
-            decoded_bytes = base64.b64decode(pool_data)
-            base_reserve = int.from_bytes(decoded_bytes[72:80], "little")
-            quote_reserve = int.from_bytes(decoded_bytes[80:88], "little")
-            lp_value = (quote_reserve / 1e6) * 2
-
-            await send_telegram_alert(f"\ud83d\udd0d LP Check for `{mint}`\nBase: {base_reserve}, Quote: {quote_reserve}\n\ud83d\udca7 LP \u2248 ${lp_value:.2f}")
-
+            data = res.json().get("data", {}).get("attributes", {})
+            liquidity = float(data.get("liquidity_usd", 0))
+            await send_telegram_alert(f"🧪 LP debug: Mint {mint}\nLiquidity: {liquidity}\nRenounced: {data.get('ownership_renounced')}\nLocked: {data.get('lp_honeycheck', {}).get('lp_locked')}")
             return {
-                "liquidity": lp_value,
-                "renounced": None,
-                "lp_locked": None
+                "liquidity": liquidity,
+                "renounced": data.get("ownership_renounced", False),
+                "lp_locked": data.get("lp_honeycheck", {}).get("lp_locked", False)
             }
-
     except Exception as e:
-        await send_telegram_alert(f"\u26a0\ufe0f get_liquidity_and_ownership error: {e}")
+        await send_telegram_alert(f"❌ get_liquidity_and_ownership ERROR for {mint}: {e}")
         return None
 
 # APPROVE
@@ -134,17 +107,17 @@ async def buy_token(mint: str):
     try:
         route = await jupiter.get_quote(input_mint, output_mint, amount)
         if not route:
-            await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying Raydium fallback")
+            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
-            await send_telegram_alert(f"\u274c No valid quote for {mint} (Jupiter & Raydium failed)")
+            await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
             log_skipped_token(mint, "No valid quote")
             return False
 
         swap_tx_base64 = await jupiter.get_swap_transaction(route)
         if not swap_tx_base64:
-            await send_telegram_alert(f"\u274c Failed to fetch swap transaction for {mint}")
+            await send_telegram_alert(f"❌ Failed to fetch swap transaction for {mint}")
             log_skipped_token(mint, "Swap fetch failed")
             return False
 
@@ -154,12 +127,12 @@ async def buy_token(mint: str):
             raise Exception("Swap transaction build failed")
 
         sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"\u2705 Buy tx sent: https://solscan.io/tx/{sig}")
+        await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
 
     except Exception as e:
-        await send_telegram_alert(f"\u274c Buy failed for {mint}: {e}")
+        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
@@ -175,23 +148,23 @@ async def sell_token(mint: str, percent: float = 100.0):
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
-            await send_telegram_alert(f"\u274c No sell quote for {mint}")
+            await send_telegram_alert(f"❌ No sell quote for {mint}")
             log_skipped_token(mint, "No sell quote")
             return False
 
         swap_tx_base64 = await jupiter.get_swap_transaction(route)
         if not swap_tx_base64:
-            await send_telegram_alert(f"\u274c Sell swap fetch failed for {mint}")
+            await send_telegram_alert(f"❌ Sell swap fetch failed for {mint}")
             log_skipped_token(mint, "Sell swap fetch failed")
             return False
 
         tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
         sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"\u2705 Sell {percent}% sent: https://solscan.io/tx/{sig}")
+        await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
         log_trade(mint, f"SELL {percent}%", 0, route.get("outAmount", 0) / 1e9)
         return True
     except Exception as e:
-        await send_telegram_alert(f"\u274c Sell failed for {mint}: {e}")
+        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
@@ -205,7 +178,7 @@ async def wait_and_auto_sell(mint):
         await asyncio.sleep(2)
         await sell_token(mint, percent=25)
     except Exception as e:
-        await send_telegram_alert(f"\u274c Auto-sell error for {mint}: {e}")
+        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
 # MINT CHECK
 def is_valid_mint(keys):
@@ -229,4 +202,4 @@ def get_wallet_status_message():
     return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"💼 Wallet: `{wallet_pubkey}`"
+    return f"\U0001f4bc Wallet: `{wallet_pubkey}`"
