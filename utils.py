@@ -1,7 +1,3 @@
-# =============================
-# utils.py — ELITE FINAL VERSION (Fixed buy_token logic w/ get_swap_transaction)
-# =============================
-
 import os
 import json
 import httpx
@@ -33,7 +29,6 @@ wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
 
-# BOT STATUS FLAG
 bot_active_flag = {"active": True}
 
 def is_bot_running():
@@ -66,7 +61,7 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# RUG CHECK — GECKO TERMINAL
+# RUG CHECK
 async def get_liquidity_and_ownership(mint):
     try:
         url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{mint}"
@@ -83,7 +78,7 @@ async def get_liquidity_and_ownership(mint):
     except:
         return None
 
-# JUPITER BUY
+# APPROVE
 async def approve_token_if_needed(mint):
     try:
         mint_pubkey = Pubkey.from_string(mint)
@@ -99,6 +94,7 @@ async def approve_token_if_needed(mint):
     except:
         pass
 
+# BUY
 async def buy_token(mint: str):
     input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
     output_mint = Pubkey.from_string(mint)
@@ -115,16 +111,16 @@ async def buy_token(mint: str):
             log_skipped_token(mint, "No valid quote")
             return False
 
-        swap_tx_b64 = await jupiter.get_swap_transaction(route)
-        if not swap_tx_b64:
-            await send_telegram_alert(f"❌ Failed to get swap transaction for {mint}")
-            log_skipped_token(mint, "Swap tx build failed")
+        swap_tx_base64 = await jupiter.get_swap_transaction(route)
+        if not swap_tx_base64:
+            await send_telegram_alert(f"❌ Failed to fetch swap transaction for {mint}")
+            log_skipped_token(mint, "Swap fetch failed")
             return False
 
         await approve_token_if_needed(mint)
-        tx = jupiter.build_swap_transaction(swap_tx_b64, keypair)
+        tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
         if not tx:
-            raise Exception("Transaction build returned None")
+            raise Exception("Swap transaction build failed")
 
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
@@ -136,38 +132,39 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# AUTO SELL
+# SELL
 async def sell_token(mint: str, percent: float = 100.0):
     input_mint = Pubkey.from_string(mint)
     output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
     amount = int(BUY_AMOUNT_SOL * 1e9 * percent / 100)
 
-    route = await jupiter.get_quote(input_mint, output_mint, amount)
-    if not route:
-        route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
-
-    if not route:
-        await send_telegram_alert(f"❌ No sell quote for {mint}")
-        log_skipped_token(mint, "No sell quote")
-        return False
-
-    swap_tx_b64 = await jupiter.get_swap_transaction(route)
-    if not swap_tx_b64:
-        await send_telegram_alert(f"❌ Failed to get sell tx for {mint}")
-        log_skipped_token(mint, "Sell tx build failed")
-        return False
-
     try:
-        tx = jupiter.build_swap_transaction(swap_tx_b64, keypair)
+        route = await jupiter.get_quote(input_mint, output_mint, amount)
+        if not route:
+            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
+
+        if not route:
+            await send_telegram_alert(f"❌ No sell quote for {mint}")
+            log_skipped_token(mint, "No sell quote")
+            return False
+
+        swap_tx_base64 = await jupiter.get_swap_transaction(route)
+        if not swap_tx_base64:
+            await send_telegram_alert(f"❌ Sell swap fetch failed for {mint}")
+            log_skipped_token(mint, "Sell swap fetch failed")
+            return False
+
+        tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, 0)  # real token_out is inside swap, this is placeholder
+        log_trade(mint, f"SELL {percent}%", 0, route.get("outAmount", 0) / 1e9)
         return True
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
+# AUTO SELL
 async def wait_and_auto_sell(mint):
     try:
         await asyncio.sleep(1)
@@ -180,11 +177,11 @@ async def wait_and_auto_sell(mint):
         await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
 # MINT CHECK
-TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 def is_valid_mint(keys):
+    TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     return any(k.get("pubkey") == TOKEN_PROGRAM_ID for k in keys if isinstance(k, dict))
 
-# TRENDING SCANNER
+# TRENDING
 async def get_trending_mints(limit=5):
     try:
         url = "https://api.dexscreener.com/latest/dex/pairs/solana"
@@ -196,8 +193,7 @@ async def get_trending_mints(limit=5):
     except:
         return []
 
-# TEXT FOR TELEGRAM
-
+# TELEGRAM TEXT
 def get_wallet_status_message():
     return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
