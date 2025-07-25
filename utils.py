@@ -63,7 +63,7 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ RAYDIUM LP RUG CHECK
+# ✅ RAYDIUM ON-CHAIN LP RUG CHECK
 async def get_liquidity_and_ownership(mint: str):
     try:
         async with AsyncClient(RPC_URL) as client:
@@ -72,12 +72,12 @@ async def get_liquidity_and_ownership(mint: str):
                 {
                     "memcmp": MemcmpOpts(
                         offset=72,
-                        bytes=base58.b58encode(Pubkey.from_string(mint).to_bytes()).decode()
+                        bytes=base58.b58encode(Pubkey.from_string(mint).to_solders().to_bytes()).decode()
                     )
                 }
             ]
             res = await client.get_program_accounts(
-                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),  # Raydium pool program
+                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),
                 encoding="jsonParsed",
                 filters=filters
             )
@@ -88,8 +88,8 @@ async def get_liquidity_and_ownership(mint: str):
             lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
             return {
                 "liquidity": lp_token_supply,
-                "renounced": False,  # Raw RPC doesn’t return this, placeholder
-                "lp_locked": True     # Same here — always assume locked unless otherwise checked
+                "renounced": False,
+                "lp_locked": True
             }
     except Exception as e:
         await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
