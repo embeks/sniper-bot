@@ -1,5 +1,5 @@
 # =============================
-# utils.py — with Raydium Fallback, Real Quotes, Valid Transactions, and Auto-Sell
+# utils.py — with Raydium Fallback, Real Quotes, Valid Transactions, Auto-Sell + Status Summary
 # =============================
 
 import os
@@ -196,3 +196,7 @@ async def start_command_bot():
     await app.start()
     await app.updater.start_polling()
 
+# ✅ Wallet Status Message
+async def get_wallet_status_message():
+    balance = rpc.get_balance(keypair.pubkey())["result"]["value"] / 1e9
+    return f"📊 Wallet: `{wallet_pubkey}`\n💰 Balance: {balance:.4f} SOL\n💸 Buy Size: {BUY_AMOUNT_SOL} SOL"
