@@ -77,10 +77,15 @@ async def get_liquidity_and_ownership(mint: str):
                 }
             ]
             res = await client.get_program_accounts(
-                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),  # Raydium pool program
+                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),
                 encoding="jsonParsed",
                 filters=filters
             )
+
+            await send_telegram_alert(f"🔍 Debug LP Check:
+*Mint:* `{mint}`
+*Results:* `{res.value}`")
+
             if not res.value:
                 return None
 
@@ -92,7 +97,7 @@ async def get_liquidity_and_ownership(mint: str):
                 "lp_locked": True
             }
     except Exception as e:
-        await send_telegram_alert(f"\u26a0\ufe0f get_liquidity_and_ownership error: {e}")
+        await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
         return None
 
 # APPROVE
@@ -120,7 +125,7 @@ async def buy_token(mint: str):
     try:
         route = await jupiter.get_quote(input_mint, output_mint, amount)
         if not route:
-            await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying Raydium fallback")
+            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
@@ -212,7 +217,7 @@ async def get_trending_mints(limit=5):
 
 # TELEGRAM TEXT
 def get_wallet_status_message():
-    return f"🔲 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+    return f"\U0001F7E2 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"💼 Wallet: `{wallet_pubkey}`"
+    return f"\U0001F4BC Wallet: `{wallet_pubkey}`"
