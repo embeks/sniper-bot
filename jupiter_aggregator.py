@@ -1,5 +1,5 @@
 # =============================
-# jupiter_aggregator.py — ELITE FINAL VERSION
+# jupiter_aggregator.py — ELITE FINAL VERSION (with working get_swap_transaction)
 # =============================
 
 import base64
@@ -30,6 +30,24 @@ class JupiterAggregatorClient:
                 response = await client.get(url)
                 if response.status_code == 200:
                     return response.json()
+                return None
+        except Exception:
+            return None
+
+    async def get_swap_transaction(self, route: dict):
+        url = "https://quote-api.jup.ag/v6/swap"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "route": route,
+            "userPublicKey": str(self.client._provider.wallet.public_key if hasattr(self.client._provider, 'wallet') else ""),
+            "wrapUnwrapSOL": True,
+            "asLegacyTransaction": False
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(url, headers=headers, json=payload)
+                if res.status_code == 200:
+                    return res.json().get("swapTransaction")
                 return None
         except Exception:
             return None
