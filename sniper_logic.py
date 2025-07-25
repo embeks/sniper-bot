@@ -150,3 +150,8 @@ async def start_sniper():
         mempool_listener("Jupiter"),
         trending_scanner()
     )
+    async def start_sniper_with_forced_token(mint: str):
+    from utils import buy_token, wait_and_auto_sell
+    bought = await buy_token(mint)
+    if bought:
+        await wait_and_auto_sell(mint)
