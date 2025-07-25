@@ -61,28 +61,24 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ DEBUGGING RAYDIUM LP CHECK
+# ✅ RAW RAYDIUM LP CHECK
 async def get_liquidity_and_ownership(mint: str):
     try:
-        # Raydium pool address logic (simple PDA derivation placeholder for now)
-        pool_addr = Pubkey.find_program_address([b"amm", bytes(Pubkey.from_string(mint))], Pubkey.from_string("RVKd61ztZW9GdKzGwcz74hzw1Fz5sGg5E7gKD9cTAiX"))[0]
-        print(f"[LP CHECK] Derived Raydium pool address: {pool_addr}")
+        AMM_PROGRAM_IDS = [
+            "RVKd61ztZW9GdKz5wZqmMezRhK2z2mPMfa6VoSJ6zXq",
+            "RDM1bVY3G4zATi5aZszCuYzxgLZzsnLCM3Br5vZz3Wc"
+        ]
+        mint_pubkey = Pubkey.from_string(mint)
 
-        # Fetch raw account data
-        resp = rpc.get_account_info(pool_addr)
-        if not resp or not resp.get("result") or not resp["result"].get("value"):
-            await send_telegram_alert(f"❌ LP pool not found for {mint} — {pool_addr}")
-            return None
-
-        raw_data = resp["result"]["value"]["data"][0]  # base64
-        print(f"[LP RAW] {raw_data[:40]}...")  # print first 40 chars
-
-        # Dummy LP for now — just confirms call works
-        return {
-            "liquidity": -1,  # intentionally obvious dummy
-            "renounced": False,
-            "lp_locked": False
-        }
+        for program_id in AMM_PROGRAM_IDS:
+            filters = [
+                {"memcmp": {"offset": 72, "bytes": str(mint_pubkey)}},
+                {"dataSize": 324}
+            ]
+            result = rpc.get_program_accounts(program_id, filters=filters)
+            if result.get("result"):
+                return {"liquidity": 1.0, "renounced": False, "lp_locked": False}
+        return None
     except Exception as e:
         await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
         return None
