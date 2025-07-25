@@ -3,13 +3,14 @@ import json
 import httpx
 import asyncio
 import csv
+import base58
 from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from solana.transaction import Transaction
-from solana.rpc.types import TxOpts, MemcmpOpts
+from solana.rpc.types import TxOpts
 from solana.rpc.async_api import AsyncClient
 from spl.token.instructions import approve, get_associated_token_address
 from jupiter_aggregator import JupiterAggregatorClient
@@ -62,43 +63,36 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ FINAL FIXED RAYDIUM LP RUG CHECK
+# ✅ RAYDIUM LP RUG CHECK
 async def get_liquidity_and_ownership(mint: str):
     try:
         async with AsyncClient(RPC_URL) as client:
             filters = [
                 {"dataSize": 3248},
                 {
-                    "memcmp": MemcmpOpts(
-                        offset=72,
-                        bytes=Pubkey.from_string(mint).to_string()
-                    )
+                    "memcmp": {
+                        "offset": 72,
+                        "bytes": base58.b58encode(Pubkey.from_string(mint).to_bytes()).decode()
+                    }
                 }
             ]
             res = await client.get_program_accounts(
-                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),  # Raydium
+                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),
                 encoding="jsonParsed",
                 filters=filters
             )
             if not res.value:
-                await send_telegram_alert(f"❌ No LP/ownership data for `{mint}`")
                 return None
 
             info = res.value[0].account.data["parsed"]["info"]
             lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
-
-            await send_telegram_alert(
-                f"🔍 LP Debug:\n• Token: `{mint}`\n• LP: `{lp_token_supply:.2f}`"
-            )
-
             return {
                 "liquidity": lp_token_supply,
                 "renounced": False,
                 "lp_locked": True
             }
-
     except Exception as e:
-        await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
+        await send_telegram_alert(f"\u26a0\ufe0f get_liquidity_and_ownership error: {e}")
         return None
 
 # APPROVE
@@ -126,11 +120,11 @@ async def buy_token(mint: str):
     try:
         route = await jupiter.get_quote(input_mint, output_mint, amount)
         if not route:
-            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
+            await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying Raydium fallback")
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
-            await send_telegram_alert(f"❌ No valid quote for {mint}")
+            await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
             log_skipped_token(mint, "No valid quote")
             return False
 
@@ -218,7 +212,7 @@ async def get_trending_mints(limit=5):
 
 # TELEGRAM TEXT
 def get_wallet_status_message():
-    return f"🔲 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+    return f"\U0001f532 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"💼 Wallet: `{wallet_pubkey}`"
+    return f"\U0001f4bc Wallet: `{wallet_pubkey}`"
