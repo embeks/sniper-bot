@@ -33,6 +33,10 @@ jupiter = JupiterAggregatorClient(RPC_URL)
 
 bot_active_flag = {"active": True}
 
+RAYDIUM_AMM = "RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"
+ORCA_AMM = "82yxjeMs8T9PtvB9G9JZ3xNdrPyGzPwrvP6L8JcT3CCW"
+METEORA_AMM = "GMGNkAaWZ5Q3uTXp2sEASoQvmFmjX5kKKtdZgZcP8L9C"
+
 def is_bot_running():
     return bot_active_flag["active"]
 
@@ -63,38 +67,35 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ RAYDIUM LP RUG CHECK
+# ✅ RAW ON-CHAIN LP CHECKS (Raydium, Orca, Meteora)
 async def get_liquidity_and_ownership(mint: str):
     try:
         async with AsyncClient(RPC_URL) as client:
-            filters = [
-                {"dataSize": 3248},
-                {
-                    "memcmp": MemcmpOpts(
-                        offset=72,
-                        bytes=base58.b58encode(Pubkey.from_string(mint).to_bytes()).decode()
-                    )
-                }
-            ]
-            res = await client.get_program_accounts(
-                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),
-                encoding="jsonParsed",
-                filters=filters
-            )
-            if not res.value:
-                await send_telegram_alert(
-                    f"📭 No LP accounts found for `{mint}`.\n"
-                    f"Raydium res.value: ```{json.dumps(res.value, indent=2)}```"
+            for program_id in [RAYDIUM_AMM, ORCA_AMM, METEORA_AMM]:
+                filters = [
+                    {"dataSize": 3248},
+                    {
+                        "memcmp": MemcmpOpts(
+                            offset=72,
+                            bytes=base58.b58encode(Pubkey.from_string(mint).to_bytes()).decode()
+                        )
+                    }
+                ]
+                res = await client.get_program_accounts(
+                    Pubkey.from_string(program_id),
+                    encoding="jsonParsed",
+                    filters=filters
                 )
-                return None
-
-            info = res.value[0].account.data["parsed"]["info"]
-            lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
-            return {
-                "liquidity": lp_token_supply,
-                "renounced": False,
-                "lp_locked": True
-            }
+                if res.value:
+                    info = res.value[0].account.data["parsed"]["info"]
+                    lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
+                    return {
+                        "liquidity": lp_token_supply,
+                        "renounced": False,
+                        "lp_locked": True
+                    ]
+        await send_telegram_alert(f"📭 No LP found on any AMM for `{mint}`")
+        return None
     except Exception as e:
         await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: `{e}`")
         return None
