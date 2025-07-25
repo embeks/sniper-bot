@@ -1,5 +1,5 @@
 # =============================
-# utils.py — ELITE FINAL VERSION for Webhook Telegram Control (with Sell Tradability Check)
+# utils.py — ELITE FINAL VERSION for Webhook Telegram Control (Fixed Jupiter Buy Logic)
 # =============================
 
 import os
@@ -111,18 +111,19 @@ async def buy_token(mint: str):
         return False
 
     quote = await jupiter.get_quote(input_mint, output_mint, amount)
-    if not quote or "swapTransaction" not in quote:
+    if not quote:
         await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
         quote = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
-    if not quote or "swapTransaction" not in quote:
+    if not quote:
         await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
         log_skipped_token(mint, "No valid quote")
         return False
 
     try:
         await approve_token_if_needed(mint)
-        tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
+        swap_tx_base64 = await jupiter.get_swap_transaction(quote)
+        tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
         if not tx:
             raise Exception("Swap transaction build failed")
 
@@ -148,16 +149,17 @@ async def sell_token(mint: str, percent: float = 100.0):
         return False
 
     quote = await jupiter.get_quote(input_mint, output_mint, amount)
-    if not quote or "swapTransaction" not in quote:
+    if not quote:
         quote = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
-    if not quote or "swapTransaction" not in quote:
+    if not quote:
         await send_telegram_alert(f"❌ No sell quote for {mint}")
         log_skipped_token(mint, "No sell quote")
         return False
 
     try:
-        tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
+        swap_tx_base64 = await jupiter.get_swap_transaction(quote)
+        tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
         log_trade(mint, f"SELL {percent}%", 0, quote.get("outAmount", 0) / 1e9)
