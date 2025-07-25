@@ -4,25 +4,11 @@ import telegram
 import logging
 import asyncio
 
-from sniper_logic import start_sniper  # make sure this path is correct
+from sniper_logic import start_sniper_with_forced_token
 
 app = FastAPI()
+bot = telegram.Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("telegram_webhook")
-
-# Telegram bot setup
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-
-# Background sniper startup
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Launching sniper logic...")
-    asyncio.create_task(start_sniper())  # Non-blocking sniper start
-
-# Telegram webhook endpoint
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     data = await request.json()
@@ -34,5 +20,16 @@ async def handle_webhook(request: Request):
 
         if message_text == "/status":
             await bot.send_message(chat_id=chat_id, text="✅ Bot is live and responding.")
+
+        elif message_text.startswith("/forcebuy"):
+            parts = message_text.split()
+            if len(parts) == 2:
+                token_mint = parts[1].strip()
+                await bot.send_message(chat_id=chat_id, text=f"🚨 Force-buying token: `{token_mint}`", parse_mode="Markdown")
+                
+                # Launch sniper logic
+                asyncio.create_task(start_sniper_with_forced_token(token_mint))
+            else:
+                await bot.send_message(chat_id=chat_id, text="⚠️ Usage: /forcebuy <TOKEN_MINT>")
 
     return {"ok": True}
