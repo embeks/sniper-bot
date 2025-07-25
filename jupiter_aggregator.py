@@ -20,7 +20,7 @@ class JupiterAggregatorClient:
         output_mint: Pubkey,
         amount: int,
         slippage_bps: int = 100,
-        only_direct_routes: bool = False  # ✅ NEW ARG
+        only_direct_routes: bool = False  # ✅ already defined
     ):
         url = (
             f"https://quote-api.jup.ag/v6/quote"
@@ -30,17 +30,32 @@ class JupiterAggregatorClient:
             f"&slippageBps={slippage_bps}"
             f"&onlyDirectRoutes={'true' if only_direct_routes else 'false'}"
         )
+
+        print(f"[JupiterAggregator] 🛰 Fetching quote:\n{url}")
+
         try:
             async with httpx.AsyncClient(timeout=3) as client:
                 response = await client.get(url)
+
+                if response.status_code != 200:
+                    print(f"[JupiterAggregator] ⚠️ Quote failed with status: {response.status_code}")
+                    print(f"[JupiterAggregator] ❌ Response text: {response.text}")
+                    return None
+
                 data = response.json()
-                routes = data.get("data", [])
-                if routes:
-                    return routes[0]
-                print(f"[JupiterAggregator] ⚠️ No routes found for {output_mint}")
-                return None
+
+                # Safety check for missing or empty route list
+                routes = data.get("data")
+                if not routes:
+                    print(f"[JupiterAggregator] ⚠️ No valid routes returned for {output_mint}")
+                    print(f"[JupiterAggregator] ❌ Full response: {data}")
+                    return None
+
+                print(f"[JupiterAggregator] ✅ Quote received with {len(routes)} route(s)")
+                return routes[0]
+
         except Exception as e:
-            print(f"[JupiterAggregator] ❌ get_quote error: {e}")
+            print(f"[JupiterAggregator] ❌ Exception during get_quote: {e}")
             return None
 
     def build_swap_transaction(self, swap_tx_b64: str, keypair: Keypair) -> bytes:
