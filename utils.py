@@ -1,5 +1,5 @@
 # =============================
-# utils.py — ELITE VERSION (Webhook-Only, No Polling, Full Telegram Control, Safety Filters)
+# utils.py — ELITE VERSION with Auto Start, Full Telegram Control, and Safety Filters
 # =============================
 
 import os
@@ -15,6 +15,7 @@ from solana.rpc.api import Client
 from solana.transaction import Transaction
 from solana.rpc.types import TxOpts
 from spl.token.instructions import approve, get_associated_token_address
+from telegram.ext import Application, CommandHandler
 
 from jupiter_aggregator import JupiterAggregatorClient
 
@@ -177,3 +178,36 @@ async def get_liquidity_and_ownership(mint):
 
 def get_wallet_status_message():
     return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+
+# =============================
+# ✅ Telegram Command Bot Functions
+# =============================
+
+async def status(update, context):
+    await update.message.reply_text(get_wallet_status_message())
+
+async def wallet(update, context):
+    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`")
+
+async def reset(update, context):
+    open("sniped_tokens.txt", "w").close()
+    await update.message.reply_text("♻️ Sniped token list reset.")
+
+async def stop(update, context):
+    stop_bot()
+    await update.message.reply_text("🛑 Bot stopped.")
+
+async def start(update, context):
+    start_bot()
+    await update.message.reply_text("▶️ Bot resumed.")
+
+async def start_command_bot():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("wallet", wallet))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start", start))
+    print("🤖 Telegram command bot ready.")
+    await app.initialize()
+    await app.start()
