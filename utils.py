@@ -1,5 +1,5 @@
 # =============================
-# utils.py — with Raydium Fallback, Real Quotes, Valid Transactions, Auto-Sell, and Full Telegram Bot
+# utils.py — ELITE VERSION with Bot Flags, Raydium Fallback, Real Quotes, Valid Transactions, and Auto-Sell
 # =============================
 
 import os
@@ -34,6 +34,18 @@ keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
+
+# ✅ Bot Status Tracker
+bot_active_flag = {"active": True}
+
+def is_bot_running():
+    return bot_active_flag["active"]
+
+def stop_bot():
+    bot_active_flag["active"] = False
+
+def start_bot():
+    bot_active_flag["active"] = True
 
 # 📩 Telegram Alerts
 async def send_telegram_alert(message: str):
@@ -174,34 +186,32 @@ async def get_liquidity_and_ownership(mint):
     except:
         return None
 
-# ✅ Status Message for Webhook
-def get_wallet_status_message():
-    return f"📈 Sniper bot is *online*\nWallet: `{wallet_pubkey}`\nBuy: {BUY_AMOUNT_SOL} SOL\nTimeout: {SELL_TIMEOUT_SEC}s"
-
 # ✅ Telegram Command Bot
 async def status(update, context):
-    await update.message.reply_text(get_wallet_status_message(), parse_mode="Markdown")
+    await update.message.reply_text(f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`")
 
 async def wallet(update, context):
-    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`", parse_mode="Markdown")
+    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`")
 
 async def reset(update, context):
     open("sniped_tokens.txt", "w").close()
     await update.message.reply_text("♻️ Sniped token list reset.")
 
-async def start_cmd(update, context):
-    await update.message.reply_text("🚀 Sniper bot already running in background.")
+async def stop(update, context):
+    stop_bot()
+    await update.message.reply_text("🛑 Bot stopped.")
 
-async def stop_cmd(update, context):
-    await update.message.reply_text("🛑 Cannot stop sniper from Telegram. Use Render dashboard.")
+async def start(update, context):
+    start_bot()
+    await update.message.reply_text("▶️ Bot resumed.")
 
 async def start_command_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("wallet", wallet))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("stop", stop_cmd))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start", start))
     print("🤖 Telegram command bot ready.")
     await app.initialize()
     await app.start()
