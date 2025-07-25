@@ -1,5 +1,5 @@
 # =============================
-# utils.py — FINAL MERGED VERSION (ALL FEATURES WORKING)
+# utils.py — ELITE VERSION with Bot Flags, Raydium Fallback, Real Quotes, Valid Transactions, Auto-Sell, and Telegram Status Message
 # =============================
 
 import os
@@ -58,21 +58,18 @@ async def send_telegram_alert(message: str):
         pass
 
 # 📊 Trade Logger
-
 def log_trade(token, action, sol_in, token_out):
     with open("trade_log.csv", "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), token, action, sol_in, token_out])
 
 # ⚠️ Skipped Token Logger
-
 def log_skipped_token(mint: str, reason: str):
     with open("skipped_tokens.csv", "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
 # ✅ Pre-Approval
-
 async def approve_token_if_needed(mint):
     try:
         mint_pubkey = Pubkey.from_string(mint)
@@ -88,8 +85,7 @@ async def approve_token_if_needed(mint):
     except:
         pass
 
-# ✅ Buy/Sell Logic
-
+# ✅ Primary Buy + Raydium Fallback
 async def buy_token(mint: str):
     input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
     output_mint = Pubkey.from_string(mint)
@@ -108,6 +104,9 @@ async def buy_token(mint: str):
     try:
         await approve_token_if_needed(mint)
         tx = jupiter.build_swap_transaction(quote["swapTransaction"], keypair)
+        if not tx:
+            raise Exception("Swap transaction build failed")
+
         sig = rpc.send_raw_transaction(tx)
         await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
@@ -117,6 +116,7 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
+# ✅ Sell Token (same fallback logic)
 async def sell_token(mint: str, percent: float = 100.0):
     input_mint = Pubkey.from_string(mint)
     output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
@@ -143,7 +143,6 @@ async def sell_token(mint: str, percent: float = 100.0):
         return False
 
 # ✅ Auto-Sell Logic
-
 async def wait_and_auto_sell(mint):
     try:
         await asyncio.sleep(1)
@@ -155,10 +154,8 @@ async def wait_and_auto_sell(mint):
     except Exception as e:
         await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
-# ✅ Helpers
-
+# ✅ Other Helpers
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-
 def is_valid_mint(keys):
     return any(k.get("pubkey") == TOKEN_PROGRAM_ID for k in keys if isinstance(k, dict))
 
@@ -189,18 +186,12 @@ async def get_liquidity_and_ownership(mint):
     except:
         return None
 
-# ✅ Wallet Command Status
-
-def get_wallet_status_message():
-    return f"\U0001F7E2 Bot is running.\nWallet: `{wallet_pubkey}`"
-
-# ✅ Telegram Command Handlers
-
+# ✅ Telegram Command Bot
 async def status(update, context):
-    await update.message.reply_text(get_wallet_status_message(), parse_mode="Markdown")
+    await update.message.reply_text(get_wallet_status_message())
 
 async def wallet(update, context):
-    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`", parse_mode="Markdown")
+    await update.message.reply_text(f"💼 Wallet: `{wallet_pubkey}`")
 
 async def reset(update, context):
     open("sniped_tokens.txt", "w").close()
@@ -225,3 +216,8 @@ async def start_command_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
+# ✅ Status Helper for Webhook
+
+def get_wallet_status_message():
+    return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
