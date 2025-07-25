@@ -61,31 +61,20 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ RUG CHECK (raw on-chain LP check)
-async def get_liquidity_and_ownership(mint):
+# ✅ FIXED RUG CHECK — Pure GeckoTerminal API
+async def get_liquidity_and_ownership(mint: str):
     try:
-        res = rpc.get_token_largest_accounts(Pubkey.from_string(mint))
-        accounts = res.value
-        if not accounts:
-            return None
-
-        lp_account = accounts[0]
-        lp_balance = int(lp_account.amount) / 1e6  # assume 6 decimals, update if needed
-
-        # Ownership check (dummy data or adjust with real locker list later)
-        owner = rpc.get_account_info(Pubkey.from_string(lp_account.address)).value.owner
-        owner_str = str(owner)
-        known_locker_programs = [
-            "11111111111111111111111111111111",  # Example
-            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        ]
-
-        return {
-            "liquidity": lp_balance,
-            "renounced": False,  # Can't easily check without source metadata
-            "lp_locked": owner_str in known_locker_programs
-        }
-
+        url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{mint}"
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url)
+            if res.status_code != 200:
+                return None
+            data = res.json().get("data", {}).get("attributes", {})
+            return {
+                "liquidity": float(data.get("liquidity_usd", 0)),
+                "renounced": data.get("ownership_renounced", False),
+                "lp_locked": data.get("lp_honeycheck", {}).get("lp_locked", False)
+            }
     except Exception as e:
         await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: {e}")
         return None
@@ -207,7 +196,8 @@ async def get_trending_mints(limit=5):
 
 # TELEGRAM TEXT
 def get_wallet_status_message():
-    return f"\U0001f7e2 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+    return f"🟢 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"\ud83d\udcbc Wallet: `{wallet_pubkey}`"
+    return f"💼 Wallet: `{wallet_pubkey}`"
+
