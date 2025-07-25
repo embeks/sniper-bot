@@ -13,7 +13,6 @@ from utils import (
     buy_token,
     log_skipped_token,
     send_telegram_alert,
-    start_command_bot,
     get_trending_mints,
     wait_and_auto_sell,
     get_liquidity_and_ownership,
@@ -41,7 +40,7 @@ async def rug_filter_passes(mint):
             log_skipped_token(mint, "Missing LP/ownership data")
             return False
 
-        lp = 1.0  # TEMP override
+        lp = float(data.get("liquidity", 0))
         renounced = data.get("renounced", False)
         locked = data.get("lp_locked", False)
 
@@ -132,10 +131,7 @@ async def trending_scanner():
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
-    # Start Telegram command bot in background
-    TASKS.append(asyncio.create_task(start_command_bot()))
-
-    # Run Forced Mint Test (if enabled)
+    # Forced Mint Test
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 Forced Test Mode: Buying {FORCE_TEST_MINT}")
         safe = await rug_filter_passes(FORCE_TEST_MINT)
@@ -167,7 +163,6 @@ async def stop_all_tasks():
 
 # ✅ Force Buy Sniper for Telegram
 async def start_sniper_with_forced_token(mint: str):
-    from utils import buy_token, wait_and_auto_sell, is_bot_running
     if not is_bot_running():
         await send_telegram_alert(f"⛔ Bot is paused. Force buy aborted for {mint}.")
         return
