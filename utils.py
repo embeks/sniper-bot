@@ -3,7 +3,6 @@ import json
 import httpx
 import asyncio
 import csv
-import base58
 from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
@@ -63,7 +62,7 @@ def log_skipped_token(mint: str, reason: str):
         writer = csv.writer(f)
         writer.writerow([datetime.utcnow().isoformat(), mint, reason])
 
-# ✅ RAYDIUM LP RUG CHECK (with Debug Alert)
+# ✅ FINAL FIXED RAYDIUM LP RUG CHECK
 async def get_liquidity_and_ownership(mint: str):
     try:
         async with AsyncClient(RPC_URL) as client:
@@ -72,23 +71,25 @@ async def get_liquidity_and_ownership(mint: str):
                 {
                     "memcmp": MemcmpOpts(
                         offset=72,
-                        bytes=base58.b58encode(Pubkey.from_string(mint).data).decode()
+                        bytes=Pubkey.from_string(mint).to_string()
                     )
                 }
             ]
             res = await client.get_program_accounts(
-                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),
+                Pubkey.from_string("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK"),  # Raydium
                 encoding="jsonParsed",
                 filters=filters
             )
             if not res.value:
-                await send_telegram_alert(f"🔍 Debug LP Check: Pool not found for {mint}")
+                await send_telegram_alert(f"❌ No LP/ownership data for `{mint}`")
                 return None
 
             info = res.value[0].account.data["parsed"]["info"]
             lp_token_supply = float(info.get("lpMintSupply", 0)) / 1e9
 
-            await send_telegram_alert(f"🔍 Debug LP Check:\n• Mint: `{mint}`\n• LP: `{lp_token_supply:.3f}`")
+            await send_telegram_alert(
+                f"🔍 LP Debug:\n• Token: `{mint}`\n• LP: `{lp_token_supply:.2f}`"
+            )
 
             return {
                 "liquidity": lp_token_supply,
@@ -129,7 +130,7 @@ async def buy_token(mint: str):
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
-            await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
+            await send_telegram_alert(f"❌ No valid quote for {mint}")
             log_skipped_token(mint, "No valid quote")
             return False
 
