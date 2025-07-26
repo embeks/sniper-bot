@@ -1,6 +1,7 @@
 import json
 import base64
 import httpx
+import logging
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
@@ -42,10 +43,10 @@ class JupiterAggregatorClient:
                 if response.status_code == 200:
                     return response.json()
                 else:
-                    print(f"[JUPITER] Quote HTTP {response.status_code} - {response.text}")
+                    logging.error(f"[JUPITER] Quote HTTP {response.status_code} - {response.text}")
                     return None
         except Exception as e:
-            print(f"[JUPITER] Quote error: {e}")
+            logging.exception(f"[JUPITER] Quote error: {e}")
             return None
 
     async def get_swap_transaction(self, quote_response: dict, keypair: Keypair):
@@ -56,37 +57,42 @@ class JupiterAggregatorClient:
                 "wrapUnwrapSOL": True,
                 "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
-                "quoteResponse": quote_response  # ✅ Must pass full quote response
+                "quoteResponse": quote_response
             }
 
-            print(f"[JUPITER] Swap request body:\n{json.dumps(body, indent=2)}")
+            logging.info(f"[JUPITER] Swap request:\n{json.dumps(body, indent=2)}")
             headers = {"Content-Type": "application/json"}
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(swap_url, json=body, headers=headers)
 
-                print(f"[JUPITER] Swap response {response.status_code}: {response.text}")
+                logging.info(f"[JUPITER] Swap response {response.status_code}: {response.text}")
                 if response.status_code == 200:
                     data = response.json()
                     tx_base64 = data.get("swapTransaction")
                     if not tx_base64:
-                        print("[JUPITER] No transaction in response")
+                        logging.error("[JUPITER] No 'swapTransaction' field in response")
                         return None
                     return tx_base64
                 else:
-                    print(f"[JUPITER] Swap error: HTTP {response.status_code}")
+                    logging.error(f"[JUPITER] Swap error: HTTP {response.status_code}")
                     return None
         except Exception as e:
-            print(f"[JUPITER] Swap exception: {e}")
+            logging.exception(f"[JUPITER] Swap exception: {e}")
             return None
 
-    def build_swap_transaction(self, tx_base64: str, keypair: Keypair):
+    def build_swap_transaction(self, route: dict, keypair: Keypair):
         try:
+            tx_base64 = route.get("swapTransaction")
+            if not tx_base64:
+                logging.error("[JUPITER] No 'swapTransaction' in route")
+                return None
+
             tx_bytes = base64.b64decode(tx_base64)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            return tx  # Already signed — do not re-sign
+            return tx
         except Exception as e:
-            print(f"[JUPITER] Transaction build error: {e}")
+            logging.exception(f"[JUPITER] Transaction build error: {e}")
             return None
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
@@ -95,5 +101,5 @@ class JupiterAggregatorClient:
             result = self.client.send_raw_transaction(raw_tx, opts=TxOpts(skip_preflight=True))
             return str(result.get("result"))
         except Exception as e:
-            print(f"[JUPITER] Send error: {e}")
+            logging.exception(f"[JUPITER] Send error: {e}")
             return None
