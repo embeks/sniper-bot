@@ -54,7 +54,7 @@ class JupiterAggregatorClient:
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": True,
-                "useSharedAccounts": False,  # use True only if you're managing shared wallets
+                "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote
             }
@@ -83,14 +83,14 @@ class JupiterAggregatorClient:
         try:
             tx_bytes = base64.b64decode(tx_base64)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            return tx  # Already signed — do not sign again
+            return tx  # Already signed — do not re-sign
         except Exception as e:
             print(f"[JUPITER] Transaction build error: {e}")
             return None
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx = signed_tx.serialize()
+            raw_tx = bytes(signed_tx)  # ✅ Correct way to serialize
             result = self.client.send_raw_transaction(raw_tx, opts=TxOpts(skip_preflight=True))
             return str(result.get("result"))
         except Exception as e:
