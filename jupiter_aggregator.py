@@ -32,8 +32,7 @@ class JupiterAggregatorClient:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, params=params)
                 if response.status_code == 200:
-                    data = response.json()
-                    return data
+                    return response.json()
                 else:
                     print(f"[JUPITER] Quote HTTP {response.status_code} - {response.text}")
                     return None
@@ -41,7 +40,7 @@ class JupiterAggregatorClient:
             print(f"[JUPITER] Quote error: {e}")
             return None
 
-    async def get_swap_transaction(self, quote_data: dict, keypair: Keypair):
+    async def get_swap_transaction(self, quote: dict, keypair: Keypair):
         try:
             swap_url = f"{self.base_url}/swap"
             body = {
@@ -49,7 +48,12 @@ class JupiterAggregatorClient:
                 "wrapUnwrapSOL": True,
                 "useSharedAccounts": True,
                 "computeUnitPriceMicroLamports": 2000,
-                **quote_data  # include all route plan data
+                "routePlan": quote.get("routePlan"),
+                "inputMint": quote.get("inputMint"),
+                "outputMint": quote.get("outputMint"),
+                "inAmount": quote.get("inAmount"),
+                "slippageBps": quote.get("slippageBps"),
+                "swapMode": quote.get("swapMode", "ExactIn")
             }
 
             headers = {"Content-Type": "application/json"}
