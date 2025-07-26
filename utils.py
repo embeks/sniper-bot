@@ -77,7 +77,7 @@ async def get_liquidity_and_ownership(mint: str):
             )
             if not res.value:
                 await send_telegram_alert(
-                    f"📭 No LP accounts found for `{mint}`.\n"
+                    f"\ud83d\udcec No LP accounts found for `{mint}`.\n"
                     f"Raydium res.value: ```{json.dumps(res.value, indent=2)}```"
                 )
                 return None
@@ -90,7 +90,7 @@ async def get_liquidity_and_ownership(mint: str):
                 "lp_locked": True
             }
     except Exception as e:
-        await send_telegram_alert(f"⚠️ get_liquidity_and_ownership error: `{e}`")
+        await send_telegram_alert(f"\u26a0\ufe0f get_liquidity_and_ownership error: `{e}`")
         return None
 
 async def approve_token_if_needed(mint):
@@ -120,13 +120,13 @@ async def buy_token(mint: str):
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
-            await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
+            await send_telegram_alert(f"\u274c No valid quote for {mint} (Jupiter & Raydium failed)")
             log_skipped_token(mint, "No valid quote")
             return False
 
-        swap_tx_base64 = await jupiter.get_swap_transaction(route)
+        swap_tx_base64 = await jupiter.get_swap_transaction(route, keypair)
         if not swap_tx_base64:
-            await send_telegram_alert(f"❌ Failed to fetch swap transaction for {mint}")
+            await send_telegram_alert(f"\u274c Failed to fetch swap transaction for {mint}")
             log_skipped_token(mint, "Swap fetch failed")
             return False
 
@@ -136,12 +136,12 @@ async def buy_token(mint: str):
             raise Exception("Swap transaction build failed")
 
         sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"✅ Buy tx sent: https://solscan.io/tx/{sig}")
+        await send_telegram_alert(f"\u2705 Buy tx sent: https://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
 
     except Exception as e:
-        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
+        await send_telegram_alert(f"\u274c Buy failed for {mint}: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
@@ -156,23 +156,23 @@ async def sell_token(mint: str, percent: float = 100.0):
             route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
 
         if not route:
-            await send_telegram_alert(f"❌ No sell quote for {mint}")
+            await send_telegram_alert(f"\u274c No sell quote for {mint}")
             log_skipped_token(mint, "No sell quote")
             return False
 
-        swap_tx_base64 = await jupiter.get_swap_transaction(route)
+        swap_tx_base64 = await jupiter.get_swap_transaction(route, keypair)
         if not swap_tx_base64:
-            await send_telegram_alert(f"❌ Sell swap fetch failed for {mint}")
+            await send_telegram_alert(f"\u274c Sell swap fetch failed for {mint}")
             log_skipped_token(mint, "Sell swap fetch failed")
             return False
 
         tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
         sig = rpc.send_raw_transaction(tx)
-        await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
+        await send_telegram_alert(f"\u2705 Sell {percent}% sent: https://solscan.io/tx/{sig}")
         log_trade(mint, f"SELL {percent}%", 0, route.get("outAmount", 0) / 1e9)
         return True
     except Exception as e:
-        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
+        await send_telegram_alert(f"\u274c Sell failed for {mint}: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
@@ -185,7 +185,7 @@ async def wait_and_auto_sell(mint):
         await asyncio.sleep(2)
         await sell_token(mint, percent=25)
     except Exception as e:
-        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
+        await send_telegram_alert(f"\u274c Auto-sell error for {mint}: {e}")
 
 def is_valid_mint(keys):
     TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -203,7 +203,7 @@ async def get_trending_mints(limit=5):
         return []
 
 def get_wallet_status_message():
-    return f"🔲 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+    return f"\ud83d\udd32 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"💼 Wallet: `{wallet_pubkey}`"
+    return f"\ud83d\udcbc Wallet: `{wallet_pubkey}`"
