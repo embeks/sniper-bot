@@ -10,57 +10,57 @@ from solana.rpc.types import TxOpts
 import os
 
 class JupiterAggregatorClient:
-    def __init__(self):
-        self.client = Client(os.environ["RPC_URL"])
+    def __init__(self, rpc_url: str):
+        self.rpc_url = rpc_url
+        self.client = Client(rpc_url)
 
-    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, user_public_key: str, slippage_bps: int = 100):
+    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int, user_pubkey: Pubkey):
         url = (
-            f"https://quote-api.jup.ag/v6/quote"
-            f"?inputMint={str(input_mint)}"
+            f"https://quote-api.jup.ag/v6/quote?"
+            f"inputMint={str(input_mint)}"
             f"&outputMint={str(output_mint)}"
             f"&amount={amount}"
             f"&slippageBps={slippage_bps}"
-            f"&userPublicKey={user_public_key}"
+            f"&userPublicKey={str(user_pubkey)}"
         )
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url)
                 response.raise_for_status()
-                return response.json()
+                quote = response.json()
+                if "data" not in quote or not quote["data"]:
+                    raise ValueError(f"No valid quote routes returned: {json.dumps(quote, indent=2)}")
+                return quote["data"][0]
         except Exception as e:
-            print(f"Error fetching Jupiter quote: {e}")
-            return None
+            raise RuntimeError(f"Failed to fetch Jupiter quote: {str(e)}")
 
-    async def get_swap_transaction(self, route: dict, user_public_key: str):
-        swap_url = "https://quote-api.jup.ag/v6/swap"
-        body = {
+    async def get_swap_transaction(self, route: dict, user_wallet: Keypair):
+        url = "https://quote-api.jup.ag/v6/swap"
+        payload = {
             "route": route,
-            "userPublicKey": user_public_key,
-            "wrapUnwrapSol": True,
-            "feeAccount": None
+            "userPublicKey": str(user_wallet.pubkey()),
+            "wrapUnwrapSOL": True,
+            "dynamicSlippage": True,
         }
+        headers = {"Content-Type": "application/json"}
+
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(swap_url, json=body)
+                response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
-                result = response.json()
-                if 'swapTransaction' not in result:
-                    print("Jupiter swap response missing 'swapTransaction'")
-                    return None
-                return result['swapTransaction']
+                swap_txn = response.json()
+                if "swapTransaction" not in swap_txn:
+                    raise ValueError(f"Swap transaction failed: {json.dumps(swap_txn, indent=2)}")
+                return base64.b64decode(swap_txn["swapTransaction"])
         except Exception as e:
-            print(f"Error fetching Jupiter swap transaction: {e}")
-            return None
+            raise RuntimeError(f"Failed to fetch swap transaction: {str(e)}")
 
-    def send_swap_transaction(self, swap_tx_base64: str, payer: Keypair):
+    def send_transaction(self, raw_txn_bytes: bytes, user_wallet: Keypair):
         try:
-            tx_bytes = base64.b64decode(swap_tx_base64)
-            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-            recent_blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
-            versioned_tx.message.recent_blockhash = recent_blockhash
-            versioned_tx.sign([payer])
-            tx_sig = self.client.send_raw_transaction(versioned_tx.serialize(), opts=TxOpts(skip_preflight=True, preflight_commitment="processed"))
+            txn = VersionedTransaction.deserialize(raw_txn_bytes)
+            txn.sign([user_wallet])
+            serialized_txn = base64.b64encode(txn.serialize()).decode("utf-8")
+            tx_sig = self.client.send_raw_transaction(serialized_txn, opts=TxOpts(skip_preflight=True, preflight_commitment="processed"))
             return tx_sig["result"]
         except Exception as e:
-            print(f"Error sending swap transaction: {e}")
-            return None
+            raise RuntimeError(f"Failed to sign or send transaction: {str(e)}")
