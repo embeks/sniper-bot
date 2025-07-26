@@ -4,9 +4,9 @@ import httpx
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solders.signature import Signature
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
+
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -14,7 +14,15 @@ class JupiterAggregatorClient:
         self.client = Client(rpc_url)
         self.base_url = "https://quote-api.jup.ag/v6"
 
-    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100, user_pubkey: Pubkey = None, only_direct_routes=False):
+    async def get_quote(
+        self,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        amount: int,
+        slippage_bps: int = 100,
+        user_pubkey: Pubkey = None,
+        only_direct_routes=False
+    ):
         try:
             url = f"{self.base_url}/quote"
             params = {
@@ -26,8 +34,6 @@ class JupiterAggregatorClient:
             }
             if user_pubkey:
                 params["userPublicKey"] = str(user_pubkey)
-            else:
-                print("[JUPITER] Warning: No userPublicKey passed to quote request")
             if only_direct_routes:
                 params["onlyDirectRoutes"] = "true"
 
@@ -48,7 +54,7 @@ class JupiterAggregatorClient:
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": True,
-                "useSharedAccounts": False,
+                "useSharedAccounts": False,  # use True only if you're managing shared wallets
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote
             }
@@ -60,7 +66,6 @@ class JupiterAggregatorClient:
                 response = await client.post(swap_url, json=body, headers=headers)
 
                 print(f"[JUPITER] Swap response {response.status_code}: {response.text}")
-
                 if response.status_code == 200:
                     data = response.json()
                     tx_base64 = data.get("swapTransaction")
@@ -78,17 +83,16 @@ class JupiterAggregatorClient:
         try:
             tx_bytes = base64.b64decode(tx_base64)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            tx.sign([keypair])
-            return tx
+            return tx  # Already signed — do not sign again
         except Exception as e:
             print(f"[JUPITER] Transaction build error: {e}")
             return None
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            result = self.client.send_raw_transaction(signed_tx.serialize(), opts=TxOpts(skip_preflight=True))
+            raw_tx = signed_tx.serialize()
+            result = self.client.send_raw_transaction(raw_tx, opts=TxOpts(skip_preflight=True))
             return str(result.get("result"))
         except Exception as e:
             print(f"[JUPITER] Send error: {e}")
             return None
-
