@@ -1,140 +1,126 @@
-# utils.py — ELITE VERSION
-
 import os
-import json
-import csv
+import asyncio
 import logging
-from datetime import datetime
-
+import csv
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from solana.rpc.api import Client
-
-from jupiter_aggregator import JupiterAggregatorClient
+from telegram import Bot
+from datetime import datetime
 
 load_dotenv()
 
-# === ENV VARS ===
-RPC_URL = os.getenv("RPC_URL")
-SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.01))
-SLIPPAGE_BPS = int(os.getenv("SLIPPAGE_BPS", 100))
-
-# === GLOBALS ===
-client = Client(RPC_URL)
-keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
-wallet_pubkey = keypair.pubkey()
-aggregator = JupiterAggregatorClient(RPC_URL)
-
-# === TELEGRAM ===
-from telegram import Bot
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# === ENVIRONMENT ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")
+
+# === TELEGRAM BOT ===
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# === STATE ===
-bot_status = {"running": True}
-seen_tokens = set()
+# === GLOBAL STATE ===
+is_bot_running = False
 task_registry = []
+sniped_tokens = set()
+
+# === WALLET ===
+keypair = Keypair.from_bytes(bytes([int(k) for k in PRIVATE_KEY.strip('[]').split(',')]))
+wallet_pubkey = keypair.pubkey()
+
+# === TELEGRAM HELPERS ===
+async def send_telegram_message(message):
+    try:
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        logging.error(f"[TELEGRAM] Failed to send message: {e}")
+
+def send_telegram_alert(message):
+    asyncio.create_task(send_telegram_message(message))
+
+# === TASK CONTROL ===
+def add_task(task):
+    task_registry.append(task)
+
+def cancel_all_tasks():
+    for task in task_registry:
+        if not task.done():
+            task.cancel()
+    task_registry.clear()
+
+# === SKIPPED TOKENS ===
+def log_skipped_token(reason, mint):
+    timestamp = datetime.utcnow().isoformat()
+    log = f"[SKIPPED] {mint} | Reason: {reason} | {timestamp}"
+    logging.info(log)
+    send_telegram_alert(log)
+
+# === CSV LOGGING ===
+def log_trade_to_csv(mint, side, size_sol, size_token, price, pnl_sol, tx_sig):
+    with open("trade_log.csv", "a", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([
+            datetime.utcnow().isoformat(),
+            mint,
+            side,
+            size_sol,
+            size_token,
+            price,
+            pnl_sol,
+            tx_sig
+        ])
 
 # === UTILS ===
-def is_valid_mint(account_data):
-    for acc in account_data:
-        if acc.get("owner") != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":
-            return False
-    return True
-
-async def send_telegram_alert(msg):
+def parse_pubkey(pubkey_str):
     try:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-    except Exception as e:
-        logging.error(f"[TELEGRAM ERROR] {e}")
+        return Pubkey.from_string(pubkey_str)
+    except Exception:
+        return None
 
-async def log_skipped_token(mint, reason):
+# === LP DATA ===
+async def get_token_data(mint):
+    # Placeholder for LP ownership and liquidity logic
+    # This should be implemented with raw on-chain calls
+    return {
+        "liquidity": 1000000,
+        "owner_count": 100,
+        "is_blacklisted": False,
+        "lp_locked": True,
+        "ownership_renounced": True
+    }
+
+# === BOT STATE ===
+def set_bot_running(state: bool):
+    global is_bot_running
+    is_bot_running = state
+
+def get_bot_running():
+    return is_bot_running
+
+# === DYNAMIC BUY SIZE ===
+def calculate_buy_amount_sol(liquidity):
+    if liquidity < 1_000_000:
+        return 0.01
+    elif liquidity < 10_000_000:
+        return 0.03
+    else:
+        return 0.05
+
+# === STATUS COMMANDS ===
+def get_current_holdings():
+    # Placeholder for wallet token parsing
+    return "No holdings yet."
+
+def get_recent_logs():
     try:
-        with open("skipped_tokens.txt", "a") as f:
-            f.write(f"{mint} — {reason}\n")
-    except Exception as e:
-        logging.error(f"[SKIP LOG ERROR] {e}")
+        with open("trade_log.csv", "r") as f:
+            lines = f.readlines()
+            return "".join(lines[-10:])
+    except:
+        return "No trade logs available."
 
-async def buy_token(mint):
-    try:
-        await send_telegram_alert(f"🚀 Buying token: {mint}")
+# === FORCE RESTART ===
+def reset_sniped_tokens():
+    global sniped_tokens
+    sniped_tokens = set()
+    return "Sniped token list cleared."
 
-        quote = await aggregator.get_quote(
-            input_mint=Pubkey.from_string("So11111111111111111111111111111111111111112"),
-            output_mint=Pubkey.from_string(mint),
-            amount=int(BUY_AMOUNT_SOL * 1e9),
-            slippage_bps=SLIPPAGE_BPS,
-            user_pubkey=wallet_pubkey
-        )
-
-        if not quote:
-            await send_telegram_alert(f"❌ Failed to get quote for {mint}")
-            return False
-
-        tx_bytes = await aggregator.get_swap_transaction(quote, keypair)
-        if not tx_bytes:
-            await send_telegram_alert(f"❌ Failed to build swap for {mint}")
-            return False
-
-        sig = await aggregator.send_transaction(tx_bytes, keypair)
-        if not sig:
-            await send_telegram_alert(f"❌ Failed to send buy TX for {mint}")
-            return False
-
-        await send_telegram_alert(f"✅ Buy TX sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, "BUY", sig)
-        return True
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Buy error for {mint}: {e}")
-        logging.exception(f"[BUY ERROR] {e}")
-        return False
-
-async def wait_and_auto_sell(mint):
-    try:
-        await asyncio.sleep(60)  # Placeholder for real strategy
-
-        quote = await aggregator.get_quote(
-            input_mint=Pubkey.from_string(mint),
-            output_mint=Pubkey.from_string("So11111111111111111111111111111111111111112"),
-            amount=0,  # You should fetch actual token balance
-            slippage_bps=SLIPPAGE_BPS,
-            user_pubkey=wallet_pubkey
-        )
-
-        if not quote:
-            await send_telegram_alert(f"❌ Sell quote failed for {mint}")
-            return
-
-        tx_bytes = await aggregator.get_swap_transaction(quote, keypair)
-        if not tx_bytes:
-            await send_telegram_alert(f"❌ Failed to build sell swap for {mint}")
-            return
-
-        sig = await aggregator.send_transaction(tx_bytes, keypair)
-        if not sig:
-            await send_telegram_alert(f"❌ Failed to send sell tx for {mint}")
-        else:
-            await send_telegram_alert(f"✅ Sell TX sent: https://solscan.io/tx/{sig}")
-            log_trade(mint, "SELL", sig)
-
-    except Exception as e:
-        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
-        logging.exception(f"[SELL ERROR] {e}")
-
-async def get_trending_mints():
-    return []  # Stub
-
-def is_bot_running():
-    return bot_status["running"]
-
-def log_trade(mint, action, txid):
-    try:
-        with open("trades.csv", "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([datetime.utcnow().isoformat(), mint, action, txid])
-    except Exception as e:
-        logging.error(f"[TRADE LOG ERROR] {e}")
