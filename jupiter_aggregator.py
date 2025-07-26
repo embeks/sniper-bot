@@ -1,90 +1,78 @@
 # =============================
-# jupiter_aggregator.py — REST Jupiter Buy/Sell SDK (Fixed Wallet Public Key)
+# jupiter_aggregator.py — Final (Updated for SOLANA_PRIVATE_KEY)
 # =============================
 
 import base64
 import json
+import os
 import httpx
+
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solders.signature import Signature
 from solana.rpc.api import Client
-import os
-from dotenv import load_dotenv
 
-load_dotenv()
-
+JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 RPC_URL = os.getenv("RPC_URL")
-WALLET_PRIVATE_KEY = json.loads(os.getenv("PRIVATE_KEY"))
+SOLANA_CLIENT = Client(RPC_URL)
+
+# Load wallet
+WALLET_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+KEYPAIR = Keypair.from_bytes(bytes(WALLET_PRIVATE_KEY))
+WALLET_ADDRESS = str(KEYPAIR.pubkey())
 
 class JupiterAggregatorClient:
-    def __init__(self, rpc_url):
+    def __init__(self, rpc_url: str):
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
 
-    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100):
+    async def get_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int = 100):
         url = (
-            f"https://quote-api.jup.ag/v6/quote"
-            f"?inputMint={str(input_mint)}"
-            f"&outputMint={str(output_mint)}"
+            f"{JUPITER_BASE_URL}/v6/quote"
+            f"?inputMint={input_mint}"
+            f"&outputMint={output_mint}"
             f"&amount={amount}"
             f"&slippageBps={slippage_bps}"
         )
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get(url)
-                data = resp.json()
-                return data["data"][0] if "data" in data and len(data["data"]) > 0 else None
+                response = await client.get(url)
+                data = response.json()
+                if "data" not in data or not data["data"]:
+                    return None
+                return data["data"][0]
         except Exception as e:
-            print(f"[JupiterAggregator] Error fetching quote: {e}")
+            print(f"[JUPITER QUOTE ERROR] {e}")
             return None
 
-    async def get_swap_tx(self, quote: dict, user_pubkey: str):
-        url = "https://quote-api.jup.ag/v6/swap"
+    async def get_swap_tx(self, quote: dict):
+        url = f"{JUPITER_BASE_URL}/v6/swap"
         payload = {
-            "quoteResponse": quote,
-            "userPublicKey": user_pubkey,
+            "userPublicKey": WALLET_ADDRESS,
             "wrapUnwrapSOL": True,
-            "computeUnitPriceMicroLamports": 10000,
-            "asLegacyTransaction": False
+            "feeAccount": None,
+            "computeUnitPriceMicroLamports": "5000",
+            **quote,
         }
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(url, json=payload)
-                swap_tx = response.json()
-                return swap_tx["swapTransaction"] if "swapTransaction" in swap_tx else None
+                data = response.json()
+                swap_tx = base64.b64decode(data["swapTransaction"])
+                return VersionedTransaction.deserialize(swap_tx)
         except Exception as e:
-            print(f"[JupiterAggregator] Error getting swap transaction: {e}")
+            print(f"[JUPITER SWAP ERROR] {e}")
             return None
 
-    def sign_and_send_tx(self, swap_tx_b64: str):
+    def send_transaction(self, transaction: VersionedTransaction):
         try:
-            keypair = Keypair.from_bytes(bytes(WALLET_PRIVATE_KEY))
-            swap_tx_bytes = base64.b64decode(swap_tx_b64)
-            tx = VersionedTransaction.deserialize(swap_tx_bytes)
-            tx.sign([keypair])
-            tx_sig = self.client.send_raw_transaction(tx.serialize(), opts={"skipPreflight": True, "maxRetries": 3})
-            return str(tx_sig)
+            tx = transaction.sign([KEYPAIR])
+            encoded = base64.b64encode(tx.serialize()).decode("utf-8")
+            response = self.client.send_raw_transaction(encoded)
+            signature = response["result"]
+            print(f"[✅ Jupiter TX Success] {signature}")
+            return signature
         except Exception as e:
-            print(f"[JupiterAggregator] Error signing/sending tx: {e}")
+            print(f"[TX ERROR] {e}")
             return None
-
-    async def buy(self, input_mint: Pubkey, output_mint: Pubkey, amount: int):
-        keypair = Keypair.from_bytes(bytes(WALLET_PRIVATE_KEY))
-        user_pubkey = str(keypair.pubkey())
-
-        quote = await self.get_quote(input_mint, output_mint, amount)
-        if not quote:
-            print("[JupiterAggregator] Quote not available.")
-            return None
-
-        swap_tx_b64 = await self.get_swap_tx(quote, user_pubkey)
-        if not swap_tx_b64:
-            print("[JupiterAggregator] Failed to get swap transaction.")
-            return None
-
-        tx_sig = self.sign_and_send_tx(swap_tx_b64)
-        if tx_sig:
-            print(f"[JupiterAggregator] Buy TX sent: {tx_sig}")
-        return tx_sig
