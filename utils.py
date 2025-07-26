@@ -77,7 +77,7 @@ async def get_liquidity_and_ownership(mint: str):
             )
             if not res.value:
                 await send_telegram_alert(
-                    f"\ud83d\udcec No LP accounts found for `{mint}`.\n"
+                    f"\U0001f4ec No LP accounts found for `{mint}`.\n"
                     f"Raydium res.value: ```{json.dumps(res.value, indent=2)}```"
                 )
                 return None
@@ -203,7 +203,7 @@ async def get_trending_mints(limit=5):
         return []
 
 def get_wallet_status_message():
-    return f"\ud83d\udd32 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
+    return f"\U0001f532 Bot is running: `{is_bot_running()}`\nWallet: `{wallet_pubkey}`"
 
 def get_wallet_summary():
-    return f"\ud83d\udcbc Wallet: `{wallet_pubkey}`"
+    return f"\U0001f4bc Wallet: `{wallet_pubkey}`"
