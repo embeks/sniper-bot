@@ -10,10 +10,9 @@ from typing import List
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solana.rpc.async_api import AsyncClient
-from solana.transaction import Transaction
+from solana.rpc.types import MemcmpOpts, TokenAccountOpts
 
 from jupiter_aggregator import JupiterAggregatorClient
-
 from telegram import Bot
 
 # === ENV ===
@@ -75,6 +74,44 @@ def reset_tasks():
         if not task.done():
             task.cancel()
     running_tasks.clear()
+
+def get_trending_mints() -> List[str]:
+    try:
+        with open("trending_mints.txt", "r") as file:
+            return [line.strip() for line in file.readlines() if line.strip()]
+    except FileNotFoundError:
+        return []
+
+# === LIQUIDITY & SAFETY CHECK ===
+async def get_liquidity_and_ownership(client: AsyncClient, token_mint: str) -> dict:
+    try:
+        filters = [
+            MemcmpOpts(offset=0, bytes=token_mint),
+            MemcmpOpts(offset=64, bytes="2")
+        ]
+        resp = await client.get_program_accounts(
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            TokenAccountOpts(memcmp_opts=filters, encoding="jsonParsed")
+        )
+        return resp.value
+    except Exception as e:
+        print(f"[Liquidity Check Error] {e}")
+        return {}
+
+# === AUTO SELL ===
+async def wait_and_auto_sell(mint: str, buy_price: float, token_amount: int):
+    try:
+        await asyncio.sleep(180)
+        sell_signature = await sell_token(mint, token_amount)
+        if sell_signature:
+            sell_price = buy_price * 2
+            pnl = (sell_price - buy_price) * (token_amount / 1e9)
+            log_trade(mint, buy_price, sell_price, pnl)
+            send_telegram_alert(f"Auto-sell complete: {sell_signature}\nPnL: {pnl:.4f} SOL")
+        else:
+            send_telegram_alert(f"Auto-sell failed for {mint}")
+    except Exception as e:
+        send_telegram_alert(f"[Auto-Sell Error] {e}")
 
 # === BUY/SELL ===
 async def buy_token(input_mint: str, amount_sol: float):
@@ -139,26 +176,3 @@ async def sell_token(input_mint: str, amount_token: int):
     except Exception as e:
         send_telegram_alert(f"Sell failed: {e}")
         return None
-
-# === AUTO SELL ===
-async def wait_and_auto_sell(mint: str, buy_price: float, token_amount: int):
-    try:
-        await asyncio.sleep(30)
-        sell_signature = await sell_token(mint, token_amount)
-        if sell_signature:
-            sell_price = buy_price * 1.5  # Simulated gain
-            pnl = (sell_price - buy_price) * (token_amount / 1e9)
-            log_trade(mint, buy_price, sell_price, pnl)
-            send_telegram_alert(f"Auto-sell complete: {sell_signature}\nPnL: {pnl:.4f} SOL")
-        else:
-            send_telegram_alert(f"Auto-sell failed for {mint}")
-    except Exception as e:
-        send_telegram_alert(f"[Auto-Sell Error] {e}")
-
-# === TRENDING MINTS ===
-def get_trending_mints() -> List[str]:
-    try:
-        with open("trending_mints.txt", "r") as file:
-            return [line.strip() for line in file.readlines() if line.strip()]
-    except FileNotFoundError:
-        return []
