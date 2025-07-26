@@ -1,5 +1,5 @@
 # =========================
-# sniper_logic.py — ELITE VERSION (Forced Buy skips LP check)
+# sniper_logic.py — ELITE VERSION (Force Buy skips LP check)
 # =========================
 
 import asyncio
@@ -35,7 +35,7 @@ RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 seen_tokens = set()
 
-TASKS = []  # Active async tasks registry
+TASKS = []
 aggregator = JupiterAggregatorClient(RPC_URL)
 
 # ✅ Rug Filter
@@ -139,7 +139,7 @@ async def start_sniper():
         asyncio.create_task(trending_scanner())
     ])
 
-# ✅ Force Buy From Telegram (Jupiter direct path)
+# ✅ Force Buy From Telegram
 async def start_sniper_with_forced_token(mint: str):
     if not is_bot_running():
         await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
@@ -159,19 +159,22 @@ async def start_sniper_with_forced_token(mint: str):
 
         if not route:
             await send_telegram_alert(f"❌ Quote failed for {mint}")
+            logging.error(f"[FORCEBUY] Quote failed: No route returned for {mint}")
             return
 
         await send_telegram_alert(f"✅ Quote received. Building swap for {mint}")
-        logging.info(f"[FORCEBUY] Quote success. Building transaction...")
+        logging.info(f"[FORCEBUY] Quote received: {route}")
 
         txn_bytes = await aggregator.get_swap_transaction(route, keypair)
         if not txn_bytes:
             await send_telegram_alert(f"❌ Failed to build swap transaction for {mint}")
+            logging.error(f"[FORCEBUY] Swap TXN build failed for {mint}")
             return
 
         sig = aggregator.send_transaction(txn_bytes, keypair)
         if not sig:
             await send_telegram_alert(f"❌ Failed to send transaction for {mint}")
+            logging.error(f"[FORCEBUY] Transaction send failed for {mint}")
         else:
             await send_telegram_alert(f"✅ TX Sent: https://solscan.io/tx/{sig}")
             logging.info(f"[FORCEBUY] ✅ TX sent for {mint}: {sig}")
