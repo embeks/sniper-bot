@@ -26,6 +26,8 @@ class JupiterAggregatorClient:
             }
             if user_pubkey:
                 params["userPublicKey"] = str(user_pubkey)
+            else:
+                print("[JUPITER] Warning: No userPublicKey passed to quote request")
             if only_direct_routes:
                 params["onlyDirectRoutes"] = "true"
 
@@ -46,13 +48,12 @@ class JupiterAggregatorClient:
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": True,
-                "useSharedAccounts": True,
+                "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
-                "quoteResponse": quote  # ✅ CRITICAL FIX
+                "quoteResponse": quote
             }
 
             print(f"[JUPITER] Swap request body:\n{json.dumps(body, indent=2)}")
-
             headers = {"Content-Type": "application/json"}
 
             async with httpx.AsyncClient() as client:
@@ -77,7 +78,8 @@ class JupiterAggregatorClient:
         try:
             tx_bytes = base64.b64decode(tx_base64)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            return tx.sign([keypair])
+            tx.sign([keypair])
+            return tx
         except Exception as e:
             print(f"[JUPITER] Transaction build error: {e}")
             return None
@@ -89,3 +91,4 @@ class JupiterAggregatorClient:
         except Exception as e:
             print(f"[JUPITER] Send error: {e}")
             return None
+
