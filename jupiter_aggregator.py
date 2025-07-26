@@ -32,8 +32,8 @@ class JupiterAggregatorClient:
             "outputMint": str(output_mint),
             "amount": amount,
             "slippageBps": slippage_bps,
-            "userPublicKey": str(user_pubkey),
-            "onlyDirectRoutes": str(only_direct_routes).lower(),
+            "userPublicKey": str(user_pubkey),  # ✅ FIXED
+            "onlyDirectRoutes": str(only_direct_routes).lower()
         }
 
         try:
@@ -51,7 +51,7 @@ class JupiterAggregatorClient:
                 logging.warning(f"[JUPITER] No quote found for input={input_mint}, output={output_mint}, amount={amount}")
                 return None
 
-            logging.info(f"[JUPITER] ✅ Quote received for {output_mint} — route found.")
+            logging.info(f"[JUPITER] ✅ Quote received for {output_mint}")
             return data["data"][0]
 
         except Exception as e:
