@@ -20,7 +20,7 @@ class JupiterAggregatorClient:
             params = {
                 "inputMint": str(input_mint),
                 "outputMint": str(output_mint),
-                "amount": amount,
+                "amount": int(amount),  # ensure it's an int
                 "slippageBps": slippage_bps,
                 "swapMode": "ExactIn"
             }
@@ -48,18 +48,24 @@ class JupiterAggregatorClient:
                 "wrapUnwrapSOL": True,
                 "useSharedAccounts": True,
                 "computeUnitPriceMicroLamports": 2000,
-                "routePlan": quote.get("routePlan"),
+                "routePlan": quote.get("routePlan", []),
                 "inputMint": quote.get("inputMint"),
                 "outputMint": quote.get("outputMint"),
-                "inAmount": quote.get("inAmount"),
-                "slippageBps": quote.get("slippageBps"),
-                "swapMode": quote.get("swapMode", "ExactIn")
+                "inAmount": int(quote.get("inAmount", 0)),
+                "slippageBps": quote.get("slippageBps", 100),
+                "swapMode": quote.get("swapMode", "ExactIn"),
+                "platformFee": quote.get("platformFee", None)
             }
+
+            print(f"[JUPITER] Swap request body:\n{json.dumps(body, indent=2)}")
 
             headers = {"Content-Type": "application/json"}
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(swap_url, json=body, headers=headers)
+
+                print(f"[JUPITER] Swap response {response.status_code}: {response.text}")
+
                 if response.status_code == 200:
                     data = response.json()
                     tx_base64 = data.get("swapTransaction")
@@ -68,7 +74,6 @@ class JupiterAggregatorClient:
                         return None
                     return tx_base64
                 else:
-                    print(f"[JUPITER] Swap HTTP {response.status_code} - {response.text}")
                     return None
         except Exception as e:
             print(f"[JUPITER] Swap error: {e}")
