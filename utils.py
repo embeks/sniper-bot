@@ -117,7 +117,7 @@ async def buy_token(mint: str):
         route = await jupiter.get_quote(input_mint, output_mint, amount, user_pubkey=keypair.pubkey())
         if not route:
             await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Raydium fallback")
-            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
+            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True, user_pubkey=keypair.pubkey())
 
         if not route:
             await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
@@ -159,7 +159,7 @@ async def sell_token(mint: str, percent: float = 100.0):
     try:
         route = await jupiter.get_quote(input_mint, output_mint, amount, user_pubkey=keypair.pubkey())
         if not route:
-            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True)
+            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True, user_pubkey=keypair.pubkey())
 
         if not route:
             await send_telegram_alert(f"❌ No sell quote for {mint}")
