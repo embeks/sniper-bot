@@ -36,7 +36,6 @@ seen_tokens = set()
 TASKS = []
 aggregator = JupiterAggregatorClient(RPC_URL)
 
-
 async def rug_filter_passes(mint):
     try:
         data = await get_liquidity_and_ownership(mint)
@@ -56,7 +55,6 @@ async def rug_filter_passes(mint):
         await send_telegram_alert(f"⚠️ Rug check error for {mint}: {e}")
         return False
 
-
 async def mempool_listener(name):
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
@@ -70,7 +68,7 @@ async def mempool_listener(name):
             ]
         }))
         print(f"[🔁] {name} listener subscribed.")
-        await send_telegram_alert(f"📡 {name} listener live.")
+        await send_telegram_alert(f"📱 {name} listener live.")
 
         while True:
             try:
@@ -98,7 +96,6 @@ async def mempool_listener(name):
                 print(f"[{name} ERROR] {e}")
                 await asyncio.sleep(1)
 
-
 async def trending_scanner():
     while True:
         try:
@@ -122,7 +119,6 @@ async def trending_scanner():
             print(f"[Scanner ERROR] {e}")
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
-
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
@@ -136,7 +132,6 @@ async def start_sniper():
         asyncio.create_task(mempool_listener("Jupiter")),
         asyncio.create_task(trending_scanner())
     ])
-
 
 async def start_sniper_with_forced_token(mint: str):
     if not is_bot_running():
@@ -169,7 +164,7 @@ async def start_sniper_with_forced_token(mint: str):
             logging.error(f"[FORCEBUY] Swap TXN build failed for {mint}")
             return
 
-        sig = await aggregator.send_transaction(txn_bytes, keypair)
+        sig = aggregator.send_transaction(txn_bytes, keypair)  # ✅ FIXED: no await
         if not sig:
             await send_telegram_alert(f"❌ Failed to send transaction for {mint}")
             logging.error(f"[FORCEBUY] Transaction send failed for {mint}")
@@ -183,7 +178,6 @@ async def start_sniper_with_forced_token(mint: str):
         await send_telegram_alert(f"❌ Force buy error for {mint}: {e}")
         logging.exception(f"[FORCEBUY] Exception: {e}")
 
-
 async def stop_all_tasks():
     for task in TASKS:
         if not task.done():
@@ -193,4 +187,4 @@ async def stop_all_tasks():
             except asyncio.CancelledError:
                 pass
     TASKS.clear()
-    await send_telegram_alert("🛑 All sniper tasks stopped.")
+    await send_telegram_alert("🚩 All sniper tasks stopped.")
