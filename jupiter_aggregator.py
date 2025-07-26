@@ -1,11 +1,8 @@
-# =============================
-# jupiter_aggregator.py — Final (Updated for SOLANA_PRIVATE_KEY)
-# =============================
-
+# === jupiter_aggregator.py ===
 import base64
 import json
-import os
 import httpx
+import os
 
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
@@ -13,66 +10,66 @@ from solders.transaction import VersionedTransaction
 from solders.signature import Signature
 from solana.rpc.api import Client
 
-JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 RPC_URL = os.getenv("RPC_URL")
-SOLANA_CLIENT = Client(RPC_URL)
+JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
+SOL_MINT = "So11111111111111111111111111111111111111112"
 
 # Load wallet
-WALLET_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-KEYPAIR = Keypair.from_bytes(bytes(WALLET_PRIVATE_KEY))
-WALLET_ADDRESS = str(KEYPAIR.pubkey())
+private_key = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+keypair = Keypair.from_bytes(bytes(private_key))
+wallet_pubkey = str(keypair.pubkey())
+rpc_client = Client(RPC_URL)
+
 
 class JupiterAggregatorClient:
-    def __init__(self, rpc_url: str):
-        self.rpc_url = rpc_url
-        self.client = Client(rpc_url)
+    def __init__(self):
+        self.base_url = JUPITER_BASE_URL
+        self.wallet = wallet_pubkey
 
-    async def get_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int = 100):
+    async def get_quote(self, output_mint: str, amount_sol: float, slippage_bps: int = 100):
+        input_mint = SOL_MINT
+        amount = int(amount_sol * 1e9)
+
         url = (
-            f"{JUPITER_BASE_URL}/v6/quote"
-            f"?inputMint={input_mint}"
-            f"&outputMint={output_mint}"
-            f"&amount={amount}"
-            f"&slippageBps={slippage_bps}"
+            f"{self.base_url}/v6/quote?"
+            f"inputMint={input_mint}&outputMint={output_mint}"
+            f"&amount={amount}&slippageBps={slippage_bps}&platformFeeBps=0"
+            f"&userPublicKey={self.wallet}"
         )
+
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.get(url)
+                response.raise_for_status()
                 data = response.json()
-                if "data" not in data or not data["data"]:
+                if "routes" not in data or not data["routes"]:
                     return None
-                return data["data"][0]
+                return data["routes"][0]
         except Exception as e:
-            print(f"[JUPITER QUOTE ERROR] {e}")
+            print(f"🛑 Quote fetch error: {e}")
             return None
 
-    async def get_swap_tx(self, quote: dict):
-        url = f"{JUPITER_BASE_URL}/v6/swap"
+    async def execute_swap(self, route: dict):
+        url = f"{self.base_url}/v6/swap"
+
         payload = {
-            "userPublicKey": WALLET_ADDRESS,
+            "route": route,
+            "userPublicKey": self.wallet,
             "wrapUnwrapSOL": True,
-            "feeAccount": None,
-            "computeUnitPriceMicroLamports": "5000",
-            **quote,
+            "dynamicComputeUnitLimit": True,
+            "useLegacyTransaction": False
         }
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=payload)
-                data = response.json()
-                swap_tx = base64.b64decode(data["swapTransaction"])
-                return VersionedTransaction.deserialize(swap_tx)
-        except Exception as e:
-            print(f"[JUPITER SWAP ERROR] {e}")
-            return None
 
-    def send_transaction(self, transaction: VersionedTransaction):
         try:
-            tx = transaction.sign([KEYPAIR])
-            encoded = base64.b64encode(tx.serialize()).decode("utf-8")
-            response = self.client.send_raw_transaction(encoded)
-            signature = response["result"]
-            print(f"[✅ Jupiter TX Success] {signature}")
-            return signature
+            async with httpx.AsyncClient(timeout=20) as client:
+                res = await client.post(url, json=payload)
+                res.raise_for_status()
+                tx = res.json()["swapTransaction"]
+                raw_tx = base64.b64decode(tx)
+                versioned_tx = VersionedTransaction.deserialize(raw_tx)
+                sig = rpc_client.send_transaction(versioned_tx, keypair)
+                print(f"✅ Sent Jupiter swap: {sig}")
+                return sig
         except Exception as e:
-            print(f"[TX ERROR] {e}")
+            print(f"❌ Swap execution failed: {e}")
             return None
