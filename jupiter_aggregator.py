@@ -32,11 +32,13 @@ class JupiterAggregatorClient:
             "outputMint": str(output_mint),
             "amount": amount,
             "slippageBps": slippage_bps,
-            "userPublicKey": str(user_pubkey),  # ✅ FIXED
+            "userPublicKey": str(user_pubkey),
             "onlyDirectRoutes": str(only_direct_routes).lower()
         }
 
         try:
+            logging.info(f"[JUPITER DEBUG PARAMS] {params}")
+
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(JUPITER_QUOTE_API, params=params)
 
