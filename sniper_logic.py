@@ -1,6 +1,4 @@
-# =========================
 # sniper_logic.py — ELITE VERSION (Force Buy skips LP check)
-# =========================
 
 import asyncio
 import json
@@ -38,7 +36,6 @@ seen_tokens = set()
 TASKS = []
 aggregator = JupiterAggregatorClient(RPC_URL)
 
-# ✅ Rug Filter
 async def rug_filter_passes(mint):
     try:
         data = await get_liquidity_and_ownership(mint)
@@ -58,7 +55,6 @@ async def rug_filter_passes(mint):
         await send_telegram_alert(f"⚠️ Rug check error for {mint}: {e}")
         return False
 
-# ✅ WebSocket Mempool Listener
 async def mempool_listener(name):
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     async with websockets.connect(url) as ws:
@@ -100,7 +96,6 @@ async def mempool_listener(name):
                 print(f"[{name} ERROR] {e}")
                 await asyncio.sleep(1)
 
-# ✅ Trending Mints Scanner
 async def trending_scanner():
     while True:
         try:
@@ -124,7 +119,6 @@ async def trending_scanner():
             print(f"[Scanner ERROR] {e}")
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
-# ✅ Start Sniper
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
@@ -139,7 +133,6 @@ async def start_sniper():
         asyncio.create_task(trending_scanner())
     ])
 
-# ✅ Force Buy From Telegram
 async def start_sniper_with_forced_token(mint: str):
     if not is_bot_running():
         await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
@@ -171,7 +164,7 @@ async def start_sniper_with_forced_token(mint: str):
             logging.error(f"[FORCEBUY] Swap TXN build failed for {mint}")
             return
 
-        sig = aggregator.send_transaction(txn_bytes, keypair)
+        sig = await aggregator.send_transaction(txn_bytes, keypair)
         if not sig:
             await send_telegram_alert(f"❌ Failed to send transaction for {mint}")
             logging.error(f"[FORCEBUY] Transaction send failed for {mint}")
@@ -185,7 +178,6 @@ async def start_sniper_with_forced_token(mint: str):
         await send_telegram_alert(f"❌ Force buy error for {mint}: {e}")
         logging.exception(f"[FORCEBUY] Exception: {e}")
 
-# ✅ Stop All Tasks
 async def stop_all_tasks():
     for task in TASKS:
         if not task.done():
