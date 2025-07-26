@@ -1,79 +1,96 @@
-# =============================
-# jupiter_aggregator.py — Jupiter V6 REST Client
-# =============================
-
+import base64
 import json
-import logging
 import httpx
+import logging
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
+from solana.rpc.types import TxOpts
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 
 class JupiterAggregatorClient:
-    def __init__(self, rpc_url: str, base_url: str = "https://quote-api.jup.ag/v6"):
+    def __init__(self, rpc_url):
+        self.rpc_url = rpc_url
         self.client = Client(rpc_url)
-        self.base_url = base_url
 
-    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int, user_pubkey: Pubkey):
-        url = (
-            f"{self.base_url}/quote"
-            f"?inputMint={str(input_mint)}"
-            f"&outputMint={str(output_mint)}"
-            f"&amount={amount}"
-            f"&slippageBps={slippage_bps}"
-            f"&userPublicKey={str(user_pubkey)}"
-        )
+    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100, user_pubkey: Pubkey = None, only_direct_routes: bool = False):
+        url = f"{JUPITER_BASE_URL}/v6/quote"
+        params = {
+            "inputMint": str(input_mint),
+            "outputMint": str(output_mint),
+            "amount": amount,
+            "slippageBps": slippage_bps,
+            "onlyDirectRoutes": str(only_direct_routes).lower()
+        }
+        if user_pubkey:
+            params["userPublicKey"] = str(user_pubkey)
+
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url)
-                logging.info(f"[JUPITER] Quote URL: {response.url}")
-                response.raise_for_status()
+                response = await client.get(url, params=params)
+                if response.status_code != 200:
+                    logging.warning(f"[JUPITER] Quote request failed: {response.status_code} {response.text}")
+                    return None
+
                 data = response.json()
-                if "data" not in data or not data["data"]:
+                if not data or "routePlan" not in data:
                     logging.warning(f"[JUPITER] No quote returned:\n{json.dumps(data, indent=2)}")
                     return None
-                return data["data"][0]
+
+                logging.info(f"[JUPITER] Quote success:\n{json.dumps(data, indent=2)}")
+                return data
         except Exception as e:
-            logging.error(f"[JUPITER] Quote fetch failed: {e}")
+            logging.exception(f"[JUPITER] Exception in get_quote: {e}")
             return None
 
-    async def get_swap_transaction(self, route: dict, keypair: Keypair):
-        swap_url = f"{self.base_url}/swap"
+    async def get_swap_transaction(self, quote: dict, user_keypair: Keypair):
+        swap_url = f"{JUPITER_BASE_URL}/v6/swap"
         payload = {
-            "route": route,
-            "userPublicKey": str(keypair.pubkey()),
+            "route": quote,
+            "userPublicKey": str(user_keypair.pubkey()),
             "wrapUnwrapSOL": True,
-            "dynamicSlippage": True
+            "useSharedAccounts": True,
+            "feeAccount": None,
+            "asLegacyTransaction": False
         }
+
         try:
+            logging.info(f"[JUPITER] Sending swap request with payload:\n{json.dumps(payload, indent=2)}")
+
             async with httpx.AsyncClient() as client:
                 res = await client.post(swap_url, json=payload)
-                logging.info(f"[JUPITER] Swap request URL: {swap_url}")
-                res.raise_for_status()
-                tx = res.json().get("swapTransaction")
-                if not tx:
-                    logging.warning(f"[JUPITER] No transaction returned:\n{res.text}")
+                logging.info(f"[JUPITER] Swap response {res.status_code}:\n{res.text}")
+
+                if res.status_code != 200:
                     return None
-                return tx
+
+                data = res.json()
+                if "swapTransaction" not in data:
+                    logging.warning("[JUPITER] No swapTransaction in response.")
+                    return None
+
+                return base64.b64decode(data["swapTransaction"])
         except Exception as e:
-            logging.error(f"[JUPITER] Swap transaction fetch failed: {e}")
+            logging.exception(f"[JUPITER] Exception in get_swap_transaction: {e}")
             return None
 
-    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
+    def build_swap_transaction(self, txn_bytes: bytes, user_keypair: Keypair):
         try:
-            tx_bytes = bytes.fromhex(swap_tx_base64)
-            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-            versioned_tx.sign([keypair])
-            return versioned_tx.serialize()
+            txn = VersionedTransaction.deserialize(txn_bytes)
+            return txn
         except Exception as e:
-            logging.error(f"[JUPITER] Failed to build transaction: {e}")
+            logging.exception(f"[JUPITER] Failed to deserialize swap transaction: {e}")
             return None
 
-    def send_transaction(self, tx_bytes: bytes, keypair: Keypair):
+    def send_transaction(self, txn: VersionedTransaction, user_keypair: Keypair):
         try:
-            sig = self.client.send_raw_transaction(tx_bytes)
+            sig = self.client.send_transaction(txn, user_keypair, opts=TxOpts(skip_preflight=True, preflight_commitment="processed"))
             return str(sig)
         except Exception as e:
-            logging.error(f"[JUPITER] Failed to send transaction: {e}")
+            logging.exception(f"[JUPITER] Send transaction failed: {e}")
             return None
