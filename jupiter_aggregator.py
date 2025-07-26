@@ -90,7 +90,8 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx = bytes(signed_tx)  # ✅ Fixed: works across all solders versions
+            # ✅ Correct serialization for VersionedTransaction
+            raw_tx = signed_tx.serialize()
             result = self.client.send_raw_transaction(raw_tx, opts=TxOpts(skip_preflight=True))
             return str(result.get("result"))
         except Exception as e:
