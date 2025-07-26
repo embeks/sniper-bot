@@ -158,9 +158,13 @@ async def start_sniper_with_forced_token(mint: str):
         await send_telegram_alert(f"✅ Quote received. Building swap for {mint}")
         logging.info(f"[FORCEBUY] Quote received: {route}")
 
-        # ✅ FIXED: Removed erroneous `await`
-        transaction = aggregator.build_swap_transaction(route, keypair)
+        # 🔐 New safety check added here
+        if "swapTransaction" not in route or not route.get("swapTransaction"):
+            await send_telegram_alert(f"❌ Jupiter quote returned no swapTransaction for {mint}")
+            logging.error(f"[FORCEBUY] Jupiter quote missing swapTransaction field: {route}")
+            return
 
+        transaction = aggregator.build_swap_transaction(route, keypair)
         if not transaction:
             await send_telegram_alert(f"❌ Failed to build swap transaction for {mint}")
             logging.error(f"[FORCEBUY] Swap TXN build failed for {mint}")
