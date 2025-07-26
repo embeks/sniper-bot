@@ -36,6 +36,7 @@ seen_tokens = set()
 TASKS = []
 aggregator = JupiterAggregatorClient(RPC_URL)
 
+
 async def rug_filter_passes(mint):
     try:
         data = await get_liquidity_and_ownership(mint)
@@ -54,6 +55,7 @@ async def rug_filter_passes(mint):
     except Exception as e:
         await send_telegram_alert(f"⚠️ Rug check error for {mint}: {e}")
         return False
+
 
 async def mempool_listener(name):
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
@@ -96,6 +98,7 @@ async def mempool_listener(name):
                 print(f"[{name} ERROR] {e}")
                 await asyncio.sleep(1)
 
+
 async def trending_scanner():
     while True:
         try:
@@ -119,6 +122,7 @@ async def trending_scanner():
             print(f"[Scanner ERROR] {e}")
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
+
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
 
@@ -132,6 +136,7 @@ async def start_sniper():
         asyncio.create_task(mempool_listener("Jupiter")),
         asyncio.create_task(trending_scanner())
     ])
+
 
 async def start_sniper_with_forced_token(mint: str):
     if not is_bot_running():
@@ -177,6 +182,7 @@ async def start_sniper_with_forced_token(mint: str):
     except Exception as e:
         await send_telegram_alert(f"❌ Force buy error for {mint}: {e}")
         logging.exception(f"[FORCEBUY] Exception: {e}")
+
 
 async def stop_all_tasks():
     for task in TASKS:
