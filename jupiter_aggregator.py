@@ -4,64 +4,77 @@ import httpx
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solana.rpc.api import Client
+from solana.rpc.async_api import AsyncClient
 
 class JupiterAggregatorClient:
-    def __init__(self, rpc_url):
+    def __init__(self, rpc_url: str):
         self.rpc_url = rpc_url
-        self.client = Client(rpc_url)
+        self.client = AsyncClient(rpc_url)
 
-    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100, user_pubkey: Pubkey = None):
+    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int,
+                        slippage_bps: int = 100, only_direct_routes: bool = False,
+                        user_pubkey: Pubkey = None):
         url = "https://quote-api.jup.ag/v6/quote"
         params = {
             "inputMint": str(input_mint),
             "outputMint": str(output_mint),
-            "amount": str(amount),
-            "slippageBps": str(slippage_bps),
+            "amount": amount,
+            "slippageBps": slippage_bps,
+            "onlyDirectRoutes": str(only_direct_routes).lower(),
+            "swapMode": "ExactIn",
         }
-        try:
-            async with httpx.AsyncClient() as client:
+        if user_pubkey:
+            params["userPublicKey"] = str(user_pubkey)
+
+        async with httpx.AsyncClient() as client:
+            try:
                 response = await client.get(url, params=params)
-                data = response.json()
-                return data if data else None
-        except Exception as e:
-            print(f"[JUPITER] Quote error: {e}")
-            return None
+                if response.status_code == 200:
+                    data = response.json()
+                    return data.get("data", [None])[0]
+                else:
+                    print(f"[JupiterAggregator] Quote API failed: {response.text}")
+            except Exception as e:
+                print(f"[JupiterAggregator] Quote exception: {e}")
+        return None
 
-    async def get_swap_transaction(self, quote: dict, keypair: Keypair):
-        swap_url = "https://quote-api.jup.ag/v6/swap"
+    async def get_swap_transaction(self, route: dict, keypair: Keypair):
+        url = "https://quote-api.jup.ag/v6/swap"
+        payload = {
+            "route": route,
+            "userPublicKey": str(keypair.pubkey()),
+            "wrapUnwrapSOL": True,
+            "useSharedAccounts": True,
+        }
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(url, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    return data.get("swapTransaction")
+                else:
+                    print(f"[JupiterAggregator] Swap build failed: {response.text}")
+            except Exception as e:
+                print(f"[JupiterAggregator] Swap exception: {e}")
+        return None
+
+    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
         try:
-            payload = {
-                "userPublicKey": str(keypair.pubkey()),
-                "wrapUnwrapSOL": True,
-                "useSharedAccounts": False,
-                "computeUnitPriceMicroLamports": 2000,
-                "quoteResponse": quote,
-            }
-
-            print(f"[JUPITER] Swap request body:\n{json.dumps(payload, indent=2)}")
-
-            async with httpx.AsyncClient() as client:
-                response = await client.post(swap_url, json=payload)
-                response.raise_for_status()
-                swap_tx = response.json().get("swapTransaction")
-
-                if not swap_tx:
-                    print("[JUPITER] No transaction returned.")
-                    return None
-
-                swap_tx_bytes = base64.b64decode(swap_tx)
-                return VersionedTransaction.from_bytes(swap_tx_bytes)
-
+            swap_tx_bytes = base64.b64decode(swap_tx_base64)
+            versioned_tx = VersionedTransaction.deserialize(swap_tx_bytes)
+            versioned_tx.sign([keypair])
+            return versioned_tx
         except Exception as e:
-            print(f"[JUPITER] Swap TX error: {e}")
+            print(f"[JupiterAggregator] Build transaction error: {e}")
             return None
 
     async def send_transaction(self, txn: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx = txn.to_bytes()
-            tx_sig = self.client.send_raw_transaction(raw_tx)
-            return str(tx_sig)
+            response = await self.client.send_raw_transaction(
+                txn.serialize(),
+                opts={"skip_preflight": True, "preflight_commitment": "processed"}
+            )
+            return response.value
         except Exception as e:
-            print(f"[JUPITER] Send error: {e}")
+            print(f"[JupiterAggregator] Send TX error: {e}")
             return None
