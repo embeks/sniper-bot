@@ -28,7 +28,7 @@ RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
-jupiter = JupiterAggregatorClient()
+jupiter = JupiterAggregatorClient(RPC_URL)
 
 bot_active_flag = {"active": True}
 
