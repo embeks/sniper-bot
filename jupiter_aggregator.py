@@ -20,7 +20,7 @@ class JupiterAggregatorClient:
             params = {
                 "inputMint": str(input_mint),
                 "outputMint": str(output_mint),
-                "amount": int(amount),  # ensure it's an int
+                "amount": amount,
                 "slippageBps": slippage_bps,
                 "swapMode": "ExactIn"
             }
@@ -48,13 +48,7 @@ class JupiterAggregatorClient:
                 "wrapUnwrapSOL": True,
                 "useSharedAccounts": True,
                 "computeUnitPriceMicroLamports": 2000,
-                "routePlan": quote.get("routePlan", []),
-                "inputMint": quote.get("inputMint"),
-                "outputMint": quote.get("outputMint"),
-                "inAmount": int(quote.get("inAmount", 0)),
-                "slippageBps": quote.get("slippageBps", 100),
-                "swapMode": quote.get("swapMode", "ExactIn"),
-                "platformFee": quote.get("platformFee", None)
+                "quoteResponse": quote  # ✅ CRITICAL FIX
             }
 
             print(f"[JUPITER] Swap request body:\n{json.dumps(body, indent=2)}")
