@@ -81,7 +81,6 @@ async def buy_token(input_mint: str, amount_sol: float):
     try:
         input_mint_pubkey = Pubkey.from_string(input_mint)
         sol_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-
         amount = int(amount_sol * 1e9)  # convert SOL to lamports
 
         quote = await jupiter.get_quote(
@@ -141,3 +140,17 @@ async def sell_token(input_mint: str, amount_token: int):
         send_telegram_alert(f"Sell failed: {e}")
         return None
 
+# === TRENDING ===
+def get_trending_mints(limit: int = 10) -> List[str]:
+    try:
+        import requests
+        response = requests.get("https://api.dexscreener.com/latest/dex/pairs/solana")
+        if response.status_code != 200:
+            print("Failed to fetch trending tokens.")
+            return []
+        pairs = response.json().get("pairs", [])
+        trending = [pair["baseToken"]["address"] for pair in pairs if "baseToken" in pair][:limit]
+        return trending
+    except Exception as e:
+        print(f"Error in get_trending_mints: {e}")
+        return []
