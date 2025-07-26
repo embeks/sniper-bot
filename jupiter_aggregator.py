@@ -51,13 +51,14 @@ class JupiterAggregatorClient:
                 logging.warning(f"[JUPITER] No quote found for input={input_mint}, output={output_mint}, amount={amount}")
                 return None
 
+            logging.info(f"[JUPITER] ✅ Quote received for {output_mint} — route found.")
             return data["data"][0]
 
         except Exception as e:
             logging.exception(f"[JUPITER] Exception in get_quote: {e}")
             return None
 
-    async def get_swap_transaction(self, route: dict, user_wallet: Keypair) -> bytes:
+    async def get_swap_transaction(self, route: dict, user_wallet: Keypair) -> bytes | None:
         payload = {
             "route": route,
             "userPublicKey": str(user_wallet.pubkey()),
@@ -79,6 +80,7 @@ class JupiterAggregatorClient:
                 logging.error(f"[JUPITER] No swapTransaction returned: {json.dumps(swap_data, indent=2)}")
                 return None
 
+            logging.info("[JUPITER] ✅ Swap transaction built successfully.")
             return base64.b64decode(swap_data["swapTransaction"])
 
         except Exception as e:
@@ -94,7 +96,9 @@ class JupiterAggregatorClient:
                 serialized_txn,
                 opts=TxOpts(skip_preflight=True, preflight_commitment="processed")
             )
+            logging.info(f"[JUPITER] ✅ Transaction sent: {tx_sig['result']}")
             return tx_sig["result"]
+
         except Exception as e:
             logging.exception(f"[JUPITER] Exception in send_transaction: {e}")
             return None
