@@ -81,7 +81,7 @@ async def buy_token(input_mint: str, amount_sol: float):
     try:
         input_mint_pubkey = Pubkey.from_string(input_mint)
         sol_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-        amount = int(amount_sol * 1e9)  # convert SOL to lamports
+        amount = int(amount_sol * 1e9)
 
         quote = await jupiter.get_quote(
             input_mint=sol_mint,
@@ -140,17 +140,25 @@ async def sell_token(input_mint: str, amount_token: int):
         send_telegram_alert(f"Sell failed: {e}")
         return None
 
-# === TRENDING ===
-def get_trending_mints(limit: int = 10) -> List[str]:
+# === AUTO SELL ===
+async def wait_and_auto_sell(mint: str, buy_price: float, token_amount: int):
     try:
-        import requests
-        response = requests.get("https://api.dexscreener.com/latest/dex/pairs/solana")
-        if response.status_code != 200:
-            print("Failed to fetch trending tokens.")
-            return []
-        pairs = response.json().get("pairs", [])
-        trending = [pair["baseToken"]["address"] for pair in pairs if "baseToken" in pair][:limit]
-        return trending
+        await asyncio.sleep(30)
+        sell_signature = await sell_token(mint, token_amount)
+        if sell_signature:
+            sell_price = buy_price * 1.5  # Simulated gain
+            pnl = (sell_price - buy_price) * (token_amount / 1e9)
+            log_trade(mint, buy_price, sell_price, pnl)
+            send_telegram_alert(f"Auto-sell complete: {sell_signature}\nPnL: {pnl:.4f} SOL")
+        else:
+            send_telegram_alert(f"Auto-sell failed for {mint}")
     except Exception as e:
-        print(f"Error in get_trending_mints: {e}")
+        send_telegram_alert(f"[Auto-Sell Error] {e}")
+
+# === TRENDING MINTS ===
+def get_trending_mints() -> List[str]:
+    try:
+        with open("trending_mints.txt", "r") as file:
+            return [line.strip() for line in file.readlines() if line.strip()]
+    except FileNotFoundError:
         return []
