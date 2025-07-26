@@ -73,7 +73,7 @@ class JupiterAggregatorClient:
                     if not tx_base64:
                         logging.error("[JUPITER] No 'swapTransaction' field in response")
                         return None
-                    return tx_base64
+                    return tx_base64  # ✅ returning base64 string directly
                 else:
                     logging.error(f"[JUPITER] Swap error: HTTP {response.status_code}")
                     return None
@@ -81,16 +81,11 @@ class JupiterAggregatorClient:
             logging.exception(f"[JUPITER] Swap exception: {e}")
             return None
 
-    def build_swap_transaction(self, route: dict, keypair: Keypair):
+    def build_swap_transaction(self, tx_base64: str, keypair: Keypair):
         try:
-            tx_base64 = route.get("swapTransaction")
-            if not tx_base64:
-                logging.error("[JUPITER] No 'swapTransaction' in route")
-                return None
-
             tx_bytes = base64.b64decode(tx_base64)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            return tx
+            return tx  # ✅ Already signed — no need to re-sign
         except Exception as e:
             logging.exception(f"[JUPITER] Transaction build error: {e}")
             return None
