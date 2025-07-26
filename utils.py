@@ -1,126 +1,143 @@
 import os
-import asyncio
-import logging
+import json
 import csv
-from dotenv import load_dotenv
-from solders.keypair import Keypair
-from solders.pubkey import Pubkey
-from telegram import Bot
+import time
+import base64
+import asyncio
 from datetime import datetime
+from typing import List
 
-load_dotenv()
+from solders.pubkey import Pubkey
+from solders.keypair import Keypair
+from solana.rpc.async_api import AsyncClient
+from solana.transaction import Transaction
 
-# === ENVIRONMENT ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+from jupiter_aggregator import JupiterAggregatorClient
+
+from telegram import Bot
+
+# === ENV ===
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")
-
-# === TELEGRAM BOT ===
-bot = Bot(token=TELEGRAM_TOKEN)
-
-# === GLOBAL STATE ===
-is_bot_running = False
-task_registry = []
-sniped_tokens = set()
+RPC_URL = os.getenv("RPC_URL")
+PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 
 # === WALLET ===
-keypair = Keypair.from_bytes(bytes([int(k) for k in PRIVATE_KEY.strip('[]').split(',')]))
+keypair = Keypair.from_bytes(bytes(PRIVATE_KEY))
 wallet_pubkey = keypair.pubkey()
 
-# === TELEGRAM HELPERS ===
-async def send_telegram_message(message):
-    try:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception as e:
-        logging.error(f"[TELEGRAM] Failed to send message: {e}")
+# === TELEGRAM ===
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-def send_telegram_alert(message):
-    asyncio.create_task(send_telegram_message(message))
-
-# === TASK CONTROL ===
-def add_task(task):
-    task_registry.append(task)
-
-def cancel_all_tasks():
-    for task in task_registry:
-        if not task.done():
-            task.cancel()
-    task_registry.clear()
-
-# === SKIPPED TOKENS ===
-def log_skipped_token(reason, mint):
-    timestamp = datetime.utcnow().isoformat()
-    log = f"[SKIPPED] {mint} | Reason: {reason} | {timestamp}"
-    logging.info(log)
-    send_telegram_alert(log)
-
-# === CSV LOGGING ===
-def log_trade_to_csv(mint, side, size_sol, size_token, price, pnl_sol, tx_sig):
-    with open("trade_log.csv", "a", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([
-            datetime.utcnow().isoformat(),
-            mint,
-            side,
-            size_sol,
-            size_token,
-            price,
-            pnl_sol,
-            tx_sig
-        ])
+# === GLOBAL ===
+running_tasks = []
+sniped_tokens = set()
+jupiter = JupiterAggregatorClient(RPC_URL)
 
 # === UTILS ===
-def parse_pubkey(pubkey_str):
+def is_valid_mint(mint: str) -> bool:
+    return len(mint) == 44 and not mint.startswith("So11111111111111111111111111111111111111112")
+
+def log_skipped_token(mint: str, reason: str):
+    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    with open("skipped_tokens.log", "a") as f:
+        f.write(f"{timestamp} | {mint} | {reason}\n")
+
+def log_trade(mint: str, buy_price: float, sell_price: float, pnl: float):
+    file_exists = os.path.isfile("trades.csv")
+    with open("trades.csv", mode="a", newline="") as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(["Timestamp", "Token Mint", "Buy Price", "Sell Price", "PnL"])
+        writer.writerow([datetime.utcnow().isoformat(), mint, buy_price, sell_price, pnl])
+
+def send_telegram_alert(message: str):
     try:
-        return Pubkey.from_string(pubkey_str)
-    except Exception:
+        asyncio.create_task(bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message))
+    except Exception as e:
+        print(f"Failed to send Telegram alert: {e}")
+
+def send_telegram_message(text: str):
+    try:
+        asyncio.run(bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text))
+    except Exception as e:
+        print(f"[Telegram Error] {e}")
+
+def is_bot_running() -> bool:
+    return any(task for task in running_tasks if not task.done())
+
+def track_task(task: asyncio.Task):
+    running_tasks.append(task)
+    task.add_done_callback(lambda t: running_tasks.remove(t))
+
+def reset_tasks():
+    for task in running_tasks:
+        if not task.done():
+            task.cancel()
+    running_tasks.clear()
+
+# === BUY/SELL ===
+async def buy_token(input_mint: str, amount_sol: float):
+    try:
+        input_mint_pubkey = Pubkey.from_string(input_mint)
+        sol_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+
+        amount = int(amount_sol * 1e9)  # convert SOL to lamports
+
+        quote = await jupiter.get_quote(
+            input_mint=sol_mint,
+            output_mint=input_mint_pubkey,
+            amount=amount,
+            slippage_bps=100,
+            user_public_key=wallet_pubkey
+        )
+
+        if not quote or "data" not in quote:
+            send_telegram_alert("No valid quote returned.")
+            return None
+
+        swap_txn = await jupiter.get_swap_transaction(
+            user_public_key=wallet_pubkey,
+            quote=quote["data"],
+            keypair=keypair
+        )
+
+        signature = await jupiter.send_transaction(swap_txn)
+        send_telegram_alert(f"Buy transaction sent: {signature}")
+        return signature
+
+    except Exception as e:
+        send_telegram_alert(f"Buy failed: {e}")
         return None
 
-# === LP DATA ===
-async def get_token_data(mint):
-    # Placeholder for LP ownership and liquidity logic
-    # This should be implemented with raw on-chain calls
-    return {
-        "liquidity": 1000000,
-        "owner_count": 100,
-        "is_blacklisted": False,
-        "lp_locked": True,
-        "ownership_renounced": True
-    }
-
-# === BOT STATE ===
-def set_bot_running(state: bool):
-    global is_bot_running
-    is_bot_running = state
-
-def get_bot_running():
-    return is_bot_running
-
-# === DYNAMIC BUY SIZE ===
-def calculate_buy_amount_sol(liquidity):
-    if liquidity < 1_000_000:
-        return 0.01
-    elif liquidity < 10_000_000:
-        return 0.03
-    else:
-        return 0.05
-
-# === STATUS COMMANDS ===
-def get_current_holdings():
-    # Placeholder for wallet token parsing
-    return "No holdings yet."
-
-def get_recent_logs():
+async def sell_token(input_mint: str, amount_token: int):
     try:
-        with open("trade_log.csv", "r") as f:
-            lines = f.readlines()
-            return "".join(lines[-10:])
-    except:
-        return "No trade logs available."
+        input_mint_pubkey = Pubkey.from_string(input_mint)
+        sol_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
-# === FORCE RESTART ===
-def reset_sniped_tokens():
-    global sniped_tokens
-    sniped_tokens = set()
-    return "Sniped token list cleared."
+        quote = await jupiter.get_quote(
+            input_mint=input_mint_pubkey,
+            output_mint=sol_mint,
+            amount=amount_token,
+            slippage_bps=100,
+            user_public_key=wallet_pubkey
+        )
+
+        if not quote or "data" not in quote:
+            send_telegram_alert("No valid sell quote returned.")
+            return None
+
+        swap_txn = await jupiter.get_swap_transaction(
+            user_public_key=wallet_pubkey,
+            quote=quote["data"],
+            keypair=keypair
+        )
+
+        signature = await jupiter.send_transaction(swap_txn)
+        send_telegram_alert(f"Sell transaction sent: {signature}")
+        return signature
+
+    except Exception as e:
+        send_telegram_alert(f"Sell failed: {e}")
+        return None
 
