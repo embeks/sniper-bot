@@ -1,18 +1,16 @@
 import base64
 import json
 import httpx
-import os
-
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solders.signature import Signature
 from solana.rpc.api import Client
+import os
 
 class JupiterAggregatorClient:
-    def __init__(self, rpc_url):
-        self.rpc_url = rpc_url
-        self.client = Client(rpc_url)
+    def __init__(self):
+        self.client = Client(os.getenv("RPC_URL"))
 
     async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100):
         url = (
@@ -25,27 +23,47 @@ class JupiterAggregatorClient:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url)
-                response.raise_for_status()
-                return response.json()
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    print(f"Quote error: {response.text}")
+                    return None
         except Exception as e:
-            print(f"[Quote Error] {e}")
+            print(f"Quote exception: {e}")
             return None
 
-    async def swap(self, transactions: dict):
+    async def get_swap_transaction(self, user_public_key: str, quote_response: dict):
+        url = "https://quote-api.jup.ag/v6/swap"
+        payload = {
+            "userPublicKey": user_public_key,
+            "wrapUnwrapSOL": True,
+            "computeUnitPriceMicroLamports": 10000,
+            **quote_response  # include the quote directly
+        }
+        headers = {"Content-Type": "application/json"}
         try:
-            swap_tx_b64 = transactions.get("swapTransaction")
-            if not swap_tx_b64:
-                raise ValueError("No swap transaction found in response")
-
-            swap_tx_bytes = base64.b64decode(swap_tx_b64)
-            versioned_tx = VersionedTransaction.from_bytes(swap_tx_bytes)
-
-            private_key_list = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-            keypair = Keypair.from_bytes(bytes(private_key_list))
-            signed_tx = versioned_tx.sign([keypair])
-            txid = self.client.send_raw_transaction(signed_tx.serialize())
-            return str(txid)
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=headers, data=json.dumps(payload))
+                if response.status_code == 200:
+                    swap_json = response.json()
+                    swap_txn_b64 = swap_json.get("swapTransaction")
+                    if not swap_txn_b64:
+                        print("Swap transaction missing in response")
+                        return None
+                    swap_txn_bytes = base64.b64decode(swap_txn_b64)
+                    txn = VersionedTransaction.deserialize(swap_txn_bytes)
+                    return txn
+                else:
+                    print(f"Swap error: {response.text}")
+                    return None
         except Exception as e:
-            print(f"[Swap Error] {e}")
+            print(f"Swap exception: {e}")
             return None
 
+    def send_transaction(self, signed_txn: VersionedTransaction):
+        try:
+            sig = self.client.send_raw_transaction(signed_txn.serialize())
+            return sig
+        except Exception as e:
+            print(f"Send txn exception: {e}")
+            return None
