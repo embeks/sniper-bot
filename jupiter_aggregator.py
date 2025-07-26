@@ -8,57 +8,52 @@ from solders.signature import Signature
 from solana.rpc.api import Client
 import os
 
-# Load from env
-token_list_url = "https://token.jup.ag/all"
+# === ENV ===
 RPC_URL = os.getenv("RPC_URL")
-WALLET_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
-WALLET_KEYPAIR = Keypair.from_bytes(bytes(WALLET_PRIVATE_KEY))
-WALLET_PUBLIC_KEY = str(WALLET_KEYPAIR.pubkey())
+SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
+
+# === DECODE WALLET ===
+keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
+PUBLIC_KEY = str(keypair.pubkey())
 
 class JupiterAggregatorClient:
     def __init__(self):
-        self.url = "https://quote-api.jup.ag/v6"
-        self.client = httpx.AsyncClient()
+        self.rpc_url = RPC_URL
+        self.client = Client(RPC_URL)
+        self.base_url = "https://quote-api.jup.ag/v6"
 
-    async def get_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int = 100):
+    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100):
+        url = (
+            f"{self.base_url}/quote"
+            f"?inputMint={str(input_mint)}"
+            f"&outputMint={str(output_mint)}"
+            f"&amount={amount}"
+            f"&slippageBps={slippage_bps}"
+            f"&userPublicKey={PUBLIC_KEY}"
+        )
         try:
-            params = {
-                "inputMint": input_mint,
-                "outputMint": output_mint,
-                "amount": amount,
-                "slippageBps": slippage_bps,
-                "userPublicKey": WALLET_PUBLIC_KEY,
-                "onlyDirectRoutes": False,
-            }
-            response = await self.client.get(f"{self.url}/quote", params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("data", [None])[0]  # Best route
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.json()
         except Exception as e:
-            print(f"[Jupiter] Quote error: {e}")
+            print(f"[JupiterAggregatorClient] Quote fetch error: {e}")
             return None
 
-    async def get_swap_transaction(self, route):
+    async def get_swap_transaction(self, quote_response):
+        url = f"{self.base_url}/swap"
+        payload = {
+            "route": quote_response["data"][0],
+            "userPublicKey": PUBLIC_KEY,
+            "wrapUnwrapSOL": True,
+            "feeAccount": None
+        }
         try:
-            body = {
-                "route": route,
-                "userPublicKey": WALLET_PUBLIC_KEY,
-                "wrapUnwrapSOL": True,
-                "dynamicSlippage": True,
-            }
-            print("[Jupiter] Swap body payload:", json.dumps(body, indent=2)[:500])
-            response = await self.client.post(
-                f"{self.url}/swap",
-                headers={"Content-Type": "application/json"},
-                json=body,
-                timeout=15,
-            )
-            response.raise_for_status()
-            swap_txn = response.json()["swapTransaction"]
-            return VersionedTransaction.from_bytes(base64.b64decode(swap_txn))
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                swap_tx = base64.b64decode(response.json()["swapTransaction"])
+                return VersionedTransaction.deserialize(swap_tx)
         except Exception as e:
-            print(f"[Jupiter] Swap TX error: {e}")
+            print(f"[JupiterAggregatorClient] Swap fetch error: {e}")
             return None
-
-    async def close(self):
-        await self.client.aclose()
