@@ -112,12 +112,12 @@ class JupiterAggregatorClient:
             self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
             return None
 
-    def send_transaction(self, swap_tx_base64: str, keypair: Keypair):
+    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx = base64.b64decode(swap_tx_base64)
+            raw_tx_bytes = signed_tx.serialize()  # serialize for send_raw_transaction
 
             result = self.client.send_raw_transaction(
-                raw_tx,
+                raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
 
