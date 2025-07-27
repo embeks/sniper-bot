@@ -112,9 +112,9 @@ class JupiterAggregatorClient:
             self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
             return None
 
-    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
+    def send_transaction(self, swap_tx_base64: str, keypair: Keypair):
         try:
-            raw_tx = bytes(signed_tx)  # Already signed by Jupiter with your pubkey
+            raw_tx = base64.b64decode(swap_tx_base64)
 
             result = self.client.send_raw_transaction(
                 raw_tx,
