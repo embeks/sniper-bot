@@ -3,11 +3,13 @@ import base64
 import httpx
 import logging
 import os
-from solders.keypair import Keypair
 from solders.pubkey import Pubkey
+from solders.keypair import Keypair
+from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
+
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -40,7 +42,10 @@ class JupiterAggregatorClient:
 
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, params=params)
+                logging.info(f"[JUPITER] Quote URL: {response.url}")
                 if response.status_code == 200:
+                    logging.info(f"[JUPITER] Quote response OK:
+{response.text}")
                     return response.json()
                 else:
                     logging.error(f"[JUPITER] Quote HTTP {response.status_code} - {response.text}")
@@ -60,12 +65,12 @@ class JupiterAggregatorClient:
                 "quoteResponse": quote_response
             }
 
-            logging.info(f"[JUPITER] Swap request:\n{json.dumps(body, indent=2)}")
+            logging.info(f"[JUPITER] Swap request:
+{json.dumps(body, indent=2)}")
             headers = {"Content-Type": "application/json"}
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(swap_url, json=body, headers=headers)
-
                 logging.info(f"[JUPITER] Swap response {response.status_code}: {response.text}")
                 if response.status_code == 200:
                     data = response.json()
@@ -89,17 +94,35 @@ class JupiterAggregatorClient:
             logging.warning(f"[JUPITER] swapTransaction length: {len(swap_tx_base64)}")
             logging.warning(f"[JUPITER] First 100 chars of swapTransaction:\n{swap_tx_base64[:100]}")
 
-            tx_bytes = base64.b64decode(swap_tx_base64)
-            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
-            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
-            return tx_bytes  # return raw bytes to send directly
+            try:
+                tx_bytes = base64.b64decode(swap_tx_base64)
+                logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
+                logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
+            except Exception as decode_err:
+                logging.exception("[JUPITER] Base64 decode failed")
+                self._send_telegram_debug(f"❌ Base64 decode failed: {decode_err}")
+                return None
+
+            try:
+                tx = VersionedTransaction.from_bytes(tx_bytes)
+                logging.info(f"[JUPITER] Transaction version: {tx.version}")
+                return tx
+            except Exception as deser_err:
+                logging.exception("[JUPITER] Deserialization failed")
+                self._send_telegram_debug(f"❌ Deserialization failed: {deser_err}")
+                return None
+
         except Exception as e:
-            logging.exception("[JUPITER] Failed to decode swapTransaction")
-            self._send_telegram_debug(f"❌ build_swap_transaction failed: {e}")
+            logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
+            self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
             return None
 
-    def send_transaction(self, raw_tx_bytes: bytes):
+    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
+            raw_tx_bytes = bytes(signed_tx)
+            logging.warning(f"[JUPITER] Raw tx byte length: {len(raw_tx_bytes)}")
+            logging.warning(f"[JUPITER] First 20 raw tx bytes: {raw_tx_bytes[:20]}")
+
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
@@ -136,4 +159,3 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
-
