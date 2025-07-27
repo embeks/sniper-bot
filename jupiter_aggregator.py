@@ -97,8 +97,13 @@ class JupiterAggregatorClient:
             return tx
 
         except Exception as e:
-            logging.exception(f"[JUPITER] Transaction build error: {e}")
-            print(f"[JUPITER] Deserialization failed: {e}")
+            err_msg = f"[JUPITER] Transaction build error:\n{type(e).__name__}: {e}"
+            logging.exception(err_msg)
+            try:
+                with open("swap_deserialization_error.log", "a") as f:
+                    f.write(err_msg + "\n")
+            except Exception as log_err:
+                logging.error(f"[JUPITER] Failed to write error log: {log_err}")
             return None
 
     def send_transaction(self, unsigned_tx: VersionedTransaction, keypair: Keypair):
