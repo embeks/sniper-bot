@@ -24,7 +24,7 @@ class JupiterAggregatorClient:
         amount: int,
         slippage_bps: int = 100,
         user_pubkey: Pubkey = None,
-        only_direct_routes=False
+        only_direct_routes=True
     ):
         try:
             url = f"{self.base_url}/quote"
