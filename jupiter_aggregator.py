@@ -114,7 +114,7 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = bytes(signed_tx)
+            raw_tx_bytes = bytes(signed_tx)  # This is the correct replacement for .serialize()
 
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
