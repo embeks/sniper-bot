@@ -57,7 +57,7 @@ class JupiterAggregatorClient:
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": True,
-                "useSharedAccounts": True,
+                "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote_response
             }
@@ -93,7 +93,8 @@ class JupiterAggregatorClient:
 
             try:
                 tx_bytes = base64.b64decode(swap_tx_base64)
-                logging.info(f"[JUPITER] Base64 decoded. Length: {len(tx_bytes)}")
+                logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
+                logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
             except Exception as decode_err:
                 logging.exception("[JUPITER] Base64 decode failed")
                 self._send_telegram_debug(f"❌ Base64 decode failed: {decode_err}")
@@ -115,7 +116,7 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = bytes(signed_tx)  # ✅ CORRECT FIX
+            raw_tx_bytes = bytes(signed_tx)
 
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
