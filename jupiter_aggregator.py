@@ -58,7 +58,7 @@ class JupiterAggregatorClient:
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": True,
-                "useSharedAccounts": True,
+                "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote_response
             }
@@ -92,21 +92,33 @@ class JupiterAggregatorClient:
             logging.warning(f"[JUPITER] swapTransaction length: {len(swap_tx_base64)}")
             logging.warning(f"[JUPITER] First 100 chars of swapTransaction:\n{swap_tx_base64[:100]}")
 
-            tx_bytes = base64.b64decode(swap_tx_base64)
-            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
-            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
+            try:
+                tx_bytes = base64.b64decode(swap_tx_base64)
+                logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
+                logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
+            except Exception as decode_err:
+                logging.exception("[JUPITER] Base64 decode failed")
+                self._send_telegram_debug(f"❌ Base64 decode failed: {decode_err}")
+                return None
 
-            tx = VersionedTransaction.from_bytes(tx_bytes)
-            logging.info(f"[JUPITER] Transaction version: {tx.version}")
-            return tx
+            try:
+                tx = VersionedTransaction.from_bytes(tx_bytes)
+                logging.info(f"[JUPITER] Transaction version: {tx.version}")
+                return tx
+            except Exception as deser_err:
+                logging.exception("[JUPITER] Deserialization failed")
+                self._send_telegram_debug(f"❌ Deserialization failed: {deser_err}")
+                return None
+
         except Exception as e:
-            logging.exception("[JUPITER] build_swap_transaction error")
-            self._send_telegram_debug(f"❌ build_swap_transaction error: {e}")
+            logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
+            self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
             return None
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = signed_tx.to_bytes()
+            raw_tx_bytes = bytes(signed_tx)  # ✅ Fixed to_bytes() issue
+
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
