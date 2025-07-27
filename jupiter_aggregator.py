@@ -81,11 +81,15 @@ class JupiterAggregatorClient:
             logging.exception(f"[JUPITER] Swap exception: {e}")
             return None
 
-    def build_swap_transaction(self, tx_base64: str, keypair: Keypair):
+    def build_swap_transaction(self, route: dict, keypair: Keypair):
         try:
+            tx_base64 = route.get("swapTransaction")
+            if not tx_base64:
+                logging.error("[JUPITER] No 'swapTransaction' in route")
+                return None
+
             tx_bytes = base64.b64decode(tx_base64)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            logging.info(f"[JUPITER] TX Signatures: {tx.signatures}")
             return tx
         except Exception as e:
             logging.exception(f"[JUPITER] Transaction build error: {e}")
@@ -93,14 +97,12 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            sol_balance = self.client.get_balance(str(keypair.pubkey()))
-            logging.info(f"[JUPITER] Wallet SOL Balance: {sol_balance}")
-
-            raw_tx = bytes(signed_tx)
-            logging.info(f"[JUPITER] Raw TX (hex): {raw_tx.hex()}")
+            raw_tx = signed_tx.serialize()
+            sol_balance = self.client.get_balance(keypair.pubkey())  # ✅ FIXED
+            logging.info(f"[JUPITER] Wallet SOL Balance: {sol_balance['result']['value'] / 1e9:.5f} SOL")
 
             result = self.client.send_raw_transaction(raw_tx, opts=TxOpts(skip_preflight=True))
-            logging.info(f"[JUPITER] RPC Send Result: {result}")
+            logging.info(f"[JUPITER] TX Result: {result}")
             return str(result.get("result"))
         except Exception as e:
             logging.exception(f"[JUPITER] Send error: {e}")
