@@ -9,8 +9,9 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
-from solana.transaction import Transaction  # ✅ Correct for solana==0.28.1
+from spl.token.instructions import get_associated_token_address  # Fixed import
+from spl.token.instructions import create_associated_token_account  # ✅ Corrected import for ATA
+from solana.transaction import Transaction
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -73,7 +74,7 @@ class JupiterAggregatorClient:
 
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-            ix = create_associated_token_account_instruction(
+            ix = create_associated_token_account(
                 payer=owner,
                 owner=owner,
                 mint=mint
