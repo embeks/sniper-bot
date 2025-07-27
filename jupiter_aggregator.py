@@ -58,7 +58,7 @@ class JupiterAggregatorClient:
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": True,
-                "useSharedAccounts": False,
+                "useSharedAccounts": True,  # ✅ ADDED FOR STABILITY
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote_response
             }
@@ -73,8 +73,8 @@ class JupiterAggregatorClient:
                 if response.status_code == 200:
                     data = response.json()
                     tx_base64 = data.get("swapTransaction")
-                    if not tx_base64 or len(tx_base64) < 300:
-                        logging.error("[JUPITER] Invalid or too short 'swapTransaction' field")
+                    if not tx_base64:
+                        logging.error("[JUPITER] No 'swapTransaction' field in response")
                         return None
                     return tx_base64
                 else:
@@ -86,16 +86,14 @@ class JupiterAggregatorClient:
 
     def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
         try:
-            if not swap_tx_base64 or len(swap_tx_base64) < 300:
-                raise ValueError("swapTransaction too short or empty — possibly invalid Jupiter response.")
+            if not swap_tx_base64:
+                raise ValueError("swap_tx_base64 is empty or None")
 
             logging.warning(f"[JUPITER] swapTransaction length: {len(swap_tx_base64)}")
             logging.warning(f"[JUPITER] First 100 chars of swapTransaction:\n{swap_tx_base64[:100]}")
 
             try:
                 tx_bytes = base64.b64decode(swap_tx_base64)
-                if len(tx_bytes) < 500:
-                    raise ValueError("Decoded tx_bytes too short, likely corrupted.")
                 logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
                 logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
             except Exception as decode_err:
@@ -120,6 +118,11 @@ class JupiterAggregatorClient:
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
             raw_tx_bytes = signed_tx.serialize()
+            if len(raw_tx_bytes) < 700:  # ✅ GUARD AGAINST BAD TRANSACTIONS
+                logging.error("[JUPITER] Raw TX bytes too short — likely malformed swap")
+                self._send_telegram_debug(f"❌ TX too short — len: {len(raw_tx_bytes)}")
+                return None
+
             base64_tx = base64.b64encode(raw_tx_bytes).decode("utf-8")
 
             logging.warning(f"[JUPITER] Final TX base64 length: {len(base64_tx)}")
