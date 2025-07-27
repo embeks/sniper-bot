@@ -58,7 +58,7 @@ class JupiterAggregatorClient:
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": True,
-                "useSharedAccounts": True,  # ✅ ADDED FOR STABILITY
+                "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote_response
             }
@@ -117,19 +117,10 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = signed_tx.serialize()
-            if len(raw_tx_bytes) < 700:  # ✅ GUARD AGAINST BAD TRANSACTIONS
-                logging.error("[JUPITER] Raw TX bytes too short — likely malformed swap")
-                self._send_telegram_debug(f"❌ TX too short — len: {len(raw_tx_bytes)}")
-                return None
-
-            base64_tx = base64.b64encode(raw_tx_bytes).decode("utf-8")
-
-            logging.warning(f"[JUPITER] Final TX base64 length: {len(base64_tx)}")
-            logging.warning(f"[JUPITER] Final TX first 100 chars:\n{base64_tx[:100]}")
+            raw_tx_bytes = signed_tx.to_bytes()
 
             result = self.client.send_raw_transaction(
-                base64_tx,
+                raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
 
