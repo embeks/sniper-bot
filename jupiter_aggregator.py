@@ -9,10 +9,8 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from solana.publickey import PublicKey
-from solana.transaction import Transaction
-from spl.token.instructions import create_associated_token_account, get_associated_token_address
-
+from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
+from solana.transaction import MessageV0
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -69,27 +67,39 @@ class JupiterAggregatorClient:
             logging.exception("[JUPITER] Error getting token accounts")
             return []
 
-    def _create_ata_if_missing(self, owner_pubkey: PublicKey, mint_pubkey: PublicKey, keypair: Keypair):
-        ata = get_associated_token_address(owner_pubkey, mint_pubkey)
+    def _create_ata_if_missing(self, owner: Pubkey, mint: Pubkey, keypair: Keypair):
+        ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
-        if res['result']['value'] is None:
-            logging.warning(f"[JUPITER] Creating missing ATA for {mint_pubkey}")
-            tx = Transaction()
-            tx.add(create_associated_token_account(payer=owner_pubkey, owner=owner_pubkey, mint=mint_pubkey))
+
+        if res.value is None:
+            logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
+            ix = create_associated_token_account_instruction(
+                payer=owner,
+                owner=owner,
+                mint=mint
+            )
+            message = MessageV0.compile(
+                payer=owner,
+                instructions=[ix],
+                address_lookup_table_accounts=[]
+            )
+            tx = VersionedTransaction(message, [keypair])
             try:
-                sig = self.client.send_transaction(tx, keypair, opts=TxOpts(skip_preflight=True))
-                logging.info(f"[JUPITER] ATA created: {sig}")
+                result = self.client.send_raw_transaction(
+                    bytes(tx),
+                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                )
+                logging.info(f"[JUPITER] ATA Creation TX: {result}")
             except Exception as e:
-                logging.exception(f"[JUPITER] Failed to create ATA: {e}")
+                logging.error(f"[JUPITER] Failed to create ATA: {e}")
 
     async def get_swap_transaction(self, quote_response: dict, keypair: Keypair):
         try:
-            output_mint = PublicKey(quote_response["outputMint"])
-            self._create_ata_if_missing(PublicKey(keypair.pubkey()), output_mint, keypair)
-
             token_accounts = await self._get_token_accounts(str(keypair.pubkey()))
             if not token_accounts:
-                logging.warning("[JUPITER] No token accounts found")
+                output_mint = Pubkey.from_string(quote_response["outputMint"])
+                logging.warning(f"[JUPITER] No token accounts found — adding fallback for {quote_response['outputMint']}")
+                self._create_ata_if_missing(keypair.pubkey(), output_mint, keypair)
 
             swap_url = f"{self.base_url}/swap"
             body = {
@@ -106,6 +116,7 @@ class JupiterAggregatorClient:
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(swap_url, json=body, headers=headers)
+
                 logging.info(f"[JUPITER] Swap response {response.status_code}: {response.text}")
                 if response.status_code == 200:
                     data = response.json()
@@ -129,14 +140,18 @@ class JupiterAggregatorClient:
             logging.warning(f"[JUPITER] swapTransaction length: {len(swap_tx_base64)}")
             logging.warning(f"[JUPITER] First 100 chars of swapTransaction:\n{swap_tx_base64[:100]}")
 
-            tx_bytes = base64.b64decode(swap_tx_base64)
-            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
-            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
-
-            if len(tx_bytes) < 400 or tx_bytes.startswith(b'\x01\x00\x00'):
-                self._send_telegram_debug(
-                    f"\u274c Decoded tx looks malformed.\nLength: {len(tx_bytes)} bytes\nFirst 20 bytes: `{tx_bytes[:20]}`\n```{swap_tx_base64[:400]}```"
-                )
+            try:
+                tx_bytes = base64.b64decode(swap_tx_base64)
+                logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
+                logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
+                if len(tx_bytes) < 400 or tx_bytes.startswith(b'\x01\x00\x00'):
+                    self._send_telegram_debug(
+                        f"❌ Decoded tx looks malformed.\nLength: {len(tx_bytes)} bytes\nFirst 20 bytes: `{tx_bytes[:20]}`\n```{swap_tx_base64[:400]}```"
+                    )
+                    return None
+            except Exception as decode_err:
+                logging.exception("[JUPITER] Base64 decode failed")
+                self._send_telegram_debug(f"❌ Base64 decode failed: {decode_err}")
                 return None
 
             try:
@@ -145,12 +160,12 @@ class JupiterAggregatorClient:
                 return tx
             except Exception as deser_err:
                 logging.exception("[JUPITER] Deserialization failed")
-                self._send_telegram_debug(f"\u274c Deserialization failed: {deser_err}")
+                self._send_telegram_debug(f"❌ Deserialization failed: {deser_err}")
                 return None
 
         except Exception as e:
             logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
-            self._send_telegram_debug(f"\u274c Unexpected swapTransaction error: {e}")
+            self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
             return None
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
@@ -159,7 +174,7 @@ class JupiterAggregatorClient:
 
             if len(raw_tx_bytes) < 400:
                 logging.error(f"[JUPITER] Raw tx too short: {len(raw_tx_bytes)} bytes")
-                self._send_telegram_debug(f"\u274c Raw TX too short: {len(raw_tx_bytes)} bytes. Aborting send.")
+                self._send_telegram_debug(f"❌ Raw TX too short: {len(raw_tx_bytes)} bytes. Aborting send.")
                 return None
 
             result = self.client.send_raw_transaction(
@@ -171,17 +186,17 @@ class JupiterAggregatorClient:
 
             if "error" in result:
                 error_info = json.dumps(result["error"], indent=2)
-                self._send_telegram_debug(f"\u274c TX Error:\n```{error_info}```")
+                self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
                 return None
 
             if "result" not in result or not result["result"]:
-                self._send_telegram_debug(f"\u274c TX failed — No tx hash returned:\n```{result}```")
+                self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
                 return None
 
             return str(result["result"])
 
         except Exception as e:
-            err_msg = f"\u274c Send error:\n{type(e).__name__}: {e}"
+            err_msg = f"❌ Send error:\n{type(e).__name__}: {e}"
             logging.exception(err_msg)
             self._send_telegram_debug(err_msg)
             return None
