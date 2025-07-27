@@ -42,10 +42,8 @@ class JupiterAggregatorClient:
 
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, params=params)
-                logging.info(f"[JUPITER] Quote URL: {response.url}")
                 if response.status_code == 200:
-                    logging.info(f"[JUPITER] Quote response OK:
-{response.text}")
+                    logging.info(f"[JUPITER] Quote response OK: {response.json()}")
                     return response.json()
                 else:
                     logging.error(f"[JUPITER] Quote HTTP {response.status_code} - {response.text}")
@@ -65,12 +63,12 @@ class JupiterAggregatorClient:
                 "quoteResponse": quote_response
             }
 
-            logging.info(f"[JUPITER] Swap request:
-{json.dumps(body, indent=2)}")
+            logging.info(f"[JUPITER] Swap request:\n{json.dumps(body, indent=2)}")
             headers = {"Content-Type": "application/json"}
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(swap_url, json=body, headers=headers)
+
                 logging.info(f"[JUPITER] Swap response {response.status_code}: {response.text}")
                 if response.status_code == 200:
                     data = response.json()
@@ -120,9 +118,6 @@ class JupiterAggregatorClient:
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
             raw_tx_bytes = bytes(signed_tx)
-            logging.warning(f"[JUPITER] Raw tx byte length: {len(raw_tx_bytes)}")
-            logging.warning(f"[JUPITER] First 20 raw tx bytes: {raw_tx_bytes[:20]}")
-
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
