@@ -114,20 +114,26 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, unsigned_tx: VersionedTransaction, keypair: Keypair):
         try:
-            # Rebuild from bytes (if needed) and sign
             tx_bytes = bytes(unsigned_tx)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            tx = tx.sign([keypair])  # Sign with your wallet
+            tx = tx.sign([keypair])  # Apply wallet signature
 
             raw_tx = bytes(tx)
             result = self.client.send_raw_transaction(
                 raw_tx,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
+
             logging.info(f"[JUPITER] TX Result: {result}")
-            return str(result.get("result"))
+            if "result" not in result or result["result"] is None:
+                raise Exception(f"Send failed. Response: {result}")
+
+            return str(result["result"])
+
         except Exception as e:
-            logging.exception(f"[JUPITER] Send error: {e}")
+            err_msg = f"❌ Send error:\n{type(e).__name__}: {e}"
+            logging.exception(err_msg)
+            self._send_telegram_debug(err_msg)
             return None
 
     def _send_telegram_debug(self, message: str):
