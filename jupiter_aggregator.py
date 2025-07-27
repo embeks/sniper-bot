@@ -96,6 +96,9 @@ class JupiterAggregatorClient:
                 tx_bytes = base64.b64decode(swap_tx_base64)
                 logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
                 logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
+                if len(tx_bytes) < 400:
+                    self._send_telegram_debug(f"❌ Decoded tx too short: {len(tx_bytes)} bytes. Likely malformed.")
+                    return None
             except Exception as decode_err:
                 logging.exception("[JUPITER] Base64 decode failed")
                 self._send_telegram_debug(f"❌ Base64 decode failed: {decode_err}")
@@ -117,7 +120,12 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = bytes(signed_tx)  # ✅ Fixed to_bytes() issue
+            raw_tx_bytes = bytes(signed_tx)
+
+            if len(raw_tx_bytes) < 400:
+                logging.error(f"[JUPITER] Raw tx too short: {len(raw_tx_bytes)} bytes")
+                self._send_telegram_debug(f"❌ Raw TX too short: {len(raw_tx_bytes)} bytes. Aborting send.")
+                return None
 
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
