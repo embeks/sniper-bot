@@ -59,6 +59,7 @@ class JupiterAggregatorClient:
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": False,
                 "useSharedAccounts": True,
+                "asLegacyTransaction": True,
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote_response
             }
