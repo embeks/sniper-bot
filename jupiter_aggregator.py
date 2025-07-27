@@ -60,7 +60,7 @@ class JupiterAggregatorClient:
                 "wrapUnwrapSOL": False,
                 "useSharedAccounts": True,
                 "computeUnitPriceMicroLamports": 2000,
-                "quoteResponse": quote_response
+                "quoteResponse": json.loads(json.dumps(quote_response))
             }
 
             logging.info(f"[JUPITER] Swap request:\n{json.dumps(body, indent=2)}")
@@ -96,7 +96,7 @@ class JupiterAggregatorClient:
                 tx_bytes = base64.b64decode(swap_tx_base64)
                 logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
                 logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
-                if len(tx_bytes) < 400 or tx_bytes.startswith(b'\x01\x00\x00\x00\x00\x00\x00'):
+                if len(tx_bytes) < 400 or tx_bytes.startswith(b'\x01\x00\x00'):
                     self._send_telegram_debug(
                         f"\u274c Decoded tx looks malformed.\nLength: {len(tx_bytes)} bytes\nFirst 20 bytes: `{tx_bytes[:20]}`\n```{swap_tx_base64[:400]}```"
                     )
