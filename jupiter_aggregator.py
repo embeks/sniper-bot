@@ -69,6 +69,18 @@ class JupiterAggregatorClient:
     async def get_swap_transaction(self, quote_response: dict, keypair: Keypair):
         try:
             token_accounts = await self._get_token_accounts(str(keypair.pubkey()))
+
+            input_mint = quote_response.get("inputMint")
+            output_mint = quote_response.get("outputMint")
+            known_mints = [ta["mint"] for ta in token_accounts]
+
+            for mint in [input_mint, output_mint]:
+                if mint not in known_mints:
+                    token_accounts.append({
+                        "mint": mint,
+                        "tokenAccount": None  # Let Jupiter auto-create ATA
+                    })
+
             swap_url = f"{self.base_url}/swap"
             body = {
                 "userPublicKey": str(keypair.pubkey()),
@@ -181,3 +193,4 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+
