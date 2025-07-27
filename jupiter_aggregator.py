@@ -74,11 +74,6 @@ class JupiterAggregatorClient:
                     tx_base64 = data.get("swapTransaction")
                     if not tx_base64:
                         logging.error("[JUPITER] No 'swapTransaction' field in response")
-                        self._send_telegram_debug("❌ No 'swapTransaction' field in response")
-                        return None
-                    if len(tx_base64) < 100:
-                        logging.warning("[JUPITER] swapTransaction too short to be valid")
-                        self._send_telegram_debug("❌ swapTransaction too short — possible failed quote")
                         return None
                     return tx_base64
                 else:
@@ -86,7 +81,6 @@ class JupiterAggregatorClient:
                     return None
         except Exception as e:
             logging.exception(f"[JUPITER] Swap exception: {e}")
-            self._send_telegram_debug(f"❌ Swap exception: {e}")
             return None
 
     def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
@@ -120,7 +114,7 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = bytes(signed_tx)
+            raw_tx_bytes = signed_tx.serialize()  # ✅ CORRECTED HERE
 
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
