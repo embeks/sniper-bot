@@ -99,7 +99,7 @@ class JupiterAggregatorClient:
                 return None
 
             try:
-                tx = VersionedTransaction.from_bytes(tx_bytes)  # ✅ FIXED HERE
+                tx = VersionedTransaction.from_bytes(tx_bytes)
                 logging.info(f"[JUPITER] Transaction version: {tx.version}")
                 return tx
             except Exception as deser_err:
@@ -114,8 +114,12 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, unsigned_tx: VersionedTransaction, keypair: Keypair):
         try:
-            unsigned_tx.sign([keypair])
-            raw_tx = unsigned_tx.serialize()
+            # Rebuild from bytes (if needed) and sign
+            tx_bytes = bytes(unsigned_tx)
+            tx = VersionedTransaction.from_bytes(tx_bytes)
+            tx = tx.sign([keypair])  # Sign with your wallet
+
+            raw_tx = bytes(tx)
             result = self.client.send_raw_transaction(
                 raw_tx,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
