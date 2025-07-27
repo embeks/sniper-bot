@@ -54,13 +54,19 @@ class JupiterAggregatorClient:
 
     async def get_swap_transaction(self, quote_response: dict, keypair: Keypair):
         try:
+            route = quote_response.get("data", [])
+            if not route:
+                logging.error("[JUPITER] Quote response contains no routes.")
+                self._send_telegram_debug("❌ Quote response contains no routes.")
+                return None
+
             swap_url = f"{self.base_url}/swap"
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": False,
                 "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
-                "quoteResponse": quote_response
+                "quoteResponse": route[0]
             }
 
             logging.info(f"[JUPITER] Swap request:\n{json.dumps(body, indent=2)}")
