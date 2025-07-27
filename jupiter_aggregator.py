@@ -60,6 +60,7 @@ class JupiterAggregatorClient:
                 "wrapUnwrapSOL": False,
                 "useSharedAccounts": True,
                 "computeUnitPriceMicroLamports": 2000,
+                "userTokenAccounts": [],
                 "quoteResponse": json.loads(json.dumps(quote_response))
             }
 
