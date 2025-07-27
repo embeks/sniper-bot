@@ -57,7 +57,7 @@ class JupiterAggregatorClient:
             swap_url = f"{self.base_url}/swap"
             body = {
                 "userPublicKey": str(keypair.pubkey()),
-                "wrapUnwrapSOL": True,
+                "wrapUnwrapSOL": False,
                 "useSharedAccounts": True,
                 "computeUnitPriceMicroLamports": 2000,
                 "quoteResponse": quote_response
