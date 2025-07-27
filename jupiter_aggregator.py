@@ -60,7 +60,7 @@ class JupiterAggregatorClient:
                 "wrapUnwrapSOL": False,
                 "useSharedAccounts": False,
                 "computeUnitPriceMicroLamports": 2000,
-                "quoteResponse": json.loads(json.dumps(quote_response))  # Fix: strict match
+                "quoteResponse": quote_response
             }
 
             logging.info(f"[JUPITER] Swap request:\n{json.dumps(body, indent=2)}")
