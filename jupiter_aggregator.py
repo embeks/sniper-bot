@@ -9,8 +9,7 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from spl.token.instructions import get_associated_token_address  # Fixed import
-from spl.token.instructions import create_associated_token_account  # ✅ Corrected import for ATA
+from spl.token.instructions import get_associated_token_address, create_associated_token_account  # Fixed here ✅
 from solana.transaction import Transaction
 
 class JupiterAggregatorClient:
@@ -81,12 +80,8 @@ class JupiterAggregatorClient:
             )
             tx = Transaction()
             tx.add(ix)
-            tx.sign([keypair])
             try:
-                result = self.client.send_raw_transaction(
-                    bytes(tx),
-                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-                )
+                result = self.client.send_transaction(tx, keypair, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
                 logging.info(f"[JUPITER] ATA Creation TX: {result}")
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to create ATA: {e}")
@@ -98,6 +93,7 @@ class JupiterAggregatorClient:
                 output_mint = Pubkey.from_string(quote_response["outputMint"])
                 logging.warning(f"[JUPITER] No token accounts found — adding fallback for {quote_response['outputMint']}")
                 self._create_ata_if_missing(keypair.pubkey(), output_mint, keypair)
+                token_accounts = await self._get_token_accounts(str(keypair.pubkey()))  # REFRESHED ✅
 
             swap_url = f"{self.base_url}/swap"
             body = {
