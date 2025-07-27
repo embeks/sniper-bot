@@ -75,6 +75,11 @@ class JupiterAggregatorClient:
                     if not tx_base64:
                         logging.error("[JUPITER] No 'swapTransaction' field in response")
                         return None
+
+                    # 🔍 Log the base64 tx length and a preview to help debug corrupted swaps
+                    logging.warning(f"[JUPITER] swapTransaction length: {len(tx_base64)}")
+                    logging.warning(f"[JUPITER] First 100 chars of swapTransaction:\n{tx_base64[:100]}")
+
                     return tx_base64
                 else:
                     logging.error(f"[JUPITER] Swap error: HTTP {response.status_code}")
@@ -114,7 +119,7 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = bytes(signed_tx)  # ✅ Correct usage for solders
+            raw_tx_bytes = bytes(signed_tx)
 
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
