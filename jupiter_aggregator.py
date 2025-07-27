@@ -7,6 +7,7 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
+from solana.rpc.commitment import Confirmed
 
 
 class JupiterAggregatorClient:
@@ -95,13 +96,14 @@ class JupiterAggregatorClient:
             logging.exception(f"[JUPITER] Transaction build error: {e}")
             return None
 
-    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
+    def send_transaction(self, unsigned_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx = signed_tx.serialize()
-            sol_balance = self.client.get_balance(keypair.pubkey())  # ✅ FIXED
-            logging.info(f"[JUPITER] Wallet SOL Balance: {sol_balance['result']['value'] / 1e9:.5f} SOL")
-
-            result = self.client.send_raw_transaction(raw_tx, opts=TxOpts(skip_preflight=True))
+            unsigned_tx.sign([keypair])
+            raw_tx = unsigned_tx.serialize()
+            result = self.client.send_raw_transaction(
+                raw_tx,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+            )
             logging.info(f"[JUPITER] TX Result: {result}")
             return str(result.get("result"))
         except Exception as e:
