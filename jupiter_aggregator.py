@@ -9,8 +9,8 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from spl.token.instructions import get_associated_token_address, create_associated_token_account
-from solana.transaction import MessageV0
+from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
+from solana.transaction import Transaction  # ✅ Correct for solana==0.28.1
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -70,19 +70,17 @@ class JupiterAggregatorClient:
     def _create_ata_if_missing(self, owner: Pubkey, mint: Pubkey, keypair: Keypair):
         ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
+
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-            ix = create_associated_token_account(
+            ix = create_associated_token_account_instruction(
                 payer=owner,
                 owner=owner,
                 mint=mint
             )
-            message = MessageV0.compile(
-                payer=owner,
-                instructions=[ix],
-                address_lookup_table_accounts=[]
-            )
-            tx = VersionedTransaction(message, [keypair])
+            tx = Transaction()
+            tx.add(ix)
+            tx.sign([keypair])
             try:
                 result = self.client.send_raw_transaction(
                     bytes(tx),
