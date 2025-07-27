@@ -116,7 +116,7 @@ class JupiterAggregatorClient:
         try:
             tx_bytes = bytes(unsigned_tx)
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            tx = tx.sign([keypair])  # Apply wallet signature
+            tx = tx.sign([keypair])
 
             raw_tx = bytes(tx)
             result = self.client.send_raw_transaction(
@@ -124,9 +124,17 @@ class JupiterAggregatorClient:
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
 
-            logging.info(f"[JUPITER] TX Result: {result}")
-            if "result" not in result or result["result"] is None:
-                raise Exception(f"Send failed. Response: {result}")
+            logging.info(f"[JUPITER] TX Raw Result: {result}")
+
+            # ✅ Manual error inspection
+            if "error" in result:
+                error_info = json.dumps(result["error"], indent=2)
+                self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
+                return None
+
+            if "result" not in result or not result["result"]:
+                self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
+                return None
 
             return str(result["result"])
 
@@ -144,7 +152,7 @@ class JupiterAggregatorClient:
                 logging.warning("[JUPITER] Telegram credentials not set in env")
                 return
             url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {"chat_id": chat_id, "text": message}
+            payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
