@@ -99,7 +99,7 @@ class JupiterAggregatorClient:
                 return None
 
             try:
-                tx = VersionedTransaction.deserialize(tx_bytes)
+                tx = VersionedTransaction.from_bytes(tx_bytes)  # ✅ FIXED HERE
                 logging.info(f"[JUPITER] Transaction version: {tx.version}")
                 return tx
             except Exception as deser_err:
