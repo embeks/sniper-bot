@@ -88,17 +88,17 @@ class JupiterAggregatorClient:
                 logging.error("[JUPITER] No swapTransaction provided to build_swap_transaction()")
                 return None
 
-            logging.info(f"[JUPITER] Decoding swapTransaction base64.")
+            logging.info(f"[JUPITER] Raw swap_tx_base64 (first 100 chars): {swap_tx_base64[:100]}")
             tx_bytes = base64.b64decode(swap_tx_base64)
+            logging.info(f"[JUPITER] Deserializing transaction bytes (length: {len(tx_bytes)})")
 
-            logging.info(f"[JUPITER] Deserializing transaction bytes.")
             tx = VersionedTransaction.deserialize(tx_bytes)
-
             logging.info(f"[JUPITER] Transaction version: {tx.version}")
             return tx
 
         except Exception as e:
             logging.exception(f"[JUPITER] Transaction build error: {e}")
+            print(f"[JUPITER] Deserialization failed: {e}")
             return None
 
     def send_transaction(self, unsigned_tx: VersionedTransaction, keypair: Keypair):
