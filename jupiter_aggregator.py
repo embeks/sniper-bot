@@ -52,15 +52,30 @@ class JupiterAggregatorClient:
             logging.exception(f"[JUPITER] Quote error: {e}")
             return None
 
+    async def _get_token_accounts(self, wallet_address: str):
+        try:
+            url = f"https://quote-api.jup.ag/v6/token-accounts/{wallet_address}"
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    logging.error(f"[JUPITER] Failed to fetch token accounts: {response.text}")
+                    return []
+        except Exception as e:
+            logging.exception("[JUPITER] Error getting token accounts")
+            return []
+
     async def get_swap_transaction(self, quote_response: dict, keypair: Keypair):
         try:
+            token_accounts = await self._get_token_accounts(str(keypair.pubkey()))
             swap_url = f"{self.base_url}/swap"
             body = {
                 "userPublicKey": str(keypair.pubkey()),
                 "wrapUnwrapSOL": False,
                 "useSharedAccounts": True,
                 "computeUnitPriceMicroLamports": 2000,
-                "userTokenAccounts": [],
+                "userTokenAccounts": token_accounts,
                 "quoteResponse": json.loads(json.dumps(quote_response))
             }
 
