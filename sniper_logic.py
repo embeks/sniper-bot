@@ -1,5 +1,3 @@
-# sniper_logic.py — ELITE VERSION (Force Buy skips LP check)
-
 import asyncio
 import json
 import os
@@ -150,6 +148,8 @@ async def start_sniper_with_forced_token(mint: str):
             user_pubkey=keypair.pubkey()
         )
 
+        logging.warning(f"[FORCEBUY DEBUG] Quote response:\n{json.dumps(route, indent=2)}")
+
         if not route:
             await send_telegram_alert(f"❌ Quote failed for {mint}")
             logging.error(f"[FORCEBUY] Quote failed: No route returned for {mint}")
@@ -194,3 +194,4 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🚩 All sniper tasks stopped.")
+
