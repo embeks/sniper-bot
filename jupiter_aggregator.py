@@ -82,16 +82,21 @@ class JupiterAggregatorClient:
             logging.exception(f"[JUPITER] Swap exception: {e}")
             return None
 
-    def build_swap_transaction(self, route: dict, keypair: Keypair):
+    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
         try:
-            tx_base64 = route.get("swapTransaction")
-            if not tx_base64:
-                logging.error("[JUPITER] No 'swapTransaction' in route")
+            if not swap_tx_base64:
+                logging.error("[JUPITER] No swapTransaction provided to build_swap_transaction()")
                 return None
 
-            tx_bytes = base64.b64decode(tx_base64)
-            tx = VersionedTransaction.from_bytes(tx_bytes)
+            logging.info(f"[JUPITER] Decoding swapTransaction base64.")
+            tx_bytes = base64.b64decode(swap_tx_base64)
+
+            logging.info(f"[JUPITER] Deserializing transaction bytes.")
+            tx = VersionedTransaction.deserialize(tx_bytes)
+
+            logging.info(f"[JUPITER] Transaction version: {tx.version}")
             return tx
+
         except Exception as e:
             logging.exception(f"[JUPITER] Transaction build error: {e}")
             return None
