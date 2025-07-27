@@ -10,6 +10,7 @@ from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
 
+
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
         self.rpc_url = rpc_url
@@ -116,7 +117,7 @@ class JupiterAggregatorClient:
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
-            raw_tx_bytes = bytes(signed_tx)  # ✅ Fixed: no .serialize() used
+            raw_tx_bytes = bytes(signed_tx)  # ✅ FIXED — DO NOT USE serialize()
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
