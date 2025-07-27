@@ -97,7 +97,7 @@ class JupiterAggregatorClient:
                 logging.warning(f"[JUPITER] First 20 decoded bytes:\n{tx_bytes[:20]}")
             except Exception as decode_err:
                 logging.exception("[JUPITER] Base64 decode failed")
-                self._send_telegram_debug(f"❌ Base64 decode failed: {decode_err}")
+                self._send_telegram_debug(f"\u274c Base64 decode failed: {decode_err}")
                 return None
 
             try:
@@ -106,17 +106,18 @@ class JupiterAggregatorClient:
                 return tx
             except Exception as deser_err:
                 logging.exception("[JUPITER] Deserialization failed")
-                self._send_telegram_debug(f"❌ Deserialization failed: {deser_err}")
+                self._send_telegram_debug(f"\u274c Deserialization failed: {deser_err}")
                 return None
 
         except Exception as e:
             logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
-            self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
+            self._send_telegram_debug(f"\u274c Unexpected swapTransaction error: {e}")
             return None
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
         try:
             raw_tx_bytes = bytes(signed_tx)
+            logging.warning(f"[JUPITER] Sending raw tx of length {len(raw_tx_bytes)}")
 
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
@@ -127,17 +128,17 @@ class JupiterAggregatorClient:
 
             if "error" in result:
                 error_info = json.dumps(result["error"], indent=2)
-                self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
+                self._send_telegram_debug(f"\u274c TX Error:\n```{error_info}```")
                 return None
 
             if "result" not in result or not result["result"]:
-                self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
+                self._send_telegram_debug(f"\u274c TX failed \u2014 No tx hash returned:\n```{result}```")
                 return None
 
             return str(result["result"])
 
         except Exception as e:
-            err_msg = f"❌ Send error:\n{type(e).__name__}: {e}"
+            err_msg = f"\u274c Send error:\n{type(e).__name__}: {e}"
             logging.exception(err_msg)
             self._send_telegram_debug(err_msg)
             return None
