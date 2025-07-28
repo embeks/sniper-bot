@@ -9,7 +9,8 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from solana.transaction import Transaction  # ✅ Correct for solana==0.28.1
+from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
+from solana.transaction import Transaction
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -67,26 +68,25 @@ class JupiterAggregatorClient:
             return []
 
     def _create_ata_if_missing(self, owner: Pubkey, mint: Pubkey, keypair: Keypair):
-        from solana.publickey import PublicKey as SolanaPubkey
-        from spl.token.instructions import get_associated_token_address, create_associated_token_account
-
-        payer = SolanaPubkey(str(owner))
-        mint_key = SolanaPubkey(str(mint))
-        ata = get_associated_token_address(payer, mint_key)
+        ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
 
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-            ix = create_associated_token_account(payer, payer, mint_key)
+            ix = create_associated_token_account_instruction(
+                payer=owner,
+                owner=owner,
+                mint=mint
+            )
             tx = Transaction()
             tx.add(ix)
-            tx.recent_blockhash = self.client.get_recent_blockhash()["result"]["value"]["blockhash"]
-            tx.fee_payer = payer
-            tx.sign(keypair)
-
             try:
+                blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
+                tx.recent_blockhash = blockhash
+                tx.fee_payer = owner
+                tx.sign([keypair])
                 result = self.client.send_raw_transaction(
-                    tx.serialize(),
+                    bytes(tx),
                     opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
                 )
                 logging.info(f"[JUPITER] ATA Creation TX: {result}")
@@ -213,4 +213,3 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
-
