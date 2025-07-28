@@ -12,11 +12,9 @@ from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
 from solana.transaction import Transaction
-from spl.token.instructions import get_associated_token_address  # FIXED: Removed broken import
-from spl.token.instructions import create_associated_token_account  # FIXED: Correct ATA ix import
 from solana.publickey import PublicKey
-from solana.system_program import SYS_PROGRAM_ID
-from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
+
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -24,7 +22,15 @@ class JupiterAggregatorClient:
         self.client = Client(rpc_url)
         self.base_url = "https://quote-api.jup.ag/v6"
 
-    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int, slippage_bps: int = 100, user_pubkey: Pubkey = None, only_direct_routes=True):
+    async def get_quote(
+        self,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        amount: int,
+        slippage_bps: int = 100,
+        user_pubkey: Pubkey = None,
+        only_direct_routes=True
+    ):
         try:
             url = f"{self.base_url}/quote"
             params = {
@@ -74,26 +80,25 @@ class JupiterAggregatorClient:
 
             owner_pubkey = PublicKey(str(owner))
             mint_pubkey = PublicKey(str(mint))
-            ata_pubkey = get_associated_token_address(owner_pubkey, mint_pubkey)
 
-            ix = create_associated_token_account(
+            ix = create_associated_token_account_instruction(
                 payer=owner_pubkey,
                 owner=owner_pubkey,
-                mint=mint_pubkey,
-                associated_account=ata_pubkey,
-                token_program_id=TOKEN_PROGRAM_ID,
-                associated_token_program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
-                system_program_id=SYS_PROGRAM_ID
+                mint=mint_pubkey
             )
 
             tx = Transaction()
             tx.add(ix)
+
             try:
                 blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
                 tx.recent_blockhash = blockhash
                 tx.fee_payer = owner_pubkey
                 tx.sign([keypair])
-                result = self.client.send_raw_transaction(bytes(tx), opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
+                result = self.client.send_raw_transaction(
+                    bytes(tx),
+                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                )
                 logging.info(f"[JUPITER] ATA Creation TX: {result}")
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to create ATA: {e}")
