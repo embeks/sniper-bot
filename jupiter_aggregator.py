@@ -11,7 +11,7 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from solana.transaction import Transaction, TransactionInstruction
+from solana.transaction import Transaction, TransactionInstruction, AccountMeta
 from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
 from solana.system_program import SYS_PROGRAM_ID
 from spl.token.instructions import get_associated_token_address
@@ -82,13 +82,13 @@ class JupiterAggregatorClient:
 
             ix = TransactionInstruction(
                 keys=[
-                    {"pubkey": keypair.pubkey(), "is_signer": True, "is_writable": True},
-                    {"pubkey": ata, "is_signer": False, "is_writable": True},
-                    {"pubkey": owner, "is_signer": False, "is_writable": False},
-                    {"pubkey": mint, "is_signer": False, "is_writable": False},
-                    {"pubkey": SYS_PROGRAM_ID, "is_signer": False, "is_writable": False},
-                    {"pubkey": TOKEN_PROGRAM_ID, "is_signer": False, "is_writable": False},
-                    {"pubkey": ASSOCIATED_TOKEN_PROGRAM_ID, "is_signer": False, "is_writable": False},
+                    AccountMeta(pubkey=keypair.pubkey(), is_signer=True, is_writable=True),
+                    AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
+                    AccountMeta(pubkey=owner, is_signer=False, is_writable=False),
+                    AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
+                    AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
+                    AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+                    AccountMeta(pubkey=ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
                 ],
                 program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
                 data=b"",
@@ -230,3 +230,4 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+            
