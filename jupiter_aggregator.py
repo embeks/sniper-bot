@@ -11,9 +11,12 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from solana.transaction import Transaction
-from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
-from solana.publickey import PublicKey  # FIXED: Needed for ATA creation
+from solana.transaction import Transaction, TransactionInstruction
+from solana.publickey import PublicKey
+from solana.system_program import SYS_PROGRAM_ID
+from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+from spl.token.instructions import get_associated_token_address
+
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -21,15 +24,8 @@ class JupiterAggregatorClient:
         self.client = Client(rpc_url)
         self.base_url = "https://quote-api.jup.ag/v6"
 
-    async def get_quote(
-        self,
-        input_mint: Pubkey,
-        output_mint: Pubkey,
-        amount: int,
-        slippage_bps: int = 100,
-        user_pubkey: Pubkey = None,
-        only_direct_routes=True
-    ):
+    async def get_quote(self, input_mint: Pubkey, output_mint: Pubkey, amount: int,
+                        slippage_bps: int = 100, user_pubkey: Pubkey = None, only_direct_routes=True):
         try:
             url = f"{self.base_url}/quote"
             params = {
@@ -73,22 +69,29 @@ class JupiterAggregatorClient:
     def _create_ata_if_missing(self, owner: Pubkey, mint: Pubkey, keypair: Keypair):
         ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
-
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-
-            # FIX: Convert solders.Pubkey → solana.PublicKey
-            owner_pubkey = PublicKey(str(owner))
-            mint_pubkey = PublicKey(str(mint))
-
-            ix = create_associated_token_account_instruction(
-                payer=owner_pubkey,
-                owner=owner_pubkey,
-                mint=mint_pubkey
-            )
-            tx = Transaction()
-            tx.add(ix)
             try:
+                owner_pubkey = PublicKey(str(owner))
+                mint_pubkey = PublicKey(str(mint))
+                ata_pubkey = get_associated_token_address(owner_pubkey, mint_pubkey)
+
+                keys = [
+                    {"pubkey": owner_pubkey, "is_signer": True, "is_writable": True},
+                    {"pubkey": ata_pubkey, "is_signer": False, "is_writable": True},
+                    {"pubkey": owner_pubkey, "is_signer": False, "is_writable": False},
+                    {"pubkey": mint_pubkey, "is_signer": False, "is_writable": False},
+                    {"pubkey": SYS_PROGRAM_ID, "is_signer": False, "is_writable": False},
+                    {"pubkey": TOKEN_PROGRAM_ID, "is_signer": False, "is_writable": False}
+                ]
+
+                ix = TransactionInstruction(
+                    keys=keys,
+                    program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
+                    data=b''
+                )
+                tx = Transaction()
+                tx.add(ix)
                 blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
                 tx.recent_blockhash = blockhash
                 tx.fee_payer = owner_pubkey
@@ -124,7 +127,6 @@ class JupiterAggregatorClient:
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(swap_url, json=body, headers=headers)
-
                 logging.info(f"[JUPITER] Swap response {response.status_code}: {response.text}")
                 if response.status_code == 200:
                     data = response.json()
