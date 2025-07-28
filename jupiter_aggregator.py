@@ -9,7 +9,7 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
+from spl.token.instructions import get_associated_token_address, create_associated_token_account
 from solana.transaction import Transaction
 
 class JupiterAggregatorClient:
@@ -73,7 +73,7 @@ class JupiterAggregatorClient:
 
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-            ix = create_associated_token_account_instruction(
+            ix = create_associated_token_account(
                 payer=owner,
                 owner=owner,
                 mint=mint
@@ -213,3 +213,4 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+
