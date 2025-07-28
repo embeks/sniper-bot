@@ -9,9 +9,7 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from solana.transaction import Transaction
-from solana.publickey import PublicKey as SolanaPubkey
-from spl.token.instructions import get_associated_token_address, create_associated_token_account
+from solana.transaction import Transaction  # ✅ Correct for solana==0.28.1
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -69,25 +67,26 @@ class JupiterAggregatorClient:
             return []
 
     def _create_ata_if_missing(self, owner: Pubkey, mint: Pubkey, keypair: Keypair):
-        payer = SolanaPubkey.from_bytes(bytes(owner))
-        owner_pubkey = SolanaPubkey.from_bytes(bytes(owner))
-        mint_pubkey = SolanaPubkey.from_bytes(bytes(mint))
-        ata = get_associated_token_address(owner_pubkey, mint_pubkey)
+        from solana.publickey import PublicKey as SolanaPubkey
+        from spl.token.instructions import get_associated_token_address, create_associated_token_account
+
+        payer = SolanaPubkey(str(owner))
+        mint_key = SolanaPubkey(str(mint))
+        ata = get_associated_token_address(payer, mint_key)
         res = self.client.get_account_info(ata)
 
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-            ix = create_associated_token_account(
-                payer=payer,
-                owner=owner_pubkey,
-                mint=mint_pubkey
-            )
+            ix = create_associated_token_account(payer, payer, mint_key)
             tx = Transaction()
             tx.add(ix)
-            tx.sign([keypair])
+            tx.recent_blockhash = self.client.get_recent_blockhash()["result"]["value"]["blockhash"]
+            tx.fee_payer = payer
+            tx.sign(keypair)
+
             try:
                 result = self.client.send_raw_transaction(
-                    bytes(tx),
+                    tx.serialize(),
                     opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
                 )
                 logging.info(f"[JUPITER] ATA Creation TX: {result}")
@@ -101,7 +100,6 @@ class JupiterAggregatorClient:
                 output_mint = Pubkey.from_string(quote_response["outputMint"])
                 logging.warning(f"[JUPITER] No token accounts found — adding fallback for {quote_response['outputMint']}")
                 self._create_ata_if_missing(keypair.pubkey(), output_mint, keypair)
-                token_accounts = await self._get_token_accounts(str(keypair.pubkey()))  # refresh
 
             swap_url = f"{self.base_url}/swap"
             body = {
@@ -215,3 +213,4 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+
