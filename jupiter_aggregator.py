@@ -11,9 +11,11 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from solana.transaction import Transaction
+from solana.transaction import Transaction, TransactionInstruction
+from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+from solana.system_program import SYS_PROGRAM_ID
+from spl.token.instructions import get_associated_token_address
 from solana.publickey import PublicKey
-from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
 
 
 class JupiterAggregatorClient:
@@ -78,13 +80,18 @@ class JupiterAggregatorClient:
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
 
-            owner_pubkey = PublicKey(str(owner))
-            mint_pubkey = PublicKey(str(mint))
-
-            ix = create_associated_token_account_instruction(
-                payer=owner_pubkey,
-                owner=owner_pubkey,
-                mint=mint_pubkey
+            ix = TransactionInstruction(
+                keys=[
+                    {"pubkey": keypair.pubkey(), "is_signer": True, "is_writable": True},
+                    {"pubkey": ata, "is_signer": False, "is_writable": True},
+                    {"pubkey": owner, "is_signer": False, "is_writable": False},
+                    {"pubkey": mint, "is_signer": False, "is_writable": False},
+                    {"pubkey": SYS_PROGRAM_ID, "is_signer": False, "is_writable": False},
+                    {"pubkey": TOKEN_PROGRAM_ID, "is_signer": False, "is_writable": False},
+                    {"pubkey": ASSOCIATED_TOKEN_PROGRAM_ID, "is_signer": False, "is_writable": False},
+                ],
+                program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
+                data=b"",
             )
 
             tx = Transaction()
@@ -93,7 +100,7 @@ class JupiterAggregatorClient:
             try:
                 blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
                 tx.recent_blockhash = blockhash
-                tx.fee_payer = owner_pubkey
+                tx.fee_payer = keypair.pubkey()
                 tx.sign([keypair])
                 result = self.client.send_raw_transaction(
                     bytes(tx),
@@ -223,4 +230,3 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
-
