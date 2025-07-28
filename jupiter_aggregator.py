@@ -3,14 +3,17 @@ import base64
 import httpx
 import logging
 import os
+
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
+
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
-from spl.token.instructions import get_associated_token_address, create_associated_token_account
 from solana.transaction import Transaction
+from spl.token.instructions import get_associated_token_address, create_associated_token_account_instruction
+from solana.publickey import PublicKey  # FIXED: Needed for ATA creation
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -73,17 +76,22 @@ class JupiterAggregatorClient:
 
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-            ix = create_associated_token_account(
-                payer=owner,
-                owner=owner,
-                mint=mint
+
+            # FIX: Convert solders.Pubkey → solana.PublicKey
+            owner_pubkey = PublicKey(str(owner))
+            mint_pubkey = PublicKey(str(mint))
+
+            ix = create_associated_token_account_instruction(
+                payer=owner_pubkey,
+                owner=owner_pubkey,
+                mint=mint_pubkey
             )
             tx = Transaction()
             tx.add(ix)
             try:
                 blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
                 tx.recent_blockhash = blockhash
-                tx.fee_payer = owner
+                tx.fee_payer = owner_pubkey
                 tx.sign([keypair])
                 result = self.client.send_raw_transaction(
                     bytes(tx),
@@ -213,4 +221,3 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
-
