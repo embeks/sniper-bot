@@ -464,6 +464,7 @@ async def wait_and_auto_sell(mint):
                         # Calculate PnL in SOL terms
                         pnl = current_sol - buy_sol
                         await send_telegram_alert(f"📈 Sold {percent}% at {milestone}x — locked in profit (PnL: +{pnl:.4f} SOL)")
+                        record_pnl(pnl)  # <-- This line records the PnL!
                         sold_stages.add(milestone)
                     # Update stored sold stages
                     position["sold_stages"] = sold_stages
