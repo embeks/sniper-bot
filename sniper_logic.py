@@ -24,7 +24,7 @@ FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))  # Start at 30s to avoid rate limit
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))  # 30s default, safe for APIs
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 seen_tokens = set()
@@ -144,13 +144,50 @@ async def mempool_listener(name):
             except Exception:
                 pass
 
-# === Advanced Trending Scanner with Rate-Limit Handling ===
+# === Multi-Source Trending Scanner: DEXScreener + Birdeye Fallback ===
 import httpx
 
 MIN_LP_USD = 1000      # Only snipe if at least $1000 liquidity
 MIN_VOLUME_USD = 1000  # Only snipe if at least $1k traded in last hour
 
 seen_trending = set()
+
+async def get_trending_pairs_dexscreener():
+    url = "https://api.dexscreener.com/latest/dex/pairs/solana"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("pairs", [])
+            else:
+                return None
+    except Exception:
+        return None
+
+async def get_trending_pairs_birdeye():
+    url = "https://public-api.birdeye.so/public/tokenlist?chain=solana"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                pairs = []
+                for tok in data.get("data", [])[:20]:
+                    mint = tok.get("address")
+                    lp_usd = float(tok.get("liquidity_usd", 0))
+                    vol_usd = float(tok.get("volume_24h_usd", 0))
+                    pair = {
+                        "baseToken": {"address": mint},
+                        "liquidity": {"usd": lp_usd},
+                        "volume": {"h1": vol_usd},
+                    }
+                    pairs.append(pair)
+                return pairs
+            else:
+                return None
+    except Exception:
+        return None
 
 async def trending_scanner():
     global seen_trending
@@ -160,39 +197,33 @@ async def trending_scanner():
                 await asyncio.sleep(5)
                 continue
 
-            url = "https://api.dexscreener.com/latest/dex/pairs/solana"
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url)
-                # Defensive: only parse if valid JSON and 200 status
-                if resp.status_code != 200:
-                    logging.warning(f"[Trending Scanner ERROR] DEXScreener HTTP {resp.status_code}")
-                    await asyncio.sleep(TREND_SCAN_INTERVAL)
+            pairs = await get_trending_pairs_dexscreener()
+            source = "DEXScreener"
+            if not pairs:
+                pairs = await get_trending_pairs_birdeye()
+                source = "Birdeye"
+            if not pairs:
+                logging.warning("[Trending Scanner ERROR] Both DEXScreener and Birdeye unavailable.")
+                await asyncio.sleep(TREND_SCAN_INTERVAL)
+                continue
+
+            for pair in pairs[:10]:
+                mint = pair.get("baseToken", {}).get("address")
+                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                vol_usd = float(pair.get("volume", {}).get("h1", 0))
+                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
                     continue
-                try:
-                    data = resp.json()
-                except Exception:
-                    logging.warning("[Trending Scanner ERROR] Invalid JSON from DEXScreener")
-                    await asyncio.sleep(TREND_SCAN_INTERVAL)
+                if lp_usd < MIN_LP_USD or vol_usd < MIN_VOLUME_USD:
+                    logging.info(f"[SKIP] {mint} - LP: ${lp_usd}, Vol: ${vol_usd}")
                     continue
-                pairs = data.get("pairs", [])
-                for pair in pairs[:10]:
-                    mint = pair.get("baseToken", {}).get("address")
-                    lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                    vol_usd = float(pair.get("volume", {}).get("h1", 0))  # last 1h
-                    # skip blacklisted, already seen, or malformed
-                    if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
-                        continue
-                    if lp_usd < MIN_LP_USD or vol_usd < MIN_VOLUME_USD:
-                        logging.info(f"[SKIP] {mint} - LP: ${lp_usd}, Vol: ${vol_usd}")
-                        continue
-                    seen_trending.add(mint)
-                    increment_stat("tokens_scanned", 1)
-                    update_last_activity()
-                    await send_telegram_alert(f"[🔥] Trending token: {mint} | LP: ${lp_usd:.0f} | Vol: ${vol_usd:.0f}")
-                    passes = await rug_filter_passes(mint)
-                    if passes:
-                        if await buy_token(mint):
-                            await wait_and_auto_sell(mint)
+                seen_trending.add(mint)
+                increment_stat("tokens_scanned", 1)
+                update_last_activity()
+                await send_telegram_alert(f"[🔥] ({source}) Trending token: {mint} | LP: ${lp_usd:.0f} | Vol: ${vol_usd:.0f}")
+                passes = await rug_filter_passes(mint)
+                if passes:
+                    if await buy_token(mint):
+                        await wait_and_auto_sell(mint)
             await asyncio.sleep(TREND_SCAN_INTERVAL)
         except Exception as e:
             logging.warning(f"[Trending Scanner ERROR] {e}")
