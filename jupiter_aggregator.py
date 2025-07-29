@@ -8,6 +8,13 @@ from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
+# solana-py uses a different Keypair class for signing legacy style
+# Transactions.  We import it under an alias to avoid confusion.  See
+# https://kevinheavey.github.io/solders/tutorials/keypairs.html for a
+# description of how a solders Keypair encapsulates both the 32‑byte
+# secret seed and 32‑byte public key in a 64‑byte array【87479222754777†L27-L44】.
+from solana.keypair import Keypair as SolanaKeypair
+
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.commitment import Confirmed
@@ -71,12 +78,27 @@ class JupiterAggregatorClient:
             return []
 
     def _create_ata_if_missing(self, owner: PublicKey, mint: PublicKey, keypair: Keypair):
+        """
+        Ensure the associated token account (ATA) exists for a given owner/mint.
+
+        If the account does not exist, this helper builds and submits a
+        one‑instruction transaction to create it.  In environments using
+        solana‑py, the `Transaction` class expects signers to be instances of
+        `solana.keypair.Keypair`.  Because our bot uses `solders` for most
+        operations, we convert the provided solders `Keypair` into a
+        compatible solana‑py `Keypair` by taking the first 32 bytes of its
+        64‑byte representation as the secret seed【87479222754777†L27-L44】.  The
+        Jupiter aggregator docs indicate that this transaction must be
+        signed by the wallet to pay the rent for the new account.
+        """
         ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
 
+        # Only attempt creation if the account truly does not exist
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
 
+            # Prepare the instruction to create the associated token account
             ix = TransactionInstruction(
                 keys=[
                     AccountMeta(pubkey=PublicKey(str(keypair.pubkey())), is_signer=True, is_writable=True),
@@ -95,11 +117,9 @@ class JupiterAggregatorClient:
             tx.add(ix)
 
             try:
-                # In solana-py >=0.28 the get_latest_blockhash returns a
-                # GetLatestBlockhashResp object.  Extract the blockhash via
-                # its ``value`` attribute rather than treating it as a dict.
+                # Extract a recent blockhash; solana‑py may return either a
+                # dictionary or an object with a `.value.blockhash` attribute.
                 latest = self.client.get_latest_blockhash()
-                # fall back to old behaviour if it's a mapping
                 if isinstance(latest, dict):
                     blockhash = latest["result"]["value"]["blockhash"]
                 else:
@@ -107,7 +127,20 @@ class JupiterAggregatorClient:
 
                 tx.recent_blockhash = str(blockhash)
                 tx.fee_payer = PublicKey(str(keypair.pubkey()))
-                tx.sign([keypair])
+
+                # Convert the solders keypair into a solana‑py keypair for
+                # signing.  A solders `Keypair` is 64 bytes long: the first
+                # 32 bytes are the secret, followed by the public key【87479222754777†L27-L44】.
+                try:
+                    raw = bytes(keypair)
+                    secret = raw[:32]
+                    sol_kp = SolanaKeypair.from_secret_key(secret)
+                except Exception:
+                    # Fallback: attempt to construct from the full 64 bytes
+                    sol_kp = SolanaKeypair.from_secret_key(bytes(keypair))  # type: ignore[arg-type]
+
+                # Sign and send the transaction
+                tx.sign([sol_kp])
                 result = self.client.send_raw_transaction(
                     bytes(tx),
                     opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
@@ -159,39 +192,31 @@ class JupiterAggregatorClient:
     def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
         """
         Decode a base64‐encoded swap transaction returned from the Jupiter API and
-        produce a signed ``VersionedTransaction`` ready for submission.  This method
+        produce a serialized transaction ready for submission.  This method
         performs several steps:
 
         1. Validate that a non‐empty base64 string was supplied.
         2. Attempt to decode the string into raw bytes, logging the length and
            a short preview of the payload for debugging.  If decoding fails,
            a helpful message is logged and ``None`` is returned.
-        3. Deserialize the raw bytes into a :class:`solders.transaction.VersionedTransaction`.
-           If this fails, the error is logged and ``None`` is returned.
-        4. Sign the deserialized message using the provided keypair.  The
-           signature replaces any existing placeholder signature for the wallet
-           within the transaction's ``signatures`` list.  If the wallet's
-           public key is not among the ``account_keys``, the signature is not
-           appended to avoid mismatching the expected signature count.  Errors
-           encountered during signing are logged; in these cases the
-           partially signed transaction is still returned for the caller to
-           handle.
+        3. Attempt to deserialize the bytes into a :class:`VersionedTransaction` for
+           debugging and potential signing.  If deserialization fails, the raw
+           bytes are still returned.
+        4. Optionally sign the transaction if the ``solders.message`` module is
+           available and the user's pubkey is present in the account keys.  The
+           signature replaces the existing placeholder signature.  Any signing
+           errors are logged but do not prevent returning the raw bytes.
 
-        A fully signed ``VersionedTransaction`` (or partially signed if signing
-        fails) is returned on success.  If any irrecoverable error occurs,
-        ``None`` is returned.
+        The function always returns the raw serialized transaction bytes.  Downstream
+        code can submit these bytes directly via RPC.  If any irrecoverable
+        error occurs before serialization, ``None`` is returned.
         """
         try:
-            # Validate the input early.  It's common for the aggregator to
-            # sometimes return ``None`` or an empty string when there is no
-            # transaction available.  In that case we log and bail out.
             if not swap_tx_base64 or not isinstance(swap_tx_base64, str):
                 logging.error("[JUPITER] Empty or invalid swap transaction string.")
                 return None
 
-            # Step 1 – base64 decode the transaction.  Catch and log any decoding
-            # errors explicitly so that the caller has context about what went
-            # wrong.
+            # Base64 decode
             try:
                 tx_bytes = base64.b64decode(swap_tx_base64)
             except Exception as decode_err:
@@ -206,70 +231,61 @@ class JupiterAggregatorClient:
             preview_hex = tx_bytes[:32].hex()
             logging.debug(f"[JUPITER] First 32 decoded bytes (hex): {preview_hex}")
 
-            # Step 2 – deserialize the bytes into a VersionedTransaction.
+            # Attempt to deserialize for debug/signing
+            versioned_tx = None
             try:
-                raw_tx = VersionedTransaction.from_bytes(tx_bytes)
+                versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                logging.info("[JUPITER] VersionedTransaction deserialized successfully.")
             except Exception as deser_err:
-                logging.exception(f"[JUPITER] Failed to deserialize VersionedTransaction: {deser_err}")
-                self._send_telegram_debug(
-                    f"❌ VersionedTransaction.from_bytes failed: {type(deser_err).__name__}: {deser_err}\n"
-                    f"Decoded length: {len(tx_bytes)} bytes\nFirst 32 bytes (hex): {preview_hex}"
-                )
-                return None
-
-            logging.info("[JUPITER] VersionedTransaction deserialized successfully.")
-
-            # Step 3 – attempt to sign the transaction with our keypair.  We use
-            # solders.message.to_bytes_versioned to get the message bytes.  If
-            # this module isn't available (e.g. solders isn't installed) we
-            # return the deserialized transaction without modification.
-            try:
-                from solders.message import to_bytes_versioned  # type: ignore
-
-                message_bytes = to_bytes_versioned(raw_tx.message)
-                signature = keypair.sign_message(message_bytes)
-
-                # Copy the existing signatures so we don't mutate the original list.
-                sigs = list(raw_tx.signatures)
-
-                # Determine where our signature should go.  The index is the
-                # position of our pubkey in the message's account keys.  If the
-                # key is not present, we cannot sign because adding an extra
-                # signature would break the required signature count set in the
-                # message header.  In that case we log and leave the
-                # transaction unsigned.
-                try:
-                    sig_index = next(
-                        i for i, pk in enumerate(raw_tx.message.account_keys)
-                        if pk == keypair.pubkey()
-                    )
-                except StopIteration:
-                    sig_index = None
-
-                if sig_index is None:
-                    logging.warning(
-                        "[JUPITER] Wallet pubkey not found among account keys; cannot attach signature. "
-                        "Proceeding with original signatures."
-                    )
-                else:
-                    sigs[sig_index] = signature
-                    raw_tx.signatures = sigs
-                    logging.info(
-                        f"[JUPITER] Swap transaction signed. Updated signature at index {sig_index}."
-                    )
-            except ImportError:
                 logging.warning(
-                    "[JUPITER] solders.message.to_bytes_versioned could not be imported; "
-                    "returning unsigned VersionedTransaction."
-                )
-            except Exception as sign_err:
-                logging.exception(f"[JUPITER] Error while signing swap transaction: {sign_err}")
-                self._send_telegram_debug(
-                    f"⚠️ Error signing transaction: {type(sign_err).__name__}: {sign_err}\n"
-                    "Proceeding with partially signed transaction."
+                    f"[JUPITER] Could not deserialize VersionedTransaction: {deser_err}. "
+                    "Continuing with raw bytes."
                 )
 
-            return raw_tx
+            # If we could deserialize and solders.message is available, try to sign
+            if versioned_tx:
+                try:
+                    from solders.message import to_bytes_versioned  # type: ignore
+
+                    message_bytes = to_bytes_versioned(versioned_tx.message)
+                    signature = keypair.sign_message(message_bytes)
+
+                    # Only replace signature if our key is present
+                    try:
+                        sig_index = next(
+                            i for i, pk in enumerate(versioned_tx.message.account_keys)
+                            if pk == keypair.pubkey()
+                        )
+                    except StopIteration:
+                        sig_index = None
+
+                    if sig_index is not None:
+                        sigs = list(versioned_tx.signatures)
+                        sigs[sig_index] = signature
+                        versioned_tx.signatures = sigs
+                        tx_bytes = bytes(versioned_tx)
+                        logging.info(
+                            f"[JUPITER] Swap transaction signed. Updated signature at index {sig_index}."
+                        )
+                    else:
+                        logging.warning(
+                            "[JUPITER] Wallet pubkey not found among account keys; cannot attach signature. "
+                            "Proceeding with original signatures."
+                        )
+                except ImportError:
+                    logging.warning(
+                        "[JUPITER] solders.message.to_bytes_versioned could not be imported; "
+                        "returning unsigned serialized bytes."
+                    )
+                except Exception as sign_err:
+                    logging.exception(f"[JUPITER] Error while signing swap transaction: {sign_err}")
+                    self._send_telegram_debug(
+                        f"⚠️ Error signing transaction: {type(sign_err).__name__}: {sign_err}\n"
+                        "Proceeding with partially signed transaction."
+                    )
+
+            # Return the raw (possibly re-serialized) bytes
+            return tx_bytes
 
         except Exception as outer_err:
             logging.exception(f"[JUPITER] Unexpected error in build_swap_transaction: {outer_err}")
@@ -278,71 +294,83 @@ class JupiterAggregatorClient:
             )
             return None
 
-    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair = None):
+    def send_transaction(self, tx, keypair: Keypair | None = None) -> str | None:
         """
-        Submit a signed :class:`VersionedTransaction` to the Solana RPC.  The
-        provided ``signed_tx`` should already contain all necessary signatures.
+        Submit a serialized transaction to the RPC and return its signature.
 
-        The optional ``keypair`` argument is accepted for backwards
-        compatibility but is unused.  A warning is emitted if the serialized
-        transaction is very small, but the function will still attempt to send
-        it.  Any RPC errors are surfaced via the Telegram debug channel and
-        logged.
+        This helper accepts either raw transaction bytes or a `VersionedTransaction`
+        instance.  It logs unexpected results and attempts to normalise the
+        response across different versions of solana‑py.  The optional
+        ``keypair`` parameter is ignored but kept for backwards compatibility.
         """
         try:
-            # Serialize the VersionedTransaction into raw bytes.  ``bytes()``
-            # raises if the transaction is not fully populated.
-            raw_tx_bytes = bytes(signed_tx)
-
-            # It's possible for valid transactions to be relatively short,
-            # especially when swapping small amounts.  Instead of refusing to
-            # send based on size alone, log a warning but continue.  The RPC
-            # will perform its own validation and return an error if the
-            # transaction is malformed.
-            if len(raw_tx_bytes) < 200:
-                logging.warning(
-                    f"[JUPITER] Serialized transaction length is only {len(raw_tx_bytes)} bytes. "
-                    f"Proceeding to send anyway."
-                )
-
-            result = self.client.send_raw_transaction(
-                raw_tx_bytes,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-            )
-
-            # Normalize the RPC response.  The solana-py client may return
-            # either a dict containing 'result' or an error.  We handle both
-            # cases and surface errors via Telegram.
-            if isinstance(result, dict) and "error" in result:
-                error_info = json.dumps(result["error"], indent=2)
-                self._send_telegram_debug(
-                    f"❌ Transaction send error:\n```{error_info}```"
-                )
-                return None
-
-            if not result or (isinstance(result, dict) and not result.get("result")):
-                self._send_telegram_debug(
-                    f"❌ TX failed — No tx hash returned:\n```{result}```"
-                )
-                return None
-
-            # The RPC library may return either a dict with a 'result' key or
-            # a simple signature string.  Normalize to a string here.
-            if isinstance(result, dict):
-                tx_sig = result["result"]
+            # Accept either bytes or VersionedTransaction.  For anything else,
+            # attempt to coerce into bytes.
+            if isinstance(tx, (bytes, bytearray)):
+                raw_tx_bytes = bytes(tx)
             else:
-                tx_sig = result
+                # If a VersionedTransaction is provided, its ``bytes()``
+                # representation yields the fully serialized transaction.
+                try:
+                    raw_tx_bytes = bytes(tx)  # type: ignore[arg-type]
+                except Exception:
+                    logging.error("[JUPITER] send_transaction received an unsupported tx type")
+                    return None
 
-            logging.info(f"[JUPITER] Transaction submitted. Signature: {tx_sig}")
-            return str(tx_sig)
+            # Warn on suspiciously small transactions but still attempt to send.
+            if len(raw_tx_bytes) < 64:
+                logging.warning(f"[JUPITER] Raw TX very short ({len(raw_tx_bytes)} bytes); sending anyway.")
+
+            # Submit the transaction.  send_raw_transaction returns a dict-like
+            # structure in older solana‑py versions; in newer versions it may
+            # raise an exception on RPC error.  We normalise both cases.
+            try:
+                result = self.client.send_raw_transaction(
+                    raw_tx_bytes,
+                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                )
+            except Exception as rpc_exc:
+                # If an exception is thrown, report and abort
+                self._send_telegram_debug(f"❌ Send error: {type(rpc_exc).__name__}: {rpc_exc}")
+                return None
+
+            # result may be a dict or an object with `.get`/index semantics
+            signature: str | None = None
+            if isinstance(result, dict):
+                # solana‑py <=0.30 returns { 'result': <sig> } or {'error': ...}
+                if result.get("result"):
+                    signature = str(result["result"])
+                elif result.get("error"):
+                    err_json = json.dumps(result["error"], indent=2)
+                    self._send_telegram_debug(f"❌ TX Error:\n```{err_json}```")
+                    return None
+                else:
+                    self._send_telegram_debug(f"❌ Unexpected send result:\n```{result}```")
+                    return None
+            else:
+                # Newer versions of solana‑py return an RPCResponse object with
+                # 'result' attribute or behave like a dict when indexed
+                try:
+                    # Attempt to index like a dict
+                    signature = str(result["result"])  # type: ignore[index]
+                except Exception:
+                    try:
+                        # Fall back to treating the entire response as the signature
+                        signature = str(result)
+                    except Exception:
+                        self._send_telegram_debug(f"❌ Unrecognised send result type: {result}")
+                        return None
+
+            if not signature:
+                self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
+                return None
+
+            logging.info(f"[JUPITER] TX sent: {signature}")
+            return signature
 
         except Exception as e:
-            # Catch any unexpected exception and surface it via Telegram.  The
-            # type name helps differentiate between different error classes.
-            self._send_telegram_debug(
-                f"❌ Send error:\n{type(e).__name__}: {e}"
-            )
-            logging.exception(f"[JUPITER] Unexpected exception while sending transaction: {e}")
+            # Catch any other unexpected exceptions
+            self._send_telegram_debug(f"❌ Send error: {type(e).__name__}: {e}")
             return None
 
     def _send_telegram_debug(self, message: str):
@@ -356,4 +384,5 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+
 
