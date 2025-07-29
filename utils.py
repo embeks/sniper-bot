@@ -30,6 +30,125 @@ wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
 
+# -----------------------------------------------------------------------------
+# Bot statistics tracking
+#
+# We track daily counts of scanned tokens, skipped tokens, snipes attempted,
+# snipes succeeded, cumulative PnL, and the last activity timestamp. These
+# statistics are persisted to a JSON file (bot_stats.json) and reset each day
+# at midnight. A daily recap is sent to Telegram with the summary.
+
+import json as _json
+from datetime import date, time, timedelta
+
+STATS_FILE = "bot_stats.json"
+
+def _load_bot_stats():
+    """Load statistics from disk or initialize default stats for today."""
+    today_str = date.today().isoformat()
+    default_stats = {
+        "date": today_str,
+        "tokens_scanned": 0,
+        "tokens_skipped": 0,
+        "snipes_attempted": 0,
+        "snipes_succeeded": 0,
+        "pnl_total": 0.0,
+        "last_activity": None,
+        "skipped_blacklist": 0,
+        "skipped_malformed": 0,
+    }
+    try:
+        if os.path.exists(STATS_FILE):
+            with open(STATS_FILE, "r") as f:
+                data = _json.load(f)
+            # If the stored stats are for today, return them; otherwise reset
+            if data.get("date") == today_str:
+                return data
+        # Not found or outdated -> return default
+    except Exception:
+        pass
+    return default_stats.copy()
+
+def _save_bot_stats():
+    """Persist the current stats dictionary to disk."""
+    try:
+        with open(STATS_FILE, "w") as f:
+            _json.dump(BOT_STATS, f)
+    except Exception:
+        pass
+
+def _reset_bot_stats_and_send_recap():
+    """Reset stats at midnight and send a recap via Telegram."""
+    try:
+        # Prepare recap message based on current stats
+        d = BOT_STATS.get("date")
+        recap = (
+            f"🧾 Daily Recap ({d})\n"
+            f"Scanned: {BOT_STATS['tokens_scanned']} tokens\n"
+            f"Skipped: {BOT_STATS['tokens_skipped']} "
+            f"({BOT_STATS['skipped_blacklist']} blacklisted, {BOT_STATS['skipped_malformed']} malformed)\n"
+            f"Snipes attempted: {BOT_STATS['snipes_attempted']}\n"
+            f"Snipes succeeded: {BOT_STATS['snipes_succeeded']}\n"
+            f"Total PnL: {BOT_STATS['pnl_total']:+.4f} SOL"
+        )
+        # Send recap
+        asyncio.create_task(send_telegram_alert(recap))
+    except Exception:
+        pass
+    # Reset stats for new day
+    new_date = date.today().isoformat()
+    BOT_STATS.update({
+        "date": new_date,
+        "tokens_scanned": 0,
+        "tokens_skipped": 0,
+        "snipes_attempted": 0,
+        "snipes_succeeded": 0,
+        "pnl_total": 0.0,
+        "last_activity": None,
+        "skipped_blacklist": 0,
+        "skipped_malformed": 0,
+    })
+    _save_bot_stats()
+
+# Initialize global stats
+BOT_STATS = _load_bot_stats()
+
+def increment_stat(key: str, amount: int = 1):
+    """Increment a numeric stat and persist the change."""
+    BOT_STATS[key] = BOT_STATS.get(key, 0) + amount
+    _save_bot_stats()
+
+def record_skip(reason: str):
+    """Record a skipped token with reason: 'blacklist' or 'malformed'."""
+    increment_stat("tokens_skipped", 1)
+    if reason == "blacklist":
+        increment_stat("skipped_blacklist", 1)
+    elif reason == "malformed":
+        increment_stat("skipped_malformed", 1)
+
+def record_pnl(amount: float):
+    """Add realized PnL (in SOL) to cumulative total."""
+    BOT_STATS["pnl_total"] = BOT_STATS.get("pnl_total", 0.0) + amount
+    _save_bot_stats()
+
+def update_last_activity():
+    """Update the last activity timestamp to now (ISO format)."""
+    BOT_STATS["last_activity"] = datetime.utcnow().isoformat()
+    _save_bot_stats()
+
+async def daily_stats_reset_loop():
+    """Background task that waits until midnight and resets stats each day."""
+    while True:
+        now = datetime.utcnow()
+        # Compute seconds until next midnight UTC
+        tomorrow = date.today() + timedelta(days=1)
+        midnight = datetime.combine(tomorrow, time(0, 0))
+        seconds_until_midnight = (midnight - now).total_seconds()
+        if seconds_until_midnight < 0:
+            seconds_until_midnight = 60  # fallback
+        await asyncio.sleep(seconds_until_midnight)
+        _reset_bot_stats_and_send_recap()
+
 # Track open positions for dynamic price-based auto-sell logic.
 # Each entry maps a mint to a dict containing:
 #   expected_token_amount: the quantity of tokens (in smallest units) expected from the buy quote
@@ -61,6 +180,8 @@ def mark_broken_token(mint: str, length: int):
         except Exception:
             pass
         log_skipped_token(mint, f"Broken swap ({length} bytes)")
+        # Count as malformed skip in stats
+        record_skip("malformed")
 
 bot_active_flag = {"active": True}
 
@@ -150,7 +271,12 @@ async def buy_token(mint: str):
         if mint in BROKEN_TOKENS:
             await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
             log_skipped_token(mint, "Broken token")
+            record_skip("malformed")
             return False
+
+        # Increment snipes attempted and update last activity
+        increment_stat("snipes_attempted", 1)
+        update_last_activity()
         route = await jupiter.get_quote(input_mint, output_mint, amount, user_pubkey=keypair.pubkey())
         if not route:
             await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying Raydium fallback")
@@ -159,6 +285,7 @@ async def buy_token(mint: str):
         if not route:
             await send_telegram_alert(f"\u274c No valid quote for {mint} (Jupiter & Raydium failed)")
             log_skipped_token(mint, "No valid quote")
+            record_skip("malformed")
             return False
 
         swap_tx_base64 = await jupiter.get_swap_transaction(route, keypair)
@@ -202,6 +329,8 @@ async def buy_token(mint: str):
             "buy_amount_sol": BUY_AMOUNT_SOL,
             "sold_stages": set(),
         }
+        # Update stats for successful snipe
+        increment_stat("snipes_succeeded", 1)
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
 
@@ -357,3 +486,24 @@ def get_wallet_status_message():
 def get_wallet_summary():
     return f"\ud83d\udcbc Wallet: `{wallet_pubkey}`"
 
+def get_bot_status_message():
+    """Construct a multi-line status summary for Telegram."""
+    # Determine bot state
+    state = "RUNNING" if is_bot_running() else "PAUSED"
+    # Compute tokens scanned, skipped, snipes attempted/succeeded
+    scanned = BOT_STATS.get("tokens_scanned", 0)
+    skipped = BOT_STATS.get("tokens_skipped", 0)
+    attempted = BOT_STATS.get("snipes_attempted", 0)
+    succeeded = BOT_STATS.get("snipes_succeeded", 0)
+    pnl = BOT_STATS.get("pnl_total", 0.0)
+    last_ts = BOT_STATS.get("last_activity") or "N/A"
+    message = (
+        f"\U0001f9e0 Bot State: {state}\n"
+        f"\U0001f441\ufe0f Tokens scanned today: {scanned}\n"
+        f"\u26d4 Tokens skipped: {skipped}\n"
+        f"\u2705 Snipes attempted: {attempted}\n"
+        f"\u2705 Snipes succeeded: {succeeded}\n"
+        f"\U0001f4c8 PnL summary today: {pnl:+.4f} SOL\n"
+        f"\U0001f553 Last activity timestamp: {last_ts} UTC"
+    )
+    return message
