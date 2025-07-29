@@ -24,10 +24,15 @@ FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 10))  # Faster for more snipes!
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 seen_tokens = set()
+
+# --- Blacklist for known scams/rugs: fill this set with any addresses you want to permanently skip
+BLACKLIST = set([
+    # "SomeKnownRugMintHere",
+])
 
 TASKS = []
 aggregator = JupiterAggregatorClient(RPC_URL)
@@ -139,35 +144,54 @@ async def mempool_listener(name):
             except Exception:
                 pass
 
+# === Advanced Trending Scanner: Only snipes tokens passing all safety filters ===
+import httpx
+
+MIN_LP_USD = 1000      # Only snipe if at least $1000 liquidity
+MIN_VOLUME_USD = 1000  # Only snipe if at least $1k traded in last hour
+
+seen_trending = set()
+
 async def trending_scanner():
+    global seen_trending
     while True:
         try:
             if not is_bot_running():
                 await asyncio.sleep(5)
                 continue
 
-            mints = await get_trending_mints()
-            for mint in mints:
-                if mint in seen_tokens:
-                    continue
-                seen_tokens.add(mint)
-                increment_stat("tokens_scanned", 1)
-                update_last_activity()
-                if mint in BROKEN_TOKENS:
-                    await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
-                    log_skipped_token(mint, "Broken token")
-                    record_skip("malformed")
-                    continue
-                await send_telegram_alert(f"[🔥] Trending token: {mint}")
-                if await rug_filter_passes(mint):
-                    if await buy_token(mint):
-                        await wait_and_auto_sell(mint)
-
+            url = "https://api.dexscreener.com/latest/dex/pairs/solana"
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url)
+                data = resp.json()
+                pairs = data.get("pairs", [])
+                for pair in pairs[:10]:
+                    mint = pair.get("baseToken", {}).get("address")
+                    lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                    vol_usd = float(pair.get("volume", {}).get("h1", 0))  # last 1h
+                    # skip blacklisted, already seen, or malformed
+                    if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
+                        continue
+                    # Filters:
+                    if lp_usd < MIN_LP_USD:
+                        logging.info(f"[SKIP] {mint} - low LP: ${lp_usd}")
+                        continue
+                    if vol_usd < MIN_VOLUME_USD:
+                        logging.info(f"[SKIP] {mint} - low volume: ${vol_usd}")
+                        continue
+                    seen_trending.add(mint)
+                    increment_stat("tokens_scanned", 1)
+                    update_last_activity()
+                    await send_telegram_alert(f"[🔥] Trending token: {mint} | LP: ${lp_usd:.0f} | Vol: ${vol_usd:.0f}")
+                    # Authority/ownership/rug checks:
+                    passes = await rug_filter_passes(mint)
+                    if passes:
+                        if await buy_token(mint):
+                            await wait_and_auto_sell(mint)
             await asyncio.sleep(TREND_SCAN_INTERVAL)
         except Exception as e:
             logging.warning(f"[Trending Scanner ERROR] {e}")
             await asyncio.sleep(TREND_SCAN_INTERVAL)
-
 
 async def start_sniper():
     await send_telegram_alert("✅ Sniper bot launching...")
@@ -184,15 +208,14 @@ async def start_sniper():
         asyncio.create_task(trending_scanner())
     ])
 
-
 async def start_sniper_with_forced_token(mint: str):
     if not is_bot_running():
         await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
         return
 
-    if mint in BROKEN_TOKENS:
-        await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
-        log_skipped_token(mint, "Broken token")
+    if mint in BROKEN_TOKENS or mint in BLACKLIST:
+        await send_telegram_alert(f"❌ Skipped {mint} — Blacklisted or broken transaction")
+        log_skipped_token(mint, "Blacklisted or broken token")
         return
 
     await send_telegram_alert(f"🚨 Force Buy (skipping LP check): {mint}")
@@ -204,7 +227,6 @@ async def start_sniper_with_forced_token(mint: str):
     except Exception as e:
         await send_telegram_alert(f"❌ Force buy error for {mint}: {e}")
         logging.exception(f"[FORCEBUY] Exception: {e}")
-
 
 async def stop_all_tasks():
     for task in TASKS:
