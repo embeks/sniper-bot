@@ -18,6 +18,7 @@ from utils import (
     BUY_AMOUNT_SOL
     , BROKEN_TOKENS
     , mark_broken_token
+    , daily_stats_reset_loop
 )
 from solders.pubkey import Pubkey
 from jupiter_aggregator import JupiterAggregatorClient
@@ -85,11 +86,16 @@ async def mempool_listener(name):
                             seen_tokens.add(key)
                             print(f"[🧠] Found token: {key}")
 
+                            # Update stats for each token scanned
+                            increment_stat("tokens_scanned", 1)
+                            update_last_activity()
                             if is_valid_mint([{ 'pubkey': key }]):
                                 # Skip tokens that have been marked as broken
                                 if key in BROKEN_TOKENS:
                                     await send_telegram_alert(f"❌ Skipped {key} — Jupiter sent broken transaction")
                                     log_skipped_token(key, "Broken token")
+                                    # count as malformed skip
+                                    record_skip("malformed")
                                     continue
                                 await send_telegram_alert(f"[🟡] Valid token: {key}")
                                 if await rug_filter_passes(key):
@@ -113,10 +119,14 @@ async def trending_scanner():
                 if mint in seen_tokens:
                     continue
                 seen_tokens.add(mint)
+                # Count as scanned and update activity
+                increment_stat("tokens_scanned", 1)
+                update_last_activity()
                 # Skip trending tokens marked as broken
                 if mint in BROKEN_TOKENS:
                     await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
                     log_skipped_token(mint, "Broken token")
+                    record_skip("malformed")
                     continue
                 await send_telegram_alert(f"[🔥] Trending token: {mint}")
 
@@ -137,6 +147,8 @@ async def start_sniper():
         if await buy_token(FORCE_TEST_MINT):
             await wait_and_auto_sell(FORCE_TEST_MINT)
 
+    # Start the daily stats reset loop
+    TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
     TASKS.extend([
         asyncio.create_task(mempool_listener("Raydium")),
         asyncio.create_task(mempool_listener("Jupiter")),
@@ -175,5 +187,4 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🚩 All sniper tasks stopped.")
-
 
