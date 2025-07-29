@@ -45,8 +45,10 @@ async def telegram_webhook(request: Request):
             await stop_all_tasks()
             await send_telegram_alert("🛑 Bot stopped.")
     elif text == "/status":
-        status = "▶️ RUNNING" if is_bot_running() else "⏸ PAUSED"
-        await send_telegram_alert(f"📊 Bot Status: {status}")
+        # Provide a detailed status report using utils.get_bot_status_message
+        from utils import get_bot_status_message  # import here to avoid circular
+        status_msg = get_bot_status_message()
+        await send_telegram_alert(f"📊 Status:\n{status_msg}")
     elif text == "/launch":
         if is_bot_running():
             asyncio.create_task(start_sniper())
