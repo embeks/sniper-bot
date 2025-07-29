@@ -71,41 +71,68 @@ class JupiterAggregatorClient:
             return []
 
     def _create_ata_if_missing(self, owner: PublicKey, mint: PublicKey, keypair: Keypair):
+        """
+        Ensure that an associated token account exists for the given owner and mint.
+
+        This helper checks for the existence of the ATA via `get_account_info`. If none
+        is found, it constructs and sends a transaction to create one using the
+        Associated Token Account program.  Some versions of `solana-py` return a
+        dictionary from `get_latest_blockhash()`, while newer versions return a
+        `GetLatestBlockhashResp` object.  We handle both cases when extracting
+        the blockhash.  We also convert the `solders.Keypair` into a
+        `solana.keypair.Keypair` because `solana-py` transactions cannot be signed
+        directly with a `solders.Keypair`.
+        """
         ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
+        if res.value is not None:
+            return
+        logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
 
-        if res.value is None:
-            logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
+        ix = TransactionInstruction(
+            keys=[
+                AccountMeta(pubkey=owner, is_signer=True, is_writable=True),
+                AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=owner, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+            ],
+            program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
+            data=b"",
+        )
 
-            ix = TransactionInstruction(
-                keys=[
-                    AccountMeta(pubkey=PublicKey(str(keypair.pubkey())), is_signer=True, is_writable=True),
-                    AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
-                    AccountMeta(pubkey=owner, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-                ],
-                program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
-                data=b"",
-            )
-
-            tx = Transaction()
-            tx.add(ix)
+        tx = Transaction()
+        tx.add(ix)
+        try:
+            blockhash_resp = self.client.get_latest_blockhash()
+            if isinstance(blockhash_resp, dict):
+                blockhash = blockhash_resp["result"]["value"]["blockhash"]
+            else:
+                blockhash = blockhash_resp.value.blockhash
+            tx.recent_blockhash = str(blockhash)
+            tx.fee_payer = owner
 
             try:
-                blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
-                tx.recent_blockhash = str(blockhash)
-                tx.fee_payer = PublicKey(str(keypair.pubkey()))
-                tx.sign([keypair])
-                result = self.client.send_raw_transaction(
-                    bytes(tx),
+                from solana.keypair import Keypair as SolanaKeypair  # type: ignore
+                sol_kp = SolanaKeypair.from_secret_key(bytes(keypair)[:32])
+            except Exception as e:
+                logging.error(f"[JUPITER] Failed to convert keypair for ATA creation: {e}")
+                return
+
+            try:
+                tx.sign(sol_kp)
+                result = self.client.send_transaction(
+                    tx,
+                    sol_kp,
                     opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
                 )
                 logging.info(f"[JUPITER] ATA Creation TX: {result}")
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to create ATA: {e}")
+        except Exception as e:
+            logging.error(f"[JUPITER] Failed to create ATA: {e}")
 
     async def get_swap_transaction(self, quote_response: dict, keypair: Keypair):
         try:
@@ -149,29 +176,38 @@ class JupiterAggregatorClient:
 
     def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
         """
-        Decode and log the Jupiter swap transaction.
+        Decode the Jupiter-provided base64 swap transaction to raw bytes.
 
-        The Jupiter API returns a base64-encoded, partially-signed versioned
-        transaction.  For development and debugging purposes, this method
-        decodes the base64 string to bytes for logging (length and a short
-        preview) but returns the original base64 string unchanged.  No
-        signature manipulation is attempted here to avoid incompatibilities
-        with different `solders` versions.  The returned string can be
-        passed directly to `send_transaction`, which will submit it using
-        base64 encoding.
+        The Jupiter API returns a base64-encoded `VersionedTransaction` that is
+        already fully constructed and signed.  This helper simply decodes the
+        base64 string into its raw byte representation for submission.  It
+        also logs the length and a short prefix of the decoded bytes for
+        debugging.  No attempt is made to inspect or modify the transaction
+        contents, since the `solders.VersionedTransaction` signatures list is
+        read-only and modifications can corrupt the transaction.  On any
+        decode error, this method returns `None` and logs a message to
+        Telegram.
+
+        :param swap_tx_base64: The base64-encoded transaction string from
+            Jupiter's swap API.
+        :param keypair: The user's `solders.Keypair`.  Not used here but kept
+            for backwards compatibility with existing calls.
+        :return: The raw transaction bytes on success, otherwise `None`.
         """
         try:
             if not swap_tx_base64:
                 raise ValueError("swap_tx_base64 is empty or None")
-            # Decode for logging purposes
+            sanitized = swap_tx_base64.replace("\n", "").replace(" ", "").strip()
             try:
-                tx_bytes = base64.b64decode(swap_tx_base64)
-                logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
-                logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(tx_bytes[:20])}")
+                tx_bytes = base64.b64decode(sanitized)
             except Exception as e:
-                logging.warning(f"[JUPITER] Failed to decode swap transaction: {e}")
-            # Simply return the original base64 string
-            return swap_tx_base64
+                logging.error(f"[JUPITER] Failed to decode base64 swap transaction: {e}")
+                self._send_telegram_debug(f"❌ Failed to decode swap transaction: {e}")
+                return None
+            # Log decoded length and a short prefix for debugging
+            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
+            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(tx_bytes[:20])}")
+            return tx_bytes
         except Exception as e:
             logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
             self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
@@ -181,34 +217,43 @@ class JupiterAggregatorClient:
         """
         Submit a serialized transaction to the RPC endpoint.
 
-        Accepts a base64 string (as returned by `build_swap_transaction`), a
-        `VersionedTransaction`, or raw bytes.  This method normalises the
-        RPC response across solana-py versions, logs any RPC errors via
-        Telegram, and returns the transaction signature on success.
+        This helper accepts three types of input:
+
+          * A `VersionedTransaction` object from `solders` — it will be
+            serialized to bytes via `bytes(signed_tx)`.
+          * Raw transaction bytes (the output of `build_swap_transaction`).
+          * A base64 string — this will be decoded to bytes before
+            submission.  This fallback is provided for backwards
+            compatibility but is not recommended.
+
+        The transaction bytes are sent via `send_raw_transaction` with
+        `skip_preflight=True` and a `Confirmed` commitment.  Any RPC error
+        information is forwarded to Telegram.  On success, the method
+        returns the transaction signature as a string.
         """
         try:
-            # If we were given a base64 string, submit it directly
-            if isinstance(signed_tx, str):
-                result = self.client.send_raw_transaction(
-                    signed_tx,
-                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed),
-                    encoding="base64"
-                )
+            # Determine how to obtain raw bytes
+            if isinstance(signed_tx, VersionedTransaction):
+                raw_tx_bytes = bytes(signed_tx)
+            elif isinstance(signed_tx, (bytes, bytearray)):
+                raw_tx_bytes = bytes(signed_tx)
+            elif isinstance(signed_tx, str):
+                # decode base64 string to bytes if provided
+                try:
+                    raw_tx_bytes = base64.b64decode(signed_tx.replace("\n", "").replace(" ", "").strip())
+                except Exception as e:
+                    self._send_telegram_debug(f"❌ Base64 decode error: {e}")
+                    return None
             else:
-                # Determine if we were given a VersionedTransaction or raw bytes
-                if isinstance(signed_tx, VersionedTransaction):
-                    raw_tx_bytes = bytes(signed_tx)
-                elif isinstance(signed_tx, (bytes, bytearray)):
-                    raw_tx_bytes = bytes(signed_tx)
-                else:
-                    raise TypeError(f"Unsupported transaction type: {type(signed_tx)}")
-                result = self.client.send_raw_transaction(
-                    raw_tx_bytes,
-                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-                )
+                raise TypeError(f"Unsupported transaction type: {type(signed_tx)}")
+            # Send the raw bytes
+            result = self.client.send_raw_transaction(
+                raw_tx_bytes,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+            )
             # Normalise the response shape
             if isinstance(result, dict):
-                if "error" in result and result["error"]:
+                if result.get("error"):
                     error_info = json.dumps(result["error"], indent=2)
                     self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
                     return None
@@ -234,3 +279,4 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+
