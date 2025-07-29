@@ -24,7 +24,7 @@ FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 10))  # Faster for more snipes!
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))  # Start at 30s to avoid rate limit
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 seen_tokens = set()
@@ -144,7 +144,7 @@ async def mempool_listener(name):
             except Exception:
                 pass
 
-# === Advanced Trending Scanner: Only snipes tokens passing all safety filters ===
+# === Advanced Trending Scanner with Rate-Limit Handling ===
 import httpx
 
 MIN_LP_USD = 1000      # Only snipe if at least $1000 liquidity
@@ -163,7 +163,17 @@ async def trending_scanner():
             url = "https://api.dexscreener.com/latest/dex/pairs/solana"
             async with httpx.AsyncClient() as client:
                 resp = await client.get(url)
-                data = resp.json()
+                # Defensive: only parse if valid JSON and 200 status
+                if resp.status_code != 200:
+                    logging.warning(f"[Trending Scanner ERROR] DEXScreener HTTP {resp.status_code}")
+                    await asyncio.sleep(TREND_SCAN_INTERVAL)
+                    continue
+                try:
+                    data = resp.json()
+                except Exception:
+                    logging.warning("[Trending Scanner ERROR] Invalid JSON from DEXScreener")
+                    await asyncio.sleep(TREND_SCAN_INTERVAL)
+                    continue
                 pairs = data.get("pairs", [])
                 for pair in pairs[:10]:
                     mint = pair.get("baseToken", {}).get("address")
@@ -172,18 +182,13 @@ async def trending_scanner():
                     # skip blacklisted, already seen, or malformed
                     if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
                         continue
-                    # Filters:
-                    if lp_usd < MIN_LP_USD:
-                        logging.info(f"[SKIP] {mint} - low LP: ${lp_usd}")
-                        continue
-                    if vol_usd < MIN_VOLUME_USD:
-                        logging.info(f"[SKIP] {mint} - low volume: ${vol_usd}")
+                    if lp_usd < MIN_LP_USD or vol_usd < MIN_VOLUME_USD:
+                        logging.info(f"[SKIP] {mint} - LP: ${lp_usd}, Vol: ${vol_usd}")
                         continue
                     seen_trending.add(mint)
                     increment_stat("tokens_scanned", 1)
                     update_last_activity()
                     await send_telegram_alert(f"[🔥] Trending token: {mint} | LP: ${lp_usd:.0f} | Vol: ${vol_usd:.0f}")
-                    # Authority/ownership/rug checks:
                     passes = await rug_filter_passes(mint)
                     if passes:
                         if await buy_token(mint):
