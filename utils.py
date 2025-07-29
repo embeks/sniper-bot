@@ -30,6 +30,31 @@ wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
 
+# Load and track tokens for which Jupiter consistently returns malformed swap transactions.
+# These tokens will be skipped in future attempts.
+BROKEN_TOKENS = set()
+broken_tokens_file = "broken_tokens.txt"
+if os.path.exists(broken_tokens_file):
+    try:
+        with open(broken_tokens_file, "r") as f:
+            for line in f:
+                parts = line.strip().split(",")
+                if parts:
+                    BROKEN_TOKENS.add(parts[0])
+    except Exception:
+        pass
+
+def mark_broken_token(mint: str, length: int):
+    """Record a mint as broken and persist to disk."""
+    if mint not in BROKEN_TOKENS:
+        BROKEN_TOKENS.add(mint)
+        try:
+            with open(broken_tokens_file, "a") as f:
+                f.write(f"{mint},{length}\n")
+        except Exception:
+            pass
+        log_skipped_token(mint, f"Broken swap ({length} bytes)")
+
 bot_active_flag = {"active": True}
 
 def is_bot_running():
@@ -114,6 +139,11 @@ async def buy_token(mint: str):
     amount = int(BUY_AMOUNT_SOL * 1e9)
 
     try:
+        # Skip tokens already marked as broken
+        if mint in BROKEN_TOKENS:
+            await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
+            log_skipped_token(mint, "Broken token")
+            return False
         route = await jupiter.get_quote(input_mint, output_mint, amount, user_pubkey=keypair.pubkey())
         if not route:
             await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying Raydium fallback")
@@ -125,24 +155,36 @@ async def buy_token(mint: str):
             return False
 
         swap_tx_base64 = await jupiter.get_swap_transaction(route, keypair)
-        if not swap_tx_base64:
-            await send_telegram_alert(f"\u274c Failed to build swap transaction for {mint}")
-            log_skipped_token(mint, "Swap fetch failed")
+        # If no swap returned (HTTP 400 or error), mark token as broken and skip.
+        if not swap_tx_base64 or not isinstance(swap_tx_base64, str):
+            await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
+            mark_broken_token(mint, 0)
             return False
 
-        raw_tx_bytes = jupiter.build_swap_transaction(swap_tx_base64, keypair)
-        if not raw_tx_bytes:
-            await send_telegram_alert(f"\u274c Failed to build VersionedTransaction for {mint}")
-            log_skipped_token(mint, "Transaction build failed")
+        # Determine the decoded byte length for classification.
+        try:
+            import base64 as _b64
+            decoded_bytes = _b64.b64decode(swap_tx_base64.replace("\n", "").replace(" ", "").strip())
+            decoded_length = len(decoded_bytes)
+        except Exception:
+            decoded_bytes = b""
+            decoded_length = 0
+
+        # Build the VersionedTransaction from the swap. If parsing fails, mark broken.
+        versioned_tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
+        if not versioned_tx or decoded_length < 900:
+            await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
+            mark_broken_token(mint, decoded_length)
             return False
 
-        sig = jupiter.send_transaction(raw_tx_bytes)
+        # Send the transaction. If sending fails, mark broken.
+        sig = jupiter.send_transaction(versioned_tx, keypair)
         if not sig:
-            await send_telegram_alert(f"\u274c Failed to send transaction for {mint}")
-            log_skipped_token(mint, "Transaction send failed")
+            await send_telegram_alert(f"📉 Trade failed — fallback RPC used, still broken for {mint}")
+            mark_broken_token(mint, decoded_length)
             return False
 
-        await send_telegram_alert(f"\u2705 Buy tx sent: https://solscan.io/tx/{sig}")
+        await send_telegram_alert(f"✅ Sniped {mint} — bought at {BUY_AMOUNT_SOL} SOL\nhttps://solscan.io/tx/{sig}")
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
 
@@ -172,13 +214,13 @@ async def sell_token(mint: str, percent: float = 100.0):
             log_skipped_token(mint, "Sell swap fetch failed")
             return False
 
-        raw_tx_bytes = jupiter.build_swap_transaction(swap_tx_base64, keypair)
-        if not raw_tx_bytes:
+        versioned_tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
+        if not versioned_tx:
             await send_telegram_alert(f"\u274c Failed to build VersionedTransaction for {mint}")
             log_skipped_token(mint, "Sell TX build failed")
             return False
 
-        sig = jupiter.send_transaction(raw_tx_bytes)
+        sig = jupiter.send_transaction(versioned_tx, keypair)
         if not sig:
             await send_telegram_alert(f"\u274c Failed to send sell tx for {mint}")
             log_skipped_token(mint, "Sell TX send failed")
@@ -193,13 +235,31 @@ async def sell_token(mint: str, percent: float = 100.0):
         return False
 
 async def wait_and_auto_sell(mint):
+    """
+    Sequentially sell a token in three stages and notify the user of profit-taking.
+
+    This function waits briefly and then executes sell orders for 50%, 25%, and 25% of
+    the original buy amount. After each successful sale, it sends a Telegram alert
+    indicating the profit milestone (2x, 5x, 10x). Errors are caught and reported.
+    """
     try:
+        # Sell 50% at 2x profit milestone
         await asyncio.sleep(1)
-        await sell_token(mint, percent=50)
+        success = await sell_token(mint, percent=50)
+        if success:
+            await send_telegram_alert(f"📈 Sold 50% at 2x — locked in profit")
+
+        # Sell 25% at 5x profit milestone
         await asyncio.sleep(2)
-        await sell_token(mint, percent=25)
+        success = await sell_token(mint, percent=25)
+        if success:
+            await send_telegram_alert(f"📈 Sold 25% at 5x — locked in profit")
+
+        # Sell remaining 25% at 10x profit milestone
         await asyncio.sleep(2)
-        await sell_token(mint, percent=25)
+        success = await sell_token(mint, percent=25)
+        if success:
+            await send_telegram_alert(f"📈 Sold 25% at 10x — locked in profit")
     except Exception as e:
         await send_telegram_alert(f"\u274c Auto-sell error for {mint}: {e}")
 
