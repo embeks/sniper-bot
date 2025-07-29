@@ -16,6 +16,8 @@ from utils import (
     is_bot_running,
     keypair,
     BUY_AMOUNT_SOL
+    , BROKEN_TOKENS
+    , mark_broken_token
 )
 from solders.pubkey import Pubkey
 from jupiter_aggregator import JupiterAggregatorClient
@@ -84,6 +86,11 @@ async def mempool_listener(name):
                             print(f"[🧠] Found token: {key}")
 
                             if is_valid_mint([{ 'pubkey': key }]):
+                                # Skip tokens that have been marked as broken
+                                if key in BROKEN_TOKENS:
+                                    await send_telegram_alert(f"❌ Skipped {key} — Jupiter sent broken transaction")
+                                    log_skipped_token(key, "Broken token")
+                                    continue
                                 await send_telegram_alert(f"[🟡] Valid token: {key}")
                                 if await rug_filter_passes(key):
                                     if await buy_token(key):
@@ -106,6 +113,11 @@ async def trending_scanner():
                 if mint in seen_tokens:
                     continue
                 seen_tokens.add(mint)
+                # Skip trending tokens marked as broken
+                if mint in BROKEN_TOKENS:
+                    await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
+                    log_skipped_token(mint, "Broken token")
+                    continue
                 await send_telegram_alert(f"[🔥] Trending token: {mint}")
 
                 if await rug_filter_passes(mint):
@@ -136,50 +148,19 @@ async def start_sniper_with_forced_token(mint: str):
         await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
         return
 
+    # Skip if mint is already marked broken
+    if mint in BROKEN_TOKENS:
+        await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
+        log_skipped_token(mint, "Broken token")
+        return
+
     await send_telegram_alert(f"🚨 Force Buy (skipping LP check): {mint}")
-    logging.info(f"[FORCEBUY] Getting quote for {mint} with {BUY_AMOUNT_SOL} SOL")
-
+    logging.info(f"[FORCEBUY] Attempting forced buy for {mint} with {BUY_AMOUNT_SOL} SOL")
     try:
-        route = await aggregator.get_quote(
-            input_mint=Pubkey.from_string("So11111111111111111111111111111111111111112"),
-            output_mint=Pubkey.from_string(mint),
-            amount=int(BUY_AMOUNT_SOL * 1e9),
-            slippage_bps=SLIPPAGE_BPS,
-            user_pubkey=keypair.pubkey()
-        )
-
-        logging.warning(f"[FORCEBUY DEBUG] Quote response:\n{json.dumps(route, indent=2)}")
-
-        if not route:
-            await send_telegram_alert(f"❌ Quote failed for {mint}")
-            logging.error(f"[FORCEBUY] Quote failed: No route returned for {mint}")
-            return
-
-        await send_telegram_alert(f"✅ Quote received. Building swap for {mint}")
-        logging.info(f"[FORCEBUY] Quote received: {route}")
-
-        tx_base64 = await aggregator.get_swap_transaction(route, keypair)
-        if not tx_base64 or not isinstance(tx_base64, str):
-            await send_telegram_alert(f"❌ Jupiter quote returned no swapTransaction for {mint}")
-            logging.error(f"[FORCEBUY] No swapTransaction string returned for {mint}")
-            return
-
-        transaction = aggregator.build_swap_transaction(tx_base64, keypair)
-        if not transaction:
-            await send_telegram_alert(f"❌ Failed to build swap transaction for {mint}")
-            logging.error(f"[FORCEBUY] Swap TXN build failed for {mint}")
-            return
-
-        sig = aggregator.send_transaction(transaction, keypair)
-        if not sig:
-            await send_telegram_alert(f"❌ Failed to send transaction for {mint}")
-            logging.error(f"[FORCEBUY] Transaction send failed for {mint}")
-        else:
-            await send_telegram_alert(f"✅ TX Sent: https://solscan.io/tx/{sig}")
-            logging.info(f"[FORCEBUY] ✅ TX sent for {mint}: {sig}")
-
-        await wait_and_auto_sell(mint)
-
+        # Reuse the buy_token helper to encapsulate quote/swap/build logic and broken-token handling
+        success = await buy_token(mint)
+        if success:
+            await wait_and_auto_sell(mint)
     except Exception as e:
         await send_telegram_alert(f"❌ Force buy error for {mint}: {e}")
         logging.exception(f"[FORCEBUY] Exception: {e}")
