@@ -151,34 +151,16 @@ class JupiterAggregatorClient:
         """
         Decode and sign a Jupiter `swapTransaction`.
 
-        Jupiter's `/swap` API returns a base64-encoded versioned transaction
-        that is unsigned for the user.  The aggregator or program may have
-        already added its own signature at a later index, but the user must
-        sign the message as the fee payer.  This method decodes the base64
-        string into a `VersionedTransaction`, signs its message with the
-        provided `solders.Keypair`, then re-populates a new transaction with
-        the signature list.
+        Jupiter's `/swap` API returns a base64-encoded versioned transaction that is
+        unsigned for the user.  The aggregator or program may have already added
+        its own signature at a later index, but the user must sign the message as
+        the fee payer.  This method decodes the base64 string into a
+        `VersionedTransaction`, signs its message with the provided
+        `solders.Keypair`, then re-populates a new transaction with the user's
+        signature.  Any existing signatures from Jupiter are ignored, as they
+        aren't needed when submitting the signed transaction from the user's wallet.
 
-        Steps:
-          1. Decode the base64 string into a `VersionedTransaction`.
-          2. Extract the message bytes.  Prefer `solders.message.to_bytes_versioned`
-             if available; fall back to `bytes(raw_tx.message)` otherwise.
-          3. Sign the message bytes with the provided keypair.
-          4. Construct a new `VersionedTransaction` using
-             `VersionedTransaction.populate(raw_tx.message, sigs)` where
-             `sigs` contains the user's signature in the first slot and
-             preserves any existing signatures from Jupiter.
-          5. Log the decoded length and a short prefix of the bytes for
-             debugging.
-
-        If any step fails, a debug message is sent to Telegram and `None`
-        is returned.
-
-        :param swap_tx_base64: The base64-encoded swap transaction returned
-            by Jupiter's API.
-        :param keypair: The user's `solders.Keypair` for signing.
-        :return: A fully signed `VersionedTransaction` on success, otherwise
-            `None`.
+        On failure, an error is logged and `None` is returned.
         """
         try:
             if not swap_tx_base64:
@@ -214,15 +196,9 @@ class JupiterAggregatorClient:
                 logging.error(f"[JUPITER] Failed to sign message: {e}")
                 self._send_telegram_debug(f"❌ Failed to sign swap transaction: {e}")
                 return None
-            # Combine the user's signature with any existing signatures
-            existing_sigs = list(raw_tx.signatures)
-            if existing_sigs:
-                sigs = [user_sig] + existing_sigs[1:]
-            else:
-                sigs = [user_sig]
-            # Populate a new transaction with the message and signatures
+            # Populate a new transaction with only the user's signature
             try:
-                signed_tx = VersionedTransaction.populate(raw_tx.message, sigs)
+                signed_tx = VersionedTransaction.populate(raw_tx.message, [user_sig])
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to populate signed transaction: {e}")
                 self._send_telegram_debug(f"❌ Failed to build signed transaction: {e}")
@@ -237,11 +213,11 @@ class JupiterAggregatorClient:
         """
         Submit a serialized transaction to the RPC endpoint.
 
-        Accepts a `VersionedTransaction`, raw bytes, or a base64 string.
-        The transaction bytes are sent via `send_raw_transaction` with
+        Accepts a `VersionedTransaction`, raw bytes, or a base64 string.  The
+        transaction bytes are sent via `send_raw_transaction` with
         `skip_preflight=True` and a `Confirmed` commitment.  Any RPC
-        error information is forwarded to Telegram.  On success, the
-        method returns the transaction signature as a string.
+        error information is forwarded to Telegram.  On success, the method
+        returns the transaction signature as a string.
         """
         try:
             # Determine how to obtain raw bytes
@@ -250,6 +226,7 @@ class JupiterAggregatorClient:
             elif isinstance(signed_tx, (bytes, bytearray)):
                 raw_tx_bytes = bytes(signed_tx)
             elif isinstance(signed_tx, str):
+                # decode base64 string to bytes if provided
                 try:
                     raw_tx_bytes = base64.b64decode(signed_tx.replace("\n", "").replace(" ", "").strip())
                 except Exception as e:
