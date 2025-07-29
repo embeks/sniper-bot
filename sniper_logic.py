@@ -29,7 +29,6 @@ RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 seen_tokens = set()
 
-# --- Blacklist for known scams/rugs: fill this set with any addresses you want to permanently skip
 BLACKLIST = set([
     # "SomeKnownRugMintHere",
 ])
@@ -37,7 +36,10 @@ BLACKLIST = set([
 TASKS = []
 aggregator = JupiterAggregatorClient(RPC_URL)
 
-# === Agent Mode: Enhanced Mempool Listener with Watchdog, Heartbeat, Auto-Restart ===
+# === Agent Mode: Enhanced Mempool Listener with Watchdog, Heartbeat, Auto-Restart + Alert Suppression ===
+last_alert_sent = {"Raydium": 0, "Jupiter": 0}
+alert_cooldown_sec = 1800   # 30 min cooldown after an inactivity alert per listener
+
 async def mempool_listener(name):
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     retry_attempts = 0
@@ -46,7 +48,6 @@ async def mempool_listener(name):
     heartbeat_interval = 60      # Every 60s: log heartbeat
     max_inactive = 300           # 5min: restart if dead
 
-    # --- Heartbeat/Watchdog loop ---
     async def heartbeat_watchdog():
         while True:
             await asyncio.sleep(heartbeat_interval)
@@ -57,13 +58,17 @@ async def mempool_listener(name):
             else:
                 logging.warning(f"⚠️ {name} listener no token for {int(elapsed)}s")
             if elapsed > max_inactive:
-                msg = f"⚠️ {name} listener inactive for 5m — restarting..."
-                logging.error(msg)
-                listener_status[name] = "RESTARTING"
-                await send_telegram_alert(msg)
+                # Alert suppression: Only send alert if it's been 30min since last one for this listener
+                if now - last_alert_sent[name] > alert_cooldown_sec:
+                    msg = f"⚠️ {name} listener inactive for 5m — restarting..."
+                    logging.error(msg)
+                    listener_status[name] = "RESTARTING"
+                    await send_telegram_alert(msg)
+                    last_alert_sent[name] = now
+                else:
+                    logging.warning(f"[{name} RESTART] Inactive >5min, suppressing repeat alert (cooldown in effect)")
                 raise Exception("ListenerInactive")
 
-    # === Main persistent listener loop ===
     while True:
         try:
             async with websockets.connect(url, ping_interval=20) as ws:
@@ -79,9 +84,8 @@ async def mempool_listener(name):
                 logging.info(f"[🔁] {name} listener subscribed.")
                 await send_telegram_alert(f"📱 {name} listener live.")
                 listener_status[name] = "ACTIVE"
-                last_seen_token[name] = time.time()  # changed to time.time() for all
+                last_seen_token[name] = time.time()
 
-                # Start the heartbeat watcher (runs in parallel)
                 watchdog_task = asyncio.create_task(heartbeat_watchdog())
 
                 while True:
@@ -100,7 +104,7 @@ async def mempool_listener(name):
                                     print(f"[🧠] Found token: {key}")
                                     increment_stat("tokens_scanned", 1)
                                     update_last_activity()
-                                    last_seen_token[name] = time.time()  # update event time
+                                    last_seen_token[name] = time.time()
 
                                     if is_valid_mint([{ 'pubkey': key }]):
                                         if key in BROKEN_TOKENS:
@@ -121,7 +125,6 @@ async def mempool_listener(name):
             logging.warning(f"[{name} ERROR] {e}")
             retry_attempts += 1
             listener_status[name] = f"RETRYING ({retry_attempts})"
-            # Kill heartbeat/watcher on error
             try:
                 watchdog_task.cancel()
                 await watchdog_task
@@ -134,10 +137,8 @@ async def mempool_listener(name):
                 break
             await asyncio.sleep(retry_delay)
         else:
-            # Reset retry count on clean exit
             retry_attempts = 0
         finally:
-            # Clean up heartbeat task if open (prevents leak)
             try:
                 watchdog_task.cancel()
                 await watchdog_task
@@ -147,8 +148,8 @@ async def mempool_listener(name):
 # === Multi-Source Trending Scanner: DEXScreener + Birdeye Fallback ===
 import httpx
 
-MIN_LP_USD = 1000      # Only snipe if at least $1000 liquidity
-MIN_VOLUME_USD = 1000  # Only snipe if at least $1k traded in last hour
+MIN_LP_USD = 1000
+MIN_VOLUME_USD = 1000
 
 seen_trending = set()
 
