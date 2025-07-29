@@ -25,7 +25,7 @@ SOLANA_PRIVATE_KEY = json.loads(os.getenv("SOLANA_PRIVATE_KEY"))
 BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")  # <--- REQUIRED for Raydium fallback
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
@@ -243,39 +243,30 @@ async def approve_token_if_needed(mint):
     except:
         pass
 
-# ====== RAYDIUM FALLBACK FUNCTION ======
-async def raydium_swap(input_mint: str, output_mint: str, amount: int) -> bool:
-    """Attempt to swap SOL for output_mint using Raydium via Birdeye aggregator."""
-    if not BIRDEYE_API_KEY:
-        await send_telegram_alert("❌ BIRDEYE_API_KEY missing for Raydium fallback.")
-        return False
+# ==== BIRDEYE FALLBACK LOGIC ====
+async def birdeye_check_token(mint: str, min_liquidity=50000):
     try:
-        url = "https://public-api.birdeye.so/defi/aggregator/v1/route/market"
-        headers = {"X-API-KEY": BIRDEYE_API_KEY}
-        params = {
-            "fromToken": input_mint,
-            "toToken": output_mint,
-            "amount": str(amount)
+        url = f"https://public-api.birdeye.so/defi/price?address={mint}"
+        headers = {
+            "X-API-KEY": BIRDEYE_API_KEY,
+            "accept": "application/json"
         }
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, params=params)
-            if resp.status_code != 200:
-                await send_telegram_alert(f"❌ Birdeye aggregator route failed: {resp.text}")
+        async with httpx.AsyncClient(timeout=7) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code != 200:
                 return False
-            data = resp.json()
-            route = data.get("data", {}).get("routes", [])
-            if not route:
-                await send_telegram_alert("❌ No Raydium swap route found on Birdeye.")
+            data = res.json()
+            price = float(data.get("data", {}).get("value", 0))
+            liquidity = float(data.get("data", {}).get("liquidity", 0))
+            if price > 0 and liquidity >= min_liquidity:
+                return True
+            else:
                 return False
-            # For demo, just log the route; real buy logic would go here.
-            await send_telegram_alert(f"🟢 Birdeye Raydium route found: {route[0]}")
-            # To implement actual Raydium swap, you'd need to build and send TX
-            # (Out of scope for this Birdeye fallback demo)
-            return True
     except Exception as e:
-        await send_telegram_alert(f"❌ Raydium swap error: {e}")
+        await send_telegram_alert(f"Birdeye check failed for {mint}: {e}")
         return False
-# ===== END RAYDIUM FALLBACK =====
+
+# ==== END BIRDEYE FALLBACK ====
 
 async def buy_token(mint: str):
     input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
@@ -293,30 +284,16 @@ async def buy_token(mint: str):
         update_last_activity()
         route = await jupiter.get_quote(input_mint, output_mint, amount, user_pubkey=keypair.pubkey())
         if not route:
-            await send_telegram_alert(f"\u26a0\ufe0f Jupiter quote failed for {mint}, trying direct Jupiter route.")
-            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True, user_pubkey=keypair.pubkey())
-
-        # ======= RAYDIUM FALLBACK BUY =======
-        if not route:
-            await send_telegram_alert(f"⚡ Jupiter failed for {mint} — trying Raydium via Birdeye aggregator...")
-            # Call fallback (real Raydium swap, not simulation)
-            fallback_ok = await raydium_swap(
-                input_mint="So11111111111111111111111111111111111111112",
-                output_mint=mint,
-                amount=amount
-            )
-            if fallback_ok:
-                # If you build/send a real TX in raydium_swap, mark as success.
-                await send_telegram_alert(f"✅ Raydium fallback (Birdeye) executed for {mint}")
-                increment_stat("snipes_succeeded", 1)
-                log_trade(mint, "BUY-RAYDIUM", BUY_AMOUNT_SOL, 0)
-                return True
-            else:
-                await send_telegram_alert(f"❌ No valid quote for {mint} (Jupiter & Raydium failed)")
-                log_skipped_token(mint, "No valid quote")
+            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Birdeye fallback")
+            is_real = await birdeye_check_token(mint)
+            if not is_real:
+                await send_telegram_alert(f"❌ Skipped {mint} — not tradable or too low liquidity (Birdeye)")
+                log_skipped_token(mint, "No valid quote or liquidity")
                 record_skip("malformed")
                 return False
-        # ======= END RAYDIUM FALLBACK =======
+            else:
+                await send_telegram_alert(f"✅ Birdeye fallback PASSED for {mint} — token is real & liquid.")
+                return False  # Placeholder: implement Raydium fallback buy logic if needed
 
         swap_tx_base64 = await jupiter.get_swap_transaction(route, keypair)
         if not swap_tx_base64 or not isinstance(swap_tx_base64, str):
@@ -359,7 +336,7 @@ async def buy_token(mint: str):
         return True
 
     except Exception as e:
-        await send_telegram_alert(f"\u274c Buy failed for {mint}: {e}")
+        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
