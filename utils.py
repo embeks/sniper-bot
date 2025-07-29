@@ -4,6 +4,7 @@ import httpx
 import asyncio
 import csv
 import base58
+import time  # <--- for heartbeat tracking
 from datetime import datetime
 from dotenv import load_dotenv
 from solders.keypair import Keypair
@@ -30,6 +31,20 @@ wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
 
+# === AGENT MODE: Listener Health State (GLOBAL) ===
+listener_status = {"Raydium": "IDLE", "Jupiter": "IDLE"}
+last_seen_token = {"Raydium": time.time(), "Jupiter": time.time()}  # use epoch time for easy math
+
+def get_listener_health():
+    health = {}
+    now = time.time()
+    for name in ["Raydium", "Jupiter"]:
+        elapsed = int(now - last_seen_token.get(name, 0))
+        status = listener_status.get(name, "UNKNOWN")
+        health[name] = {"status": status, "last_event_sec": elapsed}
+    return health
+# === END AGENT MODE LISTENER HEALTH ===
+
 # -----------------------------------------------------------------------------
 # Bot statistics tracking
 #
@@ -39,7 +54,7 @@ jupiter = JupiterAggregatorClient(RPC_URL)
 # at midnight. A daily recap is sent to Telegram with the summary.
 
 import json as _json
-from datetime import date, time, timedelta
+from datetime import date, time as dt_time, timedelta
 
 STATS_FILE = "bot_stats.json"
 
@@ -142,7 +157,7 @@ async def daily_stats_reset_loop():
         now = datetime.utcnow()
         # Compute seconds until next midnight UTC
         tomorrow = date.today() + timedelta(days=1)
-        midnight = datetime.combine(tomorrow, time(0, 0))
+        midnight = datetime.combine(tomorrow, dt_time(0, 0))
         seconds_until_midnight = (midnight - now).total_seconds()
         if seconds_until_midnight < 0:
             seconds_until_midnight = 60  # fallback
@@ -150,14 +165,9 @@ async def daily_stats_reset_loop():
         _reset_bot_stats_and_send_recap()
 
 # Track open positions for dynamic price-based auto-sell logic.
-# Each entry maps a mint to a dict containing:
-#   expected_token_amount: the quantity of tokens (in smallest units) expected from the buy quote
-#   buy_amount_sol: the SOL spent on the buy (in SOL units)
-#   sold_stages: a set of milestones already sold (e.g., {2, 5, 10})
 OPEN_POSITIONS = {}
 
 # Load and track tokens for which Jupiter consistently returns malformed swap transactions.
-# These tokens will be skipped in future attempts.
 BROKEN_TOKENS = set()
 broken_tokens_file = "broken_tokens.txt"
 if os.path.exists(broken_tokens_file):
@@ -180,7 +190,6 @@ def mark_broken_token(mint: str, length: int):
         except Exception:
             pass
         log_skipped_token(mint, f"Broken swap ({length} bytes)")
-        # Count as malformed skip in stats
         record_skip("malformed")
 
 bot_active_flag = {"active": True}
@@ -490,13 +499,19 @@ def get_bot_status_message():
     """Construct a multi-line status summary for Telegram."""
     # Determine bot state
     state = "RUNNING" if is_bot_running() else "PAUSED"
-    # Compute tokens scanned, skipped, snipes attempted/succeeded
     scanned = BOT_STATS.get("tokens_scanned", 0)
     skipped = BOT_STATS.get("tokens_skipped", 0)
     attempted = BOT_STATS.get("snipes_attempted", 0)
     succeeded = BOT_STATS.get("snipes_succeeded", 0)
     pnl = BOT_STATS.get("pnl_total", 0.0)
     last_ts = BOT_STATS.get("last_activity") or "N/A"
+    # --- Add listener health report to status ---
+    health = get_listener_health()
+    health_lines = []
+    for name, info in health.items():
+        emoji = "✅" if info['status'] == "ACTIVE" else "⚠️"
+        health_lines.append(f"{emoji} {name}: {info['status']} | Last event {info['last_event_sec']}s ago")
+    health_str = "\n".join(health_lines)
     message = (
         f"\U0001f9e0 Bot State: {state}\n"
         f"\U0001f441\ufe0f Tokens scanned today: {scanned}\n"
@@ -504,6 +519,7 @@ def get_bot_status_message():
         f"\u2705 Snipes attempted: {attempted}\n"
         f"\u2705 Snipes succeeded: {succeeded}\n"
         f"\U0001f4c8 PnL summary today: {pnl:+.4f} SOL\n"
-        f"\U0001f553 Last activity timestamp: {last_ts} UTC"
+        f"\U0001f553 Last activity timestamp: {last_ts} UTC\n"
+        f"\n\U0001f4ac Listener Health:\n{health_str}"
     )
     return message
