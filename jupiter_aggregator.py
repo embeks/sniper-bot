@@ -23,6 +23,11 @@ class JupiterAggregatorClient:
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
         self.base_url = "https://quote-api.jup.ag/v6"
+        # Load fallback RPC URL from environment, if provided
+        self.fallback_rpc_url = os.getenv("RPC_FALLBACK_URL")
+        self.fallback_client = Client(self.fallback_rpc_url) if self.fallback_rpc_url else None
+        # Track which tokens have already attempted a fallback to avoid infinite loops
+        self._fallback_attempted = set()
 
     async def get_quote(
         self,
@@ -30,7 +35,8 @@ class JupiterAggregatorClient:
         output_mint: Pubkey,
         amount: int,
         slippage_bps: int = 100,
-        user_pubkey: Pubkey = None
+        user_pubkey: Pubkey = None,
+        rpc_url: str = None,
     ):
         try:
             url = f"{self.base_url}/quote"
@@ -147,52 +153,183 @@ class JupiterAggregatorClient:
             logging.exception(f"[JUPITER] Swap exception: {e}")
             return None
 
-    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
+    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair, rpc_url: str = None):
+        """
+        Decode and sign the base64-encoded swap transaction returned by Jupiter.
+
+        The `swap_tx_base64` string is expected to represent an unsigned
+        `VersionedTransaction`.  This method decodes the string, logs its
+        length and a short prefix for debugging, deserializes it, signs the
+        message bytes using the provided `solders.Keypair`, and returns a new
+        signed `VersionedTransaction`.  If decoding or deserialization fails,
+        a Telegram alert is sent and `None` is returned.
+
+        An optional `rpc_url` argument is accepted for API parity but
+        presently unused; fallback logic is handled in `send_transaction`.
+        """
         try:
             if not swap_tx_base64:
                 raise ValueError("swap_tx_base64 is empty or None")
-
-            tx_bytes = base64.b64decode(swap_tx_base64)
-            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
-            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(tx_bytes[:20])}")
-
-            if len(tx_bytes) < 400 or tx_bytes.startswith(b'\x01\x00\x00'):
-                self._send_telegram_debug(
-                    f"❌ Decoded tx looks malformed.\nLength: {len(tx_bytes)} bytes\nFirst 20 bytes: `{tx_bytes[:20]}`\n```{swap_tx_base64[:400]}```"
-                )
+            # sanitize and decode
+            sanitized = swap_tx_base64.replace("\n", "").replace(" ", "").strip()
+            try:
+                raw_bytes = base64.b64decode(sanitized)
+            except Exception as e:
+                logging.error(f"[JUPITER] Failed to decode base64 swap transaction: {e}")
+                self._send_telegram_debug(f"❌ Failed to decode swap transaction: {e}")
                 return None
-
-            tx = VersionedTransaction.from_bytes(tx_bytes)
-            return tx
-
+            # log debug information
+            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(raw_bytes)}")
+            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(raw_bytes[:20])}")
+            # deserialize
+            try:
+                raw_tx = VersionedTransaction.from_bytes(raw_bytes)
+            except Exception as e:
+                logging.error(f"[JUPITER] Failed to deserialize transaction: {e}")
+                self._send_telegram_debug(f"❌ Failed to deserialize swap transaction: {e}")
+                return None
+            # obtain message bytes for signing
+            try:
+                from solders.message import to_bytes_versioned  # type: ignore
+                msg_bytes = to_bytes_versioned(raw_tx.message)
+            except Exception:
+                msg_bytes = bytes(raw_tx.message)
+            # sign
+            try:
+                user_sig = keypair.sign_message(msg_bytes)
+            except Exception as e:
+                logging.error(f"[JUPITER] Failed to sign message: {e}")
+                self._send_telegram_debug(f"❌ Failed to sign swap transaction: {e}")
+                return None
+            # construct new signed transaction
+            try:
+                signed_tx = VersionedTransaction.populate(raw_tx.message, [user_sig])
+            except Exception as e:
+                logging.error(f"[JUPITER] Failed to populate signed transaction: {e}")
+                self._send_telegram_debug(f"❌ Failed to build signed transaction: {e}")
+                return None
+            return signed_tx
         except Exception as e:
             logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
             self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
             return None
 
-    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
+    def send_transaction(self, signed_tx, keypair: Keypair = None, rpc_url: str = None):
+        """
+        Submit a serialized transaction using either the primary or fallback RPC.
+
+        This method accepts a `VersionedTransaction`, raw bytes, or a base64
+        string.  It decodes to raw bytes if necessary and attempts to send
+        via the primary RPC client.  If the raw bytes length is less than 900
+        bytes (indicating a truncated or malformed swapTransaction) or if the
+        RPC returns an error, it will retry once using the fallback RPC
+        client (if configured).  Telegram alerts are sent on fallback and
+        final failure.  The optional `rpc_url` argument allows callers to
+        explicitly choose which client to use.
+        """
         try:
-            raw_tx_bytes = bytes(signed_tx)
-            if len(raw_tx_bytes) < 400:
-                self._send_telegram_debug(f"❌ Raw TX too short: {len(raw_tx_bytes)} bytes. Aborting send.")
+            # Determine raw bytes from input
+            if isinstance(signed_tx, VersionedTransaction):
+                raw_tx_bytes = bytes(signed_tx)
+            elif isinstance(signed_tx, (bytes, bytearray)):
+                raw_tx_bytes = bytes(signed_tx)
+            elif isinstance(signed_tx, str):
+                try:
+                    raw_tx_bytes = base64.b64decode(signed_tx.replace("\n", "").replace(" ", "").strip())
+                except Exception as e:
+                    self._send_telegram_debug(f"❌ Base64 decode error: {e}")
+                    return None
+            else:
+                raise TypeError(f"Unsupported transaction type: {type(signed_tx)}")
+
+            # Choose client based on rpc_url parameter
+            client = None
+            if rpc_url == self.fallback_rpc_url and self.fallback_client is not None:
+                client = self.fallback_client
+            else:
+                client = self.client
+
+            def _submit(_client):
+                try:
+                    res = _client.send_raw_transaction(
+                        raw_tx_bytes,
+                        opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                    )
+                    return res
+                except Exception as exc:
+                    return exc
+
+            # If rpc_url explicitly given, do single attempt
+            if rpc_url is not None:
+                result = _submit(client)
+                if isinstance(result, Exception):
+                    self._send_telegram_debug(f"❌ Send error:\n{type(result).__name__}: {result}")
+                    return None
+                if isinstance(result, dict):
+                    if result.get("error"):
+                        error_info = json.dumps(result["error"], indent=2)
+                        self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
+                        return None
+                    sig = result.get("result")
+                    if not sig:
+                        self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
+                        return None
+                    return str(sig)
+                return str(result)
+
+            # Primary attempt
+            result = _submit(self.client)
+            # Check for malformed length
+            if len(raw_tx_bytes) < 900 or isinstance(result, Exception) or (isinstance(result, dict) and result.get("error")):
+                # Attempt fallback if available and not already attempted
+                if self.fallback_client:
+                    self._send_telegram_debug("🔁 Jupiter quote failed. Retrying via fallback RPC...")
+                    result_fb = _submit(self.fallback_client)
+                    if isinstance(result_fb, Exception):
+                        self._send_telegram_debug(f"❌ Swap failed via fallback RPC. Error: {result_fb}")
+                        return None
+                    if isinstance(result_fb, dict):
+                        if result_fb.get("error"):
+                            error_info = json.dumps(result_fb["error"], indent=2)
+                            self._send_telegram_debug(f"❌ Swap failed via fallback RPC:\n```{error_info}```")
+                            return None
+                        sig = result_fb.get("result")
+                        if not sig:
+                            self._send_telegram_debug(f"❌ Swap failed via fallback RPC. No tx hash returned:\n```{result_fb}```")
+                            return None
+                        return str(sig)
+                    return str(result_fb)
+                else:
+                    # No fallback configured
+                    if isinstance(result, Exception):
+                        self._send_telegram_debug(f"❌ Send error:\n{type(result).__name__}: {result}")
+                        return None
+                    if isinstance(result, dict):
+                        if result.get("error"):
+                            error_info = json.dumps(result["error"], indent=2)
+                            self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
+                            return None
+                        sig = result.get("result")
+                        if not sig:
+                            self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
+                            return None
+                        return str(sig)
+                    return str(result)
+            # No fallback needed; handle primary response
+            if isinstance(result, Exception):
+                self._send_telegram_debug(f"❌ Send error:\n{type(result).__name__}: {result}")
                 return None
-
-            result = self.client.send_raw_transaction(
-                raw_tx_bytes,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-            )
-
-            if "error" in result:
-                error_info = json.dumps(result["error"], indent=2)
-                self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
-                return None
-
-            if "result" not in result or not result["result"]:
-                self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
-                return None
-
-            return str(result["result"])
-
+            if isinstance(result, dict):
+                if result.get("error"):
+                    error_info = json.dumps(result["error"], indent=2)
+                    self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
+                    return None
+                sig = result.get("result")
+                if not sig:
+                    self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
+                    return None
+                return str(sig)
+            return str(result)
         except Exception as e:
             self._send_telegram_debug(f"❌ Send error:\n{type(e).__name__}: {e}")
             return None
@@ -209,119 +346,3 @@ class JupiterAggregatorClient:
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
 
-    # -------------------------------------------------------------------------
-    #  Override methods to properly build and send swap transactions
-    #  The original definitions above include heuristics and do not sign the
-    #  returned transaction.  Jupiter returns a versioned transaction that is
-    #  unsigned for the user.  We must sign the message bytes and re-create
-    #  the transaction before submission.  We override the methods here so
-    #  that the last definition in the class takes precedence.
-
-    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
-        """
-        Decode and sign a Jupiter `swapTransaction`.
-
-        Jupiter's `/swap` API returns a base64-encoded versioned transaction
-        that is unsigned for the user.  The aggregator or program may have
-        already added its own signature at a later index, but the user must
-        sign the message as the fee payer.  This method decodes the base64
-        string into a `VersionedTransaction`, signs its message with the
-        provided `solders.Keypair`, then re-populates a new transaction with
-        the user's signature.  Any existing signatures from Jupiter are
-        ignored, as they aren't needed when submitting the signed transaction
-        from the user's wallet.
-
-        On failure, an error is logged and `None` is returned.
-        """
-        try:
-            if not swap_tx_base64:
-                raise ValueError("swap_tx_base64 is empty or None")
-            sanitized = swap_tx_base64.replace("\n", "").replace(" ", "").strip()
-            # Decode base64
-            try:
-                raw_bytes = base64.b64decode(sanitized)
-            except Exception as e:
-                logging.error(f"[JUPITER] Failed to decode base64 swap transaction: {e}")
-                self._send_telegram_debug(f"❌ Failed to decode swap transaction: {e}")
-                return None
-            # Log length and prefix for debugging
-            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(raw_bytes)}")
-            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(raw_bytes[:20])}")
-            # Deserialize
-            try:
-                raw_tx = VersionedTransaction.from_bytes(raw_bytes)
-            except Exception as e:
-                logging.error(f"[JUPITER] Failed to deserialize transaction: {e}")
-                self._send_telegram_debug(f"❌ Failed to deserialize swap transaction: {e}")
-                return None
-            # Obtain message bytes
-            try:
-                from solders.message import to_bytes_versioned  # type: ignore
-                msg_bytes = to_bytes_versioned(raw_tx.message)
-            except Exception:
-                msg_bytes = bytes(raw_tx.message)
-            # Sign with user's keypair
-            try:
-                user_sig = keypair.sign_message(msg_bytes)
-            except Exception as e:
-                logging.error(f"[JUPITER] Failed to sign message: {e}")
-                self._send_telegram_debug(f"❌ Failed to sign swap transaction: {e}")
-                return None
-            # Build a new transaction with only the user's signature
-            try:
-                signed_tx = VersionedTransaction.populate(raw_tx.message, [user_sig])
-            except Exception as e:
-                logging.error(f"[JUPITER] Failed to populate signed transaction: {e}")
-                self._send_telegram_debug(f"❌ Failed to build signed transaction: {e}")
-                return None
-            return signed_tx
-        except Exception as e:
-            logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
-            self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
-            return None
-
-    def send_transaction(self, signed_tx, keypair: Keypair = None):
-        """
-        Submit a serialized transaction to the RPC endpoint.
-
-        Accepts a `VersionedTransaction`, raw bytes, or a base64 string.  The
-        transaction bytes are sent via `send_raw_transaction` with
-        `skip_preflight=True` and a `Confirmed` commitment.  Any RPC
-        error information is forwarded to Telegram.  On success, the method
-        returns the transaction signature as a string.
-        """
-        try:
-            # Determine raw bytes
-            if isinstance(signed_tx, VersionedTransaction):
-                raw_tx_bytes = bytes(signed_tx)
-            elif isinstance(signed_tx, (bytes, bytearray)):
-                raw_tx_bytes = bytes(signed_tx)
-            elif isinstance(signed_tx, str):
-                try:
-                    raw_tx_bytes = base64.b64decode(signed_tx.replace("\n", "").replace(" ", "").strip())
-                except Exception as e:
-                    self._send_telegram_debug(f"❌ Base64 decode error: {e}")
-                    return None
-            else:
-                raise TypeError(f"Unsupported transaction type: {type(signed_tx)}")
-            # Send via RPC
-            result = self.client.send_raw_transaction(
-                raw_tx_bytes,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-            )
-            # Handle dict response
-            if isinstance(result, dict):
-                if result.get("error"):
-                    error_info = json.dumps(result["error"], indent=2)
-                    self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
-                    return None
-                sig = result.get("result")
-                if not sig:
-                    self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
-                    return None
-                return str(sig)
-            # Some versions may return signature directly
-            return str(result)
-        except Exception as e:
-            self._send_telegram_debug(f"❌ Send error:\n{type(e).__name__}: {e}")
-            return None
