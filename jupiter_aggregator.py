@@ -189,8 +189,9 @@ class JupiterAggregatorClient:
         it into a `VersionedTransaction`.  If successful, it will look for the
         user's public key in the transaction's `account_keys` and replace the
         corresponding null signature with a real signature.  If the solders
-        message helper `to_bytes_versioned` cannot be imported, the raw bytes
-        are returned unmodified.  Any exceptions are logged and result in
+        message helper `to_bytes_versioned` cannot be imported, the method
+        falls back to signing using `bytes(message)`; if that also fails, it
+        returns the raw bytes.  Any exceptions are logged and result in
         `None` being returned.
         """
         try:
@@ -226,9 +227,25 @@ class JupiterAggregatorClient:
                     tx.signatures = sigs
                     return tx  # return signed VersionedTransaction
                 except Exception:
-                    logging.warning(f"[JUPITER] solders.message.to_bytes_versioned could not be imported; returning unsigned serialized bytes.")
-                    # Fall back to raw bytes
-                    return tx_bytes
+                    # If to_bytes_versioned is unavailable, attempt to sign using bytes(message)
+                    try:
+                        message_bytes = bytes(tx.message)
+                        user_sig = keypair.sign_message(message_bytes)
+                        sig_index = next(
+                            i for i, k in enumerate(tx.message.account_keys)
+                            if k == keypair.pubkey()
+                        )
+                        sigs = tx.signatures
+                        sigs[sig_index] = user_sig
+                        tx.signatures = sigs
+                        logging.info("[JUPITER] Signed tx using fallback message bytes")
+                        return tx
+                    except Exception as inner:
+                        logging.warning(
+                            f"[JUPITER] solders.message.to_bytes_versioned could not be imported or fallback signing failed; returning unsigned serialized bytes. Error: {inner}"
+                        )
+                        # Fall back to raw bytes
+                        return tx_bytes
             # If we couldn't deserialize, return raw bytes
             return tx_bytes
         except Exception as e:
@@ -287,5 +304,6 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+
 
 
