@@ -148,55 +148,126 @@ class JupiterAggregatorClient:
             return None
 
     def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
+        try:
+            if not swap_tx_base64:
+                raise ValueError("swap_tx_base64 is empty or None")
+
+            tx_bytes = base64.b64decode(swap_tx_base64)
+            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
+            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(tx_bytes[:20])}")
+
+            if len(tx_bytes) < 400 or tx_bytes.startswith(b'\x01\x00\x00'):
+                self._send_telegram_debug(
+                    f"❌ Decoded tx looks malformed.\nLength: {len(tx_bytes)} bytes\nFirst 20 bytes: `{tx_bytes[:20]}`\n```{swap_tx_base64[:400]}```"
+                )
+                return None
+
+            tx = VersionedTransaction.from_bytes(tx_bytes)
+            return tx
+
+        except Exception as e:
+            logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
+            self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
+            return None
+
+    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
+        try:
+            raw_tx_bytes = bytes(signed_tx)
+            if len(raw_tx_bytes) < 400:
+                self._send_telegram_debug(f"❌ Raw TX too short: {len(raw_tx_bytes)} bytes. Aborting send.")
+                return None
+
+            result = self.client.send_raw_transaction(
+                raw_tx_bytes,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+            )
+
+            if "error" in result:
+                error_info = json.dumps(result["error"], indent=2)
+                self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
+                return None
+
+            if "result" not in result or not result["result"]:
+                self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
+                return None
+
+            return str(result["result"])
+
+        except Exception as e:
+            self._send_telegram_debug(f"❌ Send error:\n{type(e).__name__}: {e}")
+            return None
+
+    def _send_telegram_debug(self, message: str):
+        try:
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            if not token or not chat_id:
+                return
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+            httpx.post(url, json=payload, timeout=5)
+        except Exception as e:
+            logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
+
+    # -------------------------------------------------------------------------
+    #  Override methods to properly build and send swap transactions
+    #  The original definitions above include heuristics and do not sign the
+    #  returned transaction.  Jupiter returns a versioned transaction that is
+    #  unsigned for the user.  We must sign the message bytes and re-create
+    #  the transaction before submission.  We override the methods here so
+    #  that the last definition in the class takes precedence.
+
+    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
         """
         Decode and sign a Jupiter `swapTransaction`.
 
-        Jupiter's `/swap` API returns a base64-encoded versioned transaction that is
-        unsigned for the user.  The aggregator or program may have already added
-        its own signature at a later index, but the user must sign the message as
-        the fee payer.  This method decodes the base64 string into a
-        `VersionedTransaction`, signs its message with the provided
-        `solders.Keypair`, then re-populates a new transaction with the user's
-        signature.  Any existing signatures from Jupiter are ignored, as they
-        aren't needed when submitting the signed transaction from the user's wallet.
+        Jupiter's `/swap` API returns a base64-encoded versioned transaction
+        that is unsigned for the user.  The aggregator or program may have
+        already added its own signature at a later index, but the user must
+        sign the message as the fee payer.  This method decodes the base64
+        string into a `VersionedTransaction`, signs its message with the
+        provided `solders.Keypair`, then re-populates a new transaction with
+        the user's signature.  Any existing signatures from Jupiter are
+        ignored, as they aren't needed when submitting the signed transaction
+        from the user's wallet.
 
         On failure, an error is logged and `None` is returned.
         """
         try:
             if not swap_tx_base64:
                 raise ValueError("swap_tx_base64 is empty or None")
-            # Sanitize and decode base64
             sanitized = swap_tx_base64.replace("\n", "").replace(" ", "").strip()
+            # Decode base64
             try:
                 raw_bytes = base64.b64decode(sanitized)
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to decode base64 swap transaction: {e}")
                 self._send_telegram_debug(f"❌ Failed to decode swap transaction: {e}")
                 return None
-            # Log length and prefix
+            # Log length and prefix for debugging
             logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(raw_bytes)}")
             logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(raw_bytes[:20])}")
-            # Deserialize to VersionedTransaction
+            # Deserialize
             try:
                 raw_tx = VersionedTransaction.from_bytes(raw_bytes)
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to deserialize transaction: {e}")
                 self._send_telegram_debug(f"❌ Failed to deserialize swap transaction: {e}")
                 return None
-            # Obtain message bytes for signing
+            # Obtain message bytes
             try:
                 from solders.message import to_bytes_versioned  # type: ignore
                 msg_bytes = to_bytes_versioned(raw_tx.message)
             except Exception:
                 msg_bytes = bytes(raw_tx.message)
-            # Sign the message bytes with the user's keypair
+            # Sign with user's keypair
             try:
                 user_sig = keypair.sign_message(msg_bytes)
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to sign message: {e}")
                 self._send_telegram_debug(f"❌ Failed to sign swap transaction: {e}")
                 return None
-            # Populate a new transaction with only the user's signature
+            # Build a new transaction with only the user's signature
             try:
                 signed_tx = VersionedTransaction.populate(raw_tx.message, [user_sig])
             except Exception as e:
@@ -220,13 +291,12 @@ class JupiterAggregatorClient:
         returns the transaction signature as a string.
         """
         try:
-            # Determine how to obtain raw bytes
+            # Determine raw bytes
             if isinstance(signed_tx, VersionedTransaction):
                 raw_tx_bytes = bytes(signed_tx)
             elif isinstance(signed_tx, (bytes, bytearray)):
                 raw_tx_bytes = bytes(signed_tx)
             elif isinstance(signed_tx, str):
-                # decode base64 string to bytes if provided
                 try:
                     raw_tx_bytes = base64.b64decode(signed_tx.replace("\n", "").replace(" ", "").strip())
                 except Exception as e:
@@ -234,12 +304,12 @@ class JupiterAggregatorClient:
                     return None
             else:
                 raise TypeError(f"Unsupported transaction type: {type(signed_tx)}")
-            # Send the raw bytes
+            # Send via RPC
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
-            # Normalise the response shape
+            # Handle dict response
             if isinstance(result, dict):
                 if result.get("error"):
                     error_info = json.dumps(result["error"], indent=2)
@@ -250,20 +320,8 @@ class JupiterAggregatorClient:
                     self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
                     return None
                 return str(sig)
-            # Some versions may return the signature directly
+            # Some versions may return signature directly
             return str(result)
         except Exception as e:
             self._send_telegram_debug(f"❌ Send error:\n{type(e).__name__}: {e}")
             return None
-
-    def _send_telegram_debug(self, message: str):
-        try:
-            token = os.getenv("TELEGRAM_BOT_TOKEN")
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            if not token or not chat_id:
-                return
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-            httpx.post(url, json=payload, timeout=5)
-        except Exception as e:
-            logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
