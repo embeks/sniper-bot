@@ -1,10 +1,9 @@
-# === sniper_logic.py (UPGRADED with listener health, heartbeat, and retries) ===
-
 import asyncio
 import json
 import os
 import websockets
 import logging
+import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -33,12 +32,34 @@ seen_tokens = set()
 TASKS = []
 aggregator = JupiterAggregatorClient(RPC_URL)
 
-# === Enhanced Mempool Listener with Reconnects + Heartbeats ===
+# === Agent Mode: Enhanced Mempool Listener with Watchdog, Heartbeat, Auto-Restart ===
 async def mempool_listener(name):
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     retry_attempts = 0
+    max_retries = 3
+    retry_delay = 5
+    heartbeat_interval = 60      # Every 60s: log heartbeat
+    max_inactive = 300           # 5min: restart if dead
 
-    while retry_attempts < 3:
+    # --- Heartbeat/Watchdog loop ---
+    async def heartbeat_watchdog():
+        while True:
+            await asyncio.sleep(heartbeat_interval)
+            now = time.time()
+            elapsed = now - last_seen_token[name]
+            if elapsed < heartbeat_interval * 2:
+                logging.info(f"✅ {name} listener heartbeat ({int(elapsed)}s since last event)")
+            else:
+                logging.warning(f"⚠️ {name} listener no token for {int(elapsed)}s")
+            if elapsed > max_inactive:
+                msg = f"⚠️ {name} listener inactive for 5m — restarting..."
+                logging.error(msg)
+                listener_status[name] = "RESTARTING"
+                await send_telegram_alert(msg)
+                raise Exception("ListenerInactive")
+
+    # === Main persistent listener loop ===
+    while True:
         try:
             async with websockets.connect(url, ping_interval=20) as ws:
                 await ws.send(json.dumps({
@@ -53,7 +74,10 @@ async def mempool_listener(name):
                 logging.info(f"[🔁] {name} listener subscribed.")
                 await send_telegram_alert(f"📱 {name} listener live.")
                 listener_status[name] = "ACTIVE"
-                last_seen_token[name] = datetime.utcnow()
+                last_seen_token[name] = time.time()  # changed to time.time() for all
+
+                # Start the heartbeat watcher (runs in parallel)
+                watchdog_task = asyncio.create_task(heartbeat_watchdog())
 
                 while True:
                     try:
@@ -71,7 +95,7 @@ async def mempool_listener(name):
                                     print(f"[🧠] Found token: {key}")
                                     increment_stat("tokens_scanned", 1)
                                     update_last_activity()
-                                    last_seen_token[name] = datetime.utcnow()
+                                    last_seen_token[name] = time.time()  # update event time
 
                                     if is_valid_mint([{ 'pubkey': key }]):
                                         if key in BROKEN_TOKENS:
@@ -85,7 +109,6 @@ async def mempool_listener(name):
                                                 await wait_and_auto_sell(key)
                                     else:
                                         log_skipped_token(key, "Invalid mint")
-
                     except asyncio.TimeoutError:
                         logging.info(f"[⏳] {name} heartbeat — no token seen in last 60s.")
 
@@ -93,12 +116,28 @@ async def mempool_listener(name):
             logging.warning(f"[{name} ERROR] {e}")
             retry_attempts += 1
             listener_status[name] = f"RETRYING ({retry_attempts})"
-            await asyncio.sleep(5)
-
-    # Final failure
-    await send_telegram_alert(f"⚠️ {name} listener failed 3×. Reconnect failed. Last error: {e}")
-    listener_status[name] = "FAILED"
-
+            # Kill heartbeat/watcher on error
+            try:
+                watchdog_task.cancel()
+                await watchdog_task
+            except Exception:
+                pass
+            if retry_attempts >= max_retries:
+                msg = f"⚠️ {name} listener failed {max_retries}×. Reconnect failed. Last error: {e}"
+                await send_telegram_alert(msg)
+                listener_status[name] = "FAILED"
+                break
+            await asyncio.sleep(retry_delay)
+        else:
+            # Reset retry count on clean exit
+            retry_attempts = 0
+        finally:
+            # Clean up heartbeat task if open (prevents leak)
+            try:
+                watchdog_task.cancel()
+                await watchdog_task
+            except Exception:
+                pass
 
 async def trending_scanner():
     while True:
