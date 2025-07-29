@@ -103,7 +103,7 @@ class JupiterAggregatorClient:
             tx.add(ix)
 
             try:
-                blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
+                blockhash = self.client.get_latest_blockhash().value.blockhash
                 tx.recent_blockhash = str(blockhash)
                 tx.fee_payer = PublicKey(str(keypair.pubkey()))
                 tx.sign([keypair])
