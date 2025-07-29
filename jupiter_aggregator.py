@@ -17,6 +17,11 @@ from solana.system_program import SYS_PROGRAM_ID
 from spl.token.instructions import get_associated_token_address
 from solana.publickey import PublicKey
 
+# Import the solana‑py Keypair under an alias.  We need this type when
+# signing legacy Transactions because solana‑py and solders use distinct
+# keypair classes.
+from solana.keypair import Keypair as SolanaKeypair
+
 
 class JupiterAggregatorClient:
     def __init__(self, rpc_url):
@@ -71,26 +76,12 @@ class JupiterAggregatorClient:
             return []
 
     def _create_ata_if_missing(self, owner: PublicKey, mint: PublicKey, keypair: Keypair):
-        """
-        Ensure the associated token account (ATA) exists for ``owner`` and ``mint``.
-
-        If the account does not exist, this method creates and submits a single
-        instruction transaction to initialise the ATA.  When signing
-        transactions using solana‑py's ``Transaction`` class you must pass
-        individual signer objects rather than a list; otherwise the library
-        attempts to call ``to_solders()`` on the list and fails.  Because our
-        bot's wallet uses ``solders.Keypair``, we convert it into a
-        ``solana.keypair.Keypair`` by taking the first 32 bytes of the 64‑byte
-        secret/public key array【87479222754777†L27-L44】.  This conversion is
-        necessary because solana‑py and solders use different keypair types.
-        """
         ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
 
         if res.value is None:
             logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
 
-            # Build the instruction to create the associated token account
             ix = TransactionInstruction(
                 keys=[
                     AccountMeta(pubkey=PublicKey(str(keypair.pubkey())), is_signer=True, is_writable=True),
@@ -109,39 +100,15 @@ class JupiterAggregatorClient:
             tx.add(ix)
 
             try:
-                # Get a recent blockhash; older solana‑py versions return a dict
-                # while newer return an object.
-                latest = self.client.get_latest_blockhash()
-                if isinstance(latest, dict):
-                    blockhash = latest["result"]["value"]["blockhash"]
-                else:
-                    blockhash = latest.value.blockhash  # type: ignore[attr-defined]
-
+                blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
                 tx.recent_blockhash = str(blockhash)
                 tx.fee_payer = PublicKey(str(keypair.pubkey()))
-
-                # Convert solders keypair to solana keypair.  A solders Keypair is
-                # 64 bytes long (secret + pubkey)【87479222754777†L27-L44】.  The
-                # first 32 bytes contain the secret seed; passing this to
-                # ``SolanaKeypair.from_secret_key`` yields a compatible signer.
-                try:
-                    raw = bytes(keypair)
-                    secret = raw[:32]
-                    sol_kp = SolanaKeypair.from_secret_key(secret)
-                except Exception:
-                    sol_kp = SolanaKeypair.from_secret_key(bytes(keypair))  # type: ignore[arg-type]
-
-                # Sign the transaction with the converted keypair.  Pass the signer
-                # as a separate argument rather than a list to avoid an
-                # AttributeError for ``to_solders``.
-                tx.sign(sol_kp)
-
-                # Send the transaction.  Using send_transaction ensures the
-                # transaction is properly serialised and the signer is applied.
-                send_result = self.client.send_transaction(
-                    tx, sol_kp, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                tx.sign([keypair])
+                result = self.client.send_raw_transaction(
+                    bytes(tx),
+                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
                 )
-                logging.info(f"[JUPITER] ATA Creation TX: {send_result}")
+                logging.info(f"[JUPITER] ATA Creation TX: {result}")
             except Exception as e:
                 logging.error(f"[JUPITER] Failed to create ATA: {e}")
 
@@ -246,6 +213,4 @@ class JupiterAggregatorClient:
             httpx.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
-
-
 
