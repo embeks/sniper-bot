@@ -164,52 +164,83 @@ class JupiterAggregatorClient:
             return None
 
     def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
+        """
+        Decode the base64-encoded Jupiter swap transaction and return a VersionedTransaction.
+
+        This helper will attempt to decode the provided `swap_tx_base64` string to raw bytes
+        and then deserialize those bytes into a `solders.transaction.VersionedTransaction`.
+        It does not enforce any heuristics on the length or contents of the decoded bytes.
+
+        If the base64 string cannot be decoded or if the bytes cannot be parsed into a
+        VersionedTransaction, this method returns None. Upstream callers should handle
+        the case where None is returned and decide whether to mark the associated token
+        as broken.
+        """
         try:
             if not swap_tx_base64:
-                raise ValueError("swap_tx_base64 is empty or None")
+                logging.error("[JUPITER] No swap transaction provided to build_swap_transaction")
+                return None
 
-            tx_bytes = base64.b64decode(swap_tx_base64)
+            # Decode the base64 string into bytes. Strip newlines and whitespace for safety.
+            tx_bytes = base64.b64decode(swap_tx_base64.replace("\n", "").replace(" ", "").strip())
             logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
             logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(tx_bytes[:20])}")
 
-            if len(tx_bytes) < 400 or tx_bytes.startswith(b'\x01\x00\x00'):
-                self._send_telegram_debug(
-                    f"❌ Decoded tx looks malformed.\nLength: {len(tx_bytes)} bytes\nFirst 20 bytes: `{tx_bytes[:20]}`\n```{swap_tx_base64[:400]}```"
-                )
+            # Attempt to deserialize into a VersionedTransaction. If this fails, return None.
+            try:
+                tx = VersionedTransaction.from_bytes(tx_bytes)
+            except Exception as parse_err:
+                logging.error(f"[JUPITER] Failed to parse VersionedTransaction: {parse_err}")
                 return None
 
-            tx = VersionedTransaction.from_bytes(tx_bytes)
             return tx
 
         except Exception as e:
             logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
-            self._send_telegram_debug(f"❌ Unexpected swapTransaction error: {e}")
             return None
 
     def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
+        """
+        Submit a fully-formed VersionedTransaction to the RPC endpoint.
+
+        This method converts the provided VersionedTransaction into raw bytes and uses
+        `send_raw_transaction` with skip_preflight enabled. Any errors returned by the
+        RPC or raised during submission are caught and reported via logging/telegram.
+
+        The function returns the transaction signature (a string) on success, or None
+        if the submission fails.
+        """
         try:
             raw_tx_bytes = bytes(signed_tx)
-            if len(raw_tx_bytes) < 400:
-                self._send_telegram_debug(f"❌ Raw TX too short: {len(raw_tx_bytes)} bytes. Aborting send.")
-                return None
 
+            # Send the raw transaction via the configured client. We skip preflight
+            # to reduce latency; the trade-off is that obvious failures (e.g. account
+            # not found) will only surface after submission.
             result = self.client.send_raw_transaction(
                 raw_tx_bytes,
                 opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
 
-            if "error" in result:
-                error_info = json.dumps(result["error"], indent=2)
-                self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
-                return None
+            # Check RPC response format. Newer solana-py versions return dictionaries;
+            # older versions may return raw JSON. We normalize to get the signature.
+            if isinstance(result, dict):
+                if "error" in result:
+                    error_info = json.dumps(result["error"], indent=2)
+                    self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
+                    return None
+                sig = result.get("result")
+            else:
+                # In case result is not a dict (older solana-py), use as-is
+                sig = result
 
-            if "result" not in result or not result["result"]:
+            if not sig:
                 self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
                 return None
 
-            return str(result["result"])
+            return str(sig)
 
         except Exception as e:
+            # Catch and log any exception during submission
             self._send_telegram_debug(f"❌ Send error:\n{type(e).__name__}: {e}")
             return None
 
