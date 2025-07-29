@@ -30,6 +30,13 @@ wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
 jupiter = JupiterAggregatorClient(RPC_URL)
 
+# Track open positions for dynamic price-based auto-sell logic.
+# Each entry maps a mint to a dict containing:
+#   expected_token_amount: the quantity of tokens (in smallest units) expected from the buy quote
+#   buy_amount_sol: the SOL spent on the buy (in SOL units)
+#   sold_stages: a set of milestones already sold (e.g., {2, 5, 10})
+OPEN_POSITIONS = {}
+
 # Load and track tokens for which Jupiter consistently returns malformed swap transactions.
 # These tokens will be skipped in future attempts.
 BROKEN_TOKENS = set()
@@ -185,6 +192,16 @@ async def buy_token(mint: str):
             return False
 
         await send_telegram_alert(f"✅ Sniped {mint} — bought at {BUY_AMOUNT_SOL} SOL\nhttps://solscan.io/tx/{sig}")
+        # Record the position for dynamic price monitoring
+        try:
+            expected_token_amount = int(route.get("outAmount", 0))
+        except Exception:
+            expected_token_amount = 0
+        OPEN_POSITIONS[mint] = {
+            "expected_token_amount": expected_token_amount,
+            "buy_amount_sol": BUY_AMOUNT_SOL,
+            "sold_stages": set(),
+        }
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
         return True
 
@@ -236,30 +253,86 @@ async def sell_token(mint: str, percent: float = 100.0):
 
 async def wait_and_auto_sell(mint):
     """
-    Sequentially sell a token in three stages and notify the user of profit-taking.
+    Monitor the token's price in real time and execute sell orders based on
+    configurable profit targets and stop-loss conditions.
 
-    This function waits briefly and then executes sell orders for 50%, 25%, and 25% of
-    the original buy amount. After each successful sale, it sends a Telegram alert
-    indicating the profit milestone (2x, 5x, 10x). Errors are caught and reported.
+    The bot will:
+      • Sell 50% of the position when the price reaches 2× the entry (2x).
+      • Sell 25% when the price reaches 5× the entry (5x).
+      • Sell the remaining 25% when the price reaches 10× the entry (10x).
+      • Exit the entire position if the price drops 20% below the entry.
+      • If no price movement for 5 minutes (no 2x achieved), sell all.
+
+    It sends Telegram alerts with the PnL for each sale and logs the trades. If an
+    exception occurs, the function reports the error via Telegram.
     """
     try:
-        # Sell 50% at 2x profit milestone
-        await asyncio.sleep(1)
-        success = await sell_token(mint, percent=50)
-        if success:
-            await send_telegram_alert(f"📈 Sold 50% at 2x — locked in profit")
+        position = OPEN_POSITIONS.get(mint)
+        if not position:
+            await send_telegram_alert(f"⚠️ No open position found for {mint}. Skipping auto-sell.")
+            return
 
-        # Sell 25% at 5x profit milestone
-        await asyncio.sleep(2)
-        success = await sell_token(mint, percent=25)
-        if success:
-            await send_telegram_alert(f"📈 Sold 25% at 5x — locked in profit")
+        expected_amount = position.get("expected_token_amount", 0)
+        buy_sol = position.get("buy_amount_sol", BUY_AMOUNT_SOL)
+        sold_stages = position.get("sold_stages", set())
+        start_time = datetime.utcnow()
 
-        # Sell remaining 25% at 10x profit milestone
-        await asyncio.sleep(2)
-        success = await sell_token(mint, percent=25)
-        if success:
-            await send_telegram_alert(f"📈 Sold 25% at 10x — locked in profit")
+        # Define profit milestones and percentages to sell
+        milestones = [2, 5, 10]
+        percentages = {2: 50, 5: 25, 10: 25}
+
+        while True:
+            # Break if all milestones met or position no longer exists
+            if sold_stages == set(milestones):
+                break
+
+            # Check elapsed time
+            elapsed = (datetime.utcnow() - start_time).total_seconds()
+            if elapsed > 300:  # 5 minutes fallback
+                await send_telegram_alert(f"⏲️ No price movement for {mint} after 5 minutes — exiting position")
+                await sell_token(mint, percent=100.0)
+                OPEN_POSITIONS.pop(mint, None)
+                break
+
+            # Fetch current price by quoting the full expected token amount back to SOL
+            try:
+                quote = await jupiter.get_quote(
+                    input_mint=Pubkey.from_string(mint),
+                    output_mint=Pubkey.from_string("So11111111111111111111111111111111111111112"),
+                    amount=expected_amount,
+                    user_pubkey=keypair.pubkey()
+                )
+                if quote and "outAmount" in quote:
+                    current_sol = quote["outAmount"] / 1e9
+                    ratio = current_sol / buy_sol
+                else:
+                    ratio = 0
+            except Exception:
+                ratio = 0
+
+            # Stop-loss: price dropped below 80% of entry
+            if ratio <= 0.8:
+                await send_telegram_alert(f"📉 Price drop detected for {mint} (ratio {ratio:.2f}) — selling all")
+                await sell_token(mint, percent=100.0)
+                OPEN_POSITIONS.pop(mint, None)
+                break
+
+            # Iterate milestones and sell if threshold met
+            for milestone in milestones:
+                if milestone not in sold_stages and ratio >= milestone:
+                    percent = percentages[milestone]
+                    success = await sell_token(mint, percent=percent)
+                    if success:
+                        # Calculate PnL in SOL terms
+                        pnl = current_sol - buy_sol
+                        await send_telegram_alert(f"📈 Sold {percent}% at {milestone}x — locked in profit (PnL: +{pnl:.4f} SOL)")
+                        sold_stages.add(milestone)
+                    # Update stored sold stages
+                    position["sold_stages"] = sold_stages
+            # Sleep briefly before next check to avoid spamming
+            await asyncio.sleep(15)
+        # Clean up after all sells
+        OPEN_POSITIONS.pop(mint, None)
     except Exception as e:
         await send_telegram_alert(f"\u274c Auto-sell error for {mint}: {e}")
 
@@ -283,3 +356,4 @@ def get_wallet_status_message():
 
 def get_wallet_summary():
     return f"\ud83d\udcbc Wallet: `{wallet_pubkey}`"
+
