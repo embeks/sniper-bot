@@ -9,3 +9,4 @@ gunicorn
 fastapi
 uvicorn[standard]
 base58
+raydium-py
