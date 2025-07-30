@@ -185,10 +185,13 @@ async def send_telegram_alert(message: str):
     except Exception:
         pass
 
-def log_trade(token, action, sol_in, token_out):
+def log_trade(token, action, sol_in, token_out, token_amt=0, sol_value=0.0, realized_pnl=0.0):
     with open("trade_log.csv", "a", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([datetime.utcnow().isoformat(), token, action, sol_in, token_out])
+        writer.writerow([
+            datetime.utcnow().isoformat(),
+            token, action, sol_in, token_out, token_amt, sol_value, realized_pnl
+        ])
 
 def log_skipped_token(mint: str, reason: str):
     with open("skipped_tokens.csv", "a", newline="") as f:
@@ -268,6 +271,41 @@ async def birdeye_check_token(mint: str, min_liquidity=50000):
 
 # ==== END BIRDEYE FALLBACK ====
 
+# --------- ADVANCED: ACTUAL TOKEN BALANCE CHECKS ---------
+async def get_token_balance(mint: str) -> int:
+    """
+    Returns actual on-chain SPL token balance (in base units, e.g., 9 decimals).
+    """
+    ata = get_associated_token_address(keypair.pubkey(), Pubkey.from_string(mint))
+    try:
+        resp = rpc.get_token_account_balance(ata)
+        if resp and resp.get("result") and resp["result"].get("value"):
+            return int(resp["result"]["value"]["amount"])
+    except Exception:
+        pass
+    return 0
+
+async def get_birdeye_price(mint: str) -> float:
+    """
+    Returns the SOL value of one token (token/SOL price).
+    """
+    try:
+        url = f"https://public-api.birdeye.so/defi/price?address={mint}"
+        headers = {
+            "X-API-KEY": BIRDEYE_API_KEY,
+            "accept": "application/json"
+        }
+        async with httpx.AsyncClient(timeout=7) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code != 200:
+                return 0
+            data = res.json()
+            return float(data.get("data", {}).get("value", 0))
+    except Exception:
+        return 0
+
+# ---------------------------------------------------------
+
 async def buy_token(mint: str):
     input_mint = "So11111111111111111111111111111111111111112"
     output_mint = mint
@@ -282,6 +320,9 @@ async def buy_token(mint: str):
 
         increment_stat("snipes_attempted", 1)
         update_last_activity()
+
+        # === Pre-buy: Record pre-balance ===
+        pre_balance = await get_token_balance(mint)
 
         # === Check Raydium pool exists ===
         pool = raydium.find_pool(input_mint, output_mint)
@@ -304,14 +345,36 @@ async def buy_token(mint: str):
             mark_broken_token(mint, 0)
             return False
 
-        await send_telegram_alert(f"✅ Sniped {mint} — bought at {BUY_AMOUNT_SOL} SOL\nhttps://solscan.io/tx/{sig}")
+        await asyncio.sleep(5)  # wait for confirmation
+
+        # === Post-buy: Check tokens received ===
+        post_balance = await get_token_balance(mint)
+        tokens_received = max(0, post_balance - pre_balance)
+
+        if tokens_received == 0:
+            await send_telegram_alert(f"❗ No tokens received after buying {mint}! Marking as broken.")
+            mark_broken_token(mint, 0)
+            return False
+
+        # Fetch price for PnL logging
+        token_price = await get_birdeye_price(mint)
+        buy_value_in_sol = tokens_received * token_price / 1e9
+
+        await send_telegram_alert(
+            f"✅ Sniped {mint}\n"
+            f"Bought: {BUY_AMOUNT_SOL} SOL\n"
+            f"Received: {tokens_received / 1e9:.4f} tokens\n"
+            f"Token price (SOL): {token_price:.9f}\n"
+            f"https://solscan.io/tx/{sig}"
+        )
         OPEN_POSITIONS[mint] = {
-            "expected_token_amount": 0,
+            "received_tokens": tokens_received,
             "buy_amount_sol": BUY_AMOUNT_SOL,
             "sold_stages": set(),
+            "entry_price": token_price,
         }
         increment_stat("snipes_succeeded", 1)
-        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
+        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0, token_amt=tokens_received, sol_value=buy_value_in_sol)
         return True
 
     except Exception as e:
@@ -322,16 +385,26 @@ async def buy_token(mint: str):
 async def sell_token(mint: str, percent: float = 100.0):
     input_mint = mint
     output_mint = "So11111111111111111111111111111111111111112"
-    amount = int(BUY_AMOUNT_SOL * 1e9 * percent / 100)
 
     try:
+        position = OPEN_POSITIONS.get(mint, {})
+        total_tokens = position.get("received_tokens", 0)
+        sold_stages = position.get("sold_stages", set())
+        to_sell = int(total_tokens * percent / 100)
+        if to_sell == 0:
+            await send_telegram_alert(f"❗ Not enough {mint} tokens to sell ({percent}%)")
+            return False
+
         pool = raydium.find_pool(input_mint, output_mint)
         if not pool:
             await send_telegram_alert(f"⚠️ No Raydium pool for {mint}. Skipping sell.")
             log_skipped_token(mint, "No Raydium pool for sell")
             return False
 
-        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        # Approve if needed
+        await approve_token_if_needed(mint)
+
+        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, to_sell)
         if not tx:
             await send_telegram_alert(f"❌ Failed to build sell TX for {mint}")
             log_skipped_token(mint, "Sell TX build failed")
@@ -343,8 +416,32 @@ async def sell_token(mint: str, percent: float = 100.0):
             log_skipped_token(mint, "Sell TX send failed")
             return False
 
-        await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, 0)
+        await asyncio.sleep(5)
+
+        # Check token balance after sell
+        post_balance = await get_token_balance(mint)
+        tokens_sold = total_tokens - post_balance
+        tokens_sold = max(0, tokens_sold)
+        sol_received = tokens_sold * (await get_birdeye_price(mint)) / 1e9
+        entry_price = position.get("entry_price", 0)
+        realized_pnl = sol_received - (tokens_sold * entry_price / 1e9)
+
+        await send_telegram_alert(
+            f"✅ Sell {percent:.0f}% of {mint}\n"
+            f"Tokens sold: {tokens_sold / 1e9:.4f}\n"
+            f"Sold for: {sol_received:.6f} SOL\n"
+            f"Realized PnL: {realized_pnl:+.6f} SOL\n"
+            f"https://solscan.io/tx/{sig}"
+        )
+
+        record_pnl(realized_pnl)
+        log_trade(mint, f"SELL {percent}%", 0, sol_received, token_amt=tokens_sold, sol_value=sol_received, realized_pnl=realized_pnl)
+
+        # Update position for next partial sell
+        if mint in OPEN_POSITIONS:
+            OPEN_POSITIONS[mint]["received_tokens"] = post_balance
+            OPEN_POSITIONS[mint]["sold_stages"] = sold_stages
+
         return True
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
@@ -359,13 +456,15 @@ async def wait_and_auto_sell(mint):
             return
 
         buy_sol = position.get("buy_amount_sol", BUY_AMOUNT_SOL)
+        received_tokens = position.get("received_tokens", 0)
         sold_stages = position.get("sold_stages", set())
+        entry_price = position.get("entry_price", 0)
         start_time = datetime.utcnow()
 
         milestones = [2, 5, 10]
         percentages = {2: 50, 5: 25, 10: 25}
 
-        # Placeholder: cannot get live price; must poll external API for PnL
+        # Use Birdeye to poll for live price
         while True:
             if sold_stages == set(milestones):
                 break
@@ -377,9 +476,28 @@ async def wait_and_auto_sell(mint):
                 OPEN_POSITIONS.pop(mint, None)
                 break
 
-            # Optional: fetch price from Birdeye for profit calculation here if you wish
-            # You may integrate PnL logic by polling Birdeye every X seconds
+            token_price = await get_birdeye_price(mint)
+            if not token_price:
+                await asyncio.sleep(15)
+                continue
 
+            current_value = received_tokens * token_price / 1e9
+            ratio = current_value / buy_sol if buy_sol > 0 else 0
+
+            if ratio <= 0.8:
+                await send_telegram_alert(f"📉 Price drop detected for {mint} (ratio {ratio:.2f}) — selling all")
+                await sell_token(mint, percent=100.0)
+                OPEN_POSITIONS.pop(mint, None)
+                break
+
+            for milestone in milestones:
+                if milestone not in sold_stages and ratio >= milestone:
+                    percent = percentages[milestone]
+                    success = await sell_token(mint, percent=percent)
+                    if success:
+                        await send_telegram_alert(f"📈 Sold {percent}% at {milestone}x — profit locked.")
+                        sold_stages.add(milestone)
+                    position["sold_stages"] = sold_stages
             await asyncio.sleep(15)
         OPEN_POSITIONS.pop(mint, None)
     except Exception as e:
