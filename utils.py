@@ -14,7 +14,7 @@ from solana.transaction import Transaction
 from solana.rpc.types import TxOpts, MemcmpOpts
 from solana.rpc.async_api import AsyncClient
 from spl.token.instructions import approve, get_associated_token_address
-from jupiter_aggregator import JupiterAggregatorClient
+from raydium_aggregator import RaydiumAggregatorClient
 
 load_dotenv()
 
@@ -30,15 +30,15 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
 rpc = Client(RPC_URL)
-jupiter = JupiterAggregatorClient(RPC_URL)
+raydium = RaydiumAggregatorClient(RPC_URL)
 
-listener_status = {"Raydium": "IDLE", "Jupiter": "IDLE"}
-last_seen_token = {"Raydium": time.time(), "Jupiter": time.time()}
+listener_status = {"Raydium": "IDLE"}
+last_seen_token = {"Raydium": time.time()}
 
 def get_listener_health():
     health = {}
     now = time.time()
-    for name in ["Raydium", "Jupiter"]:
+    for name in ["Raydium"]:
         elapsed = int(now - last_seen_token.get(name, 0))
         status = listener_status.get(name, "UNKNOWN")
         health[name] = {"status": status, "last_event_sec": elapsed}
@@ -269,65 +269,44 @@ async def birdeye_check_token(mint: str, min_liquidity=50000):
 # ==== END BIRDEYE FALLBACK ====
 
 async def buy_token(mint: str):
-    input_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
-    output_mint = Pubkey.from_string(mint)
+    input_mint = "So11111111111111111111111111111111111111112"
+    output_mint = mint
     amount = int(BUY_AMOUNT_SOL * 1e9)
 
     try:
         if mint in BROKEN_TOKENS:
-            await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
+            await send_telegram_alert(f"❌ Skipped {mint} — broken token")
             log_skipped_token(mint, "Broken token")
             record_skip("malformed")
             return False
 
         increment_stat("snipes_attempted", 1)
         update_last_activity()
-        route = await jupiter.get_quote(input_mint, output_mint, amount, user_pubkey=keypair.pubkey())
-        if not route:
-            await send_telegram_alert(f"⚠️ Jupiter quote failed for {mint}, trying Birdeye fallback")
-            is_real = await birdeye_check_token(mint)
-            if not is_real:
-                await send_telegram_alert(f"❌ Skipped {mint} — not tradable or too low liquidity (Birdeye)")
-                log_skipped_token(mint, "No valid quote or liquidity")
-                record_skip("malformed")
-                return False
-            else:
-                await send_telegram_alert(f"✅ Birdeye fallback PASSED for {mint} — token is real & liquid.")
-                return False  # Placeholder: implement Raydium fallback buy logic if needed
 
-        swap_tx_base64 = await jupiter.get_swap_transaction(route, keypair)
-        if not swap_tx_base64 or not isinstance(swap_tx_base64, str):
-            await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
+        # === Check Raydium pool exists ===
+        pool = raydium.find_pool(input_mint, output_mint)
+        if not pool:
+            await send_telegram_alert(f"⚠️ No Raydium pool for {mint}. Skipping.")
+            log_skipped_token(mint, "No Raydium pool")
+            record_skip("malformed")
+            return False
+
+        # === Build & send real Raydium swap ===
+        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        if not tx:
+            await send_telegram_alert(f"❌ Failed to build swap TX for {mint}. Marking as broken.")
             mark_broken_token(mint, 0)
             return False
 
-        try:
-            import base64 as _b64
-            decoded_bytes = _b64.b64decode(swap_tx_base64.replace("\n", "").replace(" ", "").strip())
-            decoded_length = len(decoded_bytes)
-        except Exception:
-            decoded_bytes = b""
-            decoded_length = 0
-
-        versioned_tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
-        if not versioned_tx or decoded_length < 900:
-            await send_telegram_alert(f"❌ Skipped {mint} — Jupiter sent broken transaction")
-            mark_broken_token(mint, decoded_length)
-            return False
-
-        sig = jupiter.send_transaction(versioned_tx, keypair)
+        sig = raydium.send_transaction(tx, keypair)
         if not sig:
-            await send_telegram_alert(f"📉 Trade failed — fallback RPC used, still broken for {mint}")
-            mark_broken_token(mint, decoded_length)
+            await send_telegram_alert(f"📉 Trade failed — TX send error for {mint}")
+            mark_broken_token(mint, 0)
             return False
 
         await send_telegram_alert(f"✅ Sniped {mint} — bought at {BUY_AMOUNT_SOL} SOL\nhttps://solscan.io/tx/{sig}")
-        try:
-            expected_token_amount = int(route.get("outAmount", 0))
-        except Exception:
-            expected_token_amount = 0
         OPEN_POSITIONS[mint] = {
-            "expected_token_amount": expected_token_amount,
+            "expected_token_amount": 0,
             "buy_amount_sol": BUY_AMOUNT_SOL,
             "sold_stages": set(),
         }
@@ -341,43 +320,34 @@ async def buy_token(mint: str):
         return False
 
 async def sell_token(mint: str, percent: float = 100.0):
-    input_mint = Pubkey.from_string(mint)
-    output_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+    input_mint = mint
+    output_mint = "So11111111111111111111111111111111111111112"
     amount = int(BUY_AMOUNT_SOL * 1e9 * percent / 100)
 
     try:
-        route = await jupiter.get_quote(input_mint, output_mint, amount, user_pubkey=keypair.pubkey())
-        if not route:
-            route = await jupiter.get_quote(input_mint, output_mint, amount, only_direct_routes=True, user_pubkey=keypair.pubkey())
-
-        if not route:
-            await send_telegram_alert(f"\u274c No sell quote for {mint}")
-            log_skipped_token(mint, "No sell quote")
+        pool = raydium.find_pool(input_mint, output_mint)
+        if not pool:
+            await send_telegram_alert(f"⚠️ No Raydium pool for {mint}. Skipping sell.")
+            log_skipped_token(mint, "No Raydium pool for sell")
             return False
 
-        swap_tx_base64 = await jupiter.get_swap_transaction(route, keypair)
-        if not swap_tx_base64:
-            await send_telegram_alert(f"\u274c Sell swap fetch failed for {mint}")
-            log_skipped_token(mint, "Sell swap fetch failed")
-            return False
-
-        versioned_tx = jupiter.build_swap_transaction(swap_tx_base64, keypair)
-        if not versioned_tx:
-            await send_telegram_alert(f"\u274c Failed to build VersionedTransaction for {mint}")
+        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        if not tx:
+            await send_telegram_alert(f"❌ Failed to build sell TX for {mint}")
             log_skipped_token(mint, "Sell TX build failed")
             return False
 
-        sig = jupiter.send_transaction(versioned_tx, keypair)
+        sig = raydium.send_transaction(tx, keypair)
         if not sig:
-            await send_telegram_alert(f"\u274c Failed to send sell tx for {mint}")
+            await send_telegram_alert(f"❌ Failed to send sell tx for {mint}")
             log_skipped_token(mint, "Sell TX send failed")
             return False
 
-        await send_telegram_alert(f"\u2705 Sell {percent}% sent: https://solscan.io/tx/{sig}")
-        log_trade(mint, f"SELL {percent}%", 0, route.get("outAmount", 0) / 1e9)
+        await send_telegram_alert(f"✅ Sell {percent}% sent: https://solscan.io/tx/{sig}")
+        log_trade(mint, f"SELL {percent}%", 0, 0)
         return True
     except Exception as e:
-        await send_telegram_alert(f"\u274c Sell failed for {mint}: {e}")
+        await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
@@ -388,7 +358,6 @@ async def wait_and_auto_sell(mint):
             await send_telegram_alert(f"⚠️ No open position found for {mint}. Skipping auto-sell.")
             return
 
-        expected_amount = position.get("expected_token_amount", 0)
         buy_sol = position.get("buy_amount_sol", BUY_AMOUNT_SOL)
         sold_stages = position.get("sold_stages", set())
         start_time = datetime.utcnow()
@@ -396,6 +365,7 @@ async def wait_and_auto_sell(mint):
         milestones = [2, 5, 10]
         percentages = {2: 50, 5: 25, 10: 25}
 
+        # Placeholder: cannot get live price; must poll external API for PnL
         while True:
             if sold_stages == set(milestones):
                 break
@@ -407,41 +377,13 @@ async def wait_and_auto_sell(mint):
                 OPEN_POSITIONS.pop(mint, None)
                 break
 
-            try:
-                quote = await jupiter.get_quote(
-                    input_mint=Pubkey.from_string(mint),
-                    output_mint=Pubkey.from_string("So11111111111111111111111111111111111111112"),
-                    amount=expected_amount,
-                    user_pubkey=keypair.pubkey()
-                )
-                if quote and "outAmount" in quote:
-                    current_sol = quote["outAmount"] / 1e9
-                    ratio = current_sol / buy_sol
-                else:
-                    ratio = 0
-            except Exception:
-                ratio = 0
+            # Optional: fetch price from Birdeye for profit calculation here if you wish
+            # You may integrate PnL logic by polling Birdeye every X seconds
 
-            if ratio <= 0.8:
-                await send_telegram_alert(f"📉 Price drop detected for {mint} (ratio {ratio:.2f}) — selling all")
-                await sell_token(mint, percent=100.0)
-                OPEN_POSITIONS.pop(mint, None)
-                break
-
-            for milestone in milestones:
-                if milestone not in sold_stages and ratio >= milestone:
-                    percent = percentages[milestone]
-                    success = await sell_token(mint, percent=percent)
-                    if success:
-                        pnl = current_sol - buy_sol
-                        await send_telegram_alert(f"📈 Sold {percent}% at {milestone}x — locked in profit (PnL: +{pnl:.4f} SOL)")
-                        record_pnl(pnl)
-                        sold_stages.add(milestone)
-                    position["sold_stages"] = sold_stages
             await asyncio.sleep(15)
         OPEN_POSITIONS.pop(mint, None)
     except Exception as e:
-        await send_telegram_alert(f"\u274c Auto-sell error for {mint}: {e}")
+        await send_telegram_alert(f"❌ Auto-sell error for {mint}: {e}")
 
 def is_valid_mint(keys):
     TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
