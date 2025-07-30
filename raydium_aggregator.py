@@ -1,4 +1,4 @@
-# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP)
+# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP, PRODUCTION)
 import os
 import json
 import httpx
@@ -26,19 +26,25 @@ class RaydiumAggregatorClient:
         try:
             r = httpx.get(RAYDIUM_POOLS_URL, timeout=10)
             r.raise_for_status()
-            self.pools = r.json()["official"]
+            pools_data = r.json()
+            # Raydium mainnet API may provide "official" or "unOfficial"
+            self.pools = (pools_data.get("official") or []) + (pools_data.get("unOfficial") or [])
             logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
         except Exception as e:
             logging.error(f"[Raydium] Failed to fetch pools: {e}")
             self.pools = []
 
     def find_pool(self, input_mint, output_mint):
-        if self.pools is None:
+        if self.pools is None or not self.pools:
             self.fetch_pools()
-        for pool in self.pools:
-            coins = (pool["baseMint"], pool["quoteMint"])
-            if (input_mint in coins) and (output_mint in coins):
-                return pool
+        # Retry if not found
+        for _ in range(2):
+            for pool in self.pools:
+                coins = (pool["baseMint"], pool["quoteMint"])
+                if (input_mint in coins) and (output_mint in coins):
+                    return pool
+            # Refresh and retry
+            self.fetch_pools()
         return None
 
     def create_ata_if_missing(self, owner, mint, keypair):
@@ -58,7 +64,8 @@ class RaydiumAggregatorClient:
         keypair: Keypair,
         input_mint: str,
         output_mint: str,
-        amount_in: int
+        amount_in: int,
+        slippage: float = 0.10
     ):
         pool = self.find_pool(input_mint, output_mint)
         if not pool:
@@ -76,21 +83,16 @@ class RaydiumAggregatorClient:
             out_token_account = get_associated_token_address(owner, PublicKey(pool["baseMint"]))
             market_side = 1  # quote to base
 
-        # Create ATA if missing
+        # Create ATA if missing for output
         self.create_ata_if_missing(owner, PublicKey(output_mint), keypair)
 
-        # Prepare swap instruction (use Raydium's AMM V3 layout)
-        # This is the "SwapBaseIn" instruction for Raydium AMM V3
+        # Prepare swap instruction (Raydium AMM V3 layout)
         keys = [
-            # User
             AccountMeta(pubkey=owner, is_signer=True, is_writable=True),
-            # In/Out
             AccountMeta(pubkey=in_token_account, is_signer=False, is_writable=True),
             AccountMeta(pubkey=out_token_account, is_signer=False, is_writable=True),
-            # Pool vaults
             AccountMeta(pubkey=PublicKey(pool["baseVault"]), is_signer=False, is_writable=True),
             AccountMeta(pubkey=PublicKey(pool["quoteVault"]), is_signer=False, is_writable=True),
-            # Pool state
             AccountMeta(pubkey=PublicKey(pool["id"]), is_signer=False, is_writable=True),
             AccountMeta(pubkey=PublicKey(pool["openOrders"]), is_signer=False, is_writable=True),
             AccountMeta(pubkey=PublicKey(pool["market"]), is_signer=False, is_writable=True),
@@ -100,18 +102,14 @@ class RaydiumAggregatorClient:
             AccountMeta(pubkey=PublicKey(pool["marketBaseVault"]), is_signer=False, is_writable=True),
             AccountMeta(pubkey=PublicKey(pool["marketQuoteVault"]), is_signer=False, is_writable=True),
             AccountMeta(pubkey=PublicKey(pool["marketAuthority"]), is_signer=False, is_writable=False),
-            # Programs
             AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), is_signer=False, is_writable=False),
             AccountMeta(pubkey=PublicKey("11111111111111111111111111111111"), is_signer=False, is_writable=False),  # Rent sysvar
         ]
 
         # Raydium swap instruction layout (V3): tag + amount_in + min_amount_out + side
-        # See Raydium code for full details; this is the standard "SwapBaseIn" call.
-        # For now, just encode as "tag=9" (swap), amount_in (u64 LE), min_out (u64 LE), side (u8: 0/1)
-
         tag = 9  # Swap
-        min_amount_out = int(amount_in * 0.9)  # Slippage tolerance 10%
+        min_amount_out = int(amount_in * (1 - slippage))
         data = (
             tag.to_bytes(1, "little")
             + amount_in.to_bytes(8, "little")
@@ -139,4 +137,3 @@ class RaydiumAggregatorClient:
         except Exception as e:
             logging.error(f"[Raydium] TX failed: {e}")
             return None
-
