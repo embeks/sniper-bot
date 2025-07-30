@@ -34,7 +34,6 @@ BLACKLIST = set([
 
 TASKS = []
 
-# === Agent Mode: Raydium-Only Mempool Listener with Heartbeat, Auto-Restart, Alert Suppression ===
 last_alert_sent = {"Raydium": 0}
 alert_cooldown_sec = 1800   # 30 min cooldown after an inactivity alert per listener
 
@@ -56,7 +55,6 @@ async def mempool_listener(name):
             else:
                 logging.warning(f"⚠️ {name} listener no token for {int(elapsed)}s")
             if elapsed > max_inactive:
-                # Alert suppression: Only send alert if it's been 30min since last one for this listener
                 if now - last_alert_sent[name] > alert_cooldown_sec:
                     msg = f"⚠️ {name} listener inactive for 5m — restarting..."
                     logging.error(msg)
@@ -143,7 +141,6 @@ async def mempool_listener(name):
             except Exception:
                 pass
 
-# === Multi-Source Trending Scanner: DEXScreener + Birdeye Fallback ===
 import httpx
 
 MIN_LP_USD = 1000
@@ -229,7 +226,6 @@ async def trending_scanner():
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 async def rug_filter_passes(mint):
-    # Call your custom LP check, rug logic etc, using utils.get_liquidity_and_ownership
     try:
         data = await get_liquidity_and_ownership(mint)
         if not data or not data.get("liquidity") or data.get("liquidity", 0) < 10:
@@ -256,24 +252,32 @@ async def start_sniper():
         asyncio.create_task(trending_scanner())
     ])
 
+# =============================
+# DEBUG FORCEBUY LOGGING HERE!
+# =============================
 async def start_sniper_with_forced_token(mint: str):
-    if not is_bot_running():
-        await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
-        return
-
-    if mint in BROKEN_TOKENS or mint in BLACKLIST:
-        await send_telegram_alert(f"❌ Skipped {mint} — Blacklisted or broken transaction")
-        log_skipped_token(mint, "Blacklisted or broken token")
-        return
-
-    await send_telegram_alert(f"🚨 Force Buy (skipping LP check): {mint}")
-    logging.info(f"[FORCEBUY] Attempting forced buy for {mint} with {BUY_AMOUNT_SOL} SOL")
     try:
-        success = await buy_token(mint)
-        if success:
+        await send_telegram_alert(f"🚨 DEBUG: start_sniper_with_forced_token({mint}) called")
+        if not is_bot_running():
+            await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
+            return
+
+        if mint in BROKEN_TOKENS or mint in BLACKLIST:
+            await send_telegram_alert(f"❌ Skipped {mint} — Blacklisted or broken transaction")
+            log_skipped_token(mint, "Blacklisted or broken token")
+            return
+
+        await send_telegram_alert(f"🚨 Force Buy (skipping LP check): {mint}")
+        logging.info(f"[FORCEBUY] Attempting forced buy for {mint} with {BUY_AMOUNT_SOL} SOL")
+
+        result = await buy_token(mint)
+        await send_telegram_alert(f"DEBUG: buy_token returned {result}")
+        if result:
             await wait_and_auto_sell(mint)
     except Exception as e:
-        await send_telegram_alert(f"❌ Force buy error for {mint}: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        await send_telegram_alert(f"❌ Force buy error for {mint}: {e}\nTraceback:\n{tb}")
         logging.exception(f"[FORCEBUY] Exception: {e}")
 
 async def stop_all_tasks():
