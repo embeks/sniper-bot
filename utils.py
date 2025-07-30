@@ -268,17 +268,12 @@ async def birdeye_check_token(mint: str, min_liquidity=50000):
 
 # ==== END BIRDEYE FALLBACK ====
 
-# ========================
-# DEBUG-LOGGING BUY TOKEN!
-# ========================
 async def buy_token(mint: str):
     input_mint = "So11111111111111111111111111111111111111112"
     output_mint = mint
     amount = int(BUY_AMOUNT_SOL * 1e9)
 
     try:
-        await send_telegram_alert(f"🚨 DEBUG: buy_token called for {mint}\ninput: {input_mint}, output: {output_mint}, amount: {amount}")
-
         if mint in BROKEN_TOKENS:
             await send_telegram_alert(f"❌ Skipped {mint} — broken token")
             log_skipped_token(mint, "Broken token")
@@ -288,15 +283,19 @@ async def buy_token(mint: str):
         increment_stat("snipes_attempted", 1)
         update_last_activity()
 
-        # === Check Raydium pool exists ===
+        # === DEBUG: Add alert before pool lookup ===
+        await send_telegram_alert(f"🔍 DEBUG: Looking for Raydium pool: input={input_mint}, output={output_mint}")
+
         pool = raydium.find_pool(input_mint, output_mint)
         if not pool:
+            await send_telegram_alert(f"❌ DEBUG: No Raydium pool found for input={input_mint}, output={output_mint}.")
             await send_telegram_alert(f"⚠️ No Raydium pool for {mint}. Skipping.")
             log_skipped_token(mint, "No Raydium pool")
             record_skip("malformed")
             return False
+        else:
+            await send_telegram_alert(f"✅ DEBUG: Raydium pool FOUND for input={input_mint}, output={output_mint}")
 
-        await send_telegram_alert(f"⚡️ Raydium pool found. Building TX for {mint}...")
         # === Build & send real Raydium swap ===
         tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
         if not tx:
@@ -304,7 +303,6 @@ async def buy_token(mint: str):
             mark_broken_token(mint, 0)
             return False
 
-        await send_telegram_alert(f"📤 Sending Raydium TX for {mint}...")
         sig = raydium.send_transaction(tx, keypair)
         if not sig:
             await send_telegram_alert(f"📉 Trade failed — TX send error for {mint}")
@@ -322,13 +320,9 @@ async def buy_token(mint: str):
         return True
 
     except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}\nTraceback:\n{tb}")
+        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
-
-# ========================
 
 async def sell_token(mint: str, percent: float = 100.0):
     input_mint = mint
@@ -376,6 +370,7 @@ async def wait_and_auto_sell(mint):
         milestones = [2, 5, 10]
         percentages = {2: 50, 5: 25, 10: 25}
 
+        # Placeholder: cannot get live price; must poll external API for PnL
         while True:
             if sold_stages == set(milestones):
                 break
@@ -386,6 +381,9 @@ async def wait_and_auto_sell(mint):
                 await sell_token(mint, percent=100.0)
                 OPEN_POSITIONS.pop(mint, None)
                 break
+
+            # Optional: fetch price from Birdeye for profit calculation here if you wish
+            # You may integrate PnL logic by polling Birdeye every X seconds
 
             await asyncio.sleep(15)
         OPEN_POSITIONS.pop(mint, None)
