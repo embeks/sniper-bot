@@ -16,7 +16,6 @@ from utils import (
     listener_status, last_seen_token
 )
 from solders.pubkey import Pubkey
-from jupiter_aggregator import JupiterAggregatorClient
 
 load_dotenv()
 
@@ -34,10 +33,9 @@ BLACKLIST = set([
 ])
 
 TASKS = []
-aggregator = JupiterAggregatorClient(RPC_URL)
 
-# === Agent Mode: Enhanced Mempool Listener with Watchdog, Heartbeat, Auto-Restart + Alert Suppression ===
-last_alert_sent = {"Raydium": 0, "Jupiter": 0}
+# === Agent Mode: Raydium-Only Mempool Listener with Heartbeat, Auto-Restart, Alert Suppression ===
+last_alert_sent = {"Raydium": 0}
 alert_cooldown_sec = 1800   # 30 min cooldown after an inactivity alert per listener
 
 async def mempool_listener(name):
@@ -108,7 +106,7 @@ async def mempool_listener(name):
 
                                     if is_valid_mint([{ 'pubkey': key }]):
                                         if key in BROKEN_TOKENS:
-                                            await send_telegram_alert(f"❌ Skipped {key} — Jupiter sent broken transaction")
+                                            await send_telegram_alert(f"❌ Skipped {key} — broken token")
                                             log_skipped_token(key, "Broken token")
                                             record_skip("malformed")
                                             continue
@@ -230,8 +228,22 @@ async def trending_scanner():
             logging.warning(f"[Trending Scanner ERROR] {e}")
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
+async def rug_filter_passes(mint):
+    # Call your custom LP check, rug logic etc, using utils.get_liquidity_and_ownership
+    try:
+        data = await get_liquidity_and_ownership(mint)
+        if not data or not data.get("liquidity") or data.get("liquidity", 0) < 10:
+            await send_telegram_alert(f"⛔ {mint} rug filter failed (low or no LP).")
+            log_skipped_token(mint, "Rug/No LP")
+            record_skip("malformed")
+            return False
+        return True
+    except Exception as e:
+        await send_telegram_alert(f"⛔ Rug check error for {mint}: {e}")
+        return False
+
 async def start_sniper():
-    await send_telegram_alert("✅ Sniper bot launching...")
+    await send_telegram_alert("✅ Sniper bot launching (Raydium-only)...")
 
     if FORCE_TEST_MINT:
         await send_telegram_alert(f"🚨 Forced Test Buy (LP check skipped): {FORCE_TEST_MINT}")
@@ -241,7 +253,6 @@ async def start_sniper():
     TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
     TASKS.extend([
         asyncio.create_task(mempool_listener("Raydium")),
-        asyncio.create_task(mempool_listener("Jupiter")),
         asyncio.create_task(trending_scanner())
     ])
 
