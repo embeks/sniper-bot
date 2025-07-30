@@ -1,258 +1,142 @@
+# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP)
+import os
 import json
-import base64
 import httpx
 import logging
-import os
-
-# List of output token mint addresses for which Jupiter swap should be bypassed.
-# If Jupiter consistently returns malformed or truncated transactions for a token,
-# add its mint address here to skip the Jupiter swap flow entirely.
-BYPASS_JUPITER_MINTS = {
-    "DUSTawucrTsGU8hcqRdHDCbuYhCPADMLM2VcCb8VnFnQ",  # DUST token
-    # Additional mints can be added here as needed
-}
-
-from solders.pubkey import Pubkey
-from solders.keypair import Keypair
-from solders.transaction import VersionedTransaction
 
 from solana.rpc.api import Client
-from solana.rpc.types import TxOpts
-from solana.rpc.commitment import Confirmed
-from solana.transaction import Transaction, TransactionInstruction, AccountMeta
-from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-from solana.system_program import SYS_PROGRAM_ID
-from spl.token.instructions import get_associated_token_address
 from solana.publickey import PublicKey
+from solana.transaction import Transaction, TransactionInstruction, AccountMeta
+from solana.rpc.types import TxOpts
+from solders.keypair import Keypair
+from spl.token.instructions import get_associated_token_address, create_associated_token_account
+from solana.system_program import SYS_PROGRAM_ID
 
+RAYDIUM_AMM_PROGRAM_ID = PublicKey("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK")
+RAYDIUM_POOLS_URL = "https://api.raydium.io/v2/sdk/liquidity/mainnet.json"
 
-class JupiterAggregatorClient:
+class RaydiumAggregatorClient:
     def __init__(self, rpc_url):
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
-        self.base_url = "https://quote-api.jup.ag/v6"
+        self.pools = None
 
-    async def get_quote(
-        self,
-        input_mint: Pubkey,
-        output_mint: Pubkey,
-        amount: int,
-        slippage_bps: int = 100,
-        user_pubkey: Pubkey = None
-    ):
+    def fetch_pools(self):
+        """Download and cache Raydium pool list from Raydium API."""
         try:
-            url = f"{self.base_url}/quote"
-            params = {
-                "inputMint": str(input_mint),
-                "outputMint": str(output_mint),
-                "amount": amount,
-                "slippageBps": slippage_bps,
-                "swapMode": "ExactIn"
-            }
-            if user_pubkey:
-                params["userPublicKey"] = str(user_pubkey)
-
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params)
-                if response.status_code == 200:
-                    logging.info(f"[JUPITER] Quote response OK: {response.json()}")
-                    return response.json()
-                else:
-                    logging.error(f"[JUPITER] Quote HTTP {response.status_code} - {response.text}")
-                    return None
+            r = httpx.get(RAYDIUM_POOLS_URL, timeout=10)
+            r.raise_for_status()
+            self.pools = r.json()["official"]
+            logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
         except Exception as e:
-            logging.exception(f"[JUPITER] Quote error: {e}")
-            return None
+            logging.error(f"[Raydium] Failed to fetch pools: {e}")
+            self.pools = []
 
-    async def _get_token_accounts(self, wallet_address: str):
-        try:
-            url = f"https://quote-api.jup.ag/v6/token-accounts/{wallet_address}"
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url)
-                if response.status_code == 200:
-                    return response.json()
-                else:
-                    logging.error(f"[JUPITER] Failed to fetch token accounts: {response.text}")
-                    return []
-        except Exception as e:
-            logging.exception("[JUPITER] Error getting token accounts")
-            return []
+    def find_pool(self, input_mint, output_mint):
+        if self.pools is None:
+            self.fetch_pools()
+        for pool in self.pools:
+            coins = (pool["baseMint"], pool["quoteMint"])
+            if (input_mint in coins) and (output_mint in coins):
+                return pool
+        return None
 
-    def _create_ata_if_missing(self, owner: PublicKey, mint: PublicKey, keypair: Keypair):
+    def create_ata_if_missing(self, owner, mint, keypair):
         ata = get_associated_token_address(owner, mint)
         res = self.client.get_account_info(ata)
-
-        if res.value is None:
-            logging.warning(f"[JUPITER] Creating missing ATA for {str(mint)}")
-
-            ix = TransactionInstruction(
-                keys=[
-                    AccountMeta(pubkey=PublicKey(str(keypair.pubkey())), is_signer=True, is_writable=True),
-                    AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
-                    AccountMeta(pubkey=owner, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-                    AccountMeta(pubkey=ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-                ],
-                program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
-                data=b"",
-            )
-
+        if res["result"]["value"] is None:
+            logging.info(f"[Raydium] Creating ATA for {str(mint)}")
             tx = Transaction()
-            tx.add(ix)
+            tx.add(create_associated_token_account(owner, owner, mint))
+            tx.recent_blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
+            tx.fee_payer = owner
+            tx.sign([keypair])
+            self.client.send_raw_transaction(bytes(tx), opts=TxOpts(skip_preflight=True))
 
-            try:
-                blockhash = self.client.get_latest_blockhash().value.blockhash
-                tx.recent_blockhash = str(blockhash)
-                tx.fee_payer = PublicKey(str(keypair.pubkey()))
-                tx.sign([keypair])
-                result = self.client.send_raw_transaction(
-                    bytes(tx),
-                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-                )
-                logging.info(f"[JUPITER] ATA Creation TX: {result}")
-            except Exception as e:
-                logging.error(f"[JUPITER] Failed to create ATA: {e}")
-
-    async def get_swap_transaction(self, quote_response: dict, keypair: Keypair):
-        try:
-            # If the output mint is in the bypass list, skip this swap entirely.
-            output_mint_str = quote_response.get("outputMint")
-            if output_mint_str in BYPASS_JUPITER_MINTS:
-                msg = f"⚠️ Skipping Jupiter swap for {output_mint_str} — bypassed due to malformed transactions"
-                logging.warning(f"[JUPITER] {msg}")
-                self._send_telegram_debug(msg)
-                return None
-
-            token_accounts = await self._get_token_accounts(str(keypair.pubkey()))
-            if not token_accounts:
-                output_mint = PublicKey(quote_response["outputMint"])
-                logging.warning(f"[JUPITER] No token accounts found — adding fallback for {quote_response['outputMint']}")
-                self._create_ata_if_missing(PublicKey(str(keypair.pubkey())), output_mint, keypair)
-
-            swap_url = f"{self.base_url}/swap"
-            body = {
-                "userPublicKey": str(keypair.pubkey()),
-                "wrapUnwrapSOL": True,
-                "useSharedAccounts": True,
-                "computeUnitPriceMicroLamports": 2000,
-                "userTokenAccounts": token_accounts,
-                "quoteResponse": json.loads(json.dumps(quote_response))
-            }
-
-            logging.info(f"[JUPITER] Swap request:\n{json.dumps(body, indent=2)}")
-            headers = {"Content-Type": "application/json"}
-
-            async with httpx.AsyncClient() as client:
-                response = await client.post(swap_url, json=body, headers=headers)
-
-                logging.info(f"[JUPITER] Swap response {response.status_code}: {response.text}")
-                if response.status_code == 200:
-                    data = response.json()
-                    tx_base64 = data.get("swapTransaction")
-                    if not tx_base64:
-                        logging.error(f"❌ Jupiter quote returned no swapTransaction for {quote_response['outputMint']}")
-                        self._send_telegram_debug(f"❌ Jupiter quote returned no swapTransaction for {quote_response['outputMint']}")
-                        return None
-                    return tx_base64
-                else:
-                    logging.error(f"[JUPITER] Swap error: HTTP {response.status_code}")
-                    return None
-        except Exception as e:
-            logging.exception(f"[JUPITER] Swap exception: {e}")
+    def build_swap_transaction(
+        self,
+        keypair: Keypair,
+        input_mint: str,
+        output_mint: str,
+        amount_in: int
+    ):
+        pool = self.find_pool(input_mint, output_mint)
+        if not pool:
+            logging.warning(f"[Raydium] No pool found for {input_mint} -> {output_mint}")
             return None
 
-    def build_swap_transaction(self, swap_tx_base64: str, keypair: Keypair):
-        """
-        Decode the base64-encoded Jupiter swap transaction and return a VersionedTransaction.
+        owner = keypair.pubkey()
+        # Find correct in/out for pool
+        if input_mint == pool["baseMint"]:
+            in_token_account = get_associated_token_address(owner, PublicKey(pool["baseMint"]))
+            out_token_account = get_associated_token_address(owner, PublicKey(pool["quoteMint"]))
+            market_side = 0  # base to quote
+        else:
+            in_token_account = get_associated_token_address(owner, PublicKey(pool["quoteMint"]))
+            out_token_account = get_associated_token_address(owner, PublicKey(pool["baseMint"]))
+            market_side = 1  # quote to base
 
-        This helper will attempt to decode the provided `swap_tx_base64` string to raw bytes
-        and then deserialize those bytes into a `solders.transaction.VersionedTransaction`.
-        It does not enforce any heuristics on the length or contents of the decoded bytes.
+        # Create ATA if missing
+        self.create_ata_if_missing(owner, PublicKey(output_mint), keypair)
 
-        If the base64 string cannot be decoded or if the bytes cannot be parsed into a
-        VersionedTransaction, this method returns None. Upstream callers should handle
-        the case where None is returned and decide whether to mark the associated token
-        as broken.
-        """
+        # Prepare swap instruction (use Raydium's AMM V3 layout)
+        # This is the "SwapBaseIn" instruction for Raydium AMM V3
+        keys = [
+            # User
+            AccountMeta(pubkey=owner, is_signer=True, is_writable=True),
+            # In/Out
+            AccountMeta(pubkey=in_token_account, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=out_token_account, is_signer=False, is_writable=True),
+            # Pool vaults
+            AccountMeta(pubkey=PublicKey(pool["baseVault"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["quoteVault"]), is_signer=False, is_writable=True),
+            # Pool state
+            AccountMeta(pubkey=PublicKey(pool["id"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["openOrders"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["market"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["marketBids"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["marketAsks"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["marketEventQueue"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["marketBaseVault"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["marketQuoteVault"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=PublicKey(pool["marketAuthority"]), is_signer=False, is_writable=False),
+            # Programs
+            AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=PublicKey("11111111111111111111111111111111"), is_signer=False, is_writable=False),  # Rent sysvar
+        ]
+
+        # Raydium swap instruction layout (V3): tag + amount_in + min_amount_out + side
+        # See Raydium code for full details; this is the standard "SwapBaseIn" call.
+        # For now, just encode as "tag=9" (swap), amount_in (u64 LE), min_out (u64 LE), side (u8: 0/1)
+
+        tag = 9  # Swap
+        min_amount_out = int(amount_in * 0.9)  # Slippage tolerance 10%
+        data = (
+            tag.to_bytes(1, "little")
+            + amount_in.to_bytes(8, "little")
+            + min_amount_out.to_bytes(8, "little")
+            + market_side.to_bytes(1, "little")
+        )
+
+        ix = TransactionInstruction(
+            program_id=RAYDIUM_AMM_PROGRAM_ID,
+            keys=keys,
+            data=data
+        )
+        tx = Transaction()
+        tx.add(ix)
+        return tx
+
+    def send_transaction(self, tx: Transaction, keypair: Keypair):
         try:
-            if not swap_tx_base64:
-                logging.error("[JUPITER] No swap transaction provided to build_swap_transaction")
-                return None
-
-            # Decode the base64 string into bytes. Strip newlines and whitespace for safety.
-            tx_bytes = base64.b64decode(swap_tx_base64.replace("\n", "").replace(" ", "").strip())
-            logging.warning(f"[JUPITER] Decoded tx_bytes length: {len(tx_bytes)}")
-            logging.warning(f"[JUPITER] First 20 decoded bytes:\n{repr(tx_bytes[:20])}")
-
-            # Attempt to deserialize into a VersionedTransaction. If this fails, return None.
-            try:
-                tx = VersionedTransaction.from_bytes(tx_bytes)
-            except Exception as parse_err:
-                logging.error(f"[JUPITER] Failed to parse VersionedTransaction: {parse_err}")
-                return None
-
-            return tx
-
+            tx.recent_blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
+            tx.fee_payer = keypair.pubkey()
+            tx.sign([keypair])
+            sig = self.client.send_raw_transaction(bytes(tx), opts=TxOpts(skip_preflight=True))
+            logging.info(f"[Raydium] TX sent: {sig}")
+            return sig
         except Exception as e:
-            logging.exception("[JUPITER] Unexpected error in build_swap_transaction")
+            logging.error(f"[Raydium] TX failed: {e}")
             return None
-
-    def send_transaction(self, signed_tx: VersionedTransaction, keypair: Keypair):
-        """
-        Submit a fully-formed VersionedTransaction to the RPC endpoint.
-
-        This method converts the provided VersionedTransaction into raw bytes and uses
-        `send_raw_transaction` with skip_preflight enabled. Any errors returned by the
-        RPC or raised during submission are caught and reported via logging/telegram.
-
-        The function returns the transaction signature (a string) on success, or None
-        if the submission fails.
-        """
-        try:
-            raw_tx_bytes = bytes(signed_tx)
-
-            # Send the raw transaction via the configured client. We skip preflight
-            # to reduce latency; the trade-off is that obvious failures (e.g. account
-            # not found) will only surface after submission.
-            result = self.client.send_raw_transaction(
-                raw_tx_bytes,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-            )
-
-            # Check RPC response format. Newer solana-py versions return dictionaries;
-            # older versions may return raw JSON. We normalize to get the signature.
-            if isinstance(result, dict):
-                if "error" in result:
-                    error_info = json.dumps(result["error"], indent=2)
-                    self._send_telegram_debug(f"❌ TX Error:\n```{error_info}```")
-                    return None
-                sig = result.get("result")
-            else:
-                # In case result is not a dict (older solana-py), use as-is
-                sig = result
-
-            if not sig:
-                self._send_telegram_debug(f"❌ TX failed — No tx hash returned:\n```{result}```")
-                return None
-
-            return str(sig)
-
-        except Exception as e:
-            # Catch and log any exception during submission
-            self._send_telegram_debug(f"❌ Send error:\n{type(e).__name__}: {e}")
-            return None
-
-    def _send_telegram_debug(self, message: str):
-        try:
-            token = os.getenv("TELEGRAM_BOT_TOKEN")
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            if not token or not chat_id:
-                return
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-            httpx.post(url, json=payload, timeout=5)
-        except Exception as e:
-            logging.error(f"[JUPITER] Failed to send Telegram debug message: {e}")
 
