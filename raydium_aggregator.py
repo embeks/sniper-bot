@@ -1,4 +1,4 @@
-# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP, PRODUCTION)
+# raydium_aggregator.py (FULL DEBUG RAYDIUM SWAP, PRODUCTION)
 import os
 import json
 import httpx
@@ -22,39 +22,45 @@ class RaydiumAggregatorClient:
         self.client = Client(rpc_url)
         self.pools = None
 
-    def fetch_pools(self, retries=5, delay=2):
-        """Download and cache Raydium pool list from Raydium API. Robust with retries."""
-        for attempt in range(retries):
+    def fetch_pools(self, max_retries=5, delay=2):
+        """Download and cache Raydium pool list from Raydium API with debug."""
+        for attempt in range(max_retries):
             try:
+                logging.info(f"[Raydium] Attempting to fetch pools (try {attempt+1}/{max_retries})")
                 r = httpx.get(RAYDIUM_POOLS_URL, timeout=15)
                 r.raise_for_status()
                 pools_data = r.json()
-                official = pools_data.get("official") or []
-                unofficial = pools_data.get("unOfficial") or []
-                all_pools = official + unofficial
-                # Only update self.pools if length is reasonable (protection from partial downloads)
-                if len(all_pools) < 500:  # Raydium has 1k+ pools; anything <500 likely truncated
-                    logging.error(f"[Raydium] Fetched pools list too short ({len(all_pools)}), retrying...")
-                    raise Exception("Truncated pool list")
-                self.pools = all_pools
+                self.pools = (pools_data.get("official") or []) + (pools_data.get("unOfficial") or [])
                 logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
+                # Print a preview of the first 3 pools and their base/quote mints
+                preview = []
+                for p in self.pools[:3]:
+                    preview.append(f"{p.get('baseMint')} <-> {p.get('quoteMint')}")
+                logging.info(f"[Raydium] First 3 pool pairs: {preview}")
+                if not self.pools:
+                    logging.warning("[Raydium] Pool list is EMPTY after fetch!")
                 return
             except Exception as e:
-                logging.error(f"[Raydium] Failed to fetch pools (attempt {attempt+1}/{retries}): {e}")
+                logging.error(f"[Raydium] Failed to fetch pools: {e}")
                 time.sleep(delay)
-        # On total failure, do NOT overwrite self.pools; log only
-        logging.critical("[Raydium] Could not fetch Raydium pools after retries.")
+        self.pools = []
 
     def find_pool(self, input_mint, output_mint):
+        """Finds the best Raydium pool for given mint pair. Logs debug if not found."""
         if self.pools is None or not self.pools:
             self.fetch_pools()
         # Retry if not found
         for _ in range(2):
-            for pool in self.pools or []:
+            candidates = []
+            for pool in self.pools:
                 coins = (pool["baseMint"], pool["quoteMint"])
                 if (input_mint in coins) and (output_mint in coins):
+                    logging.info(f"[Raydium] Pool found for {input_mint} <-> {output_mint}: {pool}")
                     return pool
-            # Refresh and retry
+                # Log all candidates if debugging forcebuy
+                candidates.append(f"{pool['baseMint']} <-> {pool['quoteMint']}")
+            # On first miss, log a detailed candidate set
+            logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}. Pool candidates: {candidates[:10]}")
             self.fetch_pools()
         return None
 
@@ -78,9 +84,10 @@ class RaydiumAggregatorClient:
         amount_in: int,
         slippage: float = 0.10
     ):
+        logging.info(f"🔍 DEBUG: Looking for Raydium pool: input={input_mint}, output={output_mint}")
         pool = self.find_pool(input_mint, output_mint)
         if not pool:
-            logging.warning(f"[Raydium] No pool found for {input_mint} -> {output_mint}")
+            logging.error(f"❌ DEBUG: No Raydium pool found for input={input_mint}, output={output_mint}.")
             return None
 
         owner = keypair.pubkey()
