@@ -1,8 +1,9 @@
-# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP, PRODUCTION, ENHANCED)
+# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP, PRODUCTION)
 import os
 import json
 import httpx
 import logging
+import time
 
 from solana.rpc.api import Client
 from solana.publickey import PublicKey
@@ -21,36 +22,40 @@ class RaydiumAggregatorClient:
         self.client = Client(rpc_url)
         self.pools = None
 
-    def fetch_pools(self):
-        """Download and cache Raydium pool list from Raydium API."""
-        try:
-            r = httpx.get(RAYDIUM_POOLS_URL, timeout=10)
-            r.raise_for_status()
-            pools_data = r.json()
-            # Merge official + unofficial
-            official = pools_data.get("official") or []
-            unofficial = pools_data.get("unOfficial") or []
-            self.pools = official + unofficial
-            logging.info(f"[Raydium] Pools loaded: official={len(official)}, unofficial={len(unofficial)}, total={len(self.pools)}")
-        except Exception as e:
-            logging.error(f"[Raydium] Failed to fetch pools: {e}")
-            self.pools = []
+    def fetch_pools(self, retries=5, delay=2):
+        """Download and cache Raydium pool list from Raydium API. Robust with retries."""
+        for attempt in range(retries):
+            try:
+                r = httpx.get(RAYDIUM_POOLS_URL, timeout=15)
+                r.raise_for_status()
+                pools_data = r.json()
+                official = pools_data.get("official") or []
+                unofficial = pools_data.get("unOfficial") or []
+                all_pools = official + unofficial
+                # Only update self.pools if length is reasonable (protection from partial downloads)
+                if len(all_pools) < 500:  # Raydium has 1k+ pools; anything <500 likely truncated
+                    logging.error(f"[Raydium] Fetched pools list too short ({len(all_pools)}), retrying...")
+                    raise Exception("Truncated pool list")
+                self.pools = all_pools
+                logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
+                return
+            except Exception as e:
+                logging.error(f"[Raydium] Failed to fetch pools (attempt {attempt+1}/{retries}): {e}")
+                time.sleep(delay)
+        # On total failure, do NOT overwrite self.pools; log only
+        logging.critical("[Raydium] Could not fetch Raydium pools after retries.")
 
     def find_pool(self, input_mint, output_mint):
-        input_mint = str(input_mint).strip()
-        output_mint = str(output_mint).strip()
         if self.pools is None or not self.pools:
             self.fetch_pools()
-        for attempt in range(2):
-            logging.info(f"[Raydium] Looking for pool: input={input_mint}, output={output_mint}, pools={len(self.pools)} (attempt {attempt+1}/2)")
-            for pool in self.pools:
-                base = pool.get("baseMint", "").strip()
-                quote = pool.get("quoteMint", "").strip()
-                if {input_mint, output_mint} == {base, quote}:
-                    logging.info(f"[Raydium] Pool found: {input_mint} <-> {output_mint} (pool ID: {pool.get('id')})")
+        # Retry if not found
+        for _ in range(2):
+            for pool in self.pools or []:
+                coins = (pool["baseMint"], pool["quoteMint"])
+                if (input_mint in coins) and (output_mint in coins):
                     return pool
+            # Refresh and retry
             self.fetch_pools()
-        logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}")
         return None
 
     def create_ata_if_missing(self, owner, mint, keypair):
@@ -75,12 +80,12 @@ class RaydiumAggregatorClient:
     ):
         pool = self.find_pool(input_mint, output_mint)
         if not pool:
-            logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}")
+            logging.warning(f"[Raydium] No pool found for {input_mint} -> {output_mint}")
             return None
 
         owner = keypair.pubkey()
-        # Direction-agnostic
-        if str(input_mint).strip() == pool["baseMint"].strip():
+        # Find correct in/out for pool
+        if input_mint == pool["baseMint"]:
             in_token_account = get_associated_token_address(owner, PublicKey(pool["baseMint"]))
             out_token_account = get_associated_token_address(owner, PublicKey(pool["quoteMint"]))
             market_side = 0  # base to quote
@@ -113,6 +118,7 @@ class RaydiumAggregatorClient:
             AccountMeta(pubkey=PublicKey("11111111111111111111111111111111"), is_signer=False, is_writable=False),  # Rent sysvar
         ]
 
+        # Raydium swap instruction layout (V3): tag + amount_in + min_amount_out + side
         tag = 9  # Swap
         min_amount_out = int(amount_in * (1 - slippage))
         data = (
