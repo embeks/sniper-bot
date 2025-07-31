@@ -1,4 +1,4 @@
-# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP, PRODUCTION)
+# raydium_aggregator.py (FULL LIVE RAYDIUM SWAP, PRODUCTION, ENHANCED)
 import os
 import json
 import httpx
@@ -27,24 +27,30 @@ class RaydiumAggregatorClient:
             r = httpx.get(RAYDIUM_POOLS_URL, timeout=10)
             r.raise_for_status()
             pools_data = r.json()
-            # Raydium mainnet API may provide "official" or "unOfficial"
-            self.pools = (pools_data.get("official") or []) + (pools_data.get("unOfficial") or [])
-            logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
+            # Merge official + unofficial
+            official = pools_data.get("official") or []
+            unofficial = pools_data.get("unOfficial") or []
+            self.pools = official + unofficial
+            logging.info(f"[Raydium] Pools loaded: official={len(official)}, unofficial={len(unofficial)}, total={len(self.pools)}")
         except Exception as e:
             logging.error(f"[Raydium] Failed to fetch pools: {e}")
             self.pools = []
 
     def find_pool(self, input_mint, output_mint):
+        input_mint = str(input_mint).strip()
+        output_mint = str(output_mint).strip()
         if self.pools is None or not self.pools:
             self.fetch_pools()
-        # Retry if not found
-        for _ in range(2):
+        for attempt in range(2):
+            logging.info(f"[Raydium] Looking for pool: input={input_mint}, output={output_mint}, pools={len(self.pools)} (attempt {attempt+1}/2)")
             for pool in self.pools:
-                coins = (pool["baseMint"], pool["quoteMint"])
-                if (input_mint in coins) and (output_mint in coins):
+                base = pool.get("baseMint", "").strip()
+                quote = pool.get("quoteMint", "").strip()
+                if {input_mint, output_mint} == {base, quote}:
+                    logging.info(f"[Raydium] Pool found: {input_mint} <-> {output_mint} (pool ID: {pool.get('id')})")
                     return pool
-            # Refresh and retry
             self.fetch_pools()
+        logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}")
         return None
 
     def create_ata_if_missing(self, owner, mint, keypair):
@@ -69,12 +75,12 @@ class RaydiumAggregatorClient:
     ):
         pool = self.find_pool(input_mint, output_mint)
         if not pool:
-            logging.warning(f"[Raydium] No pool found for {input_mint} -> {output_mint}")
+            logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}")
             return None
 
         owner = keypair.pubkey()
-        # Find correct in/out for pool
-        if input_mint == pool["baseMint"]:
+        # Direction-agnostic
+        if str(input_mint).strip() == pool["baseMint"].strip():
             in_token_account = get_associated_token_address(owner, PublicKey(pool["baseMint"]))
             out_token_account = get_associated_token_address(owner, PublicKey(pool["quoteMint"]))
             market_side = 0  # base to quote
@@ -107,7 +113,6 @@ class RaydiumAggregatorClient:
             AccountMeta(pubkey=PublicKey("11111111111111111111111111111111"), is_signer=False, is_writable=False),  # Rent sysvar
         ]
 
-        # Raydium swap instruction layout (V3): tag + amount_in + min_amount_out + side
         tag = 9  # Swap
         min_amount_out = int(amount_in * (1 - slippage))
         data = (
