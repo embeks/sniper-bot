@@ -1,9 +1,7 @@
-# raydium_aggregator.py (FULL DEBUG RAYDIUM SWAP, PRODUCTION)
+# raydium_aggregator.py (LOCAL POOL FILE VERSION, READY FOR SNIPER)
 import os
 import json
-import httpx
 import logging
-import time
 
 from solana.rpc.api import Client
 from solana.publickey import PublicKey
@@ -14,7 +12,7 @@ from spl.token.instructions import get_associated_token_address, create_associat
 from solana.system_program import SYS_PROGRAM_ID
 
 RAYDIUM_AMM_PROGRAM_ID = PublicKey("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK")
-RAYDIUM_POOLS_URL = "https://api.raydium.io/v2/sdk/liquidity/mainnet.json"
+RAYDIUM_POOLS_PATH = "raydium_pools.json"
 
 class RaydiumAggregatorClient:
     def __init__(self, rpc_url):
@@ -22,46 +20,38 @@ class RaydiumAggregatorClient:
         self.client = Client(rpc_url)
         self.pools = None
 
-    def fetch_pools(self, max_retries=5, delay=2):
-        """Download and cache Raydium pool list from Raydium API with debug."""
-        for attempt in range(max_retries):
-            try:
-                logging.info(f"[Raydium] Attempting to fetch pools (try {attempt+1}/{max_retries})")
-                r = httpx.get(RAYDIUM_POOLS_URL, timeout=15)
-                r.raise_for_status()
-                pools_data = r.json()
-                self.pools = (pools_data.get("official") or []) + (pools_data.get("unOfficial") or [])
-                logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
-                # Print a preview of the first 3 pools and their base/quote mints
-                preview = []
-                for p in self.pools[:3]:
-                    preview.append(f"{p.get('baseMint')} <-> {p.get('quoteMint')}")
-                logging.info(f"[Raydium] First 3 pool pairs: {preview}")
-                if not self.pools:
-                    logging.warning("[Raydium] Pool list is EMPTY after fetch!")
-                return
-            except Exception as e:
-                logging.error(f"[Raydium] Failed to fetch pools: {e}")
-                time.sleep(delay)
-        self.pools = []
+    def load_pools(self):
+        """Load Raydium pools from local file (raydium_pools.json)."""
+        try:
+            with open(RAYDIUM_POOLS_PATH, "r") as f:
+                pools_data = json.load(f)
+            self.pools = (pools_data.get("official") or []) + (pools_data.get("unOfficial") or [])
+            logging.info(f"[Raydium] Loaded {len(self.pools)} pools from local file.")
+            # Preview first 3 pools
+            preview = []
+            for p in self.pools[:3]:
+                preview.append(f"{p.get('baseMint')} <-> {p.get('quoteMint')}")
+            logging.info(f"[Raydium] First 3 pool pairs: {preview}")
+            if not self.pools:
+                logging.warning("[Raydium] Pool list is EMPTY after local load!")
+        except Exception as e:
+            logging.error(f"[Raydium] Failed to load local pools: {e}")
+            self.pools = []
 
     def find_pool(self, input_mint, output_mint):
         """Finds the best Raydium pool for given mint pair. Logs debug if not found."""
         if self.pools is None or not self.pools:
-            self.fetch_pools()
-        # Retry if not found
-        for _ in range(2):
+            self.load_pools()
+        for _ in range(2):  # fallback: allow reload if needed
             candidates = []
             for pool in self.pools:
                 coins = (pool["baseMint"], pool["quoteMint"])
                 if (input_mint in coins) and (output_mint in coins):
                     logging.info(f"[Raydium] Pool found for {input_mint} <-> {output_mint}: {pool}")
                     return pool
-                # Log all candidates if debugging forcebuy
                 candidates.append(f"{pool['baseMint']} <-> {pool['quoteMint']}")
-            # On first miss, log a detailed candidate set
             logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}. Pool candidates: {candidates[:10]}")
-            self.fetch_pools()
+            self.load_pools()
         return None
 
     def create_ata_if_missing(self, owner, mint, keypair):
