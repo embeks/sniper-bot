@@ -1,4 +1,4 @@
-# raydium_aggregator.py (LIVE RAYDIUM POOL FETCH VERSION)
+# raydium_aggregator.py (LIVE RAYDIUM POOL FETCH VERSION - FINAL)
 import os
 import json
 import logging
@@ -42,17 +42,15 @@ class RaydiumAggregatorClient:
 
     def find_pool(self, input_mint, output_mint):
         """Find the best Raydium pool for the given mint pair. Logs debug if not found."""
-        self.fetch_pools()  # Always fetch latest, don't rely on cache
-        for _ in range(2):  # fallback: allow reload if needed
-            candidates = []
-            for pool in self.pools:
-                coins = (pool["baseMint"], pool["quoteMint"])
-                if (input_mint in coins) and (output_mint in coins):
-                    logging.info(f"[Raydium] Pool found for {input_mint} <-> {output_mint}: {pool}")
-                    return pool
-                candidates.append(f"{pool['baseMint']} <-> {pool['quoteMint']}")
-            logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}. Pool candidates: {candidates[:10]}")
-            self.fetch_pools()
+        self.fetch_pools()  # Always fetch latest, never rely on cache
+        candidates = []
+        for pool in self.pools:
+            coins = (pool["baseMint"], pool["quoteMint"])
+            if (input_mint in coins) and (output_mint in coins):
+                logging.info(f"[Raydium] Pool found for {input_mint} <-> {output_mint}: {pool}")
+                return pool
+            candidates.append(f"{pool['baseMint']} <-> {pool['quoteMint']}")
+        logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}. Pool candidates: {candidates[:10]}")
         return None
 
     def create_ata_if_missing(self, owner, mint, keypair):
