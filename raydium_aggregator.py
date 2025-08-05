@@ -11,8 +11,8 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.instruction import Instruction, AccountMeta
-from solders.transaction import VersionedTransaction, Transaction
-from solders.message import MessageV0
+from solders.transaction import Transaction
+from solders.message import Message
 from solders.hash import Hash
 from solders.signature import Signature
 from solana.rpc.api import Client
@@ -80,13 +80,11 @@ class RaydiumAggregatorClient:
                 ix = create_associated_token_account(payer=owner, owner=owner, mint=mint)
                 recent_blockhash = self.client.get_latest_blockhash().value.blockhash
                 
-                msg = MessageV0.try_compile(
-                    payer=owner,
-                    instructions=[ix],
-                    address_lookup_table_accounts=[],
-                    recent_blockhash=recent_blockhash,
-                )
-                tx = VersionedTransaction(msg, [keypair])
+                tx = Transaction()
+                tx.fee_payer = owner
+                tx.recent_blockhash = recent_blockhash
+                tx.add(ix)
+                tx.sign(keypair)
                 
                 sig = self.client.send_transaction(tx).value
                 logging.info(f"[Raydium] Created ATA: {sig}")
@@ -103,7 +101,7 @@ class RaydiumAggregatorClient:
         output_mint: str,
         amount_in: int,
         slippage: float = 0.01
-    ) -> Optional[VersionedTransaction]:
+    ) -> Optional[Transaction]:
         """Build Raydium swap transaction."""
         try:
             pool = self.find_pool(input_mint, output_mint)
@@ -184,16 +182,12 @@ class RaydiumAggregatorClient:
             # Get recent blockhash
             recent_blockhash = self.client.get_latest_blockhash().value.blockhash
             
-            # Compile message
-            msg = MessageV0.try_compile(
-                payer=owner,
-                instructions=instructions,
-                address_lookup_table_accounts=[],
-                recent_blockhash=recent_blockhash,
-            )
-            
-            # Create transaction
-            tx = VersionedTransaction(msg, [keypair])
+            # Build transaction
+            tx = Transaction()
+            tx.fee_payer = owner
+            tx.recent_blockhash = recent_blockhash
+            for ix in instructions:
+                tx.add(ix)
             
             return tx
             
@@ -203,10 +197,13 @@ class RaydiumAggregatorClient:
             logging.error(traceback.format_exc())
             return None
 
-    def send_transaction(self, tx: VersionedTransaction, keypair: Keypair) -> Optional[str]:
+    def send_transaction(self, tx: Transaction, keypair: Keypair) -> Optional[str]:
         """Send transaction."""
         try:
-            # Transaction is already signed in VersionedTransaction constructor
+            # Sign transaction
+            tx.sign(keypair)
+            
+            # Send transaction
             result = self.client.send_transaction(tx, opts=TxOpts(skip_preflight=True))
             
             if hasattr(result, 'value'):
