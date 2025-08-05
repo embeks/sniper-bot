@@ -11,10 +11,9 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.instruction import Instruction, AccountMeta
-from solders.transaction import VersionedTransaction
+from solders.transaction import VersionedTransaction, Transaction
 from solders.message import MessageV0
 from solders.hash import Hash
-from solders.transaction import Transaction
 from solders.signature import Signature
 from solana.rpc.api import Client
 from solana.rpc.commitment import Confirmed
