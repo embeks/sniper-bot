@@ -1,4 +1,4 @@
-# raydium_aggregator.py - FIXED VERSION
+# raydium_aggregator.py - FIXED VERSION (Compatible with older solders)
 import os
 import json
 import logging
@@ -9,10 +9,8 @@ from typing import Optional, Dict, Any
 from solders.keypair import Keypair as SoldersKeypair
 from solders.pubkey import Pubkey as SoldersPubkey
 from solders.system_program import ID as SYS_PROGRAM_ID
-from solders.sysvar import RENT
 from solders.instruction import Instruction, AccountMeta
 from solders.transaction import Transaction
-from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.message import Message
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
@@ -23,6 +21,9 @@ from spl.token.instructions import get_associated_token_address, create_associat
 RAYDIUM_AMM_PROGRAM_ID = SoldersPubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
 RAYDIUM_AUTHORITY = SoldersPubkey.from_string("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
 SERUM_PROGRAM_ID = SoldersPubkey.from_string("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin")
+
+# Compute Budget Program
+COMPUTE_BUDGET_PROGRAM_ID = SoldersPubkey.from_string("ComputeBudget111111111111111111111111111111")
 
 RAYDIUM_POOLS_URL = "https://api.raydium.io/v2/sdk/liquidity/mainnet.json"
 
@@ -116,6 +117,32 @@ class RaydiumAggregatorClient:
         
         return ata
 
+    def build_compute_budget_instructions(self) -> list[Instruction]:
+        """Build compute budget instructions manually."""
+        instructions = []
+        
+        # Set compute unit limit instruction
+        # Instruction format: [0, limit(u32)]
+        compute_limit_data = struct.pack("<BI", 2, 300000)  # 2 = SetComputeUnitLimit, 300k units
+        compute_limit_ix = Instruction(
+            program_id=COMPUTE_BUDGET_PROGRAM_ID,
+            accounts=[],
+            data=compute_limit_data
+        )
+        instructions.append(compute_limit_ix)
+        
+        # Set compute unit price instruction
+        # Instruction format: [3, price(u64)]
+        compute_price_data = struct.pack("<BQ", 3, 1000)  # 3 = SetComputeUnitPrice, 1000 microlamports
+        compute_price_ix = Instruction(
+            program_id=COMPUTE_BUDGET_PROGRAM_ID,
+            accounts=[],
+            data=compute_price_data
+        )
+        instructions.append(compute_price_ix)
+        
+        return instructions
+
     def build_swap_instruction(
         self,
         pool: Dict[str, Any],
@@ -198,6 +225,12 @@ class RaydiumAggregatorClient:
                 user_source_token = user_source_ata
                 user_dest_token = user_dest_ata
             
+            # Build instructions
+            instructions = []
+            
+            # Add compute budget instructions
+            instructions.extend(self.build_compute_budget_instructions())
+            
             # Build swap instruction
             swap_ix = self.build_swap_instruction(
                 pool=pool,
@@ -207,19 +240,13 @@ class RaydiumAggregatorClient:
                 amount_in=amount_in,
                 min_amount_out=min_amount_out
             )
-            
-            # Add compute budget instructions for priority
-            compute_limit_ix = set_compute_unit_limit(200000)
-            compute_price_ix = set_compute_unit_price(1000)  # 1000 microlamports
+            instructions.append(swap_ix)
             
             # Get recent blockhash
             recent_blockhash = self.client.get_latest_blockhash().value.blockhash
             
             # Build transaction
-            tx = Transaction.new_with_payer(
-                [compute_limit_ix, compute_price_ix, swap_ix],
-                owner
-            )
+            tx = Transaction.new_with_payer(instructions, owner)
             tx.recent_blockhash = recent_blockhash
             
             logging.info(f"[Raydium] Swap TX built successfully for {input_mint} -> {output_mint}")
