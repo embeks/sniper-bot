@@ -1,22 +1,17 @@
-# raydium_aggregator.py - FINAL WORKING VERSION
+# raydium_aggregator.py - WORKS WITH solders==0.10.0
 import os
 import json
 import logging
 import httpx
 import struct
 from typing import Optional, Dict, Any
-import base64
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.instruction import Instruction, AccountMeta
 from solders.transaction import Transaction
-from solders.message import Message
-from solders.hash import Hash
-from solders.signature import Signature
 from solana.rpc.api import Client
-from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
 from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
 from spl.token.instructions import get_associated_token_address, create_associated_token_account
@@ -33,7 +28,7 @@ RAYDIUM_POOLS_URL = "https://api.raydium.io/v2/sdk/liquidity/mainnet.json"
 class RaydiumAggregatorClient:
     def __init__(self, rpc_url: str):
         self.rpc_url = rpc_url
-        self.client = Client(rpc_url, commitment=Confirmed)
+        self.client = Client(rpc_url)
         self.pools = []
 
     def fetch_pools(self) -> None:
@@ -75,18 +70,18 @@ class RaydiumAggregatorClient:
         
         try:
             account_info = self.client.get_account_info(ata)
-            if account_info.value is None:
+            if account_info["result"]["value"] is None:
                 # Create ATA
                 ix = create_associated_token_account(payer=owner, owner=owner, mint=mint)
-                recent_blockhash = self.client.get_latest_blockhash().value.blockhash
+                recent_blockhash = self.client.get_recent_blockhash()["result"]["value"]["blockhash"]
                 
                 tx = Transaction()
-                tx.fee_payer = owner
                 tx.recent_blockhash = recent_blockhash
+                tx.fee_payer = owner
                 tx.add(ix)
                 tx.sign(keypair)
                 
-                sig = self.client.send_transaction(tx).value
+                sig = self.client.send_raw_transaction(tx.serialize())["result"]
                 logging.info(f"[Raydium] Created ATA: {sig}")
                 
         except Exception as e:
@@ -117,32 +112,55 @@ class RaydiumAggregatorClient:
                 input_mint_pk = Pubkey.from_string(input_mint)
                 output_mint_pk = Pubkey.from_string(output_mint)
                 
-                # For SOL, use the owner's account directly
-                user_source_token = owner
+                # For SOL, we need to use wrapped SOL
+                # Create wrapped SOL account
+                from spl.token.instructions import create_wrapped_native_account
+                wrapped_sol_ix = create_wrapped_native_account(
+                    program_id=TOKEN_PROGRAM_ID,
+                    owner=owner,
+                    payer=owner,
+                    amount=amount_in,
+                )
+                
+                user_source_token = get_associated_token_address(owner, input_mint_pk)
                 user_dest_token = self.create_ata_if_needed(owner, output_mint_pk, keypair)
+                
+                # We'll add the wrapped SOL instruction to the transaction
+                wrap_sol = True
             else:
                 # Token to SOL
                 input_mint_pk = Pubkey.from_string(input_mint)
                 output_mint_pk = Pubkey.from_string(output_mint)
                 
                 user_source_token = self.create_ata_if_needed(owner, input_mint_pk, keypair)
-                user_dest_token = owner
+                user_dest_token = get_associated_token_address(owner, output_mint_pk)
+                wrap_sol = False
             
-            # Build instructions
-            instructions = []
+            # Build transaction
+            tx = Transaction()
+            tx.fee_payer = owner
             
-            # Compute budget
+            # Add compute budget instructions
+            compute_limit_data = struct.pack("<BI", 2, 300000)  # 2 = SetComputeUnitLimit
             compute_limit_ix = Instruction(
                 program_id=COMPUTE_BUDGET_PROGRAM_ID,
                 accounts=[],
-                data=bytes([2]) + (300_000).to_bytes(4, 'little')
+                data=compute_limit_data
             )
+            
+            compute_price_data = struct.pack("<BQ", 3, 10000)  # 3 = SetComputeUnitPrice
             compute_price_ix = Instruction(
                 program_id=COMPUTE_BUDGET_PROGRAM_ID,
                 accounts=[],
-                data=bytes([3]) + (10_000).to_bytes(8, 'little')  # Higher priority
+                data=compute_price_data
             )
-            instructions.extend([compute_limit_ix, compute_price_ix])
+            
+            tx.add(compute_limit_ix)
+            tx.add(compute_price_ix)
+            
+            # Add wrapped SOL instruction if needed
+            if wrap_sol:
+                tx.add(wrapped_sol_ix)
             
             # Calculate min amount out
             min_amount_out = int(amount_in * (1 - slippage))
@@ -177,18 +195,13 @@ class RaydiumAggregatorClient:
                 accounts=keys,
                 data=data
             )
-            instructions.append(swap_ix)
+            tx.add(swap_ix)
             
             # Get recent blockhash
-            recent_blockhash = self.client.get_latest_blockhash().value.blockhash
-            
-            # Build transaction
-            tx = Transaction()
-            tx.fee_payer = owner
+            recent_blockhash = self.client.get_recent_blockhash()["result"]["value"]["blockhash"]
             tx.recent_blockhash = recent_blockhash
-            for ix in instructions:
-                tx.add(ix)
             
+            logging.info(f"[Raydium] Swap TX built successfully")
             return tx
             
         except Exception as e:
@@ -204,15 +217,22 @@ class RaydiumAggregatorClient:
             tx.sign(keypair)
             
             # Send transaction
-            result = self.client.send_transaction(tx, opts=TxOpts(skip_preflight=True))
+            result = self.client.send_raw_transaction(
+                tx.serialize(),
+                opts={"skipPreflight": True, "preflightCommitment": "confirmed"}
+            )
             
-            if hasattr(result, 'value'):
-                sig = str(result.value)
+            if "result" in result:
+                sig = result["result"]
                 logging.info(f"[Raydium] Transaction sent: {sig}")
                 return sig
-            
-            return None
-            
+            else:
+                error = result.get("error", "Unknown error")
+                logging.error(f"[Raydium] Failed to send transaction: {error}")
+                return None
+                
         except Exception as e:
             logging.error(f"[Raydium] Send transaction error: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return None
