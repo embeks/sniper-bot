@@ -1,9 +1,9 @@
-# All compatible versions for solana==0.30.2
+# All compatible versions - using latest solana
 httpx==0.23.3
 websockets==11.0.3
 python-dotenv==1.0.0
-solana==0.30.2
-solders==0.18.1
+solana==0.32.0
+solders==0.19.0
 anchorpy==0.19.1
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
