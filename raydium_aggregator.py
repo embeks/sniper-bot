@@ -1,146 +1,256 @@
-# raydium_aggregator.py (LIVE RAYDIUM POOL FETCH VERSION - FINAL)
+# raydium_aggregator.py - FIXED VERSION
 import os
 import json
 import logging
 import httpx
+import struct
+from typing import Optional, Dict, Any
 
+from solders.keypair import Keypair as SoldersKeypair
+from solders.pubkey import Pubkey as SoldersPubkey
+from solders.system_program import ID as SYS_PROGRAM_ID
+from solders.sysvar import RENT
+from solders.instruction import Instruction, AccountMeta
+from solders.transaction import Transaction
+from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+from solders.message import Message
 from solana.rpc.api import Client
-from solana.publickey import PublicKey
-from solana.transaction import Transaction, TransactionInstruction, AccountMeta
 from solana.rpc.types import TxOpts
-from solders.keypair import Keypair
+from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
 from spl.token.instructions import get_associated_token_address, create_associated_token_account
-from solana.system_program import SYS_PROGRAM_ID
 
-RAYDIUM_AMM_PROGRAM_ID = PublicKey("RVKd61ztZW9jqhDXnTBu6UBFygcBPzjcZijMdtaiPqK")
+# Raydium Program IDs
+RAYDIUM_AMM_PROGRAM_ID = SoldersPubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
+RAYDIUM_AUTHORITY = SoldersPubkey.from_string("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
+SERUM_PROGRAM_ID = SoldersPubkey.from_string("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin")
+
 RAYDIUM_POOLS_URL = "https://api.raydium.io/v2/sdk/liquidity/mainnet.json"
 
 class RaydiumAggregatorClient:
-    def __init__(self, rpc_url):
+    def __init__(self, rpc_url: str):
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
-        self.pools = None
+        self.pools = []
+        self.fetch_pools()
 
-    def fetch_pools(self, max_retries=5, delay=2):
-        """Always fetch Raydium pool list from Raydium API (live), with debug logging."""
+    def fetch_pools(self, max_retries: int = 5, delay: int = 2) -> None:
+        """Fetch Raydium pool list from API with retry logic."""
         for attempt in range(max_retries):
             try:
                 logging.info(f"[Raydium] Fetching pools from API (attempt {attempt+1}/{max_retries})")
-                r = httpx.get(RAYDIUM_POOLS_URL, timeout=15)
+                r = httpx.get(RAYDIUM_POOLS_URL, timeout=30)
                 r.raise_for_status()
                 pools_data = r.json()
-                self.pools = (pools_data.get("official") or []) + (pools_data.get("unOfficial") or [])
-                logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
-                preview = [f"{p.get('baseMint')} <-> {p.get('quoteMint')}" for p in self.pools[:3]]
-                logging.info(f"[Raydium] First 3 pool pairs: {preview}")
-                if not self.pools:
+                
+                official = pools_data.get("official", [])
+                unofficial = pools_data.get("unOfficial", [])
+                self.pools = official + unofficial
+                
+                logging.info(f"[Raydium] Pools loaded: {len(self.pools)} (official: {len(official)}, unofficial: {len(unofficial)})")
+                
+                if self.pools:
+                    preview = [f"{p.get('baseMint')} <-> {p.get('quoteMint')}" for p in self.pools[:3]]
+                    logging.info(f"[Raydium] First 3 pool pairs: {preview}")
+                else:
                     logging.warning("[Raydium] Pool list is EMPTY after API fetch!")
                 return
             except Exception as e:
-                logging.error(f"[Raydium] Failed to fetch pools: {e}")
+                logging.error(f"[Raydium] Failed to fetch pools (attempt {attempt+1}): {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(delay)
+        
+        logging.error("[Raydium] Failed to fetch pools after all retries")
         self.pools = []
 
-    def find_pool(self, input_mint, output_mint):
-        """Find the best Raydium pool for the given mint pair. Logs debug if not found."""
-        self.fetch_pools()  # Always fetch latest, never rely on cache
-        candidates = []
+    def find_pool(self, input_mint: str, output_mint: str) -> Optional[Dict[str, Any]]:
+        """Find pool for the given mint pair."""
+        if not self.pools:
+            self.fetch_pools()
+        
+        # Normalize mint addresses
+        input_mint = str(input_mint)
+        output_mint = str(output_mint)
+        
         for pool in self.pools:
-            coins = (pool["baseMint"], pool["quoteMint"])
-            if (input_mint in coins) and (output_mint in coins):
-                logging.info(f"[Raydium] Pool found for {input_mint} <-> {output_mint}: {pool}")
+            base_mint = pool.get("baseMint", "")
+            quote_mint = pool.get("quoteMint", "")
+            
+            if (input_mint == base_mint and output_mint == quote_mint) or \
+               (input_mint == quote_mint and output_mint == base_mint):
+                logging.info(f"[Raydium] Pool found: {pool.get('id')} for {input_mint} <-> {output_mint}")
                 return pool
-            candidates.append(f"{pool['baseMint']} <-> {pool['quoteMint']}")
-        logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}. Pool candidates: {candidates[:10]}")
+        
+        logging.warning(f"[Raydium] No pool found for {input_mint} <-> {output_mint}")
         return None
 
-    def create_ata_if_missing(self, owner, mint, keypair):
+    def ensure_ata_exists(self, owner: SoldersPubkey, mint: SoldersPubkey, keypair: SoldersKeypair) -> SoldersPubkey:
+        """Ensure ATA exists, create if needed."""
         ata = get_associated_token_address(owner, mint)
-        res = self.client.get_account_info(ata)
-        if res["result"]["value"] is None:
-            logging.info(f"[Raydium] Creating ATA for {str(mint)}")
-            tx = Transaction()
-            tx.add(create_associated_token_account(owner, owner, mint))
-            tx.recent_blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
-            tx.fee_payer = owner
-            tx.sign([keypair])
-            self.client.send_raw_transaction(bytes(tx), opts=TxOpts(skip_preflight=True))
+        
+        try:
+            response = self.client.get_account_info(ata)
+            if response.value is None:
+                logging.info(f"[Raydium] Creating ATA for mint {mint}")
+                
+                create_ix = create_associated_token_account(
+                    payer=owner,
+                    owner=owner,
+                    mint=mint
+                )
+                
+                recent_blockhash = self.client.get_latest_blockhash().value.blockhash
+                tx = Transaction.new_with_payer([create_ix], owner)
+                tx.recent_blockhash = recent_blockhash
+                tx.sign([keypair])
+                
+                sig = self.client.send_raw_transaction(bytes(tx))
+                logging.info(f"[Raydium] ATA created, tx: {sig.value}")
+                
+                # Wait for confirmation
+                import time
+                time.sleep(2)
+                
+        except Exception as e:
+            logging.error(f"[Raydium] Error checking/creating ATA: {e}")
+        
+        return ata
+
+    def build_swap_instruction(
+        self,
+        pool: Dict[str, Any],
+        user_source_token: SoldersPubkey,
+        user_dest_token: SoldersPubkey,
+        user_owner: SoldersPubkey,
+        amount_in: int,
+        min_amount_out: int
+    ) -> Instruction:
+        """Build Raydium swap instruction."""
+        
+        # Swap instruction discriminator (9 for swap)
+        discriminator = struct.pack("<B", 9)
+        # Pack amount_in and min_amount_out as u64
+        data = discriminator + struct.pack("<QQ", amount_in, min_amount_out)
+        
+        keys = [
+            AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["id"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["authority"]), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["openOrders"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["targetOrders"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["baseVault"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["quoteVault"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SERUM_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["marketId"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["marketBids"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["marketAsks"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["marketEventQueue"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["marketBaseVault"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["marketQuoteVault"]), is_signer=False, is_writable=True),
+            AccountMeta(pubkey=SoldersPubkey.from_string(pool["marketAuthority"]), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=user_source_token, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=user_dest_token, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=user_owner, is_signer=True, is_writable=False),
+        ]
+        
+        return Instruction(
+            program_id=RAYDIUM_AMM_PROGRAM_ID,
+            accounts=keys,
+            data=data
+        )
 
     def build_swap_transaction(
         self,
-        keypair: Keypair,
+        keypair: SoldersKeypair,
         input_mint: str,
         output_mint: str,
         amount_in: int,
-        slippage: float = 0.10
-    ):
-        logging.info(f"🔍 DEBUG: Looking for Raydium pool: input={input_mint}, output={output_mint}")
-        pool = self.find_pool(input_mint, output_mint)
-        if not pool:
-            logging.error(f"❌ DEBUG: No Raydium pool found for input={input_mint}, output={output_mint}.")
+        slippage: float = 0.01
+    ) -> Optional[Transaction]:
+        """Build complete swap transaction."""
+        try:
+            # Find pool
+            pool = self.find_pool(input_mint, output_mint)
+            if not pool:
+                logging.error(f"[Raydium] No pool found for {input_mint} <-> {output_mint}")
+                return None
+            
+            owner = keypair.pubkey()
+            input_mint_pubkey = SoldersPubkey.from_string(input_mint)
+            output_mint_pubkey = SoldersPubkey.from_string(output_mint)
+            
+            # Ensure ATAs exist
+            user_source_ata = self.ensure_ata_exists(owner, input_mint_pubkey, keypair)
+            user_dest_ata = self.ensure_ata_exists(owner, output_mint_pubkey, keypair)
+            
+            # Calculate minimum output with slippage
+            # For a simple estimate, we'll use the slippage directly
+            # In production, you'd want to calculate based on pool reserves
+            min_amount_out = int(amount_in * (1 - slippage))
+            
+            # Determine swap direction
+            if input_mint == pool["baseMint"]:
+                # Swapping base to quote
+                user_source_token = user_source_ata
+                user_dest_token = user_dest_ata
+            else:
+                # Swapping quote to base
+                user_source_token = user_source_ata
+                user_dest_token = user_dest_ata
+            
+            # Build swap instruction
+            swap_ix = self.build_swap_instruction(
+                pool=pool,
+                user_source_token=user_source_token,
+                user_dest_token=user_dest_token,
+                user_owner=owner,
+                amount_in=amount_in,
+                min_amount_out=min_amount_out
+            )
+            
+            # Add compute budget instructions for priority
+            compute_limit_ix = set_compute_unit_limit(200000)
+            compute_price_ix = set_compute_unit_price(1000)  # 1000 microlamports
+            
+            # Get recent blockhash
+            recent_blockhash = self.client.get_latest_blockhash().value.blockhash
+            
+            # Build transaction
+            tx = Transaction.new_with_payer(
+                [compute_limit_ix, compute_price_ix, swap_ix],
+                owner
+            )
+            tx.recent_blockhash = recent_blockhash
+            
+            logging.info(f"[Raydium] Swap TX built successfully for {input_mint} -> {output_mint}")
+            return tx
+            
+        except Exception as e:
+            logging.error(f"[Raydium] Failed to build swap transaction: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return None
 
-        owner = keypair.pubkey()
-        # Find correct in/out for pool
-        if input_mint == pool["baseMint"]:
-            in_token_account = get_associated_token_address(owner, PublicKey(pool["baseMint"]))
-            out_token_account = get_associated_token_address(owner, PublicKey(pool["quoteMint"]))
-            market_side = 0  # base to quote
-        else:
-            in_token_account = get_associated_token_address(owner, PublicKey(pool["quoteMint"]))
-            out_token_account = get_associated_token_address(owner, PublicKey(pool["baseMint"]))
-            market_side = 1  # quote to base
-
-        # Create ATA if missing for output
-        self.create_ata_if_missing(owner, PublicKey(output_mint), keypair)
-
-        # Prepare swap instruction (Raydium AMM V3 layout)
-        keys = [
-            AccountMeta(pubkey=owner, is_signer=True, is_writable=True),
-            AccountMeta(pubkey=in_token_account, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=out_token_account, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["baseVault"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["quoteVault"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["id"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["openOrders"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["market"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["marketBids"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["marketAsks"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["marketEventQueue"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["marketBaseVault"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["marketQuoteVault"]), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=PublicKey(pool["marketAuthority"]), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=PublicKey("11111111111111111111111111111111"), is_signer=False, is_writable=False),  # Rent sysvar
-        ]
-
-        # Raydium swap instruction layout (V3): tag + amount_in + min_amount_out + side
-        tag = 9  # Swap
-        min_amount_out = int(amount_in * (1 - slippage))
-        data = (
-            tag.to_bytes(1, "little")
-            + amount_in.to_bytes(8, "little")
-            + min_amount_out.to_bytes(8, "little")
-            + market_side.to_bytes(1, "little")
-        )
-
-        ix = TransactionInstruction(
-            program_id=RAYDIUM_AMM_PROGRAM_ID,
-            keys=keys,
-            data=data
-        )
-        tx = Transaction()
-        tx.add(ix)
-        return tx
-
-    def send_transaction(self, tx: Transaction, keypair: Keypair):
+    def send_transaction(self, tx: Transaction, keypair: SoldersKeypair) -> Optional[str]:
+        """Send transaction with proper error handling."""
         try:
-            tx.recent_blockhash = self.client.get_latest_blockhash()["result"]["value"]["blockhash"]
-            tx.fee_payer = keypair.pubkey()
+            # Sign transaction
             tx.sign([keypair])
-            sig = self.client.send_raw_transaction(bytes(tx), opts=TxOpts(skip_preflight=True))
-            logging.info(f"[Raydium] TX sent: {sig}")
-            return sig
+            
+            # Send transaction
+            opts = TxOpts(skip_preflight=True, preflight_commitment="confirmed")
+            response = self.client.send_raw_transaction(bytes(tx), opts)
+            
+            if hasattr(response, 'value'):
+                sig = str(response.value)
+                logging.info(f"[Raydium] Transaction sent successfully: {sig}")
+                return sig
+            else:
+                logging.error(f"[Raydium] Failed to send transaction: {response}")
+                return None
+                
         except Exception as e:
-            logging.error(f"[Raydium] TX failed: {e}")
+            logging.error(f"[Raydium] Transaction send error: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return None
