@@ -1,11 +1,12 @@
-# Minimal working set - remove anchorpy since we don't use it
+# Start with your ORIGINAL working versions
 httpx==0.23.3
-websockets==11.0.3
-python-dotenv==1.0.0
-solana==0.30.2
-solders==0.18.1
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-base58==2.1.1
+websockets==10.4
+python-dotenv==1.0.1
+solana==0.28.1
+solders==0.10.0
+requests
+gunicorn
+fastapi
+uvicorn[standard]
+base58
 psutil==5.9.6
-spl-token-py==0.1.20
