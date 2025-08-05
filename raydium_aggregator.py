@@ -36,54 +36,27 @@ class RaydiumAggregatorClient:
         try:
             sol_mint = "So11111111111111111111111111111111111111112"
             
-            # Search for pools containing this token
-            filters = [
-                {"dataSize": 752},  # Raydium V4 AMM account size
-            ]
-            
-            # Get all Raydium AMM accounts
+            # Get all Raydium AMM accounts (no filters for older solana-py)
             accounts = self.client.get_program_accounts(
                 str(RAYDIUM_AMM_PROGRAM_ID),
-                encoding="base64",
-                filters=filters
+                encoding="base64"
             )
             
             if not accounts.get("result"):
+                logging.warning("[Raydium] No program accounts found")
                 return None
+            
+            logging.info(f"[Raydium] Searching through {len(accounts['result'])} Raydium accounts...")
             
             # Look through accounts to find one with our token
             for account_info in accounts["result"]:
                 try:
+                    # Check account size first
                     account_data = base64.b64decode(account_info["account"]["data"][0])
+                    if len(account_data) != 752:  # Not a V4 pool
+                        continue
                     
                     # Raydium V4 pool layout (simplified)
-                    # Skip discriminator (8 bytes)
-                    # Skip status (8 bytes) 
-                    # Skip nonce (8 bytes)
-                    # Skip max_order (8 bytes)
-                    # Skip depth (8 bytes)
-                    # Skip base_decimal (8 bytes)
-                    # Skip quote_decimal (8 bytes)
-                    # Skip state (8 bytes)
-                    # Skip reset_flag (8 bytes)
-                    # Skip min_size (8 bytes)
-                    # Skip vol_factor (8 bytes)
-                    # Skip cur_factor (8 bytes)
-                    # Skip padding1 (8 bytes)
-                    # Skip trade_fee_numerator (8 bytes)
-                    # Skip trade_fee_denominator (8 bytes)
-                    # Skip pnl_numerator (8 bytes)
-                    # Skip pnl_denominator (8 bytes)
-                    # Skip swap_fee_numerator (8 bytes)
-                    # Skip swap_fee_denominator (8 bytes)
-                    # Skip base_need_take (8 bytes)
-                    # Skip quote_need_take (8 bytes)
-                    # Skip base_total (8 bytes)
-                    # Skip quote_total (8 bytes)
-                    # Skip padding2 (8 bytes)
-                    # Skip base_lot_size (8 bytes)
-                    # Skip quote_lot_size (8 bytes)
-                    
                     # Now we're at the pubkeys section (208 bytes in)
                     offset = 208
                     
@@ -137,10 +110,13 @@ class RaydiumAggregatorClient:
                 except Exception as e:
                     continue
                     
+            logging.warning(f"[Raydium] No pool found containing {token_mint[:8]}...")
             return None
             
         except Exception as e:
             logging.error(f"[Raydium] On-chain pool search failed: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return None
 
     def _get_market_info(self, market_id: str) -> Dict[str, Any]:
