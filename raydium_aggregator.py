@@ -1,9 +1,4 @@
-def find_pool_via_jupiter(self, input_mint: str, output_mint: str) -> Optional[Dict[str, Any]]:
-        """Use Jupiter API to find Raydium pools - placeholder for future use."""
-        # This is just a placeholder - Jupiter requires whitelist
-        return None
-    
-    def find_pool_direct(self, input_mint: str, output_mint: str) -> Optional[Dict[str, Any]]:# raydium_aggregator.py - WORKS WITH solders==0.10.0
+# raydium_aggregator.py - WORKS WITH solders==0.10.0
 import os
 import json
 import logging
@@ -35,41 +30,89 @@ class RaydiumAggregatorClient:
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
         self.pools = []
+        self.pool_index = {}
 
     def fetch_pools(self) -> None:
-        """Fetch Raydium pool list from API with streaming."""
+        """Fetch Raydium pool list from API with proper handling for large file."""
         try:
             logging.info("[Raydium] Fetching pools from API...")
             
-            # For now, skip the huge API and use direct pool lookup
-            logging.warning("[Raydium] Skipping 888MB pool file, using direct pool lookup instead")
-            self.pools = []
-            
-            # Alternative: Try the SDK's filtered endpoint if available
-            try:
-                # Try a lighter endpoint that might exist
-                alt_url = "https://api.raydium.io/v2/main/pool/ids"
-                with httpx.Client(timeout=30.0) as client:
-                    response = client.get(alt_url)
-                    if response.status_code == 200:
-                        logging.info("[Raydium] Using alternative pool list")
-                        # Process lighter response
-                        return
-            except:
-                pass
+            # Use streaming to handle large file
+            with httpx.Client(timeout=120.0) as client:
+                logging.info("[Raydium] Downloading pool data (this may take 1-2 minutes)...")
                 
+                with client.stream("GET", RAYDIUM_POOLS_URL) as response:
+                    response.raise_for_status()
+                    
+                    # Read in chunks to avoid memory spike
+                    chunks = []
+                    total_size = 0
+                    for chunk in response.iter_bytes(chunk_size=1024*1024):  # 1MB chunks
+                        chunks.append(chunk)
+                        total_size += len(chunk)
+                        if total_size % (50*1024*1024) == 0:  # Log every 50MB
+                            logging.info(f"[Raydium] Downloaded {total_size/1024/1024:.0f}MB...")
+                    
+                    # Combine chunks
+                    content = b''.join(chunks)
+                    logging.info(f"[Raydium] Download complete: {len(content)/1024/1024:.1f}MB")
+                    
+                    # Parse JSON
+                    logging.info("[Raydium] Parsing pool data...")
+                    pools_data = json.loads(content)
+                    
+                    # Free memory immediately
+                    del content
+                    del chunks
+                    
+                    official = pools_data.get("official", [])
+                    unofficial = pools_data.get("unOfficial", [])
+                    
+                    # Store only pools with SOL pairs (most relevant for sniping)
+                    sol_mint = "So11111111111111111111111111111111111111112"
+                    self.pools = []
+                    
+                    for pool in official + unofficial:
+                        # Only keep SOL pools to save memory
+                        if pool.get("baseMint") == sol_mint or pool.get("quoteMint") == sol_mint:
+                            self.pools.append(pool)
+                    
+                    # Free more memory
+                    del pools_data
+                    del official
+                    del unofficial
+                    
+                    logging.info(f"[Raydium] Loaded {len(self.pools)} SOL pools (filtered from full list)")
+                    
+                    # Create a quick lookup index
+                    self._create_pool_index()
+                    
         except Exception as e:
             logging.error(f"[Raydium] Failed to fetch pools: {type(e).__name__}: {e}")
             self.pools = []
+    
+    def _create_pool_index(self):
+        """Create an index for faster pool lookups."""
+        self.pool_index = {}
+        for pool in self.pools:
+            base = pool.get("baseMint", "")
+            quote = pool.get("quoteMint", "")
+            
+            # Index by non-SOL token
+            sol_mint = "So11111111111111111111111111111111111111112"
+            if base == sol_mint:
+                self.pool_index[quote] = pool
+            elif quote == sol_mint:
+                self.pool_index[base] = pool
 
     def find_pool(self, input_mint: str, output_mint: str) -> Optional[Dict[str, Any]]:
         """Find pool for the given mint pair - optimized version."""
         # Ensure we have pools
-        if not self.pools and not hasattr(self, 'pool_index'):
+        if not self.pools and not self.pool_index:
             self.fetch_pools()
         
         # Fast lookup using index
-        if hasattr(self, 'pool_index'):
+        if self.pool_index:
             sol_mint = "So11111111111111111111111111111111111111112"
             
             # Check if one of the mints is SOL
@@ -89,137 +132,6 @@ class RaydiumAggregatorClient:
         
         # If no pool found, log it
         logging.warning(f"[Raydium] No pool found for {input_mint[:8]}... <-> {output_mint[:8]}...")
-        return None
-    
-    def find_pool_by_rpc(self, token_mint: str) -> Optional[Dict[str, Any]]:
-        """Find pool for a specific token using RPC calls."""
-        try:
-            # Get all accounts owned by Raydium AMM program that contain this mint
-            filters = [
-                {"dataSize": 752},  # Raydium V4 pool size
-                {"memcmp": {"offset": 400, "bytes": token_mint}},  # baseMint position
-            ]
-            
-            accounts = self.client.get_program_accounts(
-                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-                encoding="base64",
-                filters=filters
-            )
-            
-            if accounts.get("result"):
-                for account in accounts["result"]:
-                    # Parse account data to extract pool info
-                    # This is simplified - you'd need to decode the account properly
-                    pool_pubkey = account["pubkey"]
-                    logging.info(f"[Raydium] Found pool via RPC: {pool_pubkey}")
-                    
-                    # Return a minimal pool structure
-                    return {
-                        "id": pool_pubkey,
-                        "baseMint": token_mint,
-                        "quoteMint": "So11111111111111111111111111111111111111112",
-                        # Add other required fields based on account data
-                    }
-                    
-            # Try quoteMint position
-            filters = [
-                {"dataSize": 752},
-                {"memcmp": {"offset": 432, "bytes": token_mint}},  # quoteMint position
-            ]
-            
-            accounts = self.client.get_program_accounts(
-                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-                encoding="base64",
-                filters=filters
-            )
-            
-            if accounts.get("result") and len(accounts["result"]) > 0:
-                # Found pool where token is quoteMint
-                pool_pubkey = accounts["result"][0]["pubkey"]
-                logging.info(f"[Raydium] Found pool via RPC: {pool_pubkey}")
-                return {
-                    "id": pool_pubkey,
-                    "baseMint": "So11111111111111111111111111111111111111112",
-                    "quoteMint": token_mint,
-                }
-                
-        except Exception as e:
-            logging.error(f"[Raydium] RPC pool search failed: {e}")
-            
-        return None
-        """Try to find pool using direct RPC calls instead of cached data."""
-        # For known tokens, return hardcoded pool info
-        # This is a fallback when the API is down
-        
-        # Normalize mints
-        mints = {input_mint, output_mint}
-        sol_mint = "So11111111111111111111111111111111111111112"
-        
-        # Check if one of them is SOL
-        if sol_mint not in mints:
-            return None
-            
-        # Get the other token
-        token_mint = input_mint if output_mint == sol_mint else output_mint
-        
-        # Known token pools with SOL
-        known_pools = {
-            # RAY-SOL
-            "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": {
-                "id": "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",
-                "baseMint": "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
-                "quoteMint": "So11111111111111111111111111111111111111112",
-                "lpMint": "89ZKE4aoyfLBe2RuV6jM3JGNhaV18Nxh8eNtjRcndBip",
-                "baseDecimals": 6,
-                "quoteDecimals": 9,
-                "lpDecimals": 6,
-                "version": 4,
-                "programId": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-                "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-                "openOrders": "6Su6Ea97dBxecd5W92KcVvv6SzCurE2BXGgFe9LNGMpE",
-                "targetOrders": "5hATcCfvhVwAjNExvrg8rRkXmYyksHhVajWLa46iRsmE",
-                "baseVault": "Em6rHi68trYgBFyJ5261A2nhwuQWfLcirgzZZYoRcrkX",
-                "quoteVault": "3mEFzHsJyu2Cpjrz6zPmTzP7uoLFj9SbbecGVzzkL1mJ",
-                "marketId": "C6tp2RVZnxBPFbnAsfTjis8BN9tycESAT4SgDQgbbrsA",
-                "marketAuthority": "7SdieGqwPJo5rMmSQM9JmntSEMoimM4dQn7NkGbNFcrd",
-                "marketBaseVault": "6U6U59zmFWrPSzm9sLX7kVkaK78Kz7XJYkrhP1DjF3uF",
-                "marketQuoteVault": "4YEx21yeUAZxUL9Fs7YU9Gm3u45GWoPFs8vcJiHga2eQ",
-                "marketBids": "C1nEbACFaHMUiKAUsXVYPWZsuxunJeBkqXHPFr8QgSj9",
-                "marketAsks": "4DNBdnTw6wmrK4NmdSTTxs1kEz47yjqLGuoqsMeHvkMF",
-                "marketEventQueue": "4HGvdTqhYadgZ1YKrPfEfUvKGMGDnaPSvpEMnJ8kwGNt"
-            },
-            # USDC-SOL
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
-                "id": "6a1CsrpeZubDjEJE9s1CMVheB6HWM5d7m1cj2jkhyXhj",
-                "baseMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                "quoteMint": "So11111111111111111111111111111111111111112",
-                "lpMint": "8HoQnePLqPj4M7PUDzfw8e3Ymdwgc7NLGnaTUapubyvu",
-                "baseDecimals": 6,
-                "quoteDecimals": 9,
-                "lpDecimals": 9,
-                "version": 4,
-                "programId": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-                "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-                "openOrders": "75HKx8M5UBdp2wPLqLZqoWfPsqJnmhFCVFUe9yPg5FMa",
-                "targetOrders": "3K5bWdYQZKYLEWi655X8bNVFXmJfnVVsu3wFYomKVYsu",
-                "baseVault": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
-                "quoteVault": "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz",
-                "marketId": "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6",
-                "marketAuthority": "F8Vyqk3unwxkXukZFQeYyGmFfTG3CAX4v24iyrjEYBJV",
-                "marketBaseVault": "9vYWHBPz817wJdQpE8u3h8UoY3sZ16ZXdCcvLB7jY4Dj",
-                "marketQuoteVault": "6mJqqT5TMgveDvxzBt3hrjGkPV5VAj7tacxFCT3GebXh",
-                "marketBids": "14ivtgssEBoBjuZJtSAPKYgpUK7DmnSwuPMqJoVTSgKJ",
-                "marketAsks": "CEQdAFKdycHugujQg9k2wbmxjcpdYZyVLfV9WerTnafJ",
-                "marketEventQueue": "5KKsLVU6TcbVDK4BS6K1DGDxnh4Q9xjYJ8XaDCG5t8ht"
-            }
-        }
-        
-        if token_mint in known_pools:
-            logging.info(f"[Raydium] Using hardcoded pool for {token_mint[:8]}...")
-            return known_pools[token_mint]
-            
-        # For unknown tokens, we can't provide pool info
-        logging.warning(f"[Raydium] No hardcoded pool for {token_mint}")
         return None
 
     def create_ata_if_needed(self, owner: Pubkey, mint: Pubkey, keypair: Keypair) -> Pubkey:
