@@ -32,28 +32,66 @@ class RaydiumAggregatorClient:
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
         self.pools = []
-        self.fetch_pools()
+        # Don't fetch pools on init - fetch only when needed
 
-    def fetch_pools(self, max_retries: int = 5, delay: int = 2) -> None:
+    def fetch_pools(self, max_retries: int = 3, delay: int = 2) -> None:
         """Fetch Raydium pool list from API with retry logic."""
+        # Clear existing pools to free memory
+        self.pools = []
+        
         for attempt in range(max_retries):
             try:
                 logging.info(f"[Raydium] Fetching pools from API (attempt {attempt+1}/{max_retries})")
-                r = httpx.get(RAYDIUM_POOLS_URL, timeout=30)
-                r.raise_for_status()
-                pools_data = r.json()
+                
+                # Use streaming to reduce memory usage
+                with httpx.stream("GET", RAYDIUM_POOLS_URL, timeout=30) as r:
+                    r.raise_for_status()
+                    content = b""
+                    for chunk in r.iter_bytes():
+                        content += chunk
+                    
+                pools_data = json.loads(content)
                 
                 official = pools_data.get("official", [])
                 unofficial = pools_data.get("unOfficial", [])
-                self.pools = official + unofficial
                 
-                logging.info(f"[Raydium] Pools loaded: {len(self.pools)} (official: {len(official)}, unofficial: {len(unofficial)})")
+                # Only store essential pool data to save memory
+                self.pools = []
+                for pool in official + unofficial:
+                    # Only keep pools with both mints present
+                    if pool.get("baseMint") and pool.get("quoteMint"):
+                        # Store only essential fields
+                        self.pools.append({
+                            "id": pool.get("id"),
+                            "baseMint": pool.get("baseMint"),
+                            "quoteMint": pool.get("quoteMint"),
+                            "version": pool.get("version", 4),
+                            "authority": pool.get("authority"),
+                            "openOrders": pool.get("openOrders"),
+                            "targetOrders": pool.get("targetOrders"),
+                            "baseVault": pool.get("baseVault"),
+                            "quoteVault": pool.get("quoteVault"),
+                            "marketId": pool.get("marketId"),
+                            "marketAuthority": pool.get("marketAuthority"),
+                            "marketBaseVault": pool.get("marketBaseVault"),
+                            "marketQuoteVault": pool.get("marketQuoteVault"),
+                            "marketBids": pool.get("marketBids"),
+                            "marketAsks": pool.get("marketAsks"),
+                            "marketEventQueue": pool.get("marketEventQueue")
+                        })
+                
+                logging.info(f"[Raydium] Pools loaded: {len(self.pools)}")
                 
                 if self.pools:
-                    preview = [f"{p.get('baseMint')} <-> {p.get('quoteMint')}" for p in self.pools[:3]]
+                    preview = [f"{p.get('baseMint')[:8]}...{p.get('baseMint')[-4:]} <-> {p.get('quoteMint')[:8]}...{p.get('quoteMint')[-4:]}" for p in self.pools[:3]]
                     logging.info(f"[Raydium] First 3 pool pairs: {preview}")
                 else:
                     logging.warning("[Raydium] Pool list is EMPTY after API fetch!")
+                
+                # Clear the raw data to free memory
+                del pools_data
+                del content
+                
                 return
             except Exception as e:
                 logging.error(f"[Raydium] Failed to fetch pools (attempt {attempt+1}): {e}")
