@@ -1,11 +1,11 @@
-# All compatible versions - using latest solana
+# Minimal working set - remove anchorpy since we don't use it
 httpx==0.23.3
 websockets==11.0.3
 python-dotenv==1.0.0
-solana==0.32.0
-solders==0.19.0
-anchorpy==0.19.1
+solana==0.30.2
+solders==0.18.1
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 base58==2.1.1
 psutil==5.9.6
+spl-token-py==0.1.20
