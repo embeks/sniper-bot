@@ -1,10 +1,11 @@
-# raydium_aggregator.py - WORKS WITH solders==0.10.0
+# raydium_aggregator.py - OPTIMIZED VERSION
 import os
 import json
 import logging
 import httpx
 import struct
 from typing import Optional, Dict, Any
+import base64
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -19,119 +20,227 @@ from spl.token.instructions import get_associated_token_address, create_associat
 # Raydium Program IDs
 RAYDIUM_AMM_PROGRAM_ID = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
 SERUM_PROGRAM_ID = Pubkey.from_string("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin")
+RAYDIUM_AUTHORITY = Pubkey.from_string("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
 
 # Compute Budget Program
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
-
-RAYDIUM_POOLS_URL = "https://api.raydium.io/v2/sdk/liquidity/mainnet.json"
 
 class RaydiumAggregatorClient:
     def __init__(self, rpc_url: str):
         self.rpc_url = rpc_url
         self.client = Client(rpc_url)
-        self.pools = []
-        self.pool_index = {}
+        # Don't load pools - use on-demand lookup
 
-    def fetch_pools(self) -> None:
-        """Fetch Raydium pool list from API with proper handling for large file."""
+    def find_pool_onchain(self, token_mint: str) -> Optional[Dict[str, Any]]:
+        """Find Raydium pool directly on-chain without downloading the huge file."""
         try:
-            logging.info("[Raydium] Fetching pools from API...")
-            
-            # Use streaming to handle large file
-            with httpx.Client(timeout=120.0) as client:
-                logging.info("[Raydium] Downloading pool data (this may take 1-2 minutes)...")
-                
-                with client.stream("GET", RAYDIUM_POOLS_URL) as response:
-                    response.raise_for_status()
-                    
-                    # Read in chunks to avoid memory spike
-                    chunks = []
-                    total_size = 0
-                    for chunk in response.iter_bytes(chunk_size=1024*1024):  # 1MB chunks
-                        chunks.append(chunk)
-                        total_size += len(chunk)
-                        if total_size % (50*1024*1024) == 0:  # Log every 50MB
-                            logging.info(f"[Raydium] Downloaded {total_size/1024/1024:.0f}MB...")
-                    
-                    # Combine chunks
-                    content = b''.join(chunks)
-                    logging.info(f"[Raydium] Download complete: {len(content)/1024/1024:.1f}MB")
-                    
-                    # Parse JSON
-                    logging.info("[Raydium] Parsing pool data...")
-                    pools_data = json.loads(content)
-                    
-                    # Free memory immediately
-                    del content
-                    del chunks
-                    
-                    official = pools_data.get("official", [])
-                    unofficial = pools_data.get("unOfficial", [])
-                    
-                    # Store only pools with SOL pairs (most relevant for sniping)
-                    sol_mint = "So11111111111111111111111111111111111111112"
-                    self.pools = []
-                    
-                    for pool in official + unofficial:
-                        # Only keep SOL pools to save memory
-                        if pool.get("baseMint") == sol_mint or pool.get("quoteMint") == sol_mint:
-                            self.pools.append(pool)
-                    
-                    # Free more memory
-                    del pools_data
-                    del official
-                    del unofficial
-                    
-                    logging.info(f"[Raydium] Loaded {len(self.pools)} SOL pools (filtered from full list)")
-                    
-                    # Create a quick lookup index
-                    self._create_pool_index()
-                    
-        except Exception as e:
-            logging.error(f"[Raydium] Failed to fetch pools: {type(e).__name__}: {e}")
-            self.pools = []
-    
-    def _create_pool_index(self):
-        """Create an index for faster pool lookups."""
-        self.pool_index = {}
-        for pool in self.pools:
-            base = pool.get("baseMint", "")
-            quote = pool.get("quoteMint", "")
-            
-            # Index by non-SOL token
             sol_mint = "So11111111111111111111111111111111111111112"
-            if base == sol_mint:
-                self.pool_index[quote] = pool
-            elif quote == sol_mint:
-                self.pool_index[base] = pool
+            
+            # Search for pools containing this token
+            filters = [
+                {"dataSize": 752},  # Raydium V4 AMM account size
+            ]
+            
+            # Get all Raydium AMM accounts
+            accounts = self.client.get_program_accounts(
+                str(RAYDIUM_AMM_PROGRAM_ID),
+                encoding="base64",
+                filters=filters
+            )
+            
+            if not accounts.get("result"):
+                return None
+            
+            # Look through accounts to find one with our token
+            for account_info in accounts["result"]:
+                try:
+                    account_data = base64.b64decode(account_info["account"]["data"][0])
+                    
+                    # Raydium V4 pool layout (simplified)
+                    # Skip discriminator (8 bytes)
+                    # Skip status (8 bytes) 
+                    # Skip nonce (8 bytes)
+                    # Skip max_order (8 bytes)
+                    # Skip depth (8 bytes)
+                    # Skip base_decimal (8 bytes)
+                    # Skip quote_decimal (8 bytes)
+                    # Skip state (8 bytes)
+                    # Skip reset_flag (8 bytes)
+                    # Skip min_size (8 bytes)
+                    # Skip vol_factor (8 bytes)
+                    # Skip cur_factor (8 bytes)
+                    # Skip padding1 (8 bytes)
+                    # Skip trade_fee_numerator (8 bytes)
+                    # Skip trade_fee_denominator (8 bytes)
+                    # Skip pnl_numerator (8 bytes)
+                    # Skip pnl_denominator (8 bytes)
+                    # Skip swap_fee_numerator (8 bytes)
+                    # Skip swap_fee_denominator (8 bytes)
+                    # Skip base_need_take (8 bytes)
+                    # Skip quote_need_take (8 bytes)
+                    # Skip base_total (8 bytes)
+                    # Skip quote_total (8 bytes)
+                    # Skip padding2 (8 bytes)
+                    # Skip base_lot_size (8 bytes)
+                    # Skip quote_lot_size (8 bytes)
+                    
+                    # Now we're at the pubkeys section (208 bytes in)
+                    offset = 208
+                    
+                    # Read pool accounts
+                    pool_id = account_info["pubkey"]
+                    base_mint_bytes = account_data[offset:offset+32]
+                    quote_mint_bytes = account_data[offset+32:offset+64]
+                    
+                    base_mint_str = str(Pubkey(base_mint_bytes))
+                    quote_mint_str = str(Pubkey(quote_mint_bytes))
+                    
+                    # Check if this pool contains our token
+                    if token_mint in [base_mint_str, quote_mint_str] and \
+                       sol_mint in [base_mint_str, quote_mint_str]:
+                        
+                        # Extract other important accounts
+                        base_vault = str(Pubkey(account_data[offset+64:offset+96]))
+                        quote_vault = str(Pubkey(account_data[offset+96:offset+128]))
+                        open_orders = str(Pubkey(account_data[offset+128:offset+160]))
+                        market_id = str(Pubkey(account_data[offset+160:offset+192]))
+                        market_program = str(Pubkey(account_data[offset+192:offset+224]))
+                        target_orders = str(Pubkey(account_data[offset+224:offset+256]))
+                        
+                        logging.info(f"[Raydium] Found pool on-chain: {pool_id}")
+                        
+                        # Get market info
+                        market_info = self._get_market_info(market_id)
+                        
+                        return {
+                            "id": pool_id,
+                            "baseMint": base_mint_str,
+                            "quoteMint": quote_mint_str,
+                            "baseVault": base_vault,
+                            "quoteVault": quote_vault,
+                            "openOrders": open_orders,
+                            "targetOrders": target_orders,
+                            "marketId": market_id,
+                            "marketProgramId": market_program,
+                            "authority": str(RAYDIUM_AUTHORITY),
+                            "version": 4,
+                            "programId": str(RAYDIUM_AMM_PROGRAM_ID),
+                            # Market accounts from lookup
+                            "marketAuthority": market_info.get("authority", "11111111111111111111111111111111"),
+                            "marketBaseVault": market_info.get("baseVault", "11111111111111111111111111111111"),
+                            "marketQuoteVault": market_info.get("quoteVault", "11111111111111111111111111111111"),
+                            "marketBids": market_info.get("bids", "11111111111111111111111111111111"),
+                            "marketAsks": market_info.get("asks", "11111111111111111111111111111111"),
+                            "marketEventQueue": market_info.get("eventQueue", "11111111111111111111111111111111"),
+                        }
+                        
+                except Exception as e:
+                    continue
+                    
+            return None
+            
+        except Exception as e:
+            logging.error(f"[Raydium] On-chain pool search failed: {e}")
+            return None
+
+    def _get_market_info(self, market_id: str) -> Dict[str, Any]:
+        """Get Serum market info."""
+        try:
+            market_account = self.client.get_account_info(Pubkey.from_string(market_id))
+            if market_account["result"]["value"]:
+                data = base64.b64decode(market_account["result"]["value"]["data"][0])
+                
+                # Serum market layout (simplified)
+                # Skip padding (5 + 8 + 8 + 8 + 8 = 37 bytes)
+                offset = 37
+                
+                # Read market accounts
+                base_vault = str(Pubkey(data[offset+16:offset+48]))
+                quote_vault = str(Pubkey(data[offset+48:offset+80]))
+                bids = str(Pubkey(data[offset+96:offset+128]))
+                asks = str(Pubkey(data[offset+128:offset+160]))
+                event_queue = str(Pubkey(data[offset+160:offset+192]))
+                
+                return {
+                    "baseVault": base_vault,
+                    "quoteVault": quote_vault,
+                    "bids": bids,
+                    "asks": asks,
+                    "eventQueue": event_queue,
+                    "authority": str(SERUM_PROGRAM_ID),  # Simplified
+                }
+        except:
+            pass
+        
+        return {}
 
     def find_pool(self, input_mint: str, output_mint: str) -> Optional[Dict[str, Any]]:
-        """Find pool for the given mint pair - optimized version."""
-        # Ensure we have pools
-        if not self.pools and not self.pool_index:
-            self.fetch_pools()
+        """Find pool using on-chain lookup."""
+        sol_mint = "So11111111111111111111111111111111111111112"
         
-        # Fast lookup using index
-        if self.pool_index:
-            sol_mint = "So11111111111111111111111111111111111111112"
+        # Determine which is the token
+        if input_mint == sol_mint:
+            token_mint = output_mint
+        elif output_mint == sol_mint:
+            token_mint = input_mint
+        else:
+            logging.warning("[Raydium] Neither mint is SOL")
+            return None
+        
+        # Try on-chain lookup
+        pool = self.find_pool_onchain(token_mint)
+        if pool:
+            return pool
             
-            # Check if one of the mints is SOL
-            if input_mint == sol_mint:
-                return self.pool_index.get(output_mint)
-            elif output_mint == sol_mint:
-                return self.pool_index.get(input_mint)
+        # For well-known tokens, use hardcoded pools as fallback
+        known_pools = {
+            # RAY-SOL
+            "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": {
+                "id": "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",
+                "baseMint": "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
+                "quoteMint": "So11111111111111111111111111111111111111112",
+                "baseVault": "Em6rHi68trYgBFyJ5261A2nhwuQWfLcirgzZZYoRcrkX",
+                "quoteVault": "3mEFzHsJyu2Cpjrz6zPmTzP7uoLFj9SbbecGVzzkL1mJ",
+                "openOrders": "6Su6Ea97dBxecd5W92KcVvv6SzCurE2BXGgFe9LNGMpE",
+                "targetOrders": "5hATcCfvhVwAjNExvrg8rRkXmYyksHhVajWLa46iRsmE",
+                "marketId": "C6tp2RVZnxBPFbnAsfTjis8BN9tycESAT4SgDQgbbrsA",
+                "marketAuthority": "7SdieGqwPJo5rMmSQM9JmntSEMoimM4dQn7NkGbNFcrd",
+                "marketBaseVault": "6U6U59zmFWrPSzm9sLX7kVkaK78Kz7XJYkrhP1DjF3uF",
+                "marketQuoteVault": "4YEx21yeUAZxUL9Fs7YU9Gm3u45GWoPFs8vcJiHga2eQ",
+                "marketBids": "C1nEbACFaHMUiKAUsXVYPWZsuxunJeBkqXHPFr8QgSj9",
+                "marketAsks": "4DNBdnTw6wmrK4NmdSTTxs1kEz47yjqLGuoqsMeHvkMF",
+                "marketEventQueue": "4HGvdTqhYadgZ1YKrPfEfUvKGMGDnaPSvpEMnJ8kwGNt",
+                "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+                "version": 4,
+                "programId": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+            },
+            # USDC-SOL
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+                "id": "6a1CsrpeZubDjEJE9s1CMVheB6HWM5d7m1cj2jkhyXhj",
+                "baseMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "quoteMint": "So11111111111111111111111111111111111111112",
+                "baseVault": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
+                "quoteVault": "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz",
+                "openOrders": "75HKx8M5UBdp2wPLqLZqoWfPsqJnmhFCVFUe9yPg5FMa",
+                "targetOrders": "3K5bWdYQZKYLEWi655X8bNVFXmJfnVVsu3wFYomKVYsu",
+                "marketId": "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6",
+                "marketAuthority": "F8Vyqk3unwxkXukZFQeYyGmFfTG3CAX4v24iyrjEYBJV",
+                "marketBaseVault": "9vYWHBPz817wJdQpE8u3h8UoY3sZ16ZXdCcvLB7jY4Dj",
+                "marketQuoteVault": "6mJqqT5TMgveDvxzBt3hrjGkPV5VAj7tacxFCT3GebXh",
+                "marketBids": "14ivtgssEBoBjuZJtSAPKYgpUK7DmnSwuPMqJoVTSgKJ",
+                "marketAsks": "CEQdAFKdycHugujQg9k2wbmxjcpdYZyVLfV9WerTnafJ",
+                "marketEventQueue": "5KKsLVU6TcbVDK4BS6K1DGDxnh4Q9xjYJ8XaDCG5t8ht",
+                "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+                "version": 4,
+                "programId": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+            }
+        }
         
-        # Fallback to linear search
-        for pool in self.pools:
-            base_mint = pool.get("baseMint", "")
-            quote_mint = pool.get("quoteMint", "")
-            
-            if (input_mint == base_mint and output_mint == quote_mint) or \
-               (input_mint == quote_mint and output_mint == base_mint):
-                return pool
+        if token_mint in known_pools:
+            logging.info(f"[Raydium] Using hardcoded pool for {token_mint[:8]}...")
+            return known_pools[token_mint]
         
-        # If no pool found, log it
-        logging.warning(f"[Raydium] No pool found for {input_mint[:8]}... <-> {output_mint[:8]}...")
+        logging.warning(f"[Raydium] No pool found for {token_mint[:8]}...")
         return None
 
     def create_ata_if_needed(self, owner: Pubkey, mint: Pubkey, keypair: Keypair) -> Pubkey:
@@ -242,7 +351,7 @@ class RaydiumAggregatorClient:
             keys = [
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=Pubkey.from_string(pool["id"]), is_signer=False, is_writable=True),
-                AccountMeta(pubkey=Pubkey.from_string(pool["authority"]), is_signer=False, is_writable=False),
+                AccountMeta(pubkey=Pubkey.from_string(pool.get("authority", str(RAYDIUM_AUTHORITY))), is_signer=False, is_writable=False),
                 AccountMeta(pubkey=Pubkey.from_string(pool["openOrders"]), is_signer=False, is_writable=True),
                 AccountMeta(pubkey=Pubkey.from_string(pool["targetOrders"]), is_signer=False, is_writable=True),
                 AccountMeta(pubkey=Pubkey.from_string(pool["baseVault"]), is_signer=False, is_writable=True),
@@ -254,7 +363,7 @@ class RaydiumAggregatorClient:
                 AccountMeta(pubkey=Pubkey.from_string(pool["marketEventQueue"]), is_signer=False, is_writable=True),
                 AccountMeta(pubkey=Pubkey.from_string(pool["marketBaseVault"]), is_signer=False, is_writable=True),
                 AccountMeta(pubkey=Pubkey.from_string(pool["marketQuoteVault"]), is_signer=False, is_writable=True),
-                AccountMeta(pubkey=Pubkey.from_string(pool["marketAuthority"]), is_signer=False, is_writable=False),
+                AccountMeta(pubkey=Pubkey.from_string(pool.get("marketAuthority", str(SERUM_PROGRAM_ID))), is_signer=False, is_writable=False),
                 AccountMeta(pubkey=user_source_token, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=user_dest_token, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=owner, is_signer=True, is_writable=False),
