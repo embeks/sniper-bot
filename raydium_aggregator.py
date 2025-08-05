@@ -1,22 +1,9 @@
 def find_pool_via_jupiter(self, input_mint: str, output_mint: str) -> Optional[Dict[str, Any]]:
-        """Use Jupiter API to find Raydium pools."""
-        try:
-            # Jupiter's route API can tell us about available pools
-            url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount=1000000"
-            
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(url)
-                if response.status_code == 200:
-                    data = response.json()
-                    # Jupiter returns routes that might include Raydium pools
-                    if data.get("routePlan"):
-                        for route in data["routePlan"]:
-                            if "Raydium" in route.get("swapInfo", {}).get("label", ""):
-                                logging.info("[Raydium] Found pool via Jupiter API")
-                                # Extract pool info from Jupiter response
-                                # This is a simplified version
-                                return {
-                                    "id": route["swapInfo"].# raydium_aggregator.py - WORKS WITH solders==0.10.0
+        """Use Jupiter API to find Raydium pools - placeholder for future use."""
+        # This is just a placeholder - Jupiter requires whitelist
+        return None
+    
+    def find_pool_direct(self, input_mint: str, output_mint: str) -> Optional[Dict[str, Any]]:# raydium_aggregator.py - WORKS WITH solders==0.10.0
 import os
 import json
 import logging
