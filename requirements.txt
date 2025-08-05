@@ -1,5 +1,5 @@
-# Latest stable versions for best performance
-httpx==0.25.2
+# Compatible versions that work together
+httpx==0.23.3
 websockets==12.0
 python-dotenv==1.0.0
 solana==0.30.2
