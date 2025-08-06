@@ -259,7 +259,7 @@ class RaydiumAggregatorClient:
         input_mint: str,
         output_mint: str,
         amount_in: int,
-        slippage: float = 0.01
+        slippage: float = 0.05  # Increased to 5% default
     ) -> Optional[VersionedTransaction]:
         """Build Raydium swap transaction - FIXED WITH WSOL WRAPPING."""
         try:
@@ -291,7 +291,9 @@ class RaydiumAggregatorClient:
                     keypair
                 )
                 
-                # Use WSOL account as source, not native SOL
+                # For SOL -> Token swaps:
+                # If pool has SOL as quote (RAY-SOL pool), we're swapping quote to base
+                # Source is WSOL (quote), destination is Token (base)
                 user_source_token = wsol_account
                 
             else:
@@ -326,10 +328,20 @@ class RaydiumAggregatorClient:
                 user_dest_token = wsol_account
             
             # Calculate minimum output with slippage
-            min_amount_out = int(amount_in * (1 - slippage))
+            # For very small amounts, use even more permissive slippage
+            if amount_in < 100000000:  # Less than 0.1 SOL
+                min_amount_out = 1  # Accept any amount for small trades
+            else:
+                min_amount_out = int(amount_in * (1 - slippage))
             
             # Build swap instruction data
+            # Try using swap discriminator 9 for swapBaseIn
             data = bytes([9]) + amount_in.to_bytes(8, 'little') + min_amount_out.to_bytes(8, 'little')
+            
+            logging.info(f"[Raydium] Swap params:")
+            logging.info(f"  Amount in: {amount_in} ({amount_in/10**9:.6f} SOL)")
+            logging.info(f"  Min amount out: {min_amount_out}")
+            logging.info(f"  Slippage: {slippage*100}%")
             
             # Build swap instruction accounts - EXACT ORDER MATTERS!
             keys = [
