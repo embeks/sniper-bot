@@ -25,7 +25,8 @@ from spl.token.instructions import get_associated_token_address, create_associat
 # Raydium Program IDs - FIXED
 RAYDIUM_AMM_PROGRAM_ID = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
 RAYDIUM_AUTHORITY = Pubkey.from_string("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
-SERUM_PROGRAM_ID = Pubkey.from_string("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")  # FIXED: Correct Serum V3
+SERUM_PROGRAM_ID = Pubkey.from_string("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")  # Serum V3
+OPENBOOK_PROGRAM_ID = Pubkey.from_string("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")  # OpenBook uses same ID
 WSOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
 class RaydiumAggregatorClient:
@@ -62,7 +63,7 @@ class RaydiumAggregatorClient:
                     "openOrders": "6Su6Ea97dBxecd5W92KcVvv6SzCurE2BXGgFe9LNGMpE",
                     "targetOrders": "5hATcCfvhVwAjNExvrg8rRkXmYyksHhVajWLa46iRsmE",
                     "marketId": "C6tp2RVZnxBPFbnAsfTjis8BN9tycESAT4SgDQgbbrsA",
-                    "marketProgramId": str(SERUM_PROGRAM_ID),  # Use correct Serum ID
+                    "marketProgramId": "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",  # Correct Serum V3
                     "marketAuthority": "7SdieGqwPJo5rMmSQM9JmntSEMoimM4dQn7NkGbNFcrd",
                     "marketBaseVault": "6U6U59zmFWrPSzm9sLX7kVkaK78Kz7XJYkrhP1DjF3uF",
                     "marketQuoteVault": "4YEx21yeUAZxUL9Fs7YU9Gm3u45GWoPFs8vcJiHga2eQ",
@@ -83,7 +84,7 @@ class RaydiumAggregatorClient:
                     "openOrders": "75HKx8M5UBdp2wPLqLZqoWfPsqJnmhFCVFUe9yPg5FMa",
                     "targetOrders": "3K5bWdYQZKYLEWi655X8bNVFXmJfnVVsu3wFYomKVYsu",
                     "marketId": "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6",
-                    "marketProgramId": str(SERUM_PROGRAM_ID),  # Use correct Serum ID
+                    "marketProgramId": "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",  # Correct Serum V3
                     "marketAuthority": "F8Vyqk3unwxkXukZFQeYyGmFfTG3CAX4v24iyrjEYBJV",
                     "marketBaseVault": "9vYWHBPz817wJdQpE8u3h8UoY3sZ16ZXdCcvLB7jY4Dj",
                     "marketQuoteVault": "6mJqqT5TMgveDvxzBt3hrjGkPV5VAj7tacxFCT3GebXh",
@@ -349,7 +350,7 @@ class RaydiumAggregatorClient:
                 AccountMeta(pubkey=Pubkey.from_string(pool.get("marketAuthority", str(SERUM_PROGRAM_ID))), is_signer=False, is_writable=False),
                 AccountMeta(pubkey=user_source_token, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=user_dest_token, is_signer=False, is_writable=True),
-                AccountMeta(pubkey=owner, is_signer=True, is_writable=False),
+                AccountMeta(pubkey=owner, is_signer=True, is_writable=False),  # MUST NOT BE WRITABLE
             ]
             
             swap_ix = Instruction(
