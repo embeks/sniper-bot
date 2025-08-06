@@ -1,5 +1,5 @@
 # Modern versions for elite sniper bot
-solana==0.34.0
+solana==0.33.0
 solders==0.21.0
 anchorpy==0.20.0
 websockets==11.0.3
