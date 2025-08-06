@@ -10,8 +10,9 @@ from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
-from solana.rpc.types import TxOpts, MemcmpOpts
+from solana.rpc.types import TxOpts
 from solana.rpc.async_api import AsyncClient
+from solana.rpc.commitment import Confirmed
 from spl.token.instructions import get_associated_token_address
 from raydium_aggregator import RaydiumAggregatorClient
 
@@ -28,7 +29,7 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 keypair = Keypair.from_bytes(bytes(SOLANA_PRIVATE_KEY))
 wallet_pubkey = str(keypair.pubkey())
-rpc = Client(RPC_URL)
+rpc = Client(RPC_URL, commitment=Confirmed)
 raydium = RaydiumAggregatorClient(RPC_URL)
 
 listener_status = {"Raydium": "IDLE"}
