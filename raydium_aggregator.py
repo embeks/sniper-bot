@@ -38,7 +38,7 @@ class RaydiumAggregatorClient:
             
             # Get all Raydium AMM accounts (no filters for older solana-py)
             accounts = self.client.get_program_accounts(
-                str(RAYDIUM_AMM_PROGRAM_ID),
+                RAYDIUM_AMM_PROGRAM_ID,  # Pass Pubkey object, not string
                 encoding="base64"
             )
             
@@ -264,31 +264,19 @@ class RaydiumAggregatorClient:
             # Get mint pubkeys
             if input_mint == "So11111111111111111111111111111111111111112":
                 # SOL to Token
-                input_mint_pk = Pubkey.from_string(input_mint)
                 output_mint_pk = Pubkey.from_string(output_mint)
                 
-                # For SOL, we need to use wrapped SOL
-                # Create wrapped SOL account
-                from spl.token.instructions import create_wrapped_native_account
-                wrapped_sol_ix = create_wrapped_native_account(
-                    program_id=TOKEN_PROGRAM_ID,
-                    owner=owner,
-                    payer=owner,
-                    amount=amount_in,
-                )
-                
-                user_source_token = get_associated_token_address(owner, input_mint_pk)
+                # For SOL, use the system account directly (no wrapping needed)
+                user_source_token = owner  # Use wallet directly for SOL
                 user_dest_token = self.create_ata_if_needed(owner, output_mint_pk, keypair)
                 
-                # We'll add the wrapped SOL instruction to the transaction
-                wrap_sol = True
+                wrap_sol = False  # No wrapping needed
             else:
                 # Token to SOL
                 input_mint_pk = Pubkey.from_string(input_mint)
-                output_mint_pk = Pubkey.from_string(output_mint)
                 
                 user_source_token = self.create_ata_if_needed(owner, input_mint_pk, keypair)
-                user_dest_token = get_associated_token_address(owner, output_mint_pk)
+                user_dest_token = owner  # Use wallet directly for SOL
                 wrap_sol = False
             
             # Build transaction
@@ -312,10 +300,6 @@ class RaydiumAggregatorClient:
             
             tx.add(compute_limit_ix)
             tx.add(compute_price_ix)
-            
-            # Add wrapped SOL instruction if needed
-            if wrap_sol:
-                tx.add(wrapped_sol_ix)
             
             # Calculate min amount out
             min_amount_out = int(amount_in * (1 - slippage))
