@@ -359,7 +359,7 @@ class RaydiumAggregatorClient:
             # Build swap instruction data
             data = bytes([9]) + amount_in.to_bytes(8, 'little') + min_amount_out.to_bytes(8, 'little')
             
-            # Build swap instruction accounts
+            # Build swap instruction accounts - EXACT ORDER MATTERS!
             keys = [
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=Pubkey.from_string(pool["id"]), is_signer=False, is_writable=True),
@@ -378,7 +378,7 @@ class RaydiumAggregatorClient:
                 AccountMeta(pubkey=Pubkey.from_string(pool.get("marketAuthority", str(SERUM_PROGRAM_ID))), is_signer=False, is_writable=False),
                 AccountMeta(pubkey=user_source_token, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=user_dest_token, is_signer=False, is_writable=True),
-                AccountMeta(pubkey=owner, is_signer=True, is_writable=False),
+                AccountMeta(pubkey=owner, is_signer=True, is_writable=True),  # Changed to writable!
             ]
             
             swap_ix = Instruction(
