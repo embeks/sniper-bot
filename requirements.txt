@@ -1,12 +1,12 @@
-# Start with your ORIGINAL working versions
-httpx==0.23.3
-websockets==10.4
-python-dotenv==1.0.1
-solana==0.28.1
-solders==0.10.0
-requests
-gunicorn
-fastapi
-uvicorn[standard]
-base58
+# Modern versions for elite sniper bot
+solana==0.34.0
+solders==0.21.0
+anchorpy==0.20.0
+websockets==11.0.3
+httpx==0.25.2
+python-dotenv==1.0.0
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+base58==2.1.1
 psutil==5.9.6
+aiohttp==3.9.1
