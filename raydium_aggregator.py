@@ -48,8 +48,10 @@ class RaydiumAggregatorClient:
             logging.info(f"[Raydium] Searching for pool with {token_mint[:8]}...")
             
             # Get recent signatures for the token
+            # Try with Pubkey object for solana-py 0.28.1
+            from solana.publickey import PublicKey
             signatures = self.client.get_signatures_for_address(
-                token_mint,  # Pass string directly, not Pubkey object
+                PublicKey(token_mint),
                 limit=100
             )
             
@@ -133,7 +135,7 @@ class RaydiumAggregatorClient:
                                             
                                             # Get pool details
                                             pool_account = self.client.get_account_info(
-                                                pool_id  # Pass string directly
+                                                PublicKey(pool_id)
                                             )
                                             
                                             if pool_account.get("result", {}).get("value"):
@@ -203,7 +205,8 @@ class RaydiumAggregatorClient:
     def _get_market_info(self, market_id: str) -> Dict[str, Any]:
         """Get Serum market info."""
         try:
-            market_account = self.client.get_account_info(market_id)  # Pass string directly
+            from solana.publickey import PublicKey
+            market_account = self.client.get_account_info(PublicKey(market_id))
             if market_account.get("result", {}).get("value"):
                 data = base64.b64decode(market_account["result"]["value"]["data"][0])
                 
