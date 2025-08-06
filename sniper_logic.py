@@ -176,7 +176,7 @@ async def get_trending_pairs_dexscreener():
                 data = resp.json()
                 return data.get("pairs", [])
     except Exception as e:
-        logging.error(f"DexScreener API error: {e}")
+        logging.debug(f"DexScreener API error: {e}")
     return None
 
 async def get_trending_pairs_birdeye():
