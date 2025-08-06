@@ -49,7 +49,7 @@ class RaydiumAggregatorClient:
             
             # Get recent signatures for the token
             signatures = self.client.get_signatures_for_address(
-                Pubkey.from_string(token_mint),
+                token_mint,  # Pass string directly, not Pubkey object
                 limit=100
             )
             
@@ -133,7 +133,7 @@ class RaydiumAggregatorClient:
                                             
                                             # Get pool details
                                             pool_account = self.client.get_account_info(
-                                                Pubkey.from_string(pool_id)
+                                                pool_id  # Pass string directly
                                             )
                                             
                                             if pool_account.get("result", {}).get("value"):
@@ -203,7 +203,7 @@ class RaydiumAggregatorClient:
     def _get_market_info(self, market_id: str) -> Dict[str, Any]:
         """Get Serum market info."""
         try:
-            market_account = self.client.get_account_info(Pubkey.from_string(market_id))
+            market_account = self.client.get_account_info(market_id)  # Pass string directly
             if market_account.get("result", {}).get("value"):
                 data = base64.b64decode(market_account["result"]["value"]["data"][0])
                 
