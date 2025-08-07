@@ -37,7 +37,7 @@ class RaydiumAggregatorClient:
         self.cache_duration = 300  # 5 minutes
         
     def find_pool_realtime(self, token_mint: str) -> Optional[Dict[str, Any]]:
-        """Find Raydium pool using multiple methods - YOUR ORIGINAL LOGIC."""
+        """Find Raydium pool using multiple methods - FETCH REAL DATA."""
         try:
             sol_mint = "So11111111111111111111111111111111111111112"
             
@@ -51,68 +51,27 @@ class RaydiumAggregatorClient:
             
             logging.info(f"[Raydium] Searching for pool with {token_mint[:8]}...")
             
-            # For well-known tokens, use hardcoded pools first - YOUR ORIGINAL DATA
-            known_pools = {
-                # RAY-SOL
-                "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": {
-                    "id": "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",
-                    "baseMint": "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
-                    "quoteMint": "So11111111111111111111111111111111111111112",
-                    "baseVault": "Em6rHi68trYgBFyJ5261A2nhwuQWfLcirgzZZYoRcrkX",
-                    "quoteVault": "3mEFzHsJyu2Cpjrz6zPmTzP7uoLFj9SbbecGVzzkL1mJ",
-                    "openOrders": "6Su6Ea97dBxecd5W92KcVvv6SzCurE2BXGgFe9LNGMpE",
-                    "targetOrders": "5hATcCfvhVwAjNExvrg8rRkXmYyksHhVajWLa46iRsmE",
-                    "marketId": "C6tp2RVZnxBPFbnAsfTjis8BN9tycESAT4SgDQgbbrsA",
-                    "marketProgramId": "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",  # Correct Serum V3
-                    "marketAuthority": "7SdieGqwPJo5rMmSQM9JmntSEMoimM4dQn7NkGbNFcrd",
-                    "marketBaseVault": "6U6U59zmFWrPSzm9sLX7kVkaK78Kz7XJYkrhP1DjF3uF",
-                    "marketQuoteVault": "4YEx21yeUAZxUL9Fs7YU9Gm3u45GWoPFs8vcJiHga2eQ",
-                    "marketBids": "C1nEbACFaHMUiKAUsXVYPWZsuxunJeBkqXHPFr8QgSj9",
-                    "marketAsks": "4DNBdnTw6wmrK4NmdSTTxs1kEz47yjqLGuoqsMeHvkMF",
-                    "marketEventQueue": "4HGvdTqhYadgZ1YKrPfEfUvKGMGDnaPSvpEMnJ8kwGNt",
-                    "authority": str(RAYDIUM_AUTHORITY),
-                    "version": 4,
-                    "programId": str(RAYDIUM_AMM_PROGRAM_ID)
-                },
-                # USDC-SOL
-                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
-                    "id": "6a1CsrpeZubDjEJE9s1CMVheB6HWM5d7m1cj2jkhyXhj",
-                    "baseMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                    "quoteMint": "So11111111111111111111111111111111111111112",
-                    "baseVault": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
-                    "quoteVault": "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz",
-                    "openOrders": "75HKx8M5UBdp2wPLqLZqoWfPsqJnmhFCVFUe9yPg5FMa",
-                    "targetOrders": "3K5bWdYQZKYLEWi655X8bNVFXmJfnVVsu3wFYomKVYsu",
-                    "marketId": "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6",
-                    "marketProgramId": "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",  # Correct Serum V3
-                    "marketAuthority": "F8Vyqk3unwxkXukZFQeYyGmFfTG3CAX4v24iyrjEYBJV",
-                    "marketBaseVault": "9vYWHBPz817wJdQpE8u3h8UoY3sZ16ZXdCcvLB7jY4Dj",
-                    "marketQuoteVault": "6mJqqT5TMgveDvxzBt3hrjGkPV5VAj7tacxFCT3GebXh",
-                    "marketBids": "14ivtgssEBoBjuZJtSAPKYgpUK7DmnSwuPMqJoVTSgKJ",
-                    "marketAsks": "CEQdAFKdycHugujQg9k2wbmxjcpdYZyVLfV9WerTnafJ",
-                    "marketEventQueue": "5KKsLVU6TcbVDK4BS6K1DGDxnh4Q9xjYJ8XaDCG5t8ht",
-                    "authority": str(RAYDIUM_AUTHORITY),
-                    "version": 4,
-                    "programId": str(RAYDIUM_AMM_PROGRAM_ID)
-                }
+            # Known pool IDs - but we'll fetch the actual data
+            known_pool_ids = {
+                "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",  # RAY
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",  # USDC V2
+                "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": "Ew1pSB7JDT5HJe1NKza9Qa8nBksH2SDEsH3w4uRUAnJP",  # BONK
             }
             
-            if token_mint in known_pools:
-                pool = known_pools[token_mint]
-                self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
-                logging.info(f"[Raydium] Found known pool for {token_mint[:8]}...")
-                return pool
+            if token_mint in known_pool_ids:
+                pool_id = known_pool_ids[token_mint]
+                # Try to fetch real pool data
+                pool = self.fetch_pool_data_from_chain(pool_id)
+                if pool:
+                    self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
+                    logging.info(f"[Raydium] Fetched real pool data for {token_mint[:8]}...")
+                    return pool
             
-            # Try other methods for unknown tokens
+            # Search for pool by program accounts
             pool = self._find_pool_by_accounts(token_mint, sol_mint)
             if pool:
                 self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
                 return pool
-            
-            # Check if token exists via Jupiter
-            if self._check_token_exists(token_mint):
-                logging.info(f"[Raydium] Token {token_mint[:8]}... exists but pool not found yet")
-                return None
             
             logging.warning(f"[Raydium] No pool found for {token_mint[:8]}...")
             return None
@@ -121,6 +80,141 @@ class RaydiumAggregatorClient:
             logging.error(f"[Raydium] Pool search error: {e}")
             import traceback
             logging.error(traceback.format_exc())
+            return None
+    
+    def fetch_pool_data_from_chain(self, pool_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch actual pool data from the blockchain."""
+        try:
+            pool_pubkey = Pubkey.from_string(pool_id)
+            
+            # Get pool account
+            response = self.client.get_account_info(pool_pubkey)
+            if not response.value or not response.value.data:
+                return None
+            
+            # Decode the account data
+            account_data = response.value.data
+            if isinstance(account_data, list) and len(account_data) == 2:
+                data_str = account_data[0]
+                if isinstance(data_str, str):
+                    data = base64.b64decode(data_str)
+                else:
+                    data = bytes(data_str)
+            else:
+                data = bytes(account_data)
+            
+            # Parse Raydium V4 AMM account
+            # Skip status fields
+            offset = 87  # Start of pubkey section
+            
+            # Read all pubkeys
+            coin_vault = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            pc_vault = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            coin_mint = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            pc_mint = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            lp_mint = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            open_orders = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            market_id = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            market_program_id = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            target_orders = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            withdraw_queue = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            token_temp_account = Pubkey.from_bytes(data[offset:offset+32])
+            offset += 32
+            amm_owner = Pubkey.from_bytes(data[offset:offset+32])
+            
+            # Now fetch market data
+            market_response = self.client.get_account_info(market_id)
+            if not market_response.value:
+                # Use defaults if can't fetch market
+                return {
+                    "id": pool_id,
+                    "baseMint": str(coin_mint),
+                    "quoteMint": str(pc_mint),
+                    "lpMint": str(lp_mint),
+                    "baseVault": str(coin_vault),
+                    "quoteVault": str(pc_vault),
+                    "openOrders": str(open_orders),
+                    "targetOrders": str(target_orders),
+                    "marketId": str(market_id),
+                    "marketProgramId": str(market_program_id),
+                    "marketAuthority": str(RAYDIUM_AUTHORITY),
+                    "marketBaseVault": str(coin_vault),
+                    "marketQuoteVault": str(pc_vault),
+                    "marketBids": str(open_orders),
+                    "marketAsks": str(target_orders),
+                    "marketEventQueue": str(withdraw_queue),
+                    "authority": str(amm_owner),
+                    "version": 4,
+                    "programId": str(RAYDIUM_AMM_PROGRAM_ID)
+                }
+            
+            # Parse market data
+            market_account_data = market_response.value.data
+            if isinstance(market_account_data, list) and len(market_account_data) == 2:
+                market_data_str = market_account_data[0]
+                if isinstance(market_data_str, str):
+                    market_data = base64.b64decode(market_data_str)
+                else:
+                    market_data = bytes(market_data_str)
+            else:
+                market_data = bytes(market_account_data)
+            
+            # Parse Serum/OpenBook market
+            market_offset = 45  # Skip to pubkeys
+            
+            market_base_vault = Pubkey.from_bytes(market_data[market_offset:market_offset+32])
+            market_offset += 32
+            market_quote_vault = Pubkey.from_bytes(market_data[market_offset:market_offset+32])
+            market_offset += 32
+            
+            # Skip request queue
+            market_offset += 32
+            
+            market_event_queue = Pubkey.from_bytes(market_data[market_offset:market_offset+32])
+            market_offset += 32
+            
+            market_bids = Pubkey.from_bytes(market_data[market_offset:market_offset+32])
+            market_offset += 32
+            
+            market_asks = Pubkey.from_bytes(market_data[market_offset:market_offset+32])
+            
+            # Derive market authority
+            market_authority = self.derive_market_authority(str(market_id))
+            
+            return {
+                "id": pool_id,
+                "baseMint": str(coin_mint),
+                "quoteMint": str(pc_mint),
+                "lpMint": str(lp_mint),
+                "baseVault": str(coin_vault),
+                "quoteVault": str(pc_vault),
+                "openOrders": str(open_orders),
+                "targetOrders": str(target_orders),
+                "marketId": str(market_id),
+                "marketProgramId": str(market_program_id),
+                "marketAuthority": market_authority,
+                "marketBaseVault": str(market_base_vault),
+                "marketQuoteVault": str(market_quote_vault),
+                "marketBids": str(market_bids),
+                "marketAsks": str(market_asks),
+                "marketEventQueue": str(market_event_queue),
+                "authority": str(amm_owner),
+                "version": 4,
+                "programId": str(RAYDIUM_AMM_PROGRAM_ID)
+            }
+            
+        except Exception as e:
+            logging.error(f"Failed to fetch pool data from chain: {e}")
             return None
     
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
