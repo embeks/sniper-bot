@@ -264,6 +264,8 @@ class RaydiumAggregatorClient:
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
         """Find pool by searching program accounts - DYNAMIC DISCOVERY."""
         try:
+            from solana.rpc.types import MemcmpOpts
+            
             logging.info(f"[Raydium] Searching for pools with token {token_mint[:8]}...")
             
             # Build filters to find pools with this token
@@ -271,24 +273,20 @@ class RaydiumAggregatorClient:
             
             # Filter 1: Token might be in coin position (offset 119)
             filters_coin = [
-                {"dataSize": 752},  # Raydium V4 AMM size
-                {
-                    "memcmp": {
-                        "offset": 119,  # Coin mint offset in AMM account
-                        "bytes": base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
-                    }
-                }
+                752,  # Data size filter
+                MemcmpOpts(
+                    offset=119,  # Coin mint offset in AMM account
+                    bytes=base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
+                )
             ]
             
             # Filter 2: Token might be in pc position (offset 151)
             filters_pc = [
-                {"dataSize": 752},
-                {
-                    "memcmp": {
-                        "offset": 151,  # PC mint offset in AMM account
-                        "bytes": base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
-                    }
-                }
+                752,  # Data size filter
+                MemcmpOpts(
+                    offset=151,  # PC mint offset in AMM account
+                    bytes=base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
+                )
             ]
             
             # Try both positions
