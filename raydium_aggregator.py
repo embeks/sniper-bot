@@ -264,71 +264,87 @@ class RaydiumAggregatorClient:
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
         """Find pool by searching program accounts - DYNAMIC DISCOVERY."""
         try:
-            from solana.rpc.types import MemcmpOpts
-            
             logging.info(f"[Raydium] Searching for pools with token {token_mint[:8]}...")
             
-            # Build filters to find pools with this token
-            # We need to check both coin and pc positions since we don't know the orientation
+            # For now, let's use a simpler approach - get ALL Raydium pools and filter
+            # This is less efficient but will work
+            logging.info(f"[Raydium] Fetching all Raydium V4 pools (this may take a moment)...")
             
-            # Filter 1: Token might be in coin position (offset 119)
-            filters_coin = [
-                752,  # Data size filter
-                MemcmpOpts(
-                    offset=119,  # Coin mint offset in AMM account
-                    bytes=base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
+            try:
+                # Get all accounts owned by Raydium with size 752
+                accounts = self.client.get_program_accounts(
+                    RAYDIUM_AMM_PROGRAM_ID,
+                    encoding="base64",
+                    data_size=752  # Only get V4 pools
                 )
-            ]
-            
-            # Filter 2: Token might be in pc position (offset 151)
-            filters_pc = [
-                752,  # Data size filter
-                MemcmpOpts(
-                    offset=151,  # PC mint offset in AMM account
-                    bytes=base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
-                )
-            ]
-            
-            # Try both positions
-            for filter_name, filters in [("coin", filters_coin), ("pc", filters_pc)]:
-                logging.info(f"[Raydium] Querying program accounts (checking {filter_name} position)...")
-                try:
-                    accounts = self.client.get_program_accounts(
-                        RAYDIUM_AMM_PROGRAM_ID,
-                        encoding="base64",
-                        filters=filters
-                    )
+                
+                if hasattr(accounts, 'value') and accounts.value:
+                    logging.info(f"[Raydium] Found {len(accounts.value)} total Raydium pools, checking for {token_mint[:8]}...")
                     
-                    if accounts.value:
-                        logging.info(f"[Raydium] Found {len(accounts.value)} potential pools in {filter_name} position")
+                    # Check each pool
+                    found_count = 0
+                    for account_info in accounts.value:
+                        pool_id = str(account_info.pubkey)
                         
-                        # Check each pool
-                        for account_info in accounts.value:
-                            pool_id = str(account_info.pubkey)
-                            logging.info(f"[Raydium] Checking pool {pool_id[:8]}...")
-                            
+                        # Get the account data
+                        account_data = account_info.account.data
+                        if isinstance(account_data, list) and len(account_data) == 2:
+                            data_str = account_data[0]
+                            if isinstance(data_str, str):
+                                data = base64.b64decode(data_str)
+                            else:
+                                data = bytes(data_str)
+                        else:
+                            data = bytes(account_data)
+                        
+                        # Check if this pool contains our token
+                        # Coin mint at offset 119, PC mint at offset 151
+                        coin_mint = Pubkey.from_bytes(data[119:151])
+                        pc_mint = Pubkey.from_bytes(data[151:183])
+                        
+                        token_mint_pubkey = Pubkey.from_string(token_mint)
+                        sol_mint_pubkey = Pubkey.from_string(sol_mint)
+                        
+                        # Check if this pool has our token and SOL
+                        is_match = False
+                        if (str(coin_mint) == token_mint and str(pc_mint) == sol_mint):
+                            is_match = True
+                            logging.info(f"[Raydium] Found pool {pool_id[:8]}... with {token_mint[:8]}... as base")
+                        elif (str(pc_mint) == token_mint and str(coin_mint) == sol_mint):
+                            is_match = True
+                            logging.info(f"[Raydium] Found pool {pool_id[:8]}... with {token_mint[:8]}... as quote")
+                        
+                        if is_match:
+                            found_count += 1
                             # Fetch complete pool data
+                            logging.info(f"[Raydium] Fetching complete data for pool {pool_id[:8]}...")
                             pool = self.fetch_pool_data_from_chain(pool_id)
                             if pool:
-                                logging.info(f"[Raydium] Pool data fetched successfully")
-                                # Verify it's a SOL pair
-                                if pool["baseMint"] == sol_mint or pool["quoteMint"] == sol_mint:
-                                    logging.info(f"[Raydium] Confirmed SOL pair - Base: {pool['baseMint'][:8]}..., Quote: {pool['quoteMint'][:8]}...")
-                                    # For now, skip the initialization check - just return the pool
-                                    logging.info(f"[Raydium] Found active pool: {pool_id}")
-                                    return pool
-                                else:
-                                    logging.info(f"[Raydium] Not a SOL pair - Base: {pool['baseMint'][:8]}..., Quote: {pool['quoteMint'][:8]}...")
-                            else:
-                                logging.warning(f"[Raydium] Failed to fetch pool data for {pool_id[:8]}...")
+                                logging.info(f"[Raydium] Successfully found active pool for {token_mint[:8]}!")
+                                return pool
+                    
+                    if found_count == 0:
+                        logging.warning(f"[Raydium] No pools found containing {token_mint[:8]}...")
                     else:
-                        logging.info(f"[Raydium] No pools found in {filter_name} position")
-                        
-                except Exception as e:
-                    logging.error(f"[Raydium] Error querying {filter_name} position: {e}")
-                    continue
+                        logging.warning(f"[Raydium] Found {found_count} pools but couldn't fetch data")
+                else:
+                    logging.error(f"[Raydium] No Raydium pools returned or invalid response")
+                    
+            except Exception as e:
+                logging.error(f"[Raydium] Error fetching pools: {e}")
+                # Fallback: Try direct pool IDs if known
+                known_pool_ids = {
+                    "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": "G2YxRa6wt1qePMwfJzdXJG62ej4qaTC7YURzuh2Lwd3t",
+                    "WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk": "7RVTPyhj3bSK7b5rtPx6r9aqvKZDKnEVe8wJbWjfJrGf",
+                }
+                
+                if token_mint in known_pool_ids:
+                    pool_id = known_pool_ids[token_mint]
+                    logging.info(f"[Raydium] Using known pool ID for {token_mint[:8]}...")
+                    pool = self.fetch_pool_data_from_chain(pool_id)
+                    if pool:
+                        return pool
             
-            logging.warning(f"[Raydium] No active pools found for {token_mint[:8]}...")
             return None
             
         except Exception as e:
