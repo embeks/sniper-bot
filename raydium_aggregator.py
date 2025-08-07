@@ -287,11 +287,10 @@ class RaydiumAggregatorClient:
             # Since we're having issues with filters, let's use known pool IDs for popular tokens
             # and fetch their data dynamically
             known_pool_ids = {
-                "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": "G2YxRa6wt1qePMwfJzdXJG62ej4qaTC7YURzuh2Lwd3t",
+                # Remove JUP for now since the pool ID was wrong
                 "WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk": "7RVTPyhj3bSK7b5rtPx6r9aqvKZDKnEVe8wJbWjfJrGf",
                 "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": "DSUvc5qf5LJHHV5e2tD184ixotSnCnwj7i4jJa4Xsrmt",  # BONK
                 "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": "2hBVyoYnbGkdMPbGPKM7E2p5wmACtLwZwAWnj5ejfQqy",  # mSOL
-                "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": "FpUVQuHd9ct9hzqWJU5p5TwN4vrLUv7v5MCMZZuNzGW5",  # ETH
             }
             
             if token_mint in known_pool_ids:
