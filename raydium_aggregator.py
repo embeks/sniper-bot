@@ -61,13 +61,13 @@ class RaydiumAggregatorClient:
             
             # For known tokens, use hardcoded working configurations
             working_pools = {
-                # USDC-SOL (CORRECTED VAULT ORDER)
+                # USDC-SOL (FINAL CORRECT CONFIG)
                 "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
                     "id": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
                     "baseMint": "So11111111111111111111111111111111111111112",
                     "quoteMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                    "baseVault": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",  # SWAPPED - This is SOL vault
-                    "quoteVault": "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",  # SWAPPED - This is USDC vault
+                    "baseVault": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",  # SOL vault (coin)
+                    "quoteVault": "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz",  # USDC vault (pc) - CORRECTED
                     "openOrders": "6w5hF2hceQRZbaxjPJutiWSPAFWDkp3YbY2Aq3RpCSKe",
                     "targetOrders": "8VuvrSWfQP8vdbuMAP9AkfgLxU9hbRR6BmTJ8Gfas9aK",
                     "marketId": "9wFFyRfZBsuAha4YcuxcXLKwMxJR43S7fPfQLusDBzvT",
