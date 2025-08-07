@@ -412,16 +412,16 @@ class RaydiumAggregatorClient:
             return None
 
     def send_transaction(self, tx: VersionedTransaction, keypair: Keypair = None) -> Optional[str]:
-        """Send transaction with retry logic."""
+        """Send transaction with retry logic and better error handling."""
         max_retries = 3
         
         for attempt in range(max_retries):
             try:
-                # Send transaction
+                # Send transaction with preflight to get better errors
                 result = self.client.send_transaction(
                     tx,
                     opts=TxOpts(
-                        skip_preflight=True,
+                        skip_preflight=False,  # Enable preflight to see errors
                         preflight_commitment=Confirmed,
                         max_retries=3
                     )
@@ -433,12 +433,25 @@ class RaydiumAggregatorClient:
                     return sig
                     
             except Exception as e:
-                logging.error(f"[Raydium] Send attempt {attempt + 1} failed: {e}")
+                error_msg = str(e)
+                logging.error(f"[Raydium] Send attempt {attempt + 1} failed: {error_msg}")
+                
+                # Parse specific errors
+                if "insufficient" in error_msg.lower():
+                    logging.error("[Raydium] Insufficient balance for transaction")
+                    return None
+                elif "slippage" in error_msg.lower():
+                    logging.error("[Raydium] Slippage tolerance exceeded")
+                    return None
+                elif "unknown instruction" in error_msg.lower():
+                    logging.error("[Raydium] Pool might be paused or using different version")
+                    return None
+                    
                 if attempt < max_retries - 1:
                     time.sleep(1)
                     
                     # Get new blockhash and rebuild if needed
-                    if "blockhash" in str(e).lower():
+                    if "blockhash" in error_msg.lower():
                         return None  # Caller should rebuild transaction
                     
         return None
