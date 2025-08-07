@@ -82,12 +82,12 @@ class RaydiumAggregatorClient:
                     "version": 4,
                     "programId": str(RAYDIUM_AMM_PROGRAM_ID)
                 },
-                # BONK-SOL
+                # BONK-SOL (CORRECTED)
                 "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": {
                     "id": "DSUvc5qf5LJHHV5e2tD184ixotSnCnwj7i4jJa4Xsrmt",
                     "baseMint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
                     "quoteMint": "So11111111111111111111111111111111111111112",
-                    "baseVault": "A4Ux91kWshXfJuqaweQyGPMx3gc8jn4cSRU8yv8s2MZo",
+                    "baseVault": "FBba2XsQVhkoQDMfbNLVmo7dsvssdT39BMzVc2eFfE21",  # CORRECTED
                     "quoteVault": "BBqvdVM9B9BB9vr2tBvP6ySx9u49uH5xDNfiBLJiUqjM",
                     "openOrders": "9SfTaCQeBwnvKpMTpFZ3w7vCqDBxCYH3FbiCw1kB1NXh",
                     "targetOrders": "BLgyHcBFBJLcgX3DvCkPYmtFj6CJVVzxaXBTbABiQHNa",
@@ -262,15 +262,114 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """Find pool by searching program accounts - YOUR ORIGINAL."""
+        """Find pool by searching program accounts - DYNAMIC DISCOVERY."""
         try:
-            # For now, skip this method as it might be causing issues
-            # Will rely on known pools and transaction history
+            logging.info(f"[Raydium] Searching for pools with token {token_mint[:8]}...")
+            
+            # Build filters to find pools with this token
+            # We need to check both coin and pc positions since we don't know the orientation
+            
+            # Filter 1: Token might be in coin position (offset 119)
+            filters_coin = [
+                {"dataSize": 752},  # Raydium V4 AMM size
+                {
+                    "memcmp": {
+                        "offset": 119,  # Coin mint offset in AMM account
+                        "bytes": base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
+                    }
+                }
+            ]
+            
+            # Filter 2: Token might be in pc position (offset 151)
+            filters_pc = [
+                {"dataSize": 752},
+                {
+                    "memcmp": {
+                        "offset": 151,  # PC mint offset in AMM account
+                        "bytes": base58.b58encode(bytes(Pubkey.from_string(token_mint))).decode()
+                    }
+                }
+            ]
+            
+            # Try both positions
+            for filters in [filters_coin, filters_pc]:
+                logging.info(f"[Raydium] Querying program accounts...")
+                accounts = self.client.get_program_accounts(
+                    RAYDIUM_AMM_PROGRAM_ID,
+                    encoding="base64",
+                    filters=filters
+                )
+                
+                if accounts.value:
+                    logging.info(f"[Raydium] Found {len(accounts.value)} potential pools")
+                    
+                    # Check each pool
+                    for account_info in accounts.value:
+                        pool_id = str(account_info.pubkey)
+                        
+                        # Fetch complete pool data
+                        pool = self.fetch_pool_data_from_chain(pool_id)
+                        if pool:
+                            # Verify it's a SOL pair
+                            if pool["baseMint"] == sol_mint or pool["quoteMint"] == sol_mint:
+                                # Check if pool is initialized (has liquidity)
+                                if self._is_pool_initialized(pool_id):
+                                    logging.info(f"[Raydium] Found active pool: {pool_id}")
+                                    return pool
+                                else:
+                                    logging.info(f"[Raydium] Found pool but not initialized: {pool_id}")
+                            else:
+                                logging.debug(f"[Raydium] Pool {pool_id} is not a SOL pair")
+            
+            logging.warning(f"[Raydium] No active pools found for {token_mint[:8]}...")
             return None
+            
         except Exception as e:
-            logging.debug(f"Account search failed: {e}")
-        
-        return None
+            logging.error(f"[Raydium] Pool search error: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return None
+    
+    def _is_pool_initialized(self, pool_id: str) -> bool:
+        """Check if a pool is initialized and has liquidity."""
+        try:
+            pool_pubkey = Pubkey.from_string(pool_id)
+            response = self.client.get_account_info(pool_pubkey)
+            
+            if not response.value or not response.value.data:
+                return False
+            
+            # Decode account data
+            account_data = response.value.data
+            if isinstance(account_data, list) and len(account_data) == 2:
+                data_str = account_data[0]
+                if isinstance(data_str, str):
+                    data = base64.b64decode(data_str)
+                else:
+                    data = bytes(data_str)
+            else:
+                data = bytes(account_data)
+            
+            # Check status (first 8 bytes)
+            status = int.from_bytes(data[0:8], 'little')
+            
+            # Status values:
+            # 0 = Uninitialized
+            # 1 = Initialized
+            # 2 = Disabled
+            # 3 = WithdrawOnly
+            
+            if status == 1:
+                # Also check if pool has some liquidity (optional)
+                # You can check coin/pc amounts at specific offsets if needed
+                return True
+            else:
+                logging.debug(f"[Raydium] Pool status: {status} (not active)")
+                return False
+                
+        except Exception as e:
+            logging.error(f"[Raydium] Failed to check pool status: {e}")
+            return False
     
     def _check_token_exists(self, token_mint: str) -> bool:
         """Check if token exists and is tradeable using Jupiter Price API."""
