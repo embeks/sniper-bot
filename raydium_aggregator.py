@@ -81,6 +81,27 @@ class RaydiumAggregatorClient:
                     "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
                     "version": 4,
                     "programId": str(RAYDIUM_AMM_PROGRAM_ID)
+                },
+                # BONK-SOL
+                "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": {
+                    "id": "DSUvc5qf5LJHHV5e2tD184ixotSnCnwj7i4jJa4Xsrmt",
+                    "baseMint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+                    "quoteMint": "So11111111111111111111111111111111111111112",
+                    "baseVault": "A4Ux91kWshXfJuqaweQyGPMx3gc8jn4cSRU8yv8s2MZo",
+                    "quoteVault": "BBqvdVM9B9BB9vr2tBvP6ySx9u49uH5xDNfiBLJiUqjM",
+                    "openOrders": "9SfTaCQeBwnvKpMTpFZ3w7vCqDBxCYH3FbiCw1kB1NXh",
+                    "targetOrders": "BLgyHcBFBJLcgX3DvCkPYmtFj6CJVVzxaXBTbABiQHNa",
+                    "marketId": "Hs97TCZeuYiJxooo3U73qEHXg3dKpRL4uYKYRryEK9CF",
+                    "marketProgramId": "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+                    "marketAuthority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+                    "marketBaseVault": "AVnL1McPFDDmtEmLKffoUkfB8fPjCmKYJe5kQp52GATv",
+                    "marketQuoteVault": "EkanLFwgmsrT2HcQhLsJtJLnzYi2pDNzquCnNhz8MF7w",
+                    "marketBids": "GxS3nyEUtF9LaCNpLRgR8pFhMFUwEJbB2vE8wWZBJ6YR",
+                    "marketAsks": "EWLJVLjJAX3xZrer3S5hkLMPpmGPdbELNEMLfWa8pz6C",
+                    "marketEventQueue": "48be8v5vMKRgLmfPUUnTjUkvAMPXvEjVbVqk4bUPDDWM",
+                    "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+                    "version": 4,
+                    "programId": str(RAYDIUM_AMM_PROGRAM_ID)
                 }
             }
             
