@@ -51,21 +51,44 @@ class RaydiumAggregatorClient:
             
             logging.info(f"[Raydium] Searching for pool with {token_mint[:8]}...")
             
-            # Known pool IDs - but we'll fetch the actual data
+            # Known pool IDs - use correct, active pools
             known_pool_ids = {
                 "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",  # RAY
                 "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",  # USDC V2
                 "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": "Ew1pSB7JDT5HJe1NKza9Qa8nBksH2SDEsH3w4uRUAnJP",  # BONK
+                "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm": "2QdhepnKRTLjjSqPL1PtKNwqrUkoLee5Gqs8bvZhRdMv",  # WIF
             }
             
-            if token_mint in known_pool_ids:
-                pool_id = known_pool_ids[token_mint]
-                # Try to fetch real pool data
-                pool = self.fetch_pool_data_from_chain(pool_id)
-                if pool:
-                    self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
-                    logging.info(f"[Raydium] Fetched real pool data for {token_mint[:8]}...")
-                    return pool
+            # For known tokens, use hardcoded working configurations
+            working_pools = {
+                # USDC-SOL (CORRECT ACTIVE POOL)
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+                    "id": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+                    "baseMint": "So11111111111111111111111111111111111111112",
+                    "quoteMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                    "baseVault": "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",
+                    "quoteVault": "FMWQ6pwqQDJPXUAhBpkVCXqxw1jz3WNFwYMb3CADEYM1",
+                    "openOrders": "6w5hF2hceQRZbaxjPJutiWSPAFWDkp3YbY2Aq3RpCSKe",
+                    "targetOrders": "8VuvrSWfQP8vdbuMAP9AkfgLxU9hbRR6BmTJ8Gfas9aK",
+                    "marketId": "9wFFyRfZBsuAha4YcuxcXLKwMxJR43S7fPfQLusDBzvT",
+                    "marketProgramId": "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+                    "marketAuthority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+                    "marketBaseVault": "CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR",
+                    "marketQuoteVault": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
+                    "marketBids": "14ivtgssEBoBjuZJtSAPKYgpUK7DmnSwuPMqJoVTSgKJ",
+                    "marketAsks": "CEQdAFKdycHugujQg9k2wbmxjcpdYZyVLfV9WerTnafJ",
+                    "marketEventQueue": "5KKsLVU6TcbVDK4BS6K1DGDxnh4Q9xjYJ8XaDCG5t8ht",
+                    "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+                    "version": 4,
+                    "programId": str(RAYDIUM_AMM_PROGRAM_ID)
+                }
+            }
+            
+            if token_mint in working_pools:
+                pool = working_pools[token_mint]
+                self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
+                logging.info(f"[Raydium] Using working pool config for {token_mint[:8]}...")
+                return pool
             
             # Search for pool by program accounts
             pool = self._find_pool_by_accounts(token_mint, sol_mint)
