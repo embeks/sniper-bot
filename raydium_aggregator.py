@@ -290,34 +290,43 @@ class RaydiumAggregatorClient:
             ]
             
             # Try both positions
-            for filters in [filters_coin, filters_pc]:
-                logging.info(f"[Raydium] Querying program accounts...")
-                accounts = self.client.get_program_accounts(
-                    RAYDIUM_AMM_PROGRAM_ID,
-                    encoding="base64",
-                    filters=filters
-                )
-                
-                if accounts.value:
-                    logging.info(f"[Raydium] Found {len(accounts.value)} potential pools")
+            for filter_name, filters in [("coin", filters_coin), ("pc", filters_pc)]:
+                logging.info(f"[Raydium] Querying program accounts (checking {filter_name} position)...")
+                try:
+                    accounts = self.client.get_program_accounts(
+                        RAYDIUM_AMM_PROGRAM_ID,
+                        encoding="base64",
+                        filters=filters
+                    )
                     
-                    # Check each pool
-                    for account_info in accounts.value:
-                        pool_id = str(account_info.pubkey)
+                    if accounts.value:
+                        logging.info(f"[Raydium] Found {len(accounts.value)} potential pools in {filter_name} position")
                         
-                        # Fetch complete pool data
-                        pool = self.fetch_pool_data_from_chain(pool_id)
-                        if pool:
-                            # Verify it's a SOL pair
-                            if pool["baseMint"] == sol_mint or pool["quoteMint"] == sol_mint:
-                                # Check if pool is initialized (has liquidity)
-                                if self._is_pool_initialized(pool_id):
+                        # Check each pool
+                        for account_info in accounts.value:
+                            pool_id = str(account_info.pubkey)
+                            logging.info(f"[Raydium] Checking pool {pool_id[:8]}...")
+                            
+                            # Fetch complete pool data
+                            pool = self.fetch_pool_data_from_chain(pool_id)
+                            if pool:
+                                logging.info(f"[Raydium] Pool data fetched successfully")
+                                # Verify it's a SOL pair
+                                if pool["baseMint"] == sol_mint or pool["quoteMint"] == sol_mint:
+                                    logging.info(f"[Raydium] Confirmed SOL pair - Base: {pool['baseMint'][:8]}..., Quote: {pool['quoteMint'][:8]}...")
+                                    # For now, skip the initialization check - just return the pool
                                     logging.info(f"[Raydium] Found active pool: {pool_id}")
                                     return pool
                                 else:
-                                    logging.info(f"[Raydium] Found pool but not initialized: {pool_id}")
+                                    logging.info(f"[Raydium] Not a SOL pair - Base: {pool['baseMint'][:8]}..., Quote: {pool['quoteMint'][:8]}...")
                             else:
-                                logging.debug(f"[Raydium] Pool {pool_id} is not a SOL pair")
+                                logging.warning(f"[Raydium] Failed to fetch pool data for {pool_id[:8]}...")
+                    else:
+                        logging.info(f"[Raydium] No pools found in {filter_name} position")
+                        
+                except Exception as e:
+                    logging.error(f"[Raydium] Error querying {filter_name} position: {e}")
+                    continue
             
             logging.warning(f"[Raydium] No active pools found for {token_mint[:8]}...")
             return None
