@@ -378,7 +378,12 @@ class RaydiumAggregatorClient:
                     
                     logging.info(f"[Raydium] Scanned all {checked} V4 pools, none matched {token_mint[:8]}")
                 else:
-                    logging.error(f"[Raydium] Failed to get program accounts")
+                    logging.error(f"[Raydium] Failed to get program accounts - RPC might be rate limited or down")
+                    
+            except Exception as e:
+                logging.error(f"[Raydium] Error scanning pools: {str(e)}")
+                import traceback
+                logging.error(traceback.format_exc())
                     
             except Exception as e:
                 logging.error(f"[Raydium] Error scanning pools: {e}")
