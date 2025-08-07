@@ -132,8 +132,10 @@ class RaydiumAggregatorClient:
             pool_pubkey = Pubkey.from_string(pool_id)
             
             # Get pool account
+            logging.info(f"[Raydium] Fetching account data for pool {pool_id[:8]}...")
             response = self.client.get_account_info(pool_pubkey)
             if not response.value or not response.value.data:
+                logging.error(f"[Raydium] No account data returned for pool {pool_id[:8]}...")
                 return None
             
             # Decode the account data
@@ -146,6 +148,12 @@ class RaydiumAggregatorClient:
                     data = bytes(data_str)
             else:
                 data = bytes(account_data)
+            
+            logging.info(f"[Raydium] Pool account data size: {len(data)} bytes")
+            
+            if len(data) != 752:
+                logging.error(f"[Raydium] Invalid pool size: {len(data)} (expected 752)")
+                return None
             
             # Parse Raydium V4 AMM account
             # Skip status fields
@@ -176,10 +184,15 @@ class RaydiumAggregatorClient:
             offset += 32
             amm_owner = Pubkey.from_bytes(data[offset:offset+32])
             
+            logging.info(f"[Raydium] Pool base mint: {str(coin_mint)[:8]}...")
+            logging.info(f"[Raydium] Pool quote mint: {str(pc_mint)[:8]}...")
+            
             # Now fetch market data
+            logging.info(f"[Raydium] Fetching market data for {str(market_id)[:8]}...")
             market_response = self.client.get_account_info(market_id)
             if not market_response.value:
-                # Use defaults if can't fetch market
+                logging.warning(f"[Raydium] Failed to fetch market account, using defaults")
+                # Return pool data even without market data
                 return {
                     "id": pool_id,
                     "baseMint": str(coin_mint),
@@ -235,7 +248,7 @@ class RaydiumAggregatorClient:
             # Derive market authority
             market_authority = self.derive_market_authority(str(market_id))
             
-            return {
+            pool_data = {
                 "id": pool_id,
                 "baseMint": str(coin_mint),
                 "quoteMint": str(pc_mint),
@@ -257,8 +270,13 @@ class RaydiumAggregatorClient:
                 "programId": str(RAYDIUM_AMM_PROGRAM_ID)
             }
             
+            logging.info(f"[Raydium] Successfully fetched pool data for {pool_id[:8]}...")
+            return pool_data
+            
         except Exception as e:
-            logging.error(f"Failed to fetch pool data from chain: {e}")
+            logging.error(f"[Raydium] Failed to fetch pool data from chain: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return None
     
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
