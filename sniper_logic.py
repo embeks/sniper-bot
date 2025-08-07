@@ -35,130 +35,151 @@ last_alert_sent = {"Raydium": 0}
 alert_cooldown_sec = 1800
 
 async def mempool_listener(name):
-    """WebSocket listener for new token mints."""
+    """WebSocket listener for new token mints - FIXED VERSION."""
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     retry_attempts = 0
-    max_retries = 3
-    retry_delay = 5
-    heartbeat_interval = 60
+    max_retries = 10  # Increased retries
+    retry_delay = 10  # Increased delay
+    heartbeat_interval = 30  # More frequent heartbeat
     max_inactive = 300
-
-    async def heartbeat_watchdog():
-        while True:
-            await asyncio.sleep(heartbeat_interval)
-            now = time.time()
-            elapsed = now - last_seen_token[name]
-            if elapsed < heartbeat_interval * 2:
-                logging.info(f"✅ {name} listener heartbeat ({int(elapsed)}s since last event)")
-            else:
-                logging.warning(f"⚠️ {name} listener no token for {int(elapsed)}s")
-            if elapsed > max_inactive:
-                if now - last_alert_sent[name] > alert_cooldown_sec:
-                    msg = f"⚠️ {name} listener inactive for 5m — restarting..."
-                    logging.error(msg)
-                    listener_status[name] = "RESTARTING"
-                    await send_telegram_alert(msg)
-                    last_alert_sent[name] = now
-                else:
-                    logging.warning(f"[{name} RESTART] Inactive >5min, suppressing repeat alert")
-                raise Exception("ListenerInactive")
-
-    while True:
+    
+    while retry_attempts < max_retries:
+        ws = None
+        watchdog_task = None
+        
         try:
-            async with websockets.connect(url, ping_interval=20) as ws:
-                # Subscribe to Raydium logs
-                await ws.send(json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "logsSubscribe",
-                    "params": [
-                        {
-                            "mentions": ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"]  # Raydium V4
-                        },
-                        {"commitment": "processed"}
-                    ]
-                }))
-                
-                logging.info(f"[🔁] {name} listener subscribed to Raydium logs.")
-                await send_telegram_alert(f"📱 {name} listener live - monitoring Raydium pools.")
-                listener_status[name] = "ACTIVE"
-                last_seen_token[name] = time.time()
-
-                watchdog_task = asyncio.create_task(heartbeat_watchdog())
-
-                while True:
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=60)
-                        data = json.loads(msg)
-                        
-                        if "params" in data:
-                            logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
-                            
-                            # Look for pool initialization
-                            for log in logs:
-                                if "initialize2" in log or "InitializeInstruction2" in log:
-                                    last_seen_token[name] = time.time()
-                                    
-                                    # Extract account keys
-                                    account_keys = data["params"]["result"]["value"].get("accountKeys", [])
-                                    if len(account_keys) > 10:
-                                        # Get potential token mints from the transaction
-                                        # Typically positions 8 and 9 are the token mints
-                                        for i in [8, 9]:
-                                            if i < len(account_keys):
-                                                potential_mint = account_keys[i]
-                                                
-                                                # Skip SOL and already seen tokens
-                                                if (potential_mint == "So11111111111111111111111111111111111111112" or 
-                                                    potential_mint in seen_tokens or 
-                                                    not is_bot_running()):
-                                                    continue
-                                                
-                                                seen_tokens.add(potential_mint)
-                                                logging.info(f"[🧠] New Raydium pool token: {potential_mint}")
-                                                increment_stat("tokens_scanned", 1)
-                                                update_last_activity()
-                                                
-                                                await send_telegram_alert(f"[🟡] New token in Raydium pool: {potential_mint}")
-                                                
-                                                # Check token validity and buy
-                                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
-                                                    if await rug_filter_passes(potential_mint):
-                                                        if await buy_token(potential_mint):
-                                                            await wait_and_auto_sell(potential_mint)
-                                                else:
-                                                    log_skipped_token(potential_mint, "Blacklisted or broken")
-                                                    record_skip("blacklist")
-                                                
-                    except asyncio.TimeoutError:
-                        logging.debug(f"[⏳] {name} heartbeat — no new pools in last 60s.")
-
-        except Exception as e:
-            logging.warning(f"[{name} ERROR] {e}")
-            retry_attempts += 1
-            listener_status[name] = f"RETRYING ({retry_attempts})"
+            # Create WebSocket with better timeout settings
+            ws = await websockets.connect(
+                url, 
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=10,
+                max_size=10**7  # Increased max message size
+            )
             
-            try:
+            # Subscribe to Raydium logs
+            await ws.send(json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "logsSubscribe",
+                "params": [
+                    {
+                        "mentions": ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"]  # Raydium V4
+                    },
+                    {"commitment": "processed"}
+                ]
+            }))
+            
+            # Wait for subscription confirmation
+            response = await asyncio.wait_for(ws.recv(), timeout=10)
+            response_data = json.loads(response)
+            
+            if "result" not in response_data:
+                logging.error(f"[{name}] Failed to subscribe: {response_data}")
+                raise Exception("Subscription failed")
+            
+            subscription_id = response_data["result"]
+            logging.info(f"[🔁] {name} listener subscribed with ID: {subscription_id}")
+            await send_telegram_alert(f"📱 {name} listener live - monitoring Raydium pools.")
+            listener_status[name] = "ACTIVE"
+            last_seen_token[name] = time.time()
+            retry_attempts = 0  # Reset on successful connection
+            
+            # Heartbeat watchdog
+            async def heartbeat_watchdog():
+                while True:
+                    await asyncio.sleep(heartbeat_interval)
+                    now = time.time()
+                    elapsed = now - last_seen_token[name]
+                    
+                    if elapsed < heartbeat_interval * 2:
+                        logging.debug(f"✅ {name} listener heartbeat OK ({int(elapsed)}s)")
+                    elif elapsed > max_inactive:
+                        logging.error(f"⚠️ {name} listener inactive for {int(elapsed)}s")
+                        raise Exception("ListenerInactive")
+            
+            watchdog_task = asyncio.create_task(heartbeat_watchdog())
+            
+            # Main message loop
+            while True:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=60)
+                    data = json.loads(msg)
+                    
+                    # Update heartbeat on any message
+                    last_seen_token[name] = time.time()
+                    
+                    if "params" in data:
+                        logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                        
+                        # Look for pool initialization
+                        for log in logs:
+                            if "initialize2" in log or "InitializeInstruction2" in log:
+                                # Extract account keys
+                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
+                                if len(account_keys) > 10:
+                                    # Get potential token mints
+                                    for i in [8, 9]:
+                                        if i < len(account_keys):
+                                            potential_mint = account_keys[i]
+                                            
+                                            # Skip SOL and already seen tokens
+                                            if (potential_mint == "So11111111111111111111111111111111111111112" or 
+                                                potential_mint in seen_tokens or 
+                                                not is_bot_running()):
+                                                continue
+                                            
+                                            seen_tokens.add(potential_mint)
+                                            logging.info(f"[🧠] New Raydium pool token: {potential_mint}")
+                                            increment_stat("tokens_scanned", 1)
+                                            update_last_activity()
+                                            
+                                            await send_telegram_alert(f"[🟡] New token in Raydium pool: {potential_mint}")
+                                            
+                                            # Check token validity and buy
+                                            if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
+                                                if await rug_filter_passes(potential_mint):
+                                                    if await buy_token(potential_mint):
+                                                        await wait_and_auto_sell(potential_mint)
+                                            else:
+                                                log_skipped_token(potential_mint, "Blacklisted or broken")
+                                                record_skip("blacklist")
+                                                
+                except asyncio.TimeoutError:
+                    logging.debug(f"[⏳] {name} no new events in 60s (normal)")
+                    continue
+                except websockets.exceptions.ConnectionClosed as e:
+                    logging.warning(f"[{name}] WebSocket closed: {e}")
+                    break
+                    
+        except Exception as e:
+            logging.error(f"[{name} ERROR] {str(e)}")
+            listener_status[name] = f"RETRYING ({retry_attempts + 1})"
+            
+        finally:
+            # Clean up
+            if watchdog_task and not watchdog_task.done():
                 watchdog_task.cancel()
-                await watchdog_task
-            except Exception:
-                pass
-                
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if ws:
+                await ws.close()
+            
+            retry_attempts += 1
+            
             if retry_attempts >= max_retries:
-                msg = f"⚠️ {name} listener failed {max_retries}×. Last error: {e}"
+                msg = f"⚠️ {name} listener failed after {max_retries} attempts"
                 await send_telegram_alert(msg)
                 listener_status[name] = "FAILED"
                 break
-                
-            await asyncio.sleep(retry_delay)
-        else:
-            retry_attempts = 0
-        finally:
-            try:
-                watchdog_task.cancel()
-                await watchdog_task
-            except Exception:
-                pass
+            
+            # Exponential backoff
+            wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
+            logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
+            await asyncio.sleep(wait_time)
 
 import httpx
 
@@ -167,45 +188,66 @@ MIN_VOLUME_USD = 1000
 seen_trending = set()
 
 async def get_trending_pairs_dexscreener():
-    """Fetch trending pairs from DexScreener."""
+    """Fetch trending pairs from DexScreener - FIXED."""
     url = "https://api.dexscreener.com/latest/dex/pairs/solana"
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url)
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json"
+            }
+            resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 return data.get("pairs", [])
+            else:
+                logging.debug(f"DexScreener returned status {resp.status_code}")
     except Exception as e:
         logging.debug(f"DexScreener API error: {e}")
     return None
 
 async def get_trending_pairs_birdeye():
-    """Fetch trending pairs from Birdeye."""
-    url = "https://public-api.birdeye.so/public/tokenlist?chain=solana"
+    """Fetch trending pairs from Birdeye - FIXED."""
+    # Skip Birdeye if no API key
+    BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+    if not BIRDEYE_API_KEY:
+        return None
+        
+    url = "https://public-api.birdeye.so/defi/tokenlist"
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url)
+        async with httpx.AsyncClient(timeout=30) as client:
+            headers = {
+                "X-API-KEY": BIRDEYE_API_KEY,
+                "accept": "application/json"
+            }
+            resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 pairs = []
-                for tok in data.get("data", [])[:20]:
+                for tok in data.get("data", {}).get("tokens", [])[:20]:
                     mint = tok.get("address")
-                    lp_usd = float(tok.get("liquidity_usd", 0))
-                    vol_usd = float(tok.get("volume_24h_usd", 0))
+                    if not mint:
+                        continue
+                    lp_usd = float(tok.get("liquidity", 0))
+                    vol_usd = float(tok.get("v24hUSD", 0))
                     pair = {
                         "baseToken": {"address": mint},
                         "liquidity": {"usd": lp_usd},
-                        "volume": {"h1": vol_usd},
+                        "volume": {"h24": vol_usd},
                     }
                     pairs.append(pair)
                 return pairs
+            else:
+                logging.debug(f"Birdeye returned status {resp.status_code}")
     except Exception as e:
-        logging.error(f"Birdeye API error: {e}")
+        logging.debug(f"Birdeye API error: {e}")
     return None
 
 async def trending_scanner():
-    """Scan for trending tokens to snipe."""
+    """Scan for trending tokens to snipe - FIXED."""
     global seen_trending
+    consecutive_failures = 0
+    max_consecutive_failures = 5
     
     while True:
         try:
@@ -213,32 +255,42 @@ async def trending_scanner():
                 await asyncio.sleep(5)
                 continue
 
-            # Try DexScreener first, fall back to Birdeye
+            # Try DexScreener first
             pairs = await get_trending_pairs_dexscreener()
             source = "DEXScreener"
+            
+            # Fall back to Birdeye if DexScreener fails
             if not pairs:
                 pairs = await get_trending_pairs_birdeye()
                 source = "Birdeye"
-                
+            
             if not pairs:
-                logging.warning("[Trending Scanner] Both APIs unavailable")
-                await asyncio.sleep(TREND_SCAN_INTERVAL)
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logging.warning(f"[Trending Scanner] Both APIs unavailable ({consecutive_failures} failures)")
+                    consecutive_failures = 0  # Reset counter
+                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)  # Wait longer on failure
                 continue
-
+            
+            # Reset failure counter on success
+            consecutive_failures = 0
+            
             # Process top trending tokens
+            processed = 0
             for pair in pairs[:10]:
                 mint = pair.get("baseToken", {}).get("address")
                 lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                vol_usd = float(pair.get("volume", {}).get("h1", 0))
+                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
                 
                 if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
                     continue
                     
                 if lp_usd < MIN_LP_USD or vol_usd < MIN_VOLUME_USD:
-                    logging.info(f"[SKIP] {mint} - LP: ${lp_usd}, Vol: ${vol_usd}")
+                    logging.debug(f"[SKIP] {mint[:8]}... - LP: ${lp_usd:.0f}, Vol: ${vol_usd:.0f}")
                     continue
                     
                 seen_trending.add(mint)
+                processed += 1
                 increment_stat("tokens_scanned", 1)
                 update_last_activity()
                 
@@ -250,11 +302,14 @@ async def trending_scanner():
                 if await rug_filter_passes(mint):
                     if await buy_token(mint):
                         await wait_and_auto_sell(mint)
+            
+            if processed > 0:
+                logging.info(f"[Trending Scanner] Processed {processed} tokens from {source}")
                         
             await asyncio.sleep(TREND_SCAN_INTERVAL)
             
         except Exception as e:
-            logging.warning(f"[Trending Scanner ERROR] {e}")
+            logging.error(f"[Trending Scanner ERROR] {e}")
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 async def rug_filter_passes(mint: str) -> bool:
