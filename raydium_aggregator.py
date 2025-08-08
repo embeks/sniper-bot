@@ -279,6 +279,10 @@ class RaydiumAggregatorClient:
             logging.error(traceback.format_exc())
             return None
     
+    def derive_market_authority(self, market_id: str) -> str:
+        """Derive market authority - simplified version"""
+        return str(RAYDIUM_AUTHORITY)
+    
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
         """Find pool by searching program accounts - DYNAMIC DISCOVERY."""
         try:
@@ -385,9 +389,6 @@ class RaydiumAggregatorClient:
                 import traceback
                 logging.error(traceback.format_exc())
                     
-            except Exception as e:
-                logging.error(f"[Raydium] Error scanning pools: {e}")
-            
             return None
             
         except Exception as e:
