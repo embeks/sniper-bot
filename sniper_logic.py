@@ -22,11 +22,12 @@ load_dotenv()
 
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-HELIUS_API = os.getenv("HELIUS_API")
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.75))
+HELIUS_API = os.getenv("HELIUS_API")  # Optional - will skip mempool if not set
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))  # Changed default to match your .env
 TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")  # Added for Birdeye
 
 seen_tokens = set()
 BLACKLIST = set()
@@ -37,6 +38,11 @@ alert_cooldown_sec = 1800
 
 async def mempool_listener(name, program_id=None):
     """WebSocket listener for new token mints - FIXED VERSION."""
+    if not HELIUS_API:
+        logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
+        await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
+        return
+    
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     retry_attempts = 0
     max_retries = 10
@@ -238,7 +244,6 @@ async def get_trending_pairs_dexscreener():
 async def get_trending_pairs_birdeye():
     """Fetch trending pairs from Birdeye - FIXED."""
     # Skip Birdeye if no API key
-    BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
     if not BIRDEYE_API_KEY:
         return None
         
