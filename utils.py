@@ -1,5 +1,6 @@
 # Add these imports at the top of utils.py
 import base64
+from typing import Optional
 from solders.transaction import VersionedTransaction
 
 # Add these new functions to utils.py (don't remove anything, just add):
