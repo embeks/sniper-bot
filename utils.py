@@ -94,7 +94,10 @@ async def wait_and_auto_sell(mint: str):
                     if await sell_token(mint, SELL_PERCENT_1):
                         position["sold_stages"].add("profit1")
                         await send_telegram_alert(
-                            f"💰 Hit {TAKE_PROFIT_1}import os
+                            f"💰 Hit {TAKE_PROFIT_1}x profit for {mint[:8]}!\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
+                            f"Sold {SELL_PERCENT_1}% of position"
+                        )import os
 import json
 import logging
 import httpx
