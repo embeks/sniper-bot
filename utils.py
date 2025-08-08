@@ -348,7 +348,9 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
                 time.sleep(2)  # Wait 2 seconds
                 
                 try:
-                    status = rpc.get_signature_statuses([sig])
+                    from solders.signature import Signature
+                    sig_obj = Signature.from_string(sig)
+                    status = rpc.get_signature_statuses([sig_obj])
                     if status.value[0] is not None:
                         if status.value[0].confirmation_status:
                             logging.info(f"[Jupiter] Transaction status: {status.value[0].confirmation_status}")
@@ -357,7 +359,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
                             logging.error(f"[Jupiter] Transaction failed: {status.value[0].err}")
                             return None
                 except Exception as e:
-                    logging.warning(f"[Jupiter] Could not check status: {e}")
+                    logging.debug(f"[Jupiter] Status check not critical: {e}")
                 
                 return sig  # Return the signature anyway
             else:
@@ -394,27 +396,57 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         if not swap_data:
             return None
         
-        # Sign and send - PROPERLY FIXED
+        # Sign and send - SAME FIX AS BUY
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
         
-        # Create a new transaction with signature
-        from solders.signature import Signature
-        signature = keypair.sign_message(bytes(tx.message))
-        signed_tx = VersionedTransaction.populate(tx.message, [signature])
+        # The transaction needs to be signed with our keypair
+        signed_tx = VersionedTransaction(tx.message, [keypair])
         
-        result = rpc.send_transaction(
-            signed_tx,
-            opts=TxOpts(
-                skip_preflight=True,
-                preflight_commitment=Confirmed,
-                max_retries=3
+        # Send transaction
+        logging.info("[Jupiter] Sending sell transaction...")
+        
+        try:
+            result = rpc.send_transaction(
+                signed_tx,
+                opts=TxOpts(
+                    skip_preflight=True,
+                    preflight_commitment=Confirmed,
+                    max_retries=3
+                )
             )
-        )
-        
-        if result.value:
-            return str(result.value)
-        return None
+            
+            if result.value:
+                sig = str(result.value)
+                logging.info(f"[Jupiter] Sell transaction sent: {sig}")
+                
+                # Quick confirmation check
+                import time
+                time.sleep(2)
+                
+                try:
+                    from solders.signature import Signature
+                    sig_obj = Signature.from_string(sig)
+                    status = rpc.get_signature_statuses([sig_obj])
+                    if status.value[0] is not None:
+                        if status.value[0].confirmation_status:
+                            logging.info(f"[Jupiter] Sell confirmed: {status.value[0].confirmation_status}")
+                        elif status.value[0].err:
+                            logging.error(f"[Jupiter] Sell failed: {status.value[0].err}")
+                            return None
+                except Exception as e:
+                    logging.debug(f"[Jupiter] Status check: {e}")
+                
+                return sig
+            else:
+                logging.error(f"[Jupiter] Failed to send sell transaction")
+                return None
+                
+        except Exception as e:
+            logging.error(f"[Jupiter] Sell send error: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return None
             
     except Exception as e:
         logging.error(f"[Jupiter] Sell execution error: {e}")
