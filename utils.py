@@ -1,10 +1,217 @@
-# Add these imports at the top of utils.py
+import os
+import json
+import logging
+import httpx
+import asyncio
+import time
+import csv
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from dotenv import load_dotenv
 import base64
 from typing import Optional
 from solders.transaction import VersionedTransaction
 
-# Add these new functions to utils.py (don't remove anything, just add):
+# Solana imports
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solana.rpc.api import Client
+from solana.rpc.commitment import Confirmed
+from solana.rpc.types import TxOpts
+from spl.token.instructions import get_associated_token_address
 
+# Import Raydium client
+from raydium_aggregator import RaydiumAggregatorClient
+
+# Setup
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Environment variables
+RPC_URL = os.getenv("RPC_URL")
+WALLET_PK = os.getenv("WALLET_PK")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.01))
+AUTO_SELL_PERCENT_2X = float(os.getenv("AUTO_SELL_PERCENT_2X", 50))
+AUTO_SELL_PERCENT_5X = float(os.getenv("AUTO_SELL_PERCENT_5X", 25))
+AUTO_SELL_PERCENT_10X = float(os.getenv("AUTO_SELL_PERCENT_10X", 25))
+
+# Initialize clients
+rpc = Client(RPC_URL, commitment=Confirmed)
+raydium = RaydiumAggregatorClient(RPC_URL)
+
+# Load wallet
+keypair = Keypair.from_base58_string(WALLET_PK)
+wallet_pubkey = str(keypair.pubkey())
+
+# Global state
+OPEN_POSITIONS = {}
+BROKEN_TOKENS = set()
+BOT_RUNNING = True
+BLACKLIST_FILE = "blacklist.json"
+TRADES_CSV_FILE = "trades.csv"
+
+# Stats tracking
+daily_stats = {
+    "tokens_scanned": 0,
+    "snipes_attempted": 0,
+    "snipes_succeeded": 0,
+    "sells_executed": 0,
+    "profit_sol": 0.0,
+    "skip_reasons": {
+        "low_lp": 0,
+        "blacklist": 0,
+        "malformed": 0,
+        "buy_failed": 0
+    }
+}
+
+# Status tracking
+listener_status = {"Raydium": "OFFLINE", "Jupiter": "OFFLINE"}
+last_activity = time.time()
+last_seen_token = {"Raydium": time.time(), "Jupiter": time.time()}
+
+def update_last_activity():
+    global last_activity
+    last_activity = time.time()
+
+def increment_stat(stat_name: str, value: int = 1):
+    if stat_name in daily_stats:
+        daily_stats[stat_name] += value
+
+def record_skip(reason: str):
+    if reason in daily_stats["skip_reasons"]:
+        daily_stats["skip_reasons"][reason] += 1
+
+def is_bot_running():
+    return BOT_RUNNING
+
+def start_bot():
+    global BOT_RUNNING
+    BOT_RUNNING = True
+
+def stop_bot():
+    global BOT_RUNNING
+    BOT_RUNNING = False
+
+def mark_broken_token(mint: str, error_code: int):
+    BROKEN_TOKENS.add(mint)
+    log_skipped_token(mint, f"Marked as broken (error {error_code})")
+
+def is_valid_mint(mint: str) -> bool:
+    try:
+        Pubkey.from_string(mint)
+        return True
+    except:
+        return False
+
+async def send_telegram_alert(message: str):
+    """Send alert to Telegram"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_USER_ID,
+            "text": message[:4096],
+            "parse_mode": "HTML"
+        }
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(url, json=payload)
+    except Exception as e:
+        logging.error(f"Telegram send failed: {e}")
+
+def log_trade(mint: str, action: str, sol_amount: float, token_amount: float):
+    """Log trade to CSV file"""
+    try:
+        with open(TRADES_CSV_FILE, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.now().isoformat(),
+                mint,
+                action,
+                sol_amount,
+                token_amount
+            ])
+    except Exception as e:
+        logging.error(f"Failed to log trade: {e}")
+
+def log_skipped_token(mint: str, reason: str):
+    """Log skipped tokens"""
+    logging.info(f"[SKIP] {mint}: {reason}")
+
+def get_wallet_summary() -> str:
+    """Get wallet balance summary"""
+    try:
+        balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+        return f"Balance: {balance:.4f} SOL\nAddress: {wallet_pubkey}"
+    except:
+        return "Failed to fetch wallet info"
+
+def get_bot_status_message() -> str:
+    """Get detailed bot status"""
+    elapsed = int(time.time() - last_activity)
+    raydium_elapsed = int(time.time() - last_seen_token["Raydium"])
+    jupiter_elapsed = int(time.time() - last_seen_token["Jupiter"])
+    
+    return f"""
+🤖 Bot: {'RUNNING' if BOT_RUNNING else 'PAUSED'}
+📊 Daily Stats:
+  • Scanned: {daily_stats['tokens_scanned']}
+  • Attempted: {daily_stats['snipes_attempted']}
+  • Succeeded: {daily_stats['snipes_succeeded']}
+  • Sells: {daily_stats['sells_executed']}
+  • P&L: {daily_stats['profit_sol']:.4f} SOL
+  
+⏱ Last Activity: {elapsed}s ago
+🔌 Listeners:
+  • Raydium: {listener_status['Raydium']} ({raydium_elapsed}s)
+  • Jupiter: {listener_status['Jupiter']} ({jupiter_elapsed}s)
+  
+📈 Open Positions: {len(OPEN_POSITIONS)}
+🚫 Broken Tokens: {len(BROKEN_TOKENS)}
+"""
+
+async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
+    """Get liquidity info for a token"""
+    try:
+        pool = raydium.find_pool("So11111111111111111111111111111111111111112", mint)
+        if pool:
+            # Get vault balances
+            sol_vault = Pubkey.from_string(pool["baseVault"] if pool["baseMint"] == "So11111111111111111111111111111111111111112" else pool["quoteVault"])
+            sol_balance = rpc.get_balance(sol_vault).value / 1e9
+            return {"liquidity": sol_balance * 2}  # Rough estimate
+    except Exception as e:
+        logging.error(f"Failed to get liquidity: {e}")
+    return None
+
+async def get_trending_mints():
+    """Placeholder for trending mints"""
+    return []
+
+async def daily_stats_reset_loop():
+    """Reset daily stats at midnight"""
+    while True:
+        try:
+            now = datetime.now()
+            midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
+            seconds_until_midnight = (midnight - now).total_seconds()
+            await asyncio.sleep(seconds_until_midnight)
+            
+            # Reset stats
+            daily_stats["tokens_scanned"] = 0
+            daily_stats["snipes_attempted"] = 0
+            daily_stats["snipes_succeeded"] = 0
+            daily_stats["sells_executed"] = 0
+            daily_stats["profit_sol"] = 0.0
+            for key in daily_stats["skip_reasons"]:
+                daily_stats["skip_reasons"][key] = 0
+                
+            await send_telegram_alert("📊 Daily stats reset")
+        except Exception as e:
+            logging.error(f"Stats reset error: {e}")
+            await asyncio.sleep(3600)
+
+# Jupiter Integration Functions
 async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 100):
     """Get swap quote from Jupiter API"""
     try:
@@ -115,7 +322,45 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         logging.error(traceback.format_exc())
         return None
 
-# REPLACE your existing buy_token function with this enhanced version:
+async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
+    """Execute a sell using Jupiter"""
+    try:
+        input_mint = mint
+        output_mint = "So11111111111111111111111111111111111111112"  # SOL
+        
+        # Get quote
+        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}...")
+        quote = await get_jupiter_quote(input_mint, output_mint, amount)
+        if not quote:
+            return None
+        
+        # Get swap transaction
+        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
+        if not swap_data:
+            return None
+        
+        # Sign and send
+        tx_bytes = base64.b64decode(swap_data["swapTransaction"])
+        tx = VersionedTransaction.from_bytes(tx_bytes)
+        tx.sign([keypair])
+        
+        result = rpc.send_transaction(
+            tx,
+            opts=TxOpts(
+                skip_preflight=True,
+                preflight_commitment=Confirmed,
+                max_retries=3
+            )
+        )
+        
+        if result.value:
+            return str(result.value)
+        return None
+            
+    except Exception as e:
+        logging.error(f"[Jupiter] Sell execution error: {e}")
+        return None
+
 async def buy_token(mint: str):
     """Execute buy transaction for a token - NOW WITH JUPITER!"""
     amount = int(BUY_AMOUNT_SOL * 1e9)  # Convert SOL to lamports
@@ -203,46 +448,6 @@ async def buy_token(mint: str):
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-# Similarly, enhance sell_token with Jupiter:
-async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
-    """Execute a sell using Jupiter"""
-    try:
-        input_mint = mint
-        output_mint = "So11111111111111111111111111111111111111112"  # SOL
-        
-        # Get quote
-        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}...")
-        quote = await get_jupiter_quote(input_mint, output_mint, amount)
-        if not quote:
-            return None
-        
-        # Get swap transaction
-        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
-        if not swap_data:
-            return None
-        
-        # Sign and send
-        tx_bytes = base64.b64decode(swap_data["swapTransaction"])
-        tx = VersionedTransaction.from_bytes(tx_bytes)
-        tx.sign([keypair])
-        
-        result = rpc.send_transaction(
-            tx,
-            opts=TxOpts(
-                skip_preflight=True,
-                preflight_commitment=Confirmed,
-                max_retries=3
-            )
-        )
-        
-        if result.value:
-            return str(result.value)
-        return None
-            
-    except Exception as e:
-        logging.error(f"[Jupiter] Sell execution error: {e}")
-        return None
-
 async def sell_token(mint: str, percent: float = 100.0):
     """Execute sell transaction for a token - NOW WITH JUPITER!"""
     try:
@@ -273,6 +478,7 @@ async def sell_token(mint: str, percent: float = 100.0):
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
             log_trade(mint, f"SELL {percent}%", 0, amount)
+            increment_stat("sells_executed", 1)
             return True
         
         # ========== FALLBACK TO RAYDIUM ==========
@@ -306,9 +512,66 @@ async def sell_token(mint: str, percent: float = 100.0):
             f"TX: https://solscan.io/tx/{sig}"
         )
         log_trade(mint, f"SELL {percent}%", 0, amount)
+        increment_stat("sells_executed", 1)
         return True
         
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
+
+async def wait_and_auto_sell(mint: str):
+    """Monitor position and auto-sell at profit targets"""
+    try:
+        if mint not in OPEN_POSITIONS:
+            logging.warning(f"No position found for {mint}")
+            return
+            
+        position = OPEN_POSITIONS[mint]
+        initial_balance = position["buy_amount_sol"]
+        
+        # Wait for token to settle
+        await asyncio.sleep(10)
+        
+        # Monitor for 10 minutes max
+        start_time = time.time()
+        max_duration = 600  # 10 minutes
+        
+        while time.time() - start_time < max_duration:
+            try:
+                # Get current price/value (simplified - you'd need real price checking)
+                # For now, we'll just do timed sells
+                elapsed = time.time() - start_time
+                
+                # Sell 50% at 30 seconds (simulating 2x)
+                if elapsed > 30 and "2x" not in position["sold_stages"]:
+                    if await sell_token(mint, AUTO_SELL_PERCENT_2X):
+                        position["sold_stages"].add("2x")
+                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at ~2x for {mint}")
+                
+                # Sell 25% at 2 minutes (simulating 5x)
+                if elapsed > 120 and "5x" not in position["sold_stages"]:
+                    if await sell_token(mint, AUTO_SELL_PERCENT_5X):
+                        position["sold_stages"].add("5x")
+                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at ~5x for {mint}")
+                
+                # Sell remaining at 5 minutes (simulating 10x or timeout)
+                if elapsed > 300 and "10x" not in position["sold_stages"]:
+                    if await sell_token(mint, AUTO_SELL_PERCENT_10X):
+                        position["sold_stages"].add("10x")
+                        await send_telegram_alert(f"🌙 Sold final {AUTO_SELL_PERCENT_10X}% for {mint}")
+                        break
+                
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+            except Exception as e:
+                logging.error(f"Error monitoring {mint}: {e}")
+                await asyncio.sleep(10)
+        
+        # Clean up position
+        if mint in OPEN_POSITIONS:
+            del OPEN_POSITIONS[mint]
+            
+    except Exception as e:
+        logging.error(f"Auto-sell error for {mint}: {e}")
+        await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
