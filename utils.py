@@ -275,7 +275,7 @@ async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str):
             "userPublicKey": user_pubkey,
             "wrapAndUnwrapSol": True,  # Handles WSOL automatically!
             "dynamicComputeUnitLimit": True,
-            "prioritizationFeeLamports": "auto"
+            "prioritizationFeeLamports": 200000  # Increased from "auto" - about 0.0002 SOL
         }
         
         async with httpx.AsyncClient(timeout=15) as client:
@@ -326,7 +326,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         signature = keypair.sign_message(bytes(tx.message))
         signed_tx = VersionedTransaction.populate(tx.message, [signature])
         
-        # Step 4: Send transaction
+        # Step 4: Send transaction with confirmation
         logging.info("[Jupiter] Sending transaction...")
         result = rpc.send_transaction(
             signed_tx,
@@ -340,7 +340,26 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         if result.value:
             sig = str(result.value)
             logging.info(f"[Jupiter] Transaction sent: {sig}")
-            return sig
+            
+            # Wait for confirmation
+            logging.info("[Jupiter] Waiting for confirmation...")
+            import time
+            for i in range(30):  # Wait up to 30 seconds
+                time.sleep(1)
+                try:
+                    status = rpc.get_signature_statuses([sig])
+                    if status.value[0] is not None:
+                        if status.value[0].confirmation_status in ["confirmed", "finalized"]:
+                            logging.info(f"[Jupiter] Transaction confirmed: {sig}")
+                            return sig
+                        elif status.value[0].err:
+                            logging.error(f"[Jupiter] Transaction failed: {status.value[0].err}")
+                            return None
+                except:
+                    pass
+            
+            logging.warning(f"[Jupiter] Transaction not confirmed after 30s: {sig}")
+            return sig  # Return anyway, might confirm later
         else:
             logging.error("[Jupiter] Failed to send transaction")
             return None
