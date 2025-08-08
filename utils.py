@@ -317,15 +317,14 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
             logging.warning("[Jupiter] Failed to get swap transaction")
             return None
         
-        # Step 3: Deserialize and sign transaction
+        # Step 3: Deserialize and sign transaction - PROPERLY FIXED
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
         
-        # Sign with our keypair - FIXED SIGNING METHOD
-        from solders.message import MessageV0
-        # The transaction already has a message, we just need to add signature
-        signatures = [keypair.sign_message(bytes(tx.message))]
-        signed_tx = VersionedTransaction(tx.message, signatures)
+        # Create a new transaction with signature
+        from solders.signature import Signature
+        signature = keypair.sign_message(bytes(tx.message))
+        signed_tx = VersionedTransaction.populate(tx.message, [signature])
         
         # Step 4: Send transaction
         logging.info("[Jupiter] Sending transaction...")
@@ -369,13 +368,14 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         if not swap_data:
             return None
         
-        # Sign and send - FIXED SIGNING METHOD
+        # Sign and send - PROPERLY FIXED
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
         
-        # The transaction already has a message, we just need to add signature
-        signatures = [keypair.sign_message(bytes(tx.message))]
-        signed_tx = VersionedTransaction(tx.message, signatures)
+        # Create a new transaction with signature
+        from solders.signature import Signature
+        signature = keypair.sign_message(bytes(tx.message))
+        signed_tx = VersionedTransaction.populate(tx.message, [signature])
         
         result = rpc.send_transaction(
             signed_tx,
