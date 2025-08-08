@@ -51,45 +51,8 @@ class RaydiumAggregatorClient:
             
             logging.info(f"[Raydium] Searching for pool with {token_mint[:8]}...")
             
-            # Known pool IDs - use correct, active pools
-            known_pool_ids = {
-                "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",  # RAY
-                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",  # USDC V2
-                "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": "Ew1pSB7JDT5HJe1NKza9Qa8nBksH2SDEsH3w4uRUAnJP",  # BONK
-                "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm": "2QdhepnKRTLjjSqPL1PtKNwqrUkoLee5Gqs8bvZhRdMv",  # WIF
-            }
-            
-            # For known tokens, use hardcoded working configurations
-            working_pools = {
-                # USDC-SOL (FINAL CORRECT CONFIG)
-                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
-                    "id": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
-                    "baseMint": "So11111111111111111111111111111111111111112",
-                    "quoteMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                    "baseVault": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",  # SOL vault (coin)
-                    "quoteVault": "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz",  # USDC vault (pc) - CORRECTED
-                    "openOrders": "6w5hF2hceQRZbaxjPJutiWSPAFWDkp3YbY2Aq3RpCSKe",
-                    "targetOrders": "8VuvrSWfQP8vdbuMAP9AkfgLxU9hbRR6BmTJ8Gfas9aK",
-                    "marketId": "9wFFyRfZBsuAha4YcuxcXLKwMxJR43S7fPfQLusDBzvT",
-                    "marketProgramId": "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
-                    "marketAuthority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-                    "marketBaseVault": "CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR",
-                    "marketQuoteVault": "9vYWHBPz817wJdQpE8u3h8UoY3sZ16ZXdCcvLB7jY4Dj",
-                    "marketBids": "14ivtgssEBoBjuZJtSAPKYgpUK7DmnSwuPMqJoVTSgKJ",
-                    "marketAsks": "CEQdAFKdycHugujQg9k2wbmxjcpdYZyVLfV9WerTnafJ",
-                    "marketEventQueue": "5KKsLVU6TcbVDK4BS6K1DGDxnh4Q9xjYJ8XaDCG5t8ht",
-                    "authority": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-                    "version": 4,
-                    "programId": str(RAYDIUM_AMM_PROGRAM_ID)
-                }
-                # REMOVED BONK - Let it find dynamically since hardcoded one is wrong
-            }
-            
-            if token_mint in working_pools:
-                pool = working_pools[token_mint]
-                self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
-                logging.info(f"[Raydium] Using working pool config for {token_mint[:8]}...")
-                return pool
+            # NO HARDCODED POOLS - Everything discovered dynamically!
+            # This is what a real sniper needs - finding pools for brand new tokens
             
             # Search for pool by program accounts
             pool = self._find_pool_by_accounts(token_mint, sol_mint)
@@ -266,33 +229,17 @@ class RaydiumAggregatorClient:
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
         """Find pool by searching program accounts - DYNAMIC DISCOVERY."""
         try:
-            logging.info(f"[Raydium] Searching for pools with token {token_mint[:8]}...")
+            logging.info(f"[Raydium] Dynamically searching for pools with token {token_mint[:8]}...")
             
-            # Since we're having issues with filters, let's use known pool IDs for popular tokens
-            # and fetch their data dynamically
-            known_pool_ids = {
-                # Remove JUP for now since the pool ID was wrong
-                "WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk": "7RVTPyhj3bSK7b5rtPx6r9aqvKZDKnEVe8wJbWjfJrGf",
-                "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": "DSUvc5qf5LJHHV5e2tD184ixotSnCnwj7i4jJa4Xsrmt",  # BONK
-                "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": "2hBVyoYnbGkdMPbGPKM7E2p5wmACtLwZwAWnj5ejfQqy",  # mSOL
-            }
+            # Try Jupiter Price API first to check if token exists
+            if self._check_token_exists(token_mint):
+                logging.info(f"[Raydium] Token {token_mint[:8]} exists on Jupiter, likely has pools")
             
-            if token_mint in known_pool_ids:
-                pool_id = known_pool_ids[token_mint]
-                logging.info(f"[Raydium] Using known pool ID {pool_id[:8]}... for {token_mint[:8]}...")
-                pool = self.fetch_pool_data_from_chain(pool_id)
-                if pool:
-                    logging.info(f"[Raydium] Successfully fetched pool data for {token_mint[:8]}!")
-                    return pool
-                else:
-                    logging.warning(f"[Raydium] Failed to fetch data for known pool {pool_id[:8]}...")
-            
-            # For unknown tokens, try to get all pools
-            logging.info(f"[Raydium] Token not in known list, attempting full scan...")
+            # For ANY token, try to get pools dynamically
+            logging.info(f"[Raydium] Fetching all Raydium pools (this may take 10-30 seconds)...")
             
             try:
                 # Get all program accounts
-                logging.info(f"[Raydium] Fetching all Raydium pools (this may take 10-30 seconds)...")
                 accounts = self.client.get_program_accounts(
                     RAYDIUM_AMM_PROGRAM_ID,
                     encoding="base64"
