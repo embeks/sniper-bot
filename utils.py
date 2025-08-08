@@ -321,13 +321,16 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
         
-        # Sign with our keypair
-        tx.sign([keypair])
+        # Sign with our keypair - FIXED SIGNING METHOD
+        from solders.message import MessageV0
+        # The transaction already has a message, we just need to add signature
+        signatures = [keypair.sign_message(bytes(tx.message))]
+        signed_tx = VersionedTransaction(tx.message, signatures)
         
         # Step 4: Send transaction
         logging.info("[Jupiter] Sending transaction...")
         result = rpc.send_transaction(
-            tx,
+            signed_tx,
             opts=TxOpts(
                 skip_preflight=True,
                 preflight_commitment=Confirmed,
@@ -366,13 +369,16 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         if not swap_data:
             return None
         
-        # Sign and send
+        # Sign and send - FIXED SIGNING METHOD
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
-        tx.sign([keypair])
+        
+        # The transaction already has a message, we just need to add signature
+        signatures = [keypair.sign_message(bytes(tx.message))]
+        signed_tx = VersionedTransaction(tx.message, signatures)
         
         result = rpc.send_transaction(
-            tx,
+            signed_tx,
             opts=TxOpts(
                 skip_preflight=True,
                 preflight_commitment=Confirmed,
