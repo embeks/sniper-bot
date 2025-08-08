@@ -648,7 +648,7 @@ class RaydiumAggregatorClient:
         
         for attempt in range(max_retries):
             try:
-                # Send transaction with preflight to get better errors
+                # Send transaction with preflight to catch errors
                 result = self.client.send_transaction(
                     tx,
                     opts=TxOpts(
@@ -661,7 +661,25 @@ class RaydiumAggregatorClient:
                 if result.value:
                     sig = str(result.value)
                     logging.info(f"[Raydium] Transaction sent: {sig}")
-                    return sig
+                    
+                    # CRITICAL: Wait for confirmation
+                    logging.info(f"[Raydium] Waiting for confirmation...")
+                    try:
+                        confirmation = self.client.confirm_transaction(
+                            sig,
+                            commitment=Confirmed,
+                            sleep_seconds=1,
+                            last_valid_block_height=None
+                        )
+                        if confirmation.value:
+                            logging.info(f"[Raydium] Transaction confirmed: {sig}")
+                            return sig
+                        else:
+                            logging.error(f"[Raydium] Transaction failed to confirm: {sig}")
+                            return None
+                    except Exception as e:
+                        logging.error(f"[Raydium] Confirmation error: {e}")
+                        return None
                     
             except Exception as e:
                 error_msg = str(e)
