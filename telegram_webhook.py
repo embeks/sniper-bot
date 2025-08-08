@@ -1,11 +1,9 @@
-# =========================
-# telegram_webhook.py — Fixed Version
+# telegram_webhook.py 
 # =========================
 from fastapi import FastAPI, Request
 import asyncio
 import os
 from dotenv import load_dotenv
-
 # Direct imports - no lazy loading
 from sniper_logic import start_sniper, start_sniper_with_forced_token, stop_all_tasks
 from utils import send_telegram_alert, is_bot_running, start_bot, stop_bot, get_wallet_summary, get_bot_status_message
@@ -13,8 +11,9 @@ from utils import send_telegram_alert, is_bot_running, start_bot, stop_bot, get_
 load_dotenv()
 
 app = FastAPI()
+
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID"))
+AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CHAT_ID", 0))
 
 # ✅ Command Router
 @app.post("/")
