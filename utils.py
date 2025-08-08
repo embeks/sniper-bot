@@ -488,13 +488,20 @@ async def sell_token(mint: str, percent: float = 100.0):
         owner = keypair.pubkey()
         token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
         
-        # Get actual balance
-        response = rpc.get_token_account_balance(token_account)
-        if not response.value:
-            await send_telegram_alert(f"⚠️ No token balance found for {mint}")
+        # Get actual balance - FIXED ERROR HANDLING
+        try:
+            response = rpc.get_token_account_balance(token_account)
+            if not response or not hasattr(response, 'value') or not response.value:
+                logging.warning(f"No token balance found for {mint}")
+                await send_telegram_alert(f"⚠️ No token balance found for {mint}")
+                return False
+            
+            balance = int(response.value.amount)
+        except Exception as e:
+            logging.error(f"Failed to get token balance for {mint}: {e}")
+            await send_telegram_alert(f"⚠️ Failed to get balance for {mint}: {e}")
             return False
         
-        balance = int(response.value.amount)
         amount = int(balance * percent / 100)
         
         if amount == 0:
