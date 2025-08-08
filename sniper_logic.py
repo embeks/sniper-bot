@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import httpx
 
 from utils import (
     is_valid_mint, buy_token, log_skipped_token, send_telegram_alert,
@@ -31,17 +32,27 @@ seen_tokens = set()
 BLACKLIST = set()
 TASKS = []
 
-last_alert_sent = {"Raydium": 0}
+last_alert_sent = {"Raydium": 0, "Jupiter": 0}
 alert_cooldown_sec = 1800
 
-async def mempool_listener(name):
+async def mempool_listener(name, program_id=None):
     """WebSocket listener for new token mints - FIXED VERSION."""
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
     retry_attempts = 0
-    max_retries = 10  # Increased retries
-    retry_delay = 10  # Increased delay
-    heartbeat_interval = 30  # More frequent heartbeat
+    max_retries = 10
+    retry_delay = 10
+    heartbeat_interval = 30
     max_inactive = 300
+    
+    # Set program ID based on listener name
+    if program_id is None:
+        if name == "Raydium":
+            program_id = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"  # Raydium V4
+        elif name == "Jupiter":
+            program_id = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"  # Jupiter V6
+        else:
+            logging.error(f"Unknown listener: {name}")
+            return
     
     while retry_attempts < max_retries:
         ws = None
@@ -54,18 +65,16 @@ async def mempool_listener(name):
                 ping_interval=20,
                 ping_timeout=10,
                 close_timeout=10,
-                max_size=10**7  # Increased max message size
+                max_size=10**7
             )
             
-            # Subscribe to Raydium logs
+            # Subscribe to program logs
             await ws.send(json.dumps({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "logsSubscribe",
                 "params": [
-                    {
-                        "mentions": ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"]  # Raydium V4
-                    },
+                    {"mentions": [program_id]},
                     {"commitment": "processed"}
                 ]
             }))
@@ -80,10 +89,10 @@ async def mempool_listener(name):
             
             subscription_id = response_data["result"]
             logging.info(f"[🔁] {name} listener subscribed with ID: {subscription_id}")
-            await send_telegram_alert(f"📱 {name} listener live - monitoring Raydium pools.")
+            await send_telegram_alert(f"📱 {name} listener live - monitoring pools.")
             listener_status[name] = "ACTIVE"
             last_seen_token[name] = time.time()
-            retry_attempts = 0  # Reset on successful connection
+            retry_attempts = 0
             
             # Heartbeat watchdog
             async def heartbeat_watchdog():
@@ -112,18 +121,16 @@ async def mempool_listener(name):
                     if "params" in data:
                         logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
                         
-                        # Look for pool initialization
+                        # Look for pool initialization or swap events
                         for log in logs:
-                            if "initialize2" in log or "InitializeInstruction2" in log:
-                                # Extract account keys
+                            if name == "Raydium" and ("initialize2" in log or "InitializeInstruction2" in log):
+                                # Extract account keys for Raydium
                                 account_keys = data["params"]["result"]["value"].get("accountKeys", [])
                                 if len(account_keys) > 10:
-                                    # Get potential token mints
                                     for i in [8, 9]:
                                         if i < len(account_keys):
                                             potential_mint = account_keys[i]
                                             
-                                            # Skip SOL and already seen tokens
                                             if (potential_mint == "So11111111111111111111111111111111111111112" or 
                                                 potential_mint in seen_tokens or 
                                                 not is_bot_running()):
@@ -144,6 +151,30 @@ async def mempool_listener(name):
                                             else:
                                                 log_skipped_token(potential_mint, "Blacklisted or broken")
                                                 record_skip("blacklist")
+                            
+                            elif name == "Jupiter" and ("swap" in log.lower() or "route" in log.lower()):
+                                # Extract account keys for Jupiter
+                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
+                                for key in account_keys:
+                                    if (key != "So11111111111111111111111111111111111111112" and 
+                                        key not in seen_tokens and
+                                        is_bot_running() and
+                                        is_valid_mint(key)):
+                                        
+                                        seen_tokens.add(key)
+                                        logging.info(f"[🧠] New Jupiter swap token: {key}")
+                                        increment_stat("tokens_scanned", 1)
+                                        update_last_activity()
+                                        
+                                        await send_telegram_alert(f"[🔵] New token in Jupiter swap: {key}")
+                                        
+                                        if key not in BROKEN_TOKENS and key not in BLACKLIST:
+                                            if await rug_filter_passes(key):
+                                                if await buy_token(key):
+                                                    await wait_and_auto_sell(key)
+                                        else:
+                                            log_skipped_token(key, "Blacklisted or broken")
+                                            record_skip("blacklist")
                                                 
                 except asyncio.TimeoutError:
                     logging.debug(f"[⏳] {name} no new events in 60s (normal)")
@@ -180,8 +211,6 @@ async def mempool_listener(name):
             wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
             logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
             await asyncio.sleep(wait_time)
-
-import httpx
 
 MIN_LP_USD = 1000
 MIN_VOLUME_USD = 1000
@@ -328,7 +357,7 @@ async def rug_filter_passes(mint: str) -> bool:
 
 async def start_sniper():
     """Start the sniper bot with all listeners."""
-    await send_telegram_alert("✅ Sniper bot launching (Raydium-only mode)...")
+    await send_telegram_alert("✅ Sniper bot launching (dual-mode: Raydium + Jupiter)...")
 
     # Test mint if configured
     if FORCE_TEST_MINT:
@@ -340,8 +369,11 @@ async def start_sniper():
     TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
     TASKS.extend([
         asyncio.create_task(mempool_listener("Raydium")),
+        asyncio.create_task(mempool_listener("Jupiter")),
         asyncio.create_task(trending_scanner())
     ])
+    
+    await send_telegram_alert("🚀 All listeners active: Raydium, Jupiter, Trending Scanner")
 
 async def start_sniper_with_forced_token(mint: str):
     """Force buy a specific token (for testing)."""
