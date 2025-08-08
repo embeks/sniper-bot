@@ -27,23 +27,47 @@ from raydium_aggregator import RaydiumAggregatorClient
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Environment variables
+# Environment variables - MATCHING YOUR .env FILE
 RPC_URL = os.getenv("RPC_URL")
-WALLET_PK = os.getenv("WALLET_PK")
+SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Changed from WALLET_PK
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.01))
-AUTO_SELL_PERCENT_2X = float(os.getenv("AUTO_SELL_PERCENT_2X", 50))
-AUTO_SELL_PERCENT_5X = float(os.getenv("AUTO_SELL_PERCENT_5X", 25))
-AUTO_SELL_PERCENT_10X = float(os.getenv("AUTO_SELL_PERCENT_10X", 25))
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Changed from TELEGRAM_USER_ID
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")  # Keep both for compatibility
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))  # Changed default to 0.03
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
+SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
+SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
+BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
+
+# Parse sell percentages from multipliers (using defaults)
+AUTO_SELL_PERCENT_2X = 50
+AUTO_SELL_PERCENT_5X = 25
+AUTO_SELL_PERCENT_10X = 25
 
 # Initialize clients
 rpc = Client(RPC_URL, commitment=Confirmed)
 raydium = RaydiumAggregatorClient(RPC_URL)
 
-# Load wallet
-keypair = Keypair.from_base58_string(WALLET_PK)
+# Load wallet - Handle array format [1,2,3,...] from your .env
+import ast
+try:
+    # If it's an array string like [1,2,3,...]
+    if SOLANA_PRIVATE_KEY and SOLANA_PRIVATE_KEY.startswith("["):
+        private_key_array = ast.literal_eval(SOLANA_PRIVATE_KEY)
+        keypair = Keypair.from_seed(bytes(private_key_array[:32]))
+    else:
+        # If it's a base58 string
+        keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
+except Exception as e:
+    raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
+
 wallet_pubkey = str(keypair.pubkey())
+
+# Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID for backwards compatibility
+if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
+    TELEGRAM_CHAT_ID = TELEGRAM_USER_ID
 
 # Global state
 OPEN_POSITIONS = {}
@@ -51,6 +75,9 @@ BROKEN_TOKENS = set()
 BOT_RUNNING = True
 BLACKLIST_FILE = "blacklist.json"
 TRADES_CSV_FILE = "trades.csv"
+
+# Add blacklisted tokens from env
+BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
 
 # Stats tracking
 daily_stats = {
@@ -111,7 +138,7 @@ async def send_telegram_alert(message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": TELEGRAM_USER_ID,
+            "chat_id": TELEGRAM_CHAT_ID,  # Changed from TELEGRAM_USER_ID
             "text": message[:4096],
             "parse_mode": "HTML"
         }
@@ -215,7 +242,7 @@ async def daily_stats_reset_loop():
 async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 100):
     """Get swap quote from Jupiter API"""
     try:
-        url = "https://quote-api.jup.ag/v6/quote"
+        url = f"{JUPITER_BASE_URL}/v6/quote"
         params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
@@ -241,7 +268,7 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
 async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str):
     """Get the swap transaction from Jupiter"""
     try:
-        url = "https://quote-api.jup.ag/v6/swap"
+        url = f"{JUPITER_BASE_URL}/v6/swap"
         
         body = {
             "quoteResponse": quote,
