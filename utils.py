@@ -576,6 +576,8 @@ async def wait_and_auto_sell(mint: str):
         # Monitor for 10 minutes max
         start_time = time.time()
         max_duration = 600  # 10 minutes
+        max_sell_attempts = 3  # Prevent spam
+        sell_attempts = {"2x": 0, "5x": 0, "10x": 0}
         
         while time.time() - start_time < max_duration:
             try:
@@ -584,23 +586,40 @@ async def wait_and_auto_sell(mint: str):
                 elapsed = time.time() - start_time
                 
                 # Sell 50% at 30 seconds (simulating 2x)
-                if elapsed > 30 and "2x" not in position["sold_stages"]:
+                if elapsed > 30 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
+                    sell_attempts["2x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_2X):
                         position["sold_stages"].add("2x")
                         await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at ~2x for {mint}")
+                    elif sell_attempts["2x"] >= max_sell_attempts:
+                        position["sold_stages"].add("2x")  # Mark as attempted to stop retrying
+                        logging.error(f"Failed to sell {mint} after {max_sell_attempts} attempts at 2x")
                 
                 # Sell 25% at 2 minutes (simulating 5x)
-                if elapsed > 120 and "5x" not in position["sold_stages"]:
+                if elapsed > 120 and "5x" not in position["sold_stages"] and sell_attempts["5x"] < max_sell_attempts:
+                    sell_attempts["5x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_5X):
                         position["sold_stages"].add("5x")
                         await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at ~5x for {mint}")
+                    elif sell_attempts["5x"] >= max_sell_attempts:
+                        position["sold_stages"].add("5x")  # Mark as attempted to stop retrying
+                        logging.error(f"Failed to sell {mint} after {max_sell_attempts} attempts at 5x")
                 
                 # Sell remaining at 5 minutes (simulating 10x or timeout)
-                if elapsed > 300 and "10x" not in position["sold_stages"]:
+                if elapsed > 300 and "10x" not in position["sold_stages"] and sell_attempts["10x"] < max_sell_attempts:
+                    sell_attempts["10x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_10X):
                         position["sold_stages"].add("10x")
                         await send_telegram_alert(f"🌙 Sold final {AUTO_SELL_PERCENT_10X}% for {mint}")
                         break
+                    elif sell_attempts["10x"] >= max_sell_attempts:
+                        position["sold_stages"].add("10x")  # Mark as attempted to stop retrying
+                        logging.error(f"Failed to sell {mint} after {max_sell_attempts} attempts at 10x")
+                        break
+                
+                # If all stages attempted, exit loop
+                if len(position["sold_stages"]) >= 3:
+                    break
                 
                 await asyncio.sleep(10)  # Check every 10 seconds
                 
