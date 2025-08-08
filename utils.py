@@ -318,57 +318,22 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
             logging.warning("[Jupiter] Failed to get swap transaction")
             return None
         
-        # Step 3: Deserialize and sign transaction - DIFFERENT APPROACH
+        # Step 3: Deserialize and sign transaction - SIMPLEST METHOD
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
+        tx = VersionedTransaction.from_bytes(tx_bytes)
         
-        # Try sending the raw transaction directly
-        logging.info("[Jupiter] Sending raw transaction...")
+        # The transaction needs to be signed with our keypair
+        # Pass the keypair directly to the transaction constructor
+        signed_tx = VersionedTransaction(tx.message, [keypair])
         
-        # Use sendTransaction with the base64 encoded transaction
-        import base58
+        # Step 4: Send transaction
+        logging.info("[Jupiter] Sending transaction...")
+        
         try:
-            # Send raw transaction
-            result = rpc.send_raw_transaction(tx_bytes)
-            
-            if result.value:
-                sig = str(result.value)
-                logging.info(f"[Jupiter] Transaction sent: {sig}")
-                
-                # Wait for confirmation
-                logging.info("[Jupiter] Waiting for confirmation...")
-                import time
-                for i in range(30):  # Wait up to 30 seconds
-                    time.sleep(1)
-                    try:
-                        status = rpc.get_signature_statuses([sig])
-                        if status.value[0] is not None:
-                            if status.value[0].confirmation_status in ["confirmed", "finalized"]:
-                                logging.info(f"[Jupiter] Transaction confirmed: {sig}")
-                                return sig
-                            elif status.value[0].err:
-                                logging.error(f"[Jupiter] Transaction failed: {status.value[0].err}")
-                                return None
-                    except:
-                        pass
-                
-                logging.warning(f"[Jupiter] Transaction not confirmed after 30s: {sig}")
-                return sig  # Return anyway, might confirm later
-            else:
-                logging.error("[Jupiter] Failed to send raw transaction")
-                return None
-                
-        except Exception as e:
-            logging.error(f"[Jupiter] Raw send error: {e}")
-            # Fall back to original method
-            tx = VersionedTransaction.from_bytes(tx_bytes)
-            from solders.signature import Signature
-            signature = keypair.sign_message(bytes(tx.message))
-            signed_tx = VersionedTransaction.populate(tx.message, [signature])
-            
             result = rpc.send_transaction(
                 signed_tx,
                 opts=TxOpts(
-                    skip_preflight=False,  # Enable preflight to see errors
+                    skip_preflight=True,  # Skip to avoid false failures
                     preflight_commitment=Confirmed,
                     max_retries=3
                 )
@@ -376,11 +341,35 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
             
             if result.value:
                 sig = str(result.value)
-                logging.info(f"[Jupiter] Transaction sent (fallback): {sig}")
-                return sig
+                logging.info(f"[Jupiter] Transaction sent: {sig}")
+                
+                # Quick confirmation check
+                import time
+                time.sleep(2)  # Wait 2 seconds
+                
+                try:
+                    status = rpc.get_signature_statuses([sig])
+                    if status.value[0] is not None:
+                        if status.value[0].confirmation_status:
+                            logging.info(f"[Jupiter] Transaction status: {status.value[0].confirmation_status}")
+                            return sig
+                        elif status.value[0].err:
+                            logging.error(f"[Jupiter] Transaction failed: {status.value[0].err}")
+                            return None
+                except Exception as e:
+                    logging.warning(f"[Jupiter] Could not check status: {e}")
+                
+                return sig  # Return the signature anyway
             else:
-                logging.error("[Jupiter] Fallback also failed")
+                logging.error(f"[Jupiter] Failed to send transaction: {result}")
                 return None
+                
+        except Exception as e:
+            logging.error(f"[Jupiter] Send error: {e}")
+            # Log more details
+            import traceback
+            logging.error(traceback.format_exc())
+            return None
             
     except Exception as e:
         logging.error(f"[Jupiter] Swap execution error: {e}")
