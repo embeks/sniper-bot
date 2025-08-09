@@ -11,6 +11,12 @@ daily_stats = {
         "malformed": 0,
         "buy_failed": 0
     }
+}_reasons": {
+        "low_lp": 0,
+        "blacklist": 0,
+        "malformed": 0,
+        "buy_failed": 0
+    }
 }
 
 # Status tracking
