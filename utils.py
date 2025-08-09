@@ -41,23 +41,33 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             except Exception as e:
                 logging.debug(f"[Price] Birdeye error: {e}")
         
-        # Calculate price from Jupiter QUOTE (not price API) as fallback
-        # This uses Jupiter's swap quote which is more reliable than their price API
+        # Only try Jupiter as LAST resort (since it has DNS issues on Render)
+        # But use the quote API which might work better than price API
         try:
-            logging.debug(f"[Price] Calculating from Jupiter quote for {mint[:8]}")
+            # Get a quote for 0.001 SOL to derive price
+            sol_price = 150.0  # Current SOL price estimate
+            quote_url = f"{JUPITER_BASE_URL}/v6/quote"
+            params = {
+                "inputMint": "So11111111111111111111111111111111111111112",
+                "outputMint": mint,
+                "amount": str(int(0.001 * 1e9)),
+                "slippageBps": "100"
+            }
             
-            # Get current SOL price (you could also get this from DexScreener)
-            sol_price = 150.0  #import os
-import json
-import logging
-import httpx
-import asyncio
-import time
-import csv
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from dotenv import load_dotenv
-import base64
+            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+                response = await client.get(quote_url, params=params)
+                if response.status_code == 200:
+                    quote = response.json()
+                    if "outAmount" in quote and float(quote["outAmount"]) > 0:
+                        # Calculate price
+                        tokens_received = float(quote["outAmount"]) / 1e9
+                        sol_spent = 0.001
+                        price = (sol_spent * sol_price) / tokens_received
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated)")
+                        return price
+        except Exception as e:
+            # Don't log Jupiter errors since we know DNS is broken
+            pass
 from typing import Optional
 from solders.transaction import VersionedTransaction
 
