@@ -1,80 +1,19 @@
-async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price in USD - ELITE VERSION optimized for what actually works"""
-    try:
-        # Try DexScreener FIRST (most reliable for new tokens)
-        try:
-            logging.debug(f"[Price] Checking DexScreener for {mint[:8]}")
-            dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-            
-            async with httpx.AsyncClient(timeout=10, verify=False) as client:
-                response = await client.get(dex_url)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "pairs" in data and len(data["pairs"]) > 0:
-                        # Get the pair with highest liquidity
-                        pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
-                        if pairs[0].get("priceUsd"):
-                            price = float(pairs[0]["priceUsd"])
-                            if price > 0:
-                                logging.info(f"[Price] LIVE: {mint[:8]}... = ${price:.8f} (from DexScreener)")
-                                return price
-        except Exception as e:
-            logging.debug(f"[Price] DexScreener error: {e}")
-        
-        # Try Birdeye if configured (great for established tokens)
-        if BIRDEYE_API_KEY:
-            try:
-                logging.debug(f"[Price] Trying Birdeye for {mint[:8]}")
-                url = f"https://public-api.birdeye.so/defi/price?address={mint}"
-                
-                async with httpx.AsyncClient(timeout=10, verify=False) as client:
-                    headers = {"X-API-KEY": BIRDEYE_API_KEY}
-                    response = await client.get(url, headers=headers)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "data" in data and "value" in data["data"]:
-                            price = float(data["data"]["value"])
-                            if price > 0:
-                                logging.info(f"[Price] LIVE: {mint[:8]}... = ${price:.8f} (from Birdeye)")
-                                return price
-            except Exception as e:
-                logging.debug(f"[Price] Birdeye error: {e}")
-        
-        # Only try Jupiter as LAST resort (since it has DNS issues on Render)
-        # But use the quote API which might work better than price API
-        try:
-            # Get a quote for 0.001 SOL to derive price
-            sol_price = 150.0  # Current SOL price estimate
-            quote_url = f"{JUPITER_BASE_URL}/v6/quote"
-            params = {
-                "inputMint": "So11111111111111111111111111111111111111112",
-                "outputMint": mint,
-                "amount": str(int(0.001 * 1e9)),
-                "slippageBps": "100"
-            }
-            
-            async with httpx.AsyncClient(timeout=5, verify=False) as client:
-                response = await client.get(quote_url, params=params)
-                if response.status_code == 200:
-                    quote = response.json()
-                    if "outAmount" in quote and float(quote["outAmount"]) > 0:
-                        # Calculate price
-                        tokens_received = float(quote["outAmount"]) / 1e9
-                        sol_spent = 0.001
-                        price = (sol_spent * sol_price) / tokens_received
-                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated)")
-                        return price
-        except Exception as e:
-            # Don't log Jupiter errors since we know DNS is broken
-            pass
-from typing import Optional
+import os
+import json
+import logging
+import httpx
+import asyncio
+import time
+import csv
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+import base64
 from solders.transaction import VersionedTransaction
 
 # Solana imports
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-# REMOVED: from solana.publickey import PublicKey as SolPublicKey  # THIS WAS THE ERROR - LINE DELETED
 from solana.rpc.api import Client
 from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
@@ -416,7 +355,6 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
                 logging.info(f"[Jupiter] Transaction sent: {sig}")
                 
                 # Quick confirmation check
-                import time
                 time.sleep(2)  # Wait 2 seconds
                 
                 try:
@@ -493,7 +431,6 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
                 logging.info(f"[Jupiter] Sell transaction sent: {sig}")
                 
                 # Quick confirmation check
-                import time
                 time.sleep(2)
                 
                 try:
@@ -758,13 +695,6 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             # Don't log Jupiter errors since we know DNS is broken
             pass
-        
-        logging.warning(f"[Price] Could not get price for {mint[:8]} from any source")
-        return None
-        
-    except Exception as e:
-        logging.error(f"[Price] Unexpected error for {mint}: {e}")
-        return None
 
 async def wait_and_auto_sell(mint: str):
     """Monitor position and auto-sell at REAL profit targets with risk management"""
