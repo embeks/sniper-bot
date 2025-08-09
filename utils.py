@@ -695,6 +695,15 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             # Don't log Jupiter errors since we know DNS is broken
             pass
+            pass
+        
+        # If we get here, all price sources failed
+        logging.warning(f"[Price] Could not get price for {mint[:8]} from any source")
+        return None
+        
+    except Exception as e:
+        logging.error(f"[Price] Unexpected error for {mint}: {e}")
+        return None
 
 async def wait_and_auto_sell(mint: str):
     """Monitor position and auto-sell at REAL profit targets with risk management"""
