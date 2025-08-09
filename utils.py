@@ -1,3 +1,4 @@
+
 import os
 import json
 import logging
@@ -951,6 +952,9 @@ async def wait_and_auto_sell(mint: str):
     except Exception as e:
         logging.error(f"Auto-sell error for {mint}: {e}")
         await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
+        # Clean up position even on error
+        if mint in OPEN_POSITIONS:
+            del OPEN_POSITIONS[mint]
 
 async def wait_and_auto_sell_timer_based(mint: str):
     """FALLBACK: Original timer-based selling if price feed fails"""
