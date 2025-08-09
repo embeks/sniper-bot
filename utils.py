@@ -746,8 +746,8 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                             if price > 0:
                                 logging.info(f"[Price] LIVE: {mint[:8]}... = ${price:.8f} (from Birdeye)")
                                 return price
-        except Exception as e:
-            logging.debug(f"[Price] Birdeye error: {e}")
+            except Exception as e:
+                logging.debug(f"[Price] Birdeye error: {e}")
         
         # Calculate price from pool ratio as last resort
         try:
