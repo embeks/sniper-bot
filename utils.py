@@ -1,195 +1,3 @@
-async def wait_and_auto_sell(mint: str):
-    """Monitor position and auto-sell at REAL profit targets with risk management"""
-    try:
-        if mint not in OPEN_POSITIONS:
-            logging.warning(f"No position found for {mint}")
-            return
-            
-        position = OPEN_POSITIONS[mint]
-        buy_amount_sol = position["buy_amount_sol"]
-        
-        # Wait for token to settle and get initial price
-        await asyncio.sleep(10)
-        
-        # Get entry price (price we bought at)
-        entry_price = await get_token_price_usd(mint)
-        if not entry_price:
-            logging.warning(f"Could not get entry price for {mint}, using timer-based fallback")
-            # Fall back to timer-based selling if we can't get prices
-            await wait_and_auto_sell_timer_based(mint)
-            return
-            
-        # Initialize tracking variables
-        position["entry_price"] = entry_price
-        position["highest_price"] = entry_price
-        position["token_amount"] = position.get("expected_token_amount", 0)
-        
-        await send_telegram_alert(
-            f"📊 Monitoring {mint[:8]}...\n"
-            f"Entry: ${entry_price:.6f}\n"
-            f"Targets: {TAKE_PROFIT_1}x/${entry_price*TAKE_PROFIT_1:.6f}, "
-            f"{TAKE_PROFIT_2}x/${entry_price*TAKE_PROFIT_2:.6f}, "
-            f"{TAKE_PROFIT_3}x/${entry_price*TAKE_PROFIT_3:.6f}\n"
-            f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}"
-        )
-        
-        # Monitor loop
-        start_time = time.time()
-        last_price_check = 0
-        max_sell_attempts = 3
-        sell_attempts = {"profit1": 0, "profit2": 0, "profit3": 0, "stop_loss": 0}
-        
-        while time.time() - start_time < MAX_HOLD_TIME_SEC:
-            try:
-                # Check price at intervals
-                if time.time() - last_price_check < PRICE_CHECK_INTERVAL_SEC:
-                    await asyncio.sleep(1)
-                    continue
-                    
-                last_price_check = time.time()
-                current_price = await get_token_price_usd(mint)
-                
-                if not current_price:
-                    logging.debug(f"Could not get price for {mint}, skipping this check")
-                    await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
-                    continue
-                
-                # Calculate profit metrics
-                profit_multiplier = current_price / entry_price
-                profit_percent = (profit_multiplier - 1) * 100
-                
-                # Update highest price for trailing stop
-                if current_price > position["highest_price"]:
-                    position["highest_price"] = current_price
-                    logging.info(f"[{mint[:8]}] New high: ${current_price:.6f} ({profit_multiplier:.2f}x)")
-                
-                # Check for trailing stop
-                drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
-                if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
-                    logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
-                    if await sell_token(mint, 100):  # Sell all remaining
-                        await send_telegram_alert(
-                            f"⛔ Trailing stop triggered for {mint[:8]}!\n"
-                            f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
-                            f"Sold remaining position at ${current_price:.6f}"
-                        )
-                        break
-                
-                # Check stop loss
-                if profit_percent <= -STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
-                    sell_attempts["stop_loss"] += 1
-                    logging.info(f"[{mint[:8]}] Stop loss triggered at {profit_percent:.1f}%")
-                    if await sell_token(mint, 100):  # Sell everything
-                        await send_telegram_alert(
-                            f"🛑 Stop loss triggered for {mint[:8]}!\n"
-                            f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
-                            f"Sold all to minimize losses"
-                        )
-                        break
-                
-                # Check profit targets
-                # Target 1 (e.g., 2x)
-                if profit_multiplier >= TAKE_PROFIT_1 and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
-                    sell_attempts["profit1"] += 1
-                    if await sell_token(mint, SELL_PERCENT_1):
-                        position["sold_stages"].add("profit1")
-                        await send_telegram_alert(
-                            f"💰 Hit {TAKE_PROFIT_1}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
-                            f"Sold {SELL_PERCENT_1}% of position"
-                        )import os
-import json
-import logging
-import httpx
-import asyncio
-import time
-import csv
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from dotenv import load_dotenv
-import base64
-from typing import Optional
-from solders.transaction import VersionedTransaction
-
-# Solana imports
-from solders.keypair import Keypair
-from solders.pubkey import Pubkey
-from solana.rpc.api import Client
-from solana.rpc.commitment import Confirmed
-from solana.rpc.types import TxOpts
-from spl.token.instructions import get_associated_token_address
-
-# Import Raydium client
-from raydium_aggregator import RaydiumAggregatorClient
-
-# Setup
-load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Environment variables - MATCHING YOUR .env FILE
-RPC_URL = os.getenv("RPC_URL")
-SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Changed from WALLET_PK
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Changed from TELEGRAM_USER_ID
-TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")  # Keep both for compatibility
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))  # Changed default to 0.03
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
-SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
-SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
-BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
-
-# Parse sell percentages from multipliers (using defaults)
-AUTO_SELL_PERCENT_2X = 50
-AUTO_SELL_PERCENT_5X = 25
-AUTO_SELL_PERCENT_10X = 25
-
-# NEW: Profit-based trading configuration
-TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))  # 2x
-TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 5.0))  # 5x
-TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 10.0))  # 10x
-SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 50))
-SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 25))
-SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 25))
-STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 50))  # Sell if down 50%
-TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))  # Sell if drops 20% from peak
-MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))  # 1 hour max hold
-PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))  # Check every 10s
-
-# Initialize clients
-rpc = Client(RPC_URL, commitment=Confirmed)
-raydium = RaydiumAggregatorClient(RPC_URL)
-
-# Load wallet - Handle array format [1,2,3,...] from your .env
-import ast
-try:
-    # If it's an array string like [1,2,3,...]
-    if SOLANA_PRIVATE_KEY and SOLANA_PRIVATE_KEY.startswith("["):
-        private_key_array = ast.literal_eval(SOLANA_PRIVATE_KEY)
-        keypair = Keypair.from_seed(bytes(private_key_array[:32]))
-    else:
-        # If it's a base58 string
-        keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
-except Exception as e:
-    raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
-
-wallet_pubkey = str(keypair.pubkey())
-
-# Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID for backwards compatibility
-if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
-    TELEGRAM_CHAT_ID = TELEGRAM_USER_ID
-
-# Global state
-OPEN_POSITIONS = {}
-BROKEN_TOKENS = set()
-BOT_RUNNING = True
-BLACKLIST_FILE = "blacklist.json"
-TRADES_CSV_FILE = "trades.csv"
-
-# Add blacklisted tokens from env
-BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
-
 # Stats tracking
 daily_stats = {
     "tokens_scanned": 0,
@@ -749,35 +557,100 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         return None
 
 async def wait_and_auto_sell(mint: str):
-    """Monitor position and auto-sell at profit targets"""
+    """Monitor position and auto-sell at REAL profit targets with risk management"""
     try:
         if mint not in OPEN_POSITIONS:
             logging.warning(f"No position found for {mint}")
             return
             
         position = OPEN_POSITIONS[mint]
-        initial_balance = position["buy_amount_sol"]
+        buy_amount_sol = position["buy_amount_sol"]
         
-        # Wait for token to settle
+        # Wait for token to settle and get initial price
         await asyncio.sleep(10)
         
-        # Monitor for 10 minutes max
-        start_time = time.time()
-        max_duration = 600  # 10 minutes
-        max_sell_attempts = 3  # Prevent spam
-        sell_attempts = {"2x": 0, "5x": 0, "10x": 0}
+        # Get entry price (price we bought at)
+        entry_price = await get_token_price_usd(mint)
+        if not entry_price:
+            logging.warning(f"Could not get entry price for {mint}, using timer-based fallback")
+            # Fall back to timer-based selling if we can't get prices
+            await wait_and_auto_sell_timer_based(mint)
+            return
+            
+        # Initialize tracking variables
+        position["entry_price"] = entry_price
+        position["highest_price"] = entry_price
+        position["token_amount"] = position.get("expected_token_amount", 0)
         
-        while time.time() - start_time < max_duration:
+        await send_telegram_alert(
+            f"📊 Monitoring {mint[:8]}...\n"
+            f"Entry: ${entry_price:.6f}\n"
+            f"Targets: {TAKE_PROFIT_1}x/${entry_price*TAKE_PROFIT_1:.6f}, "
+            f"{TAKE_PROFIT_2}x/${entry_price*TAKE_PROFIT_2:.6f}, "
+            f"{TAKE_PROFIT_3}x/${entry_price*TAKE_PROFIT_3:.6f}\n"
+            f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}"
+        )
+        
+        # Monitor loop
+        start_time = time.time()
+        last_price_check = 0
+        max_sell_attempts = 3
+        sell_attempts = {"profit1": 0, "profit2": 0, "profit3": 0, "stop_loss": 0}
+        
+        while time.time() - start_time < MAX_HOLD_TIME_SEC:
             try:
-                # Get current price/value (simplified - you'd need real price checking)
-                # For now, we'll just do timed sells
-                elapsed = time.time() - start_time
+                # Check price at intervals
+                if time.time() - last_price_check < PRICE_CHECK_INTERVAL_SEC:
+                    await asyncio.sleep(1)
+                    continue
+                    
+                last_price_check = time.time()
+                current_price = await get_token_price_usd(mint)
                 
-                # Sell 50% at 30 seconds (simulating 2x)
-                if elapsed > 30 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
-                    sell_attempts["2x"] += 1
-                    if await sell_token(mint, AUTO_SELL_PERCENT_2X):
-                        position["sold_stages"].add("2x")
+                if not current_price:
+                    logging.debug(f"Could not get price for {mint}, skipping this check")
+                    await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
+                    continue
+                
+                # Calculate profit metrics
+                profit_multiplier = current_price / entry_price
+                profit_percent = (profit_multiplier - 1) * 100
+                
+                # Update highest price for trailing stop
+                if current_price > position["highest_price"]:
+                    position["highest_price"] = current_price
+                    logging.info(f"[{mint[:8]}] New high: ${current_price:.6f} ({profit_multiplier:.2f}x)")
+                
+                # Check for trailing stop
+                drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
+                if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
+                    logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
+                    if await sell_token(mint, 100):  # Sell all remaining
+                        await send_telegram_alert(
+                            f"⛔ Trailing stop triggered for {mint[:8]}!\n"
+                            f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
+                            f"Sold remaining position at ${current_price:.6f}"
+                        )
+                        break
+                
+                # Check stop loss
+                if profit_percent <= -STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
+                    sell_attempts["stop_loss"] += 1
+                    logging.info(f"[{mint[:8]}] Stop loss triggered at {profit_percent:.1f}%")
+                    if await sell_token(mint, 100):  # Sell everything
+                        await send_telegram_alert(
+                            f"🛑 Stop loss triggered for {mint[:8]}!\n"
+                            f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
+                            f"Sold all to minimize losses"
+                        )
+                        break
+                
+                # Check profit targets
+                # Target 1 (e.g., 2x)
+                if profit_multiplier >= TAKE_PROFIT_1 and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
+                    sell_attempts["profit1"] += 1
+                    if await sell_token(mint, SELL_PERCENT_1):
+                        position["sold_stages"].add("profit1")
                         await send_telegram_alert(
                             f"💰 Hit {TAKE_PROFIT_1}x profit for {mint[:8]}!\n"
                             f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
@@ -903,4 +776,104 @@ async def wait_and_auto_sell_timer_based(mint: str):
             del OPEN_POSITIONS[mint]
             
     except Exception as e:
-        logging.error(f"Timer-based auto-sell error for {mint}: {e}")
+        logging.error(f"Timer-based auto-sell error for {mint}: {e}")import os
+import json
+import logging
+import httpx
+import asyncio
+import time
+import csv
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+import base64
+from typing import Optional
+from solders.transaction import VersionedTransaction
+
+# Solana imports
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solana.rpc.api import Client
+from solana.rpc.commitment import Confirmed
+from solana.rpc.types import TxOpts
+from spl.token.instructions import get_associated_token_address
+
+# Import Raydium client
+from raydium_aggregator import RaydiumAggregatorClient
+
+# Setup
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Environment variables - MATCHING YOUR .env FILE
+RPC_URL = os.getenv("RPC_URL")
+SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Changed from WALLET_PK
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Changed from TELEGRAM_USER_ID
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")  # Keep both for compatibility
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))  # Changed default to 0.03
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
+SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
+SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
+BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
+
+# Parse sell percentages from multipliers (using defaults)
+AUTO_SELL_PERCENT_2X = 50
+AUTO_SELL_PERCENT_5X = 25
+AUTO_SELL_PERCENT_10X = 25
+
+# NEW: Profit-based trading configuration
+TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))  # 2x
+TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 5.0))  # 5x
+TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 10.0))  # 10x
+SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 50))
+SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 25))
+SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 25))
+STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 50))  # Sell if down 50%
+TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))  # Sell if drops 20% from peak
+MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))  # 1 hour max hold
+PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))  # Check every 10s
+
+# Initialize clients
+rpc = Client(RPC_URL, commitment=Confirmed)
+raydium = RaydiumAggregatorClient(RPC_URL)
+
+# Load wallet - Handle array format [1,2,3,...] from your .env
+import ast
+try:
+    # If it's an array string like [1,2,3,...]
+    if SOLANA_PRIVATE_KEY and SOLANA_PRIVATE_KEY.startswith("["):
+        private_key_array = ast.literal_eval(SOLANA_PRIVATE_KEY)
+        keypair = Keypair.from_seed(bytes(private_key_array[:32]))
+    else:
+        # If it's a base58 string
+        keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
+except Exception as e:
+    raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
+
+wallet_pubkey = str(keypair.pubkey())
+
+# Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID for backwards compatibility
+if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
+    TELEGRAM_CHAT_ID = TELEGRAM_USER_ID
+
+# Global state
+OPEN_POSITIONS = {}
+BROKEN_TOKENS = set()
+BOT_RUNNING = True
+BLACKLIST_FILE = "blacklist.json"
+TRADES_CSV_FILE = "trades.csv"
+
+# Add blacklisted tokens from env
+BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
+
+# Stats tracking
+daily_stats = {
+    "tokens_scanned": 0,
+    "snipes_attempted": 0,
+    "snipes_succeeded": 0,
+    "sells_executed": 0,
+    "profit_sol": 0.0,
+    "skip
