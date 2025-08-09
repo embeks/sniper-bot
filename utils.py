@@ -1,4 +1,3 @@
-
 import os
 import json
 import logging
@@ -1010,8 +1009,12 @@ async def wait_and_auto_sell_timer_based(mint: str):
                 logging.error(f"Timer-based monitoring error for {mint}: {e}")
                 await asyncio.sleep(10)
         
+        # Clean up position
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
             
     except Exception as e:
         logging.error(f"Timer-based auto-sell error for {mint}: {e}")
+        # Clean up position even on error
+        if mint in OPEN_POSITIONS:
+            del OPEN_POSITIONS[mint]
