@@ -1,3 +1,97 @@
+import os
+import json
+import logging
+import httpx
+import asyncio
+import time
+import csv
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+import base64
+from typing import Optional
+from solders.transaction import VersionedTransaction
+
+# Solana imports
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+# REMOVED: from solana.publickey import PublicKey as SolPublicKey  # THIS WAS THE ERROR - LINE DELETED
+from solana.rpc.api import Client
+from solana.rpc.commitment import Confirmed
+from solana.rpc.types import TxOpts
+from spl.token.instructions import get_associated_token_address
+
+# Import Raydium client
+from raydium_aggregator import RaydiumAggregatorClient
+
+# Setup
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Environment variables - MATCHING YOUR .env FILE
+RPC_URL = os.getenv("RPC_URL")
+SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Changed from WALLET_PK
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Changed from TELEGRAM_USER_ID
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")  # Keep both for compatibility
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))  # Changed default to 0.03
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
+SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
+SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
+BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
+
+# Parse sell percentages from multipliers (using defaults)
+AUTO_SELL_PERCENT_2X = 50
+AUTO_SELL_PERCENT_5X = 25
+AUTO_SELL_PERCENT_10X = 25
+
+# NEW: Profit-based trading configuration
+TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))  # 2x
+TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 5.0))  # 5x
+TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 10.0))  # 10x
+SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 50))
+SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 25))
+SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 25))
+STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 50))  # Sell if down 50%
+TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))  # Sell if drops 20% from peak
+MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))  # 1 hour max hold
+PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))  # Check every 10s
+
+# Initialize clients
+rpc = Client(RPC_URL, commitment=Confirmed)
+raydium = RaydiumAggregatorClient(RPC_URL)
+
+# Load wallet - Handle array format [1,2,3,...] from your .env
+import ast
+try:
+    # If it's an array string like [1,2,3,...]
+    if SOLANA_PRIVATE_KEY and SOLANA_PRIVATE_KEY.startswith("["):
+        private_key_array = ast.literal_eval(SOLANA_PRIVATE_KEY)
+        keypair = Keypair.from_seed(bytes(private_key_array[:32]))
+    else:
+        # If it's a base58 string
+        keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
+except Exception as e:
+    raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
+
+wallet_pubkey = str(keypair.pubkey())
+
+# Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID for backwards compatibility
+if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
+    TELEGRAM_CHAT_ID = TELEGRAM_USER_ID
+
+# Global state
+OPEN_POSITIONS = {}
+BROKEN_TOKENS = set()
+BOT_RUNNING = True
+BLACKLIST_FILE = "blacklist.json"
+TRADES_CSV_FILE = "trades.csv"
+
+# Add blacklisted tokens from env
+BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
+
 # Stats tracking
 daily_stats = {
     "tokens_scanned": 0,
@@ -6,12 +100,6 @@ daily_stats = {
     "sells_executed": 0,
     "profit_sol": 0.0,
     "skip_reasons": {
-        "low_lp": 0,
-        "blacklist": 0,
-        "malformed": 0,
-        "buy_failed": 0
-    }
-}_reasons": {
         "low_lp": 0,
         "blacklist": 0,
         "malformed": 0,
@@ -782,104 +870,4 @@ async def wait_and_auto_sell_timer_based(mint: str):
             del OPEN_POSITIONS[mint]
             
     except Exception as e:
-        logging.error(f"Timer-based auto-sell error for {mint}: {e}")import os
-import json
-import logging
-import httpx
-import asyncio
-import time
-import csv
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from dotenv import load_dotenv
-import base64
-from typing import Optional
-from solders.transaction import VersionedTransaction
-
-# Solana imports
-from solders.keypair import Keypair
-from solders.pubkey import Pubkey
-from solana.rpc.api import Client
-from solana.rpc.commitment import Confirmed
-from solana.rpc.types import TxOpts
-from spl.token.instructions import get_associated_token_address
-
-# Import Raydium client
-from raydium_aggregator import RaydiumAggregatorClient
-
-# Setup
-load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Environment variables - MATCHING YOUR .env FILE
-RPC_URL = os.getenv("RPC_URL")
-SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Changed from WALLET_PK
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Changed from TELEGRAM_USER_ID
-TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")  # Keep both for compatibility
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))  # Changed default to 0.03
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
-SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
-SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
-BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
-
-# Parse sell percentages from multipliers (using defaults)
-AUTO_SELL_PERCENT_2X = 50
-AUTO_SELL_PERCENT_5X = 25
-AUTO_SELL_PERCENT_10X = 25
-
-# NEW: Profit-based trading configuration
-TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))  # 2x
-TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 5.0))  # 5x
-TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 10.0))  # 10x
-SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 50))
-SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 25))
-SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 25))
-STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 50))  # Sell if down 50%
-TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))  # Sell if drops 20% from peak
-MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))  # 1 hour max hold
-PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))  # Check every 10s
-
-# Initialize clients
-rpc = Client(RPC_URL, commitment=Confirmed)
-raydium = RaydiumAggregatorClient(RPC_URL)
-
-# Load wallet - Handle array format [1,2,3,...] from your .env
-import ast
-try:
-    # If it's an array string like [1,2,3,...]
-    if SOLANA_PRIVATE_KEY and SOLANA_PRIVATE_KEY.startswith("["):
-        private_key_array = ast.literal_eval(SOLANA_PRIVATE_KEY)
-        keypair = Keypair.from_seed(bytes(private_key_array[:32]))
-    else:
-        # If it's a base58 string
-        keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
-except Exception as e:
-    raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
-
-wallet_pubkey = str(keypair.pubkey())
-
-# Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID for backwards compatibility
-if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
-    TELEGRAM_CHAT_ID = TELEGRAM_USER_ID
-
-# Global state
-OPEN_POSITIONS = {}
-BROKEN_TOKENS = set()
-BOT_RUNNING = True
-BLACKLIST_FILE = "blacklist.json"
-TRADES_CSV_FILE = "trades.csv"
-
-# Add blacklisted tokens from env
-BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
-
-# Stats tracking
-daily_stats = {
-    "tokens_scanned": 0,
-    "snipes_attempted": 0,
-    "snipes_succeeded": 0,
-    "sells_executed": 0,
-    "profit_sol": 0.0,
-    "skip
+        logging.error(f"Timer-based auto-sell error for {mint}: {e}")
