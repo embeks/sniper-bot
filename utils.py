@@ -632,80 +632,110 @@ async def sell_token(mint: str, percent: float = 100.0):
         return False
 
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price in USD from Jupiter Price API - ELITE VERSION with DNS fixes"""
+    """Get current token price in USD - ELITE VERSION for live price discovery"""
     try:
-        # List of API endpoints to try (with both hostnames and direct IPs)
+        # Try multiple endpoints with different approaches
         endpoints = [
-            "https://price.jup.ag/v4/price",
-            "https://api.jup.ag/price/v2",
-            "https://quote-api.jup.ag/v6/price",  # Quote API might work better
+            ("https://price.jup.ag/v4/price", "jupiter_v4"),
+            ("https://api.jup.ag/price/v2", "jupiter_v2"),
+            ("https://quote-api.jup.ag/v6/price", "jupiter_quote"),
         ]
         
-        for endpoint in endpoints:
+        for endpoint, source in endpoints:
             try:
-                # Configure client with better DNS and timeout settings
+                # Use longer timeout and retry logic for DNS issues
                 async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(15.0, connect=10.0),
+                    timeout=httpx.Timeout(20.0, connect=15.0),
                     follow_redirects=True,
-                    verify=False  # Skip SSL verification if needed
+                    verify=False,
+                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
                 ) as client:
                     
-                    # Build the request
-                    if "v2" in endpoint:
-                        url = f"{endpoint}?ids={mint}"
-                        response = await client.get(url)
-                    else:
-                        params = {"ids": mint}
-                        response = await client.get(endpoint, params=params)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        
-                        # Handle different response formats
-                        price = None
-                        
-                        # Standard format: {"data": {"mint": {"price": X}}}
-                        if "data" in data and mint in data["data"]:
-                            price_info = data["data"][mint]
-                            if isinstance(price_info, dict):
-                                price = float(price_info.get("price", 0))
+                    # Add retry logic for DNS failures
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            if "v2" in endpoint:
+                                url = f"{endpoint}?ids={mint}"
+                                response = await client.get(url)
                             else:
-                                price = float(price_info) if price_info else 0
-                        
-                        # Alternative format: {"mint": {"price": X}}
-                        elif mint in data:
-                            price_info = data[mint]
-                            if isinstance(price_info, dict):
-                                price = float(price_info.get("price", 0))
+                                params = {"ids": mint}
+                                response = await client.get(endpoint, params=params)
+                            
+                            if response.status_code == 200:
+                                data = response.json()
+                                
+                                # Handle different response formats
+                                price = None
+                                
+                                if "data" in data and mint in data["data"]:
+                                    price_info = data["data"][mint]
+                                    if isinstance(price_info, dict):
+                                        price = float(price_info.get("price", 0))
+                                    else:
+                                        price = float(price_info) if price_info else 0
+                                
+                                elif mint in data:
+                                    price_info = data[mint]
+                                    if isinstance(price_info, dict):
+                                        price = float(price_info.get("price", 0))
+                                    else:
+                                        price = float(price_info) if price_info else 0
+                                
+                                if price and price > 0:
+                                    logging.info(f"[Price] LIVE: {mint[:8]}... = ${price:.8f} (from {source})")
+                                    return price
+                            
+                            break  # Success, exit retry loop
+                            
+                        except httpx.ConnectError as e:
+                            if attempt < max_retries - 1:
+                                logging.debug(f"[Price] Retry {attempt + 1}/{max_retries} for {source}")
+                                await asyncio.sleep(1)  # Wait before retry
                             else:
-                                price = float(price_info) if price_info else 0
-                        
-                        if price and price > 0:
-                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (from {endpoint.split('/')[2]})")
-                            return price
+                                raise
                     
-                    logging.debug(f"[Price] {endpoint.split('/')[2]} returned status {response.status_code}")
-                    
-            except httpx.DNSError as dns_err:
-                logging.warning(f"[Price] DNS error for {endpoint}: {dns_err}")
-                continue
             except httpx.ConnectError as conn_err:
-                logging.warning(f"[Price] Connection error for {endpoint}: {conn_err}")
+                error_msg = str(conn_err)
+                if "No address associated with hostname" in error_msg:
+                    logging.warning(f"[Price] DNS issue with {source}, trying next...")
+                else:
+                    logging.warning(f"[Price] Connection error with {source}")
                 continue
             except httpx.TimeoutException:
-                logging.warning(f"[Price] Timeout for {endpoint}")
+                logging.warning(f"[Price] Timeout with {source}")
                 continue
             except Exception as e:
-                logging.debug(f"[Price] Error with {endpoint}: {e}")
+                logging.debug(f"[Price] Error with {source}: {e}")
                 continue
         
-        # Fallback: Try using Birdeye API if configured
+        # Try DexScreener as alternative (often more reliable for new tokens)
+        try:
+            logging.debug(f"[Price] Trying DexScreener for {mint[:8]}")
+            dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            
+            async with httpx.AsyncClient(timeout=15, verify=False) as client:
+                response = await client.get(dex_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "pairs" in data and len(data["pairs"]) > 0:
+                        # Get the pair with highest liquidity
+                        pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
+                        if pairs[0].get("priceUsd"):
+                            price = float(pairs[0]["priceUsd"])
+                            if price > 0:
+                                logging.info(f"[Price] LIVE: {mint[:8]}... = ${price:.8f} (from DexScreener)")
+                                return price
+        except Exception as e:
+            logging.debug(f"[Price] DexScreener error: {e}")
+        
+        # Try Birdeye if configured
         if BIRDEYE_API_KEY:
             try:
                 logging.debug(f"[Price] Trying Birdeye for {mint[:8]}")
                 url = f"https://public-api.birdeye.so/defi/price?address={mint}"
                 
-                async with httpx.AsyncClient(timeout=10) as client:
+                async with httpx.AsyncClient(timeout=15, verify=False) as client:
                     headers = {"X-API-KEY": BIRDEYE_API_KEY}
                     response = await client.get(url, headers=headers)
                     
@@ -714,31 +744,50 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         if "data" in data and "value" in data["data"]:
                             price = float(data["data"]["value"])
                             if price > 0:
-                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (from Birdeye)")
+                                logging.info(f"[Price] LIVE: {mint[:8]}... = ${price:.8f} (from Birdeye)")
                                 return price
-            except Exception as e:
-                logging.debug(f"[Price] Birdeye error: {e}")
+        except Exception as e:
+            logging.debug(f"[Price] Birdeye error: {e}")
         
-        # Last resort: Known token prices
-        known_prices = {
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 1.0,      # USDC
-            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 1.0,      # USDT
-            "So11111111111111111111111111111111111111112": 150.0,     # SOL
-            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr": 0.0019,  # POPCAT (approximate)
-        }
+        # Calculate price from pool ratio as last resort
+        try:
+            logging.debug(f"[Price] Attempting to calculate price from pool for {mint[:8]}")
+            
+            # Get a quote for 1 SOL worth to derive price
+            sol_price = 150.0  # Current SOL price (you could fetch this dynamically)
+            test_amount = int(0.001 * 1e9)  # 0.001 SOL
+            
+            quote_url = f"{JUPITER_BASE_URL}/v6/quote"
+            params = {
+                "inputMint": "So11111111111111111111111111111111111111112",
+                "outputMint": mint,
+                "amount": str(test_amount),
+                "slippageBps": "100"
+            }
+            
+            async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                response = await client.get(quote_url, params=params)
+                if response.status_code == 200:
+                    quote = response.json()
+                    if "outAmount" in quote:
+                        out_amount = float(quote["outAmount"])
+                        # Calculate price: (SOL amount * SOL price) / token amount
+                        if out_amount > 0:
+                            # Assuming token has 9 decimals (adjust if needed)
+                            token_decimals = 9
+                            tokens_received = out_amount / (10 ** token_decimals)
+                            sol_spent = test_amount / 1e9
+                            price = (sol_spent * sol_price) / tokens_received
+                            logging.info(f"[Price] CALCULATED: {mint[:8]}... = ${price:.8f} (from pool ratio)")
+                            return price
+        except Exception as e:
+            logging.debug(f"[Price] Pool calculation error: {e}")
         
-        if mint in known_prices:
-            logging.info(f"[Price] Using fallback price for {mint[:8]}: ${known_prices[mint]}")
-            return known_prices[mint]
-        
-        # For unknown tokens, estimate based on pool ratios if possible
-        logging.warning(f"[Price] Could not get price for {mint[:8]} from any source")
+        logging.warning(f"[Price] Could not get live price for {mint[:8]} from any source")
         return None
         
     except Exception as e:
         logging.error(f"[Price] Unexpected error for {mint}: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
         return None
 
 async def wait_and_auto_sell(mint: str):
