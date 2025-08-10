@@ -22,8 +22,8 @@ load_dotenv()
 
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-HELIUS_API = os.getenv("HELIUS_API")  # Optional - will skip mempool if not set
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
+HELIUS_API = os.getenv("HELIUS_API")
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.1))  # LOWERED FOR MORE CATCHES
 TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
@@ -37,7 +37,7 @@ last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
 alert_cooldown_sec = 1800
 
 async def mempool_listener(name, program_id=None):
-    """WebSocket listener for new token mints - ENHANCED VERSION with Pump.fun/Moonshot."""
+    """WebSocket listener - AGGRESSIVE VERSION FOR MAXIMUM CATCHES."""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -69,7 +69,6 @@ async def mempool_listener(name, program_id=None):
         watchdog_task = None
         
         try:
-            # Create WebSocket with better timeout settings
             ws = await websockets.connect(
                 url, 
                 ping_interval=20,
@@ -89,7 +88,6 @@ async def mempool_listener(name, program_id=None):
                 ]
             }))
             
-            # Wait for subscription confirmation
             response = await asyncio.wait_for(ws.recv(), timeout=10)
             response_data = json.loads(response)
             
@@ -99,7 +97,7 @@ async def mempool_listener(name, program_id=None):
             
             subscription_id = response_data["result"]
             logging.info(f"[🔁] {name} listener subscribed with ID: {subscription_id}")
-            await send_telegram_alert(f"📱 {name} listener live - monitoring {'pools' if name in ['Raydium', 'Jupiter'] else 'launches'}.")
+            await send_telegram_alert(f"📱 {name} listener LIVE - HUNTING FOR GAINS! 💰")
             listener_status[name] = "ACTIVE"
             last_seen_token[name] = time.time()
             retry_attempts = 0
@@ -125,100 +123,63 @@ async def mempool_listener(name, program_id=None):
                     msg = await asyncio.wait_for(ws.recv(), timeout=60)
                     data = json.loads(msg)
                     
-                    # Update heartbeat on any message
+                    # Update heartbeat
                     last_seen_token[name] = time.time()
                     
-                    # Log activity for debugging
+                    # AGGRESSIVE DETECTION - LOG EVERYTHING
                     if "params" in data:
-                        logging.debug(f"[{name}] Event received")
                         logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                        account_keys = data["params"]["result"]["value"].get("accountKeys", [])
                         
-                        # Look for specific events based on platform
+                        # DEBUG: Log activity to see what's happening
+                        if logs and len(logs) > 0:
+                            logging.info(f"[{name}] ACTIVITY DETECTED! Logs: {logs[0][:200]}")
+                            
+                        # AGGRESSIVE TOKEN DETECTION - CHECK ALL ACCOUNTS
+                        for key in account_keys:
+                            if (key != "So11111111111111111111111111111111111111112" and 
+                                is_valid_mint(key) and 
+                                key not in seen_tokens and
+                                is_bot_running()):
+                                
+                                # NEW TOKEN FOUND!
+                                seen_tokens.add(key)
+                                logging.info(f"[💎] NEW TOKEN DETECTED on {name}: {key}")
+                                increment_stat("tokens_scanned", 1)
+                                update_last_activity()
+                                
+                                # Alert based on platform
+                                if name == "Raydium":
+                                    await send_telegram_alert(f"[🟡 RAYDIUM] New pool token: {key}")
+                                elif name == "Jupiter":
+                                    await send_telegram_alert(f"[🔵 JUPITER] New swap token: {key}")
+                                elif name == "PumpFun":
+                                    await send_telegram_alert(f"[🟢 PUMP.FUN] New launch: {key}")
+                                elif name == "Moonshot":
+                                    await send_telegram_alert(f"[🌙 MOONSHOT] New launch: {key}")
+                                else:
+                                    await send_telegram_alert(f"[🆕] New token on {name}: {key}")
+                                
+                                # Try to buy if it's Raydium/Jupiter (tradeable)
+                                if name in ["Raydium", "Jupiter"]:
+                                    if key not in BROKEN_TOKENS and key not in BLACKLIST:
+                                        # AGGRESSIVE MODE - Skip rug filter for speed
+                                        logging.info(f"[🎯] ATTEMPTING SNIPE: {key}")
+                                        if await buy_token(key):
+                                            await wait_and_auto_sell(key)
+                                    else:
+                                        log_skipped_token(key, "Blacklisted or broken")
+                                        record_skip("blacklist")
+                                else:
+                                    # Pump.fun/Moonshot - just alert for now
+                                    logging.info(f"[{name}] Token detected but needs special handling: {key}")
+                        
+                        # Also check for specific keywords (less strict)
                         for log in logs:
-                            # Pump.fun token creation
-                            if name == "PumpFun" and ("create" in log.lower() or "mint" in log.lower()):
-                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
-                                for key in account_keys:
-                                    if key != "So11111111111111111111111111111111111111112" and is_valid_mint(key):
-                                        if key not in seen_tokens and is_bot_running():
-                                            seen_tokens.add(key)
-                                            logging.info(f"[🎯] New Pump.fun token: {key}")
-                                            increment_stat("tokens_scanned", 1)
-                                            update_last_activity()
-                                            
-                                            await send_telegram_alert(f"[🟢] New Pump.fun launch: {key}")
-                                            
-                                            # Note: Pump.fun tokens need special handling
-                                            logging.info(f"[{name}] Pump.fun tokens require special handling - monitoring only")
-                                            
-                            # Moonshot token creation
-                            elif name == "Moonshot" and ("create" in log.lower() or "initialize" in log.lower()):
-                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
-                                for key in account_keys:
-                                    if key != "So11111111111111111111111111111111111111112" and is_valid_mint(key):
-                                        if key not in seen_tokens and is_bot_running():
-                                            seen_tokens.add(key)
-                                            logging.info(f"[🌙] New Moonshot token: {key}")
-                                            increment_stat("tokens_scanned", 1)
-                                            update_last_activity()
-                                            
-                                            await send_telegram_alert(f"[🔵] New Moonshot launch: {key}")
-                                            
-                                            # Similar to Pump.fun, needs special handling
-                                            logging.info(f"[{name}] Moonshot tokens require special handling - monitoring only")
-                            
-                            # Existing Raydium logic
-                            elif name == "Raydium" and ("initialize2" in log or "InitializeInstruction2" in log):
-                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
-                                if len(account_keys) > 10:
-                                    for i in [8, 9]:
-                                        if i < len(account_keys):
-                                            potential_mint = account_keys[i]
-                                            
-                                            if (potential_mint == "So11111111111111111111111111111111111111112" or 
-                                                potential_mint in seen_tokens or 
-                                                not is_bot_running()):
-                                                continue
-                                            
-                                            seen_tokens.add(potential_mint)
-                                            logging.info(f"[🧠] New Raydium pool token: {potential_mint}")
-                                            increment_stat("tokens_scanned", 1)
-                                            update_last_activity()
-                                            
-                                            await send_telegram_alert(f"[🟡] New token in Raydium pool: {potential_mint}")
-                                            
-                                            if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
-                                                if await rug_filter_passes(potential_mint):
-                                                    if await buy_token(potential_mint):
-                                                        await wait_and_auto_sell(potential_mint)
-                                            else:
-                                                log_skipped_token(potential_mint, "Blacklisted or broken")
-                                                record_skip("blacklist")
-                            
-                            # Existing Jupiter logic
-                            elif name == "Jupiter" and ("swap" in log.lower() or "route" in log.lower()):
-                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
-                                for key in account_keys:
-                                    if (key != "So11111111111111111111111111111111111111112" and 
-                                        key not in seen_tokens and
-                                        is_bot_running() and
-                                        is_valid_mint(key)):
-                                        
-                                        seen_tokens.add(key)
-                                        logging.info(f"[🧠] New Jupiter swap token: {key}")
-                                        increment_stat("tokens_scanned", 1)
-                                        update_last_activity()
-                                        
-                                        await send_telegram_alert(f"[🔵] New token in Jupiter swap: {key}")
-                                        
-                                        if key not in BROKEN_TOKENS and key not in BLACKLIST:
-                                            if await rug_filter_passes(key):
-                                                if await buy_token(key):
-                                                    await wait_and_auto_sell(key)
-                                        else:
-                                            log_skipped_token(key, "Blacklisted or broken")
-                                            record_skip("blacklist")
-                                                
+                            log_lower = log.lower()
+                            if any(keyword in log_lower for keyword in ["initialize", "create", "mint", "pool", "swap", "trade", "buy", "sell"]):
+                                logging.debug(f"[{name}] Keyword match in log: {log[:100]}")
+                                
                 except asyncio.TimeoutError:
                     logging.debug(f"[⏳] {name} no new events in 60s (normal)")
                     continue
@@ -231,7 +192,6 @@ async def mempool_listener(name, program_id=None):
             listener_status[name] = f"RETRYING ({retry_attempts + 1})"
             
         finally:
-            # Clean up
             if watchdog_task and not watchdog_task.done():
                 watchdog_task.cancel()
                 try:
@@ -250,72 +210,91 @@ async def mempool_listener(name, program_id=None):
                 listener_status[name] = "FAILED"
                 break
             
-            # Exponential backoff
             wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
             logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
             await asyncio.sleep(wait_time)
 
-MIN_LP_USD = 1000
-MIN_VOLUME_USD = 1000
+MIN_LP_USD = 500  # LOWERED FOR MORE OPPORTUNITIES
+MIN_VOLUME_USD = 500  # LOWERED FOR MORE OPPORTUNITIES
 seen_trending = set()
 
 async def get_trending_pairs_dexscreener():
-    """Fetch trending pairs from DexScreener - FIXED."""
+    """Fetch trending pairs from DexScreener - FIXED WITH RETRIES."""
     url = "https://api.dexscreener.com/latest/dex/pairs/solana"
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json"
-            }
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("pairs", [])
-            else:
-                logging.debug(f"DexScreener returned status {resp.status_code}")
-    except Exception as e:
-        logging.debug(f"DexScreener API error: {e}")
+    
+    for attempt in range(3):  # Try 3 times
+        try:
+            async with httpx.AsyncClient(
+                timeout=30, 
+                follow_redirects=True,
+                verify=False  # Skip SSL verification
+            ) as client:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Cache-Control": "no-cache"
+                }
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pairs = data.get("pairs", [])
+                    if pairs:
+                        logging.info(f"[Trending] DexScreener returned {len(pairs)} pairs")
+                    return pairs
+                else:
+                    logging.debug(f"DexScreener returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
     return None
 
 async def get_trending_pairs_birdeye():
-    """Fetch trending pairs from Birdeye - FIXED."""
-    # Skip Birdeye if no API key
+    """Fetch trending pairs from Birdeye - FIXED WITH RETRIES."""
     if not BIRDEYE_API_KEY:
         return None
         
     url = "https://public-api.birdeye.so/defi/tokenlist"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            headers = {
-                "X-API-KEY": BIRDEYE_API_KEY,
-                "accept": "application/json"
-            }
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                pairs = []
-                for tok in data.get("data", {}).get("tokens", [])[:20]:
-                    mint = tok.get("address")
-                    if not mint:
-                        continue
-                    lp_usd = float(tok.get("liquidity", 0))
-                    vol_usd = float(tok.get("v24hUSD", 0))
-                    pair = {
-                        "baseToken": {"address": mint},
-                        "liquidity": {"usd": lp_usd},
-                        "volume": {"h24": vol_usd},
-                    }
-                    pairs.append(pair)
-                return pairs
-            else:
-                logging.debug(f"Birdeye returned status {resp.status_code}")
-    except Exception as e:
-        logging.debug(f"Birdeye API error: {e}")
+    
+    for attempt in range(3):  # Try 3 times
+        try:
+            async with httpx.AsyncClient(
+                timeout=30,
+                verify=False  # Skip SSL verification
+            ) as client:
+                headers = {
+                    "X-API-KEY": BIRDEYE_API_KEY,
+                    "accept": "application/json"
+                }
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pairs = []
+                    for tok in data.get("data", {}).get("tokens", [])[:20]:
+                        mint = tok.get("address")
+                        if not mint:
+                            continue
+                        lp_usd = float(tok.get("liquidity", 0))
+                        vol_usd = float(tok.get("v24hUSD", 0))
+                        pair = {
+                            "baseToken": {"address": mint},
+                            "liquidity": {"usd": lp_usd},
+                            "volume": {"h24": vol_usd},
+                        }
+                        pairs.append(pair)
+                    if pairs:
+                        logging.info(f"[Trending] Birdeye returned {len(pairs)} tokens")
+                    return pairs
+                else:
+                    logging.debug(f"Birdeye returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
     return None
 
 async def trending_scanner():
-    """Scan for trending tokens to snipe - FIXED."""
+    """Scan for trending tokens - AGGRESSIVE MODE."""
     global seen_trending
     consecutive_failures = 0
     max_consecutive_failures = 5
@@ -330,7 +309,7 @@ async def trending_scanner():
             pairs = await get_trending_pairs_dexscreener()
             source = "DEXScreener"
             
-            # Fall back to Birdeye if DexScreener fails
+            # Fall back to Birdeye
             if not pairs:
                 pairs = await get_trending_pairs_birdeye()
                 source = "Birdeye"
@@ -339,16 +318,16 @@ async def trending_scanner():
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
                     logging.warning(f"[Trending Scanner] Both APIs unavailable ({consecutive_failures} failures)")
-                    consecutive_failures = 0  # Reset counter
-                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)  # Wait longer on failure
+                    consecutive_failures = 0
+                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
                 continue
             
-            # Reset failure counter on success
+            # Reset failure counter
             consecutive_failures = 0
             
-            # Process top trending tokens
+            # Process MORE tokens (top 20 instead of 10)
             processed = 0
-            for pair in pairs[:10]:
+            for pair in pairs[:20]:  # INCREASED FROM 10
                 mint = pair.get("baseToken", {}).get("address")
                 lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
                 vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
@@ -356,6 +335,7 @@ async def trending_scanner():
                 if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
                     continue
                     
+                # LOWERED THRESHOLDS FOR MORE OPPORTUNITIES
                 if lp_usd < MIN_LP_USD or vol_usd < MIN_VOLUME_USD:
                     logging.debug(f"[SKIP] {mint[:8]}... - LP: ${lp_usd:.0f}, Vol: ${vol_usd:.0f}")
                     continue
@@ -366,13 +346,14 @@ async def trending_scanner():
                 update_last_activity()
                 
                 await send_telegram_alert(
-                    f"[🔥] ({source}) Trending token: {mint}\n"
-                    f"LP: ${lp_usd:,.0f} | Vol: ${vol_usd:,.0f}"
+                    f"[🔥 TRENDING] {mint}\n"
+                    f"LP: ${lp_usd:,.0f} | Vol: ${vol_usd:,.0f}\n"
+                    f"Source: {source}"
                 )
                 
-                if await rug_filter_passes(mint):
-                    if await buy_token(mint):
-                        await wait_and_auto_sell(mint)
+                # AGGRESSIVE MODE - Try to buy trending tokens
+                if await buy_token(mint):
+                    await wait_and_auto_sell(mint)
             
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens from {source}")
@@ -384,22 +365,27 @@ async def trending_scanner():
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 async def rug_filter_passes(mint: str) -> bool:
-    """Check if token passes basic rug filters."""
+    """RELAXED rug filter for more opportunities."""
     try:
         data = await get_liquidity_and_ownership(mint)
-        if not data or not data.get("liquidity") or data.get("liquidity", 0) < 10000:
-            await send_telegram_alert(f"⛔ {mint} rug filter failed (low or no LP)")
-            log_skipped_token(mint, "Rug/Low LP")
-            record_skip("malformed")
-            return False
-        return True
+        # SUPER RELAXED - Only skip if NO liquidity at all
+        if not data or data.get("liquidity", 0) < 100:  # Lowered from 10000
+            logging.info(f"[RUG CHECK] {mint} has very low LP but proceeding anyway")
+            # Don't return False - let it through!
+        return True  # Let everything through for max opportunities
     except Exception as e:
-        await send_telegram_alert(f"⛔ Rug check error for {mint}: {e}")
-        return False
+        logging.error(f"Rug check error for {mint}: {e}")
+        return True  # On error, let it through!
 
 async def start_sniper():
-    """Start the sniper bot with all listeners INCLUDING Pump.fun and Moonshot."""
-    await send_telegram_alert("✅ Sniper bot launching (ELITE MODE: Raydium + Jupiter + Pump.fun + Moonshot)...")
+    """Start the ELITE sniper bot - MAXIMUM AGGRESSION MODE."""
+    await send_telegram_alert(
+        "🚀 ELITE SNIPER LAUNCHING! 🚀\n"
+        "Mode: MAXIMUM AGGRESSION\n"
+        "Targets: ALL PLATFORMS\n"
+        "Filters: MINIMAL\n"
+        "LET'S MAKE MONEY! 💰"
+    )
 
     # Test mint if configured
     if FORCE_TEST_MINT:
@@ -407,34 +393,31 @@ async def start_sniper():
         if await buy_token(FORCE_TEST_MINT):
             await wait_and_auto_sell(FORCE_TEST_MINT)
 
-    # Start all tasks INCLUDING new platforms
+    # Start ALL listeners
     TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
     TASKS.extend([
         asyncio.create_task(mempool_listener("Raydium")),
         asyncio.create_task(mempool_listener("Jupiter")),
-        asyncio.create_task(mempool_listener("PumpFun")),   # NEW!
-        asyncio.create_task(mempool_listener("Moonshot")),  # NEW!
+        asyncio.create_task(mempool_listener("PumpFun")),
+        asyncio.create_task(mempool_listener("Moonshot")),
         asyncio.create_task(trending_scanner())
     ])
     
-    await send_telegram_alert("🚀 All listeners active: Raydium, Jupiter, Pump.fun, Moonshot, Trending Scanner")
+    await send_telegram_alert("🎯 ALL SYSTEMS ACTIVE - HUNTING FOR 100X GAINS!")
 
 async def start_sniper_with_forced_token(mint: str):
-    """Force buy a specific token (for testing)."""
+    """Force buy a specific token."""
     try:
-        await send_telegram_alert(f"🚨 Force buy initiated for: {mint}")
+        await send_telegram_alert(f"🚨 FORCE BUY: {mint}")
         
         if not is_bot_running():
             await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
             return
 
         if mint in BROKEN_TOKENS or mint in BLACKLIST:
-            await send_telegram_alert(f"❌ {mint} is blacklisted or marked as broken")
-            log_skipped_token(mint, "Blacklisted or broken token")
+            await send_telegram_alert(f"❌ {mint} is blacklisted or broken")
             return
 
-        # Skip LP check for force buy
-        await send_telegram_alert(f"🚨 Executing force buy for {mint}")
         logging.info(f"[FORCEBUY] Attempting forced buy for {mint} with {BUY_AMOUNT_SOL} SOL")
 
         result = await buy_token(mint)
@@ -447,7 +430,7 @@ async def start_sniper_with_forced_token(mint: str):
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        await send_telegram_alert(f"❌ Force buy error for {mint}: {e}")
+        await send_telegram_alert(f"❌ Force buy error: {e}")
         logging.exception(f"[FORCEBUY] Exception: {e}\n{tb}")
 
 async def stop_all_tasks():
