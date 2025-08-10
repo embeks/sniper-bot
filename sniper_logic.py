@@ -23,21 +23,21 @@ load_dotenv()
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")  # Optional - will skip mempool if not set
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))  # Changed default to match your .env
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
 TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 30))
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")  # Added for Birdeye
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 seen_tokens = set()
 BLACKLIST = set()
 TASKS = []
 
-last_alert_sent = {"Raydium": 0, "Jupiter": 0}
+last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
 alert_cooldown_sec = 1800
 
 async def mempool_listener(name, program_id=None):
-    """WebSocket listener for new token mints - FIXED VERSION."""
+    """WebSocket listener for new token mints - ENHANCED VERSION with Pump.fun/Moonshot."""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -56,6 +56,10 @@ async def mempool_listener(name, program_id=None):
             program_id = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"  # Raydium V4
         elif name == "Jupiter":
             program_id = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"  # Jupiter V6
+        elif name == "PumpFun":
+            program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"  # Pump.fun
+        elif name == "Moonshot":
+            program_id = "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG"  # Moonshot
         else:
             logging.error(f"Unknown listener: {name}")
             return
@@ -95,7 +99,7 @@ async def mempool_listener(name, program_id=None):
             
             subscription_id = response_data["result"]
             logging.info(f"[🔁] {name} listener subscribed with ID: {subscription_id}")
-            await send_telegram_alert(f"📱 {name} listener live - monitoring pools.")
+            await send_telegram_alert(f"📱 {name} listener live - monitoring {'pools' if name in ['Raydium', 'Jupiter'] else 'launches'}.")
             listener_status[name] = "ACTIVE"
             last_seen_token[name] = time.time()
             retry_attempts = 0
@@ -124,13 +128,47 @@ async def mempool_listener(name, program_id=None):
                     # Update heartbeat on any message
                     last_seen_token[name] = time.time()
                     
+                    # Log activity for debugging
                     if "params" in data:
+                        logging.debug(f"[{name}] Event received")
                         logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
                         
-                        # Look for pool initialization or swap events
+                        # Look for specific events based on platform
                         for log in logs:
-                            if name == "Raydium" and ("initialize2" in log or "InitializeInstruction2" in log):
-                                # Extract account keys for Raydium
+                            # Pump.fun token creation
+                            if name == "PumpFun" and ("create" in log.lower() or "mint" in log.lower()):
+                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
+                                for key in account_keys:
+                                    if key != "So11111111111111111111111111111111111111112" and is_valid_mint(key):
+                                        if key not in seen_tokens and is_bot_running():
+                                            seen_tokens.add(key)
+                                            logging.info(f"[🎯] New Pump.fun token: {key}")
+                                            increment_stat("tokens_scanned", 1)
+                                            update_last_activity()
+                                            
+                                            await send_telegram_alert(f"[🟢] New Pump.fun launch: {key}")
+                                            
+                                            # Note: Pump.fun tokens need special handling
+                                            logging.info(f"[{name}] Pump.fun tokens require special handling - monitoring only")
+                                            
+                            # Moonshot token creation
+                            elif name == "Moonshot" and ("create" in log.lower() or "initialize" in log.lower()):
+                                account_keys = data["params"]["result"]["value"].get("accountKeys", [])
+                                for key in account_keys:
+                                    if key != "So11111111111111111111111111111111111111112" and is_valid_mint(key):
+                                        if key not in seen_tokens and is_bot_running():
+                                            seen_tokens.add(key)
+                                            logging.info(f"[🌙] New Moonshot token: {key}")
+                                            increment_stat("tokens_scanned", 1)
+                                            update_last_activity()
+                                            
+                                            await send_telegram_alert(f"[🔵] New Moonshot launch: {key}")
+                                            
+                                            # Similar to Pump.fun, needs special handling
+                                            logging.info(f"[{name}] Moonshot tokens require special handling - monitoring only")
+                            
+                            # Existing Raydium logic
+                            elif name == "Raydium" and ("initialize2" in log or "InitializeInstruction2" in log):
                                 account_keys = data["params"]["result"]["value"].get("accountKeys", [])
                                 if len(account_keys) > 10:
                                     for i in [8, 9]:
@@ -149,7 +187,6 @@ async def mempool_listener(name, program_id=None):
                                             
                                             await send_telegram_alert(f"[🟡] New token in Raydium pool: {potential_mint}")
                                             
-                                            # Check token validity and buy
                                             if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                                 if await rug_filter_passes(potential_mint):
                                                     if await buy_token(potential_mint):
@@ -158,8 +195,8 @@ async def mempool_listener(name, program_id=None):
                                                 log_skipped_token(potential_mint, "Blacklisted or broken")
                                                 record_skip("blacklist")
                             
+                            # Existing Jupiter logic
                             elif name == "Jupiter" and ("swap" in log.lower() or "route" in log.lower()):
-                                # Extract account keys for Jupiter
                                 account_keys = data["params"]["result"]["value"].get("accountKeys", [])
                                 for key in account_keys:
                                     if (key != "So11111111111111111111111111111111111111112" and 
@@ -361,8 +398,8 @@ async def rug_filter_passes(mint: str) -> bool:
         return False
 
 async def start_sniper():
-    """Start the sniper bot with all listeners."""
-    await send_telegram_alert("✅ Sniper bot launching (dual-mode: Raydium + Jupiter)...")
+    """Start the sniper bot with all listeners INCLUDING Pump.fun and Moonshot."""
+    await send_telegram_alert("✅ Sniper bot launching (ELITE MODE: Raydium + Jupiter + Pump.fun + Moonshot)...")
 
     # Test mint if configured
     if FORCE_TEST_MINT:
@@ -370,15 +407,17 @@ async def start_sniper():
         if await buy_token(FORCE_TEST_MINT):
             await wait_and_auto_sell(FORCE_TEST_MINT)
 
-    # Start all tasks
+    # Start all tasks INCLUDING new platforms
     TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
     TASKS.extend([
         asyncio.create_task(mempool_listener("Raydium")),
         asyncio.create_task(mempool_listener("Jupiter")),
+        asyncio.create_task(mempool_listener("PumpFun")),   # NEW!
+        asyncio.create_task(mempool_listener("Moonshot")),  # NEW!
         asyncio.create_task(trending_scanner())
     ])
     
-    await send_telegram_alert("🚀 All listeners active: Raydium, Jupiter, Trending Scanner")
+    await send_telegram_alert("🚀 All listeners active: Raydium, Jupiter, Pump.fun, Moonshot, Trending Scanner")
 
 async def start_sniper_with_forced_token(mint: str):
     """Force buy a specific token (for testing)."""
