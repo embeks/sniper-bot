@@ -36,8 +36,20 @@ TASKS = []
 last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
 alert_cooldown_sec = 1800
 
+# SYSTEM PROGRAMS TO IGNORE
+SYSTEM_PROGRAMS = [
+    "11111111111111111111111111111111",  # System Program
+    "ComputeBudget111111111111111111111111111111",  # Compute Budget
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",  # Token Program
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",  # Associated Token
+    "SysvarRent111111111111111111111111111111111",  # Rent
+    "SysvarC1ock11111111111111111111111111111111",  # Clock
+    "Vote111111111111111111111111111111111111111",  # Vote Program
+    "Stake11111111111111111111111111111111111111",  # Stake Program
+]
+
 async def mempool_listener(name, program_id=None):
-    """WebSocket listener - AGGRESSIVE VERSION FOR MAXIMUM CATCHES."""
+    """WebSocket listener - SMART VERSION WITH BETTER FILTERING."""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -126,59 +138,94 @@ async def mempool_listener(name, program_id=None):
                     # Update heartbeat
                     last_seen_token[name] = time.time()
                     
-                    # AGGRESSIVE DETECTION - LOG EVERYTHING
+                    # SMART DETECTION WITH FILTERING
                     if "params" in data:
                         logs = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
                         account_keys = data["params"]["result"]["value"].get("accountKeys", [])
                         
-                        # DEBUG: Log activity to see what's happening
-                        if logs and len(logs) > 0:
-                            logging.info(f"[{name}] ACTIVITY DETECTED! Logs: {logs[0][:200]}")
-                            
-                        # AGGRESSIVE TOKEN DETECTION - CHECK ALL ACCOUNTS
-                        for key in account_keys:
-                            if (key != "So11111111111111111111111111111111111111112" and 
-                                is_valid_mint(key) and 
-                                key not in seen_tokens and
-                                is_bot_running()):
-                                
-                                # NEW TOKEN FOUND!
-                                seen_tokens.add(key)
-                                logging.info(f"[💎] NEW TOKEN DETECTED on {name}: {key}")
-                                increment_stat("tokens_scanned", 1)
-                                update_last_activity()
-                                
-                                # Alert based on platform
-                                if name == "Raydium":
-                                    await send_telegram_alert(f"[🟡 RAYDIUM] New pool token: {key}")
-                                elif name == "Jupiter":
-                                    await send_telegram_alert(f"[🔵 JUPITER] New swap token: {key}")
-                                elif name == "PumpFun":
-                                    await send_telegram_alert(f"[🟢 PUMP.FUN] New launch: {key}")
-                                elif name == "Moonshot":
-                                    await send_telegram_alert(f"[🌙 MOONSHOT] New launch: {key}")
-                                else:
-                                    await send_telegram_alert(f"[🆕] New token on {name}: {key}")
-                                
-                                # Try to buy if it's Raydium/Jupiter (tradeable)
-                                if name in ["Raydium", "Jupiter"]:
-                                    if key not in BROKEN_TOKENS and key not in BLACKLIST:
-                                        # AGGRESSIVE MODE - Skip rug filter for speed
-                                        logging.info(f"[🎯] ATTEMPTING SNIPE: {key}")
-                                        if await buy_token(key):
-                                            await wait_and_auto_sell(key)
-                                    else:
-                                        log_skipped_token(key, "Blacklisted or broken")
-                                        record_skip("blacklist")
-                                else:
-                                    # Pump.fun/Moonshot - just alert for now
-                                    logging.info(f"[{name}] Token detected but needs special handling: {key}")
-                        
-                        # Also check for specific keywords (less strict)
+                        # Check for REAL token creation indicators in logs
+                        has_token_activity = False
                         for log in logs:
-                            log_lower = log.lower()
-                            if any(keyword in log_lower for keyword in ["initialize", "create", "mint", "pool", "swap", "trade", "buy", "sell"]):
-                                logging.debug(f"[{name}] Keyword match in log: {log[:100]}")
+                            if any(indicator in log for indicator in [
+                                "InitializeMint",
+                                "InitializeAccount",
+                                "MintTo",
+                                "initialize2",  # Raydium pool
+                                "InitializeInstruction2",  # Raydium
+                                "swap",  # Jupiter swap
+                                "create",  # Token creation
+                                "Mint",  # Minting activity
+                                "Pool",  # Pool creation
+                            ]):
+                                has_token_activity = True
+                                logging.info(f"[{name}] REAL TOKEN ACTIVITY FOUND: {log[:100]}")
+                                break
+                        
+                        # Only process if we found real token activity
+                        if has_token_activity:
+                            # DEBUG: Show activity (reduced logging)
+                            logging.debug(f"[{name}] Processing {len(account_keys)} accounts")
+                            
+                            # SMART TOKEN DETECTION - CHECK ACCOUNTS
+                            for key in account_keys:
+                                # Skip system programs
+                                if any(sys_prog in key for sys_prog in SYSTEM_PROGRAMS):
+                                    continue
+                                
+                                # Skip SOL
+                                if key == "So11111111111111111111111111111111111111112":
+                                    continue
+                                
+                                # Must be valid mint format
+                                if not is_valid_mint(key) or len(key) != 44:
+                                    continue
+                                
+                                # Skip if already seen
+                                if key in seen_tokens or not is_bot_running():
+                                    continue
+                                
+                                # Additional validation - try to parse as valid pubkey
+                                try:
+                                    mint_pubkey = Pubkey.from_string(key)
+                                    
+                                    # NEW TOKEN FOUND!
+                                    seen_tokens.add(key)
+                                    logging.info(f"[💎] NEW TOKEN DETECTED on {name}: {key}")
+                                    increment_stat("tokens_scanned", 1)
+                                    update_last_activity()
+                                    
+                                    # Alert based on platform
+                                    if name == "Raydium":
+                                        await send_telegram_alert(f"[🟡 RAYDIUM] New pool token: {key}")
+                                    elif name == "Jupiter":
+                                        await send_telegram_alert(f"[🔵 JUPITER] New swap token: {key}")
+                                    elif name == "PumpFun":
+                                        await send_telegram_alert(f"[🟢 PUMP.FUN] New launch: {key}")
+                                    elif name == "Moonshot":
+                                        await send_telegram_alert(f"[🌙 MOONSHOT] New launch: {key}")
+                                    else:
+                                        await send_telegram_alert(f"[🆕] New token on {name}: {key}")
+                                    
+                                    # Try to buy if it's Raydium/Jupiter (tradeable)
+                                    if name in ["Raydium", "Jupiter"]:
+                                        if key not in BROKEN_TOKENS and key not in BLACKLIST:
+                                            logging.info(f"[🎯] ATTEMPTING SNIPE: {key}")
+                                            if await buy_token(key):
+                                                await wait_and_auto_sell(key)
+                                        else:
+                                            log_skipped_token(key, "Blacklisted or broken")
+                                            record_skip("blacklist")
+                                    else:
+                                        # Pump.fun/Moonshot - just alert for now
+                                        logging.info(f"[{name}] Token detected but needs special handling: {key}")
+                                
+                                except Exception as e:
+                                    logging.debug(f"Invalid pubkey format: {key}")
+                                    continue
+                        else:
+                            # No real token activity, just debug log
+                            if logs and "ComputeBudget" not in str(logs):
+                                logging.debug(f"[{name}] Non-token activity detected")
                                 
                 except asyncio.TimeoutError:
                     logging.debug(f"[⏳] {name} no new events in 60s (normal)")
@@ -381,9 +428,9 @@ async def start_sniper():
     """Start the ELITE sniper bot - MAXIMUM AGGRESSION MODE."""
     await send_telegram_alert(
         "🚀 ELITE SNIPER LAUNCHING! 🚀\n"
-        "Mode: MAXIMUM AGGRESSION\n"
-        "Targets: ALL PLATFORMS\n"
-        "Filters: MINIMAL\n"
+        "Mode: SMART DETECTION\n"
+        "Targets: REAL TOKENS ONLY\n"
+        "Filters: OPTIMIZED\n"
         "LET'S MAKE MONEY! 💰"
     )
 
@@ -403,7 +450,7 @@ async def start_sniper():
         asyncio.create_task(trending_scanner())
     ])
     
-    await send_telegram_alert("🎯 ALL SYSTEMS ACTIVE - HUNTING FOR 100X GAINS!")
+    await send_telegram_alert("🎯 ALL SYSTEMS ACTIVE - SMART FILTERS ENGAGED!")
 
 async def start_sniper_with_forced_token(mint: str):
     """Force buy a specific token."""
