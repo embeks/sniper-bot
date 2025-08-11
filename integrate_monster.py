@@ -220,6 +220,63 @@ async def start_monster_sniper():
     await asyncio.gather(*tasks)
 
 # ============================================
+# CONFIGURATION HELPER
+# ============================================
+
+def setup_monster_config():
+    """
+    Add these to your .env file for monster features
+    """
+    config = """
+# ============================================
+# MONSTER BOT CONFIGURATION
+# Add these to your .env file
+# ============================================
+
+# AI Scoring
+MIN_AI_SCORE=0.6                # Minimum AI score to buy (0-1)
+AI_LIQUIDITY_WEIGHT=0.3         # Weight for liquidity in AI score
+AI_HOLDER_WEIGHT=0.2            # Weight for holder distribution
+AI_SOCIAL_WEIGHT=0.2            # Weight for social signals
+AI_PATTERN_WEIGHT=0.3          # Weight for pattern matching
+
+# MEV Protection (Jito)
+USE_JITO=true                   # Use Jito bundles for MEV protection
+JITO_URL=https://mainnet.block-engine.jito.wtf/api/v1
+JITO_TIP=0.001                  # SOL tip for priority (0.001 = $0.15)
+
+# Copy Trading
+ENABLE_COPY_TRADING=true        # Follow profitable wallets
+COPY_WALLET_1=9WzDXwBbmkg8ZTbNFMPiAaQ9xhqvK8GXhPYjfgMJ8a9
+COPY_WALLET_2=Cs5qShsPL85WtanR8G2XticV9Y7eQFpBCCVUwvjxLgpn
+COPY_SCALE_PERCENT=10           # Copy at 10% of whale's size
+
+# Social Scanning
+ENABLE_SOCIAL_SCAN=true         # Scan Telegram/Twitter
+TELEGRAM_CHANNEL_1=@alphagroup  # Replace with real channels
+TELEGRAM_CHANNEL_2=@gemcalls
+SOCIAL_MIN_MENTIONS=3           # Need 3 mentions to trigger buy
+
+# Arbitrage
+ENABLE_ARBITRAGE=true           # DEX arbitrage bot
+ARB_MIN_PROFIT=2.0             # Minimum 2% profit to execute
+ARB_MAX_POSITION=5.0           # Max 5 SOL per arbitrage
+
+# Auto-Scaling
+ENABLE_AUTO_COMPOUND=true       # Auto increase positions with profits
+COMPOUND_THRESHOLD=10          # Compound after 10 SOL profit
+COMPOUND_INCREASE=20           # Increase positions by 20%
+
+# Position Limits
+MAX_POSITION_PER_TOKEN=5.0     # Max 5 SOL per token
+MAX_OPEN_POSITIONS=20          # Max 20 concurrent positions
+DAILY_LOSS_LIMIT=50            # Stop if down 50 SOL in a day
+    """
+    
+    print(config)
+    return config
+
+# ============================================
 # MAIN ENTRY POINT WITH WEB SERVER
 # ============================================
 
@@ -241,20 +298,37 @@ async def run_bot_with_web_server():
     logging.info(f"Starting web server on port {port} to keep Render happy...")
     await server.serve()
 
-def main():
-    """Main entry point"""
+async def main():
+    """
+    Launch the monster bot - MAIN ENTRY
+    """
+    # Check if we have the necessary config
+    if not os.getenv("HELIUS_API"):
+        print("ERROR: HELIUS_API not set in environment")
+        print("The monster bot needs Helius API for mempool monitoring")
+        return
+    
+    # Show config helper if needed
+    if os.getenv("SHOW_CONFIG_HELP", "false").lower() == "true":
+        setup_monster_config()
+        return
+    
+    # Choose mode
+    mode = os.getenv("BOT_MODE", "monster").lower()
+    
+    if mode == "monster":
+        # Run with ALL features
+        await run_bot_with_web_server()
+    elif mode == "basic":
+        # Run your original bot
+        from sniper_logic import start_sniper
+        await start_sniper()
+    else:
+        print(f"Unknown mode: {mode}")
+
+if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
-    
-    # Check if we have the necessary config
-    if not os.getenv("HELIUS_API"):
-        print("ERROR: HELIUS_API not set in environment")
-        return
-    
-    # Run the bot with web server
-    asyncio.run(run_bot_with_web_server())
-
-if __name__ == "__main__":
-    main()
+    asyncio.run(main())
