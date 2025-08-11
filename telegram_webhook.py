@@ -3,18 +3,15 @@
 from fastapi import FastAPI, Request
 import asyncio
 import os
+import logging
 from dotenv import load_dotenv
 # Direct imports - no lazy loading
 from sniper_logic import start_sniper, start_sniper_with_forced_token, stop_all_tasks
 from utils import send_telegram_alert, is_bot_running, start_bot, stop_bot, get_wallet_summary, get_bot_status_message
-
 load_dotenv()
-
 app = FastAPI()
-
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CHAT_ID", 0))
-
 # ✅ Command Router
 @app.post("/")
 async def telegram_webhook(request: Request):
@@ -81,9 +78,29 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert(f"💾 Memory usage: {memory_mb:.1f} MB")
             except:
                 await send_telegram_alert("💾 Memory check not available")
+        
+        elif text == "/ping":
+            # Simple ping command for testing
+            await send_telegram_alert("🏓 Pong! Commands are working!")
+            
+        elif text == "/help":
+            # Help command
+            help_text = """
+📚 Available Commands:
+/start - Start the bot
+/stop - Stop the bot
+/status - Get bot status
+/wallet - Check wallet balance
+/forcebuy <MINT> - Force buy a token
+/launch - Launch sniper
+/memory - Check memory usage
+/ping - Test commands
+/help - Show this message
+"""
+            await send_telegram_alert(help_text)
             
         else:
-            await send_telegram_alert("🤖 Unknown command.")
+            await send_telegram_alert("🤖 Unknown command. Try /help")
             
         return {"ok": True}
         
@@ -100,3 +117,28 @@ async def startup_event():
 async def health_check():
     """Health check endpoint for Render"""
     return {"status": "ok"}
+
+# ============================================
+# NEW FUNCTION FOR MONSTER BOT INTEGRATION
+# ============================================
+
+async def start_telegram_webhook():
+    """
+    Function to start webhook handler when called from monster bot.
+    This allows the webhook to be imported and run from integrate_monster.py
+    """
+    logging.info("[TELEGRAM] Webhook handler activated from monster bot")
+    
+    # The FastAPI app is already configured above
+    # This function just keeps the webhook alive when called
+    # The actual webhook endpoints are handled by FastAPI
+    
+    while True:
+        # Keep the webhook task alive
+        await asyncio.sleep(60)
+        # Optional: Could add health checks or status updates here
+        
+# This allows the module to work both standalone and when imported
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
