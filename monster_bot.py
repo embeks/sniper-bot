@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from collections import deque
-import numpy as np
+
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
