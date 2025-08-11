@@ -226,7 +226,17 @@ async def start_monster_sniper():
     if os.getenv("ENABLE_AUTO_COMPOUND", "true").lower() == "true":
         tasks.append(asyncio.create_task(monster.auto_compound_profits()))
         await send_telegram_alert("📈 Auto-Compound: ACTIVE")
-    
+        
+    # 7. START TELEGRAM WEBHOOK FOR COMMANDS
+    try:
+        from telegram_webhook import start_telegram_webhook
+        webhook_task = asyncio.create_task(start_telegram_webhook())
+        tasks.append(webhook_task)
+        await send_telegram_alert("📱 Telegram Commands: ACTIVE")
+        logging.info("[TELEGRAM] Webhook started for commands")
+    except Exception as e:
+        logging.error(f"[TELEGRAM] Failed to start webhook: {e}")
+        await send_telegram_alert(f"⚠️ Telegram commands unavailable: {e}")
     
     await send_telegram_alert(
         "🚀 MONSTER BOT FULLY OPERATIONAL 🚀\n\n"
