@@ -67,7 +67,12 @@ try:
     # If it's an array string like [1,2,3,...]
     if SOLANA_PRIVATE_KEY and SOLANA_PRIVATE_KEY.startswith("["):
         private_key_array = ast.literal_eval(SOLANA_PRIVATE_KEY)
-        keypair = Keypair.from_seed(bytes(private_key_array[:32]))
+        # FIXED: Use from_bytes for 64-byte keys, not from_seed
+        if len(private_key_array) == 64:
+            keypair = Keypair.from_bytes(bytes(private_key_array))  # ← FIXED LINE
+        else:
+            # If it's 32 bytes, use as seed
+            keypair = Keypair.from_seed(bytes(private_key_array[:32]))
     else:
         # If it's a base58 string
         keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
