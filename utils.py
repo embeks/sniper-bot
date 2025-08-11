@@ -37,7 +37,7 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 0.5))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 5.0))  # RAISED TO 5 SOL MINIMUM
 BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 
 # Parse sell percentages from multipliers (using defaults)
@@ -106,9 +106,9 @@ daily_stats = {
 }
 
 # Status tracking
-listener_status = {"Raydium": "OFFLINE", "Jupiter": "OFFLINE"}
+listener_status = {"Raydium": "OFFLINE", "Jupiter": "OFFLINE", "PumpFun": "OFFLINE", "Moonshot": "OFFLINE"}
 last_activity = time.time()
-last_seen_token = {"Raydium": time.time(), "Jupiter": time.time()}
+last_seen_token = {"Raydium": time.time(), "Jupiter": time.time(), "PumpFun": time.time(), "Moonshot": time.time()}
 
 def update_last_activity():
     global last_activity
@@ -190,6 +190,8 @@ def get_bot_status_message() -> str:
     elapsed = int(time.time() - last_activity)
     raydium_elapsed = int(time.time() - last_seen_token["Raydium"])
     jupiter_elapsed = int(time.time() - last_seen_token["Jupiter"])
+    pumpfun_elapsed = int(time.time() - last_seen_token["PumpFun"])
+    moonshot_elapsed = int(time.time() - last_seen_token["Moonshot"])
     
     return f"""
 🤖 Bot: {'RUNNING' if BOT_RUNNING else 'PAUSED'}
@@ -204,23 +206,48 @@ def get_bot_status_message() -> str:
 🔌 Listeners:
   • Raydium: {listener_status['Raydium']} ({raydium_elapsed}s)
   • Jupiter: {listener_status['Jupiter']} ({jupiter_elapsed}s)
+  • PumpFun: {listener_status['PumpFun']} ({pumpfun_elapsed}s)
+  • Moonshot: {listener_status['Moonshot']} ({moonshot_elapsed}s)
   
 📈 Open Positions: {len(OPEN_POSITIONS)}
 🚫 Broken Tokens: {len(BROKEN_TOKENS)}
+💰 Min LP Filter: {RUG_LP_THRESHOLD} SOL
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get liquidity info for a token"""
+    """Get ACCURATE liquidity info for a token - ELITE VERSION"""
     try:
+        # Try to find the pool
         pool = raydium.find_pool("So11111111111111111111111111111111111111112", mint)
         if pool:
-            # Get vault balances
-            sol_vault = Pubkey.from_string(pool["baseVault"] if pool["baseMint"] == "So11111111111111111111111111111111111111112" else pool["quoteVault"])
-            sol_balance = rpc.get_balance(sol_vault).value / 1e9
-            return {"liquidity": sol_balance * 2}  # Rough estimate
+            # Determine which vault has SOL
+            sol_mint = "So11111111111111111111111111111111111111112"
+            if pool["baseMint"] == sol_mint:
+                sol_vault_key = pool["baseVault"]
+            else:
+                sol_vault_key = pool["quoteVault"]
+            
+            # Get SOL balance in the pool
+            sol_vault = Pubkey.from_string(sol_vault_key)
+            response = rpc.get_balance(sol_vault)
+            if response and hasattr(response, 'value'):
+                sol_balance = response.value / 1e9
+                
+                # Only return if there's actual liquidity
+                if sol_balance > 0:
+                    logging.info(f"[LP Check] {mint[:8]}... has {sol_balance:.2f} SOL liquidity")
+                    return {"liquidity": sol_balance}
+                else:
+                    logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity")
+                    return {"liquidity": 0}
+        
+        # If no pool found, check if it's too new
+        logging.info(f"[LP Check] No pool found yet for {mint[:8]}...")
+        return {"liquidity": 0}
+        
     except Exception as e:
-        logging.error(f"Failed to get liquidity: {e}")
-    return None
+        logging.error(f"Failed to get liquidity for {mint}: {e}")
+        return {"liquidity": 0}
 
 async def get_trending_mints():
     """Placeholder for trending mints"""
@@ -474,6 +501,21 @@ async def buy_token(mint: str):
 
         increment_stat("snipes_attempted", 1)
         update_last_activity()
+        
+        # ELITE: Quick liquidity check before buying
+        lp_data = await get_liquidity_and_ownership(mint)
+        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 5.0))
+        
+        if lp_data and lp_data.get("liquidity", 0) < min_lp:
+            await send_telegram_alert(
+                f"⚠️ Skipping low LP token\n"
+                f"Token: {mint[:8]}...\n"
+                f"LP: {lp_data.get('liquidity', 0):.2f} SOL\n"
+                f"Min required: {min_lp} SOL"
+            )
+            log_skipped_token(mint, f"Low liquidity: {lp_data.get('liquidity', 0):.2f} SOL")
+            record_skip("low_lp")
+            return False
 
         # ========== TRY JUPITER FIRST (works for 95% of tokens) ==========
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
@@ -694,7 +736,6 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         return price
         except Exception as e:
             # Don't log Jupiter errors since we know DNS is broken
-            pass
             pass
         
         # If we get here, all price sources failed
