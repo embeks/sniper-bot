@@ -1,12 +1,16 @@
 """
 Integration layer - Connects monster features to your existing bot
-Run this INSTEAD of sniper_logic.py for BEAST MODE
+WITH DUMMY WEB SERVER TO KEEP RENDER HAPPY
 """
 
 import asyncio
 import os
 import logging
 from dotenv import load_dotenv
+
+# Import for dummy web server
+from fastapi import FastAPI
+import uvicorn
 
 # Import your existing bot
 from sniper_logic import (
@@ -28,6 +32,30 @@ from utils import (
 )
 
 load_dotenv()
+
+# ============================================
+# DUMMY WEB SERVER FOR RENDER
+# ============================================
+
+app = FastAPI()
+
+@app.get("/")
+async def health_check():
+    """Health check endpoint for Render"""
+    return {
+        "status": "🚀 Monster Bot Active",
+        "mode": "BEAST MODE",
+        "target": "$10k-100k daily"
+    }
+
+@app.get("/status")
+async def status():
+    """Status endpoint"""
+    return {
+        "bot": "running",
+        "listeners": "active",
+        "mode": os.getenv("BOT_MODE", "monster")
+    }
 
 # ============================================
 # ENHANCED BUY FUNCTION WITH ALL FEATURES
@@ -192,97 +220,41 @@ async def start_monster_sniper():
     await asyncio.gather(*tasks)
 
 # ============================================
-# CONFIGURATION HELPER
+# MAIN ENTRY POINT WITH WEB SERVER
 # ============================================
 
-def setup_monster_config():
-    """
-    Add these to your .env file for monster features
-    """
-    config = """
-# ============================================
-# MONSTER BOT CONFIGURATION
-# Add these to your .env file
-# ============================================
-
-# AI Scoring
-MIN_AI_SCORE=0.6                # Minimum AI score to buy (0-1)
-AI_LIQUIDITY_WEIGHT=0.3         # Weight for liquidity in AI score
-AI_HOLDER_WEIGHT=0.2            # Weight for holder distribution
-AI_SOCIAL_WEIGHT=0.2            # Weight for social signals
-AI_PATTERN_WEIGHT=0.3          # Weight for pattern matching
-
-# MEV Protection (Jito)
-USE_JITO=true                   # Use Jito bundles for MEV protection
-JITO_URL=https://mainnet.block-engine.jito.wtf/api/v1
-JITO_TIP=0.001                  # SOL tip for priority (0.001 = $0.15)
-
-# Copy Trading
-ENABLE_COPY_TRADING=true        # Follow profitable wallets
-COPY_WALLET_1=9WzDXwBbmkg8ZTbNFMPiAaQ9xhqvK8GXhPYjfgMJ8a9
-COPY_WALLET_2=Cs5qShsPL85WtanR8G2XticV9Y7eQFpBCCVUwvjxLgpn
-COPY_SCALE_PERCENT=10           # Copy at 10% of whale's size
-
-# Social Scanning
-ENABLE_SOCIAL_SCAN=true         # Scan Telegram/Twitter
-TELEGRAM_CHANNEL_1=@alphagroup  # Replace with real channels
-TELEGRAM_CHANNEL_2=@gemcalls
-SOCIAL_MIN_MENTIONS=3           # Need 3 mentions to trigger buy
-
-# Arbitrage
-ENABLE_ARBITRAGE=true           # DEX arbitrage bot
-ARB_MIN_PROFIT=2.0             # Minimum 2% profit to execute
-ARB_MAX_POSITION=5.0           # Max 5 SOL per arbitrage
-
-# Auto-Scaling
-ENABLE_AUTO_COMPOUND=true       # Auto increase positions with profits
-COMPOUND_THRESHOLD=10          # Compound after 10 SOL profit
-COMPOUND_INCREASE=20           # Increase positions by 20%
-
-# Position Limits
-MAX_POSITION_PER_TOKEN=5.0     # Max 5 SOL per token
-MAX_OPEN_POSITIONS=20          # Max 20 concurrent positions
-DAILY_LOSS_LIMIT=50            # Stop if down 50 SOL in a day
-    """
+async def run_bot_with_web_server():
+    """Run the bot alongside dummy web server"""
+    # Start the monster bot in the background
+    asyncio.create_task(start_monster_sniper())
     
-    print(config)
-    return config
-
-# ============================================
-# MAIN ENTRY POINT
-# ============================================
-
-async def main():
-    """
-    Launch the monster bot
-    """
-    # Check if we have the necessary config
-    if not os.getenv("HELIUS_API"):
-        print("ERROR: HELIUS_API not set in environment")
-        print("The monster bot needs Helius API for mempool monitoring")
-        return
+    # Run the web server to keep Render happy
+    port = int(os.getenv("PORT", 10000))
+    config = uvicorn.Config(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        log_level="warning"  # Reduce web server noise
+    )
+    server = uvicorn.Server(config)
     
-    # Show config helper if needed
-    if os.getenv("SHOW_CONFIG_HELP", "false").lower() == "true":
-        setup_monster_config()
-        return
-    
-    # Choose mode
-    mode = os.getenv("BOT_MODE", "monster").lower()
-    
-    if mode == "monster":
-        # Run with ALL features
-        await start_monster_sniper()
-    elif mode == "basic":
-        # Run your original bot
-        from sniper_logic import start_sniper
-        await start_sniper()
-    else:
-        print(f"Unknown mode: {mode}")
+    logging.info(f"Starting web server on port {port} to keep Render happy...")
+    await server.serve()
 
-if __name__ == "__main__":
+def main():
+    """Main entry point"""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
-    asyncio.run(main())
+    
+    # Check if we have the necessary config
+    if not os.getenv("HELIUS_API"):
+        print("ERROR: HELIUS_API not set in environment")
+        return
+    
+    # Run the bot with web server
+    asyncio.run(run_bot_with_web_server())
+
+if __name__ == "__main__":
+    main()
