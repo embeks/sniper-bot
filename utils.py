@@ -979,3 +979,80 @@ async def wait_and_auto_sell_timer_based(mint: str):
         # Clean up position even on error
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
+            
+             # ADD THESE FUNCTIONS TO YOUR EXISTING utils.py FILE (at the end)
+
+async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
+    """
+    Check PumpFun token status and market cap
+    Returns: {"market_cap": float, "graduated": bool, "pool_address": str}
+    """
+    try:
+        # Check PumpFun API
+        url = f"https://frontend-api.pump.fun/coins/{mint}"
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                market_cap = data.get("usd_market_cap", 0)
+                
+                # Check if graduated (market cap > $69,420)
+                graduated = market_cap >= 69420
+                
+                # Check for Raydium pool
+                pool_address = data.get("raydium_pool")  # May not be available
+                
+                return {
+                    "market_cap": market_cap,
+                    "graduated": graduated,
+                    "pool_address": pool_address,
+                    "progress": (market_cap / 69420) * 100 if market_cap < 69420 else 100
+                }
+    except Exception as e:
+        logging.debug(f"PumpFun status check error: {e}")
+    
+    return None
+
+async def detect_pumpfun_migration(mint: str) -> bool:
+    """
+    Detect if a PumpFun token has migrated to Raydium/Jupiter
+    """
+    try:
+        # First check if token exists on PumpFun
+        pf_status = await check_pumpfun_token_status(mint)
+        if not pf_status or not pf_status.get("graduated"):
+            return False
+        
+        # Check if pool exists on Raydium
+        from raydium_aggregator import RaydiumAggregatorClient
+        raydium_client = RaydiumAggregatorClient(RPC_URL)
+        pool = raydium_client.find_pool_realtime(mint)
+        
+        if pool:
+            logging.info(f"[Migration] PumpFun token {mint[:8]}... has migrated to Raydium!")
+            return True
+            
+        # Check Jupiter as well
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
+                        return True
+        except:
+            pass
+            
+    except Exception as e:
+        logging.error(f"Migration detection error: {e}")
+    
+    return False
+
+# Export for use in sniper_logic
+__all__ = [
+    # ... your existing exports ...
+    'check_pumpfun_token_status',
+    'detect_pumpfun_migration'
+]
