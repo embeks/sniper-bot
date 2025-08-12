@@ -412,28 +412,28 @@ async def elite_buy_token(mint: str, force_amount: float = None):
     ELITE buy with MEV protection, simulation, and AI scoring
     """
     try:
-        # Check if elite features are enabled
-        if not ENABLE_ELITE_FEATURES:
-            # Fall back to monster buy
-            return await monster_buy_token(mint, force_amount)
-        
-        # 1. HONEYPOT CHECK
-        if HONEYPOT_CHECK and not force_amount:
-            is_honeypot = await simulator.detect_honeypot(mint)
-            if is_honeypot:
-                logging.info(f"[ELITE] Skipping potential honeypot: {mint[:8]}...")
-                await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... - Potential honeypot detected")
-                return False
-        
-        # Competition analysis
-try:
-    competition_level = await mev_protection.estimate_competition_level(mint)
-    competitor_count = await competitor_analyzer.count_competing_bots(mint)
-except Exception as e:
-    logging.warning(f"Competition analysis failed: {e}, using defaults")
-    competition_level = "medium"
-    competitor_count = 10
-        
+    # Check if elite features are enabled
+    if not ENABLE_ELITE_FEATURES:
+        # Fall back to monster buy
+        return await monster_buy_token(mint, force_amount)
+
+    # 1. HONEYPOT CHECK
+    if HONEYPOT_CHECK and not force_amount:
+        is_honeypot = await simulator.detect_honeypot(mint)
+        if is_honeypot:
+            logging.info(f"[ELITE] Skipping potential honeypot: {mint[:8]}...")
+            await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... – Potential honeypot detected")
+            return False
+
+    # Competition analysis
+    try:
+        competition_level = await mev_protection.estimate_competition_level(mint)
+        competitor_count = await competitor_analyzer.count_competing_bots(mint)
+    except Exception as e:
+        logging.warning(f"Competition analysis failed: {e}, using defaults")
+        competition_level = "medium"
+        competitor_count = 10
+
         
         
         logging.info(f"[ELITE] Competition: {competition_level}, Estimated bots: {competitor_count}")
