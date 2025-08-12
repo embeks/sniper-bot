@@ -149,13 +149,12 @@ if not ELITE_MODULES_AVAILABLE:
     
     # Embedded Competition Analysis
     class CompetitorAnalysis:
-        def __init__(self):
-            self.known_bots = set()
-            
-        async def count_competing_bots(self, mint: str) -> int:
-            """Estimate number of competing bots"""
-            # Simplified - in production would analyze transaction patterns
-            return random.randint(5, 20)
+    def __init__(self):
+        self.known_bots = set()
+        
+    async def count_competing_bots(self, mint: str) -> int:
+        """Estimate number of competing bots"""
+        return random.randint(5, 20)
     
     # Embedded Smart Exit Strategy
     class SmartExitStrategy:
@@ -426,9 +425,16 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... - Potential honeypot detected")
                 return False
         
-        # 2. COMPETITION ANALYSIS
-        competition_level = await mev_protection.estimate_competition_level(mint)
-        competitor_count = await competitor_analyzer.count_competing_bots(mint)
+        # Competition analysis
+try:
+    competition_level = await mev_protection.estimate_competition_level(mint)
+    competitor_count = await competitor_analyzer.count_competing_bots(mint)
+except Exception as e:
+    logging.warning(f"Competition analysis failed: {e}, using defaults")
+    competition_level = "medium"
+    competitor_count = 10
+        
+        
         
         logging.info(f"[ELITE] Competition: {competition_level}, Estimated bots: {competitor_count}")
         
