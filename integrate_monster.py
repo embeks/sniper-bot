@@ -149,8 +149,8 @@ if not ELITE_MODULES_AVAILABLE:
     
     # Embedded Competition Analysis
     class CompetitorAnalysis:
-    def __init__(self):
-        self.known_bots = set()
+     def __init__(self):
+       self.known_bots = set()
         
     async def count_competing_bots(self, mint: str) -> int:
         """Estimate number of competing bots"""
