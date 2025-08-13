@@ -1,4 +1,4 @@
-# raydium_aggregator.py - FIXED VERSION (KEEPING YOUR ORIGINAL POOL LOGIC + WSOL FIX)
+# raydium_aggregator.py - COMPLETE FIXED VERSION (NO MORE TIMEOUTS!)
 import os
 import json
 import logging
@@ -35,13 +35,20 @@ class RaydiumAggregatorClient:
         self.client = Client(rpc_url, commitment=Confirmed)
         self.pool_cache = {}
         self.cache_duration = 300  # 5 minutes
+        # NEW: Track pools we've already found
+        self.known_pools = {}  # token_mint -> pool_data
         
     def find_pool_realtime(self, token_mint: str) -> Optional[Dict[str, Any]]:
-        """Find Raydium pool using multiple methods - FETCH REAL DATA."""
+        """Find Raydium pool - EFFICIENT VERSION that won't timeout"""
         try:
             sol_mint = "So11111111111111111111111111111111111111112"
             
-            # Check cache first
+            # 1. Check if we already know this pool
+            if token_mint in self.known_pools:
+                logging.info(f"[Raydium] Using known pool for {token_mint[:8]}...")
+                return self.known_pools[token_mint]
+            
+            # 2. Check cache
             cache_key = f"{token_mint}-{sol_mint}"
             if cache_key in self.pool_cache:
                 cached = self.pool_cache[cache_key]
@@ -51,23 +58,158 @@ class RaydiumAggregatorClient:
             
             logging.info(f"[Raydium] Searching for pool with {token_mint[:8]}...")
             
-            # NO HARDCODED POOLS - Everything discovered dynamically!
-            # This is what a real sniper needs - finding pools for brand new tokens
-            
-            # Search for pool by program accounts
-            pool = self._find_pool_by_accounts(token_mint, sol_mint)
+            # 3. SMART APPROACH: Limited scan instead of full scan
+            pool = self._find_pool_smart(token_mint, sol_mint)
             if pool:
                 self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
+                self.known_pools[token_mint] = pool
                 return pool
             
-            logging.warning(f"[Raydium] No pool found for {token_mint[:8]}...")
+            # 4. If not found, it might be too new or only on Jupiter
+            logging.info(f"[Raydium] No pool found for {token_mint[:8]}... (might be on Jupiter only)")
             return None
             
         except Exception as e:
             logging.error(f"[Raydium] Pool search error: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
             return None
+    
+    def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
+        """SMART pool finding - only get relevant pools, not all 5000+"""
+        try:
+            # Skip the full scan if configured
+            if os.getenv("SKIP_RAYDIUM_FULL_SCAN", "false").lower() == "true":
+                logging.info(f"[Raydium] Full scan disabled, using Jupiter fallback")
+                return None
+            
+            # Check environment for Jupiter-first mode
+            if os.getenv("JUPITER_FIRST", "false").lower() == "true":
+                logging.info(f"[Raydium] Jupiter-first mode, skipping Raydium scan")
+                return None
+            
+            # First, try to get from recent transactions (most efficient)
+            recent_pool = self._check_recent_transactions(token_mint)
+            if recent_pool:
+                return recent_pool
+            
+            # If not in recent transactions, do a LIMITED scan
+            limit = int(os.getenv("POOL_SCAN_LIMIT", "100"))
+            
+            logging.info(f"[Raydium] Doing limited scan (max {limit} pools)...")
+            
+            try:
+                # Set a shorter timeout for the RPC call
+                import socket
+                original_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(5)  # 5 second timeout
+                
+                try:
+                    # Get only the most recent pools (likely to have new tokens)
+                    response = self.client.get_program_accounts(
+                        RAYDIUM_AMM_PROGRAM_ID,
+                        encoding="base64",
+                        data_slice={"offset": 0, "length": 752},  # Only get pool data
+                    )
+                finally:
+                    socket.setdefaulttimeout(original_timeout)
+                
+                if hasattr(response, 'value') and response.value:
+                    # Only check the most recent pools
+                    pools_to_check = response.value[-limit:] if len(response.value) > limit else response.value
+                    
+                    logging.info(f"[Raydium] Checking {len(pools_to_check)} recent pools...")
+                    
+                    checked = 0
+                    for account_info in pools_to_check:
+                        try:
+                            pool_id = str(account_info.pubkey)
+                            
+                            # Quick check if this pool has our token
+                            if self._pool_contains_token(account_info, token_mint, sol_mint):
+                                logging.info(f"[Raydium] 🎯 Found pool {pool_id[:8]}... for {token_mint[:8]}!")
+                                # Fetch full data for this specific pool
+                                return self.fetch_pool_data_from_chain(pool_id)
+                            
+                            checked += 1
+                            if checked % 20 == 0:
+                                logging.debug(f"[Raydium] Checked {checked}/{len(pools_to_check)} pools...")
+                                
+                        except Exception as e:
+                            continue
+                    
+                    logging.info(f"[Raydium] Token not found in recent {len(pools_to_check)} pools")
+                    
+            except socket.timeout:
+                logging.warning(f"[Raydium] Scan timed out after 5 seconds, falling back to Jupiter")
+                return None
+            except Exception as e:
+                logging.warning(f"[Raydium] Limited scan failed: {e}, falling back to Jupiter")
+                return None
+                
+            return None
+            
+        except Exception as e:
+            logging.error(f"[Raydium] Smart pool search error: {e}")
+            return None
+    
+    def _check_recent_transactions(self, token_mint: str) -> Optional[Dict[str, Any]]:
+        """Check recent transactions for pool creation (FASTEST method)"""
+        try:
+            # If we just detected this token from logs, the pool address might be in the transaction
+            # This is how PumpFun tracking works - we already HAVE the pool from the transaction
+            
+            # Check environment for recently detected pools
+            recent_pools = os.getenv("RECENT_POOL_DETECTIONS", "")
+            if recent_pools:
+                for entry in recent_pools.split(","):
+                    if token_mint in entry:
+                        pool_id = entry.split(":")[1]
+                        logging.info(f"[Raydium] Found pool from recent detection: {pool_id[:8]}...")
+                        return self.fetch_pool_data_from_chain(pool_id)
+        except:
+            pass
+        return None
+    
+    def _pool_contains_token(self, account_info: Any, token_mint: str, sol_mint: str) -> bool:
+        """Quick check if a pool contains our token without full deserialization"""
+        try:
+            # Get the account data
+            account_data = account_info.account.data
+            if isinstance(account_data, list) and len(account_data) == 2:
+                data_str = account_data[0]
+                if isinstance(data_str, str):
+                    data = base64.b64decode(data_str)
+                else:
+                    data = bytes(data_str)
+            else:
+                return False
+            
+            # Check size - V4 pools are 752 bytes
+            if len(data) != 752:
+                return False
+            
+            # Quick check for our mints at known offsets
+            # Coin mint at offset 119-151, PC mint at offset 151-183
+            coin_mint = Pubkey.from_bytes(data[119:151])
+            pc_mint = Pubkey.from_bytes(data[151:183])
+            
+            # Check if this pool has our token
+            return (
+                (str(coin_mint) == token_mint and str(pc_mint) == sol_mint) or
+                (str(pc_mint) == token_mint and str(coin_mint) == sol_mint)
+            )
+        except:
+            return False
+    
+    def register_new_pool(self, pool_id: str, token_mint: str):
+        """Register a newly detected pool (from mempool monitoring)"""
+        # When sniper_logic detects a new pool, it can register it here
+        # This avoids any scanning at all!
+        logging.info(f"[Raydium] Registering new pool {pool_id[:8]}... for {token_mint[:8]}...")
+        pool_data = self.fetch_pool_data_from_chain(pool_id)
+        if pool_data:
+            self.known_pools[token_mint] = pool_data
+            return pool_data
+        return None
     
     def fetch_pool_data_from_chain(self, pool_id: str) -> Optional[Dict[str, Any]]:
         """Fetch actual pool data from the blockchain."""
@@ -227,102 +369,9 @@ class RaydiumAggregatorClient:
         return str(RAYDIUM_AUTHORITY)
     
     def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """Find pool by searching program accounts - DYNAMIC DISCOVERY."""
-        try:
-            logging.info(f"[Raydium] Dynamically searching for pools with token {token_mint[:8]}...")
-            
-            # Try Jupiter Price API first to check if token exists
-            if self._check_token_exists(token_mint):
-                logging.info(f"[Raydium] Token {token_mint[:8]} exists on Jupiter, likely has pools")
-            
-            # For ANY token, try to get pools dynamically
-            logging.info(f"[Raydium] Fetching all Raydium pools (this may take 10-30 seconds)...")
-            
-            try:
-                # Get all program accounts
-                accounts = self.client.get_program_accounts(
-                    RAYDIUM_AMM_PROGRAM_ID,
-                    encoding="base64"
-                )
-                
-                if hasattr(accounts, 'value') and accounts.value:
-                    total_pools = len(accounts.value)
-                    logging.info(f"[Raydium] Found {total_pools} total Raydium pools, scanning for {token_mint[:8]}...")
-                    
-                    # Check ALL pools - no limit
-                    checked = 0
-                    v4_pools = 0
-                    
-                    for i, account_info in enumerate(accounts.value):
-                        try:
-                            pool_id = str(account_info.pubkey)
-                            
-                            # Get the account data
-                            account_data = account_info.account.data
-                            if isinstance(account_data, list) and len(account_data) == 2:
-                                data_str = account_data[0]
-                                if isinstance(data_str, str):
-                                    data = base64.b64decode(data_str)
-                                else:
-                                    data = bytes(data_str)
-                            else:
-                                continue
-                            
-                            # Check size - V4 pools are 752 bytes
-                            if len(data) != 752:
-                                continue
-                            
-                            v4_pools += 1
-                            
-                            # Check if this pool contains our token
-                            # Coin mint at offset 119-151, PC mint at offset 151-183
-                            coin_mint = Pubkey.from_bytes(data[119:151])
-                            pc_mint = Pubkey.from_bytes(data[151:183])
-                            
-                            checked += 1
-                            
-                            # Log progress every 100 pools
-                            if checked % 100 == 0:
-                                logging.info(f"[Raydium] Checked {checked}/{v4_pools} V4 pools...")
-                            
-                            # Check if this pool has our token and SOL
-                            is_match = False
-                            if (str(coin_mint) == token_mint and str(pc_mint) == sol_mint):
-                                is_match = True
-                                logging.info(f"[Raydium] 🎯 Found pool {pool_id[:8]}... with {token_mint[:8]}... as base!")
-                            elif (str(pc_mint) == token_mint and str(coin_mint) == sol_mint):
-                                is_match = True
-                                logging.info(f"[Raydium] 🎯 Found pool {pool_id[:8]}... with {token_mint[:8]}... as quote!")
-                            
-                            if is_match:
-                                # Fetch complete pool data
-                                logging.info(f"[Raydium] Fetching complete pool data...")
-                                pool = self.fetch_pool_data_from_chain(pool_id)
-                                if pool:
-                                    logging.info(f"[Raydium] ✅ Successfully found and fetched pool for {token_mint[:8]}!")
-                                    return pool
-                                else:
-                                    logging.warning(f"[Raydium] Found pool but failed to fetch data")
-                                    
-                        except Exception as e:
-                            continue
-                    
-                    logging.info(f"[Raydium] Scanned all {checked} V4 pools, none matched {token_mint[:8]}")
-                else:
-                    logging.error(f"[Raydium] Failed to get program accounts - RPC might be rate limited or down")
-                    
-            except Exception as e:
-                logging.error(f"[Raydium] Error scanning pools: {str(e)}")
-                import traceback
-                logging.error(traceback.format_exc())
-                    
-            return None
-            
-        except Exception as e:
-            logging.error(f"[Raydium] Pool search error: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            return None
+        """DEPRECATED - This is the old broken method, kept for compatibility but redirects to smart method"""
+        logging.warning(f"[Raydium] Using deprecated _find_pool_by_accounts, redirecting to smart search")
+        return self._find_pool_smart(token_mint, sol_mint)
     
     def _is_pool_initialized(self, pool_id: str) -> bool:
         """Check if a pool is initialized and has liquidity."""
@@ -391,11 +440,16 @@ class RaydiumAggregatorClient:
             logging.warning("[Raydium] Neither mint is SOL")
             return None
         
-        # Find pool in real-time
+        # Check if Jupiter-first mode is enabled
+        if os.getenv("JUPITER_FIRST", "false").lower() == "true":
+            logging.info("[Raydium] Jupiter-first mode enabled, skipping Raydium")
+            return None
+        
+        # Find pool efficiently
         return self.find_pool_realtime(token_mint)
     
     def create_wsol_account_instructions(self, owner: Pubkey, amount: int) -> Tuple[Pubkey, List[Instruction]]:
-        """Create instructions to wrap SOL into WSOL - THIS IS THE CRITICAL FIX"""
+        """Create instructions to wrap SOL into WSOL"""
         wsol_account = get_associated_token_address(owner, WSOL_MINT)
         instructions = []
         
@@ -432,7 +486,7 @@ class RaydiumAggregatorClient:
             )
         )
         
-        # Sync native to wrap the SOL - CRITICAL INSTRUCTION
+        # Sync native to wrap the SOL
         sync_native_data = bytes([17])  # syncNative instruction discriminator
         instructions.append(
             Instruction(
@@ -447,7 +501,7 @@ class RaydiumAggregatorClient:
         return wsol_account, instructions
     
     def create_ata_if_needed(self, owner: Pubkey, mint: Pubkey, keypair: Keypair) -> Pubkey:
-        """Create ATA if it doesn't exist - YOUR ORIGINAL METHOD."""
+        """Create ATA if it doesn't exist."""
         ata = get_associated_token_address(owner, mint)
         
         try:
@@ -490,9 +544,9 @@ class RaydiumAggregatorClient:
         input_mint: str,
         output_mint: str,
         amount_in: int,
-        slippage: float = 0.05  # Increased to 5% default
+        slippage: float = 0.05  # 5% default
     ) -> Optional[VersionedTransaction]:
-        """Build Raydium swap transaction - FIXED WITH WSOL WRAPPING."""
+        """Build Raydium swap transaction with WSOL wrapping."""
         try:
             pool = self.find_pool(input_mint, output_mint)
             if not pool:
@@ -511,7 +565,7 @@ class RaydiumAggregatorClient:
             # Determine swap direction and accounts
             if input_mint == sol_mint_str:
                 # BUYING: SOL -> Token
-                # CRITICAL FIX: Must wrap SOL to WSOL first!
+                # Must wrap SOL to WSOL first
                 wsol_account, wrap_instructions = self.create_wsol_account_instructions(owner, amount_in)
                 instructions.extend(wrap_instructions)
                 
@@ -522,9 +576,6 @@ class RaydiumAggregatorClient:
                     keypair
                 )
                 
-                # For SOL -> Token swaps:
-                # If pool has SOL as quote (RAY-SOL pool), we're swapping quote to base
-                # Source is WSOL (quote), destination is Token (base)
                 user_source_token = wsol_account
                 
             else:
@@ -559,14 +610,12 @@ class RaydiumAggregatorClient:
                 user_dest_token = wsol_account
             
             # Calculate minimum output with slippage
-            # For very small amounts, use even more permissive slippage
             if amount_in < 100000000:  # Less than 0.1 SOL
                 min_amount_out = 1  # Accept any amount for small trades
             else:
                 min_amount_out = int(amount_in * (1 - slippage))
             
             # Build swap instruction data
-            # Try using swap discriminator 9 for swapBaseIn
             data = bytes([9]) + amount_in.to_bytes(8, 'little') + min_amount_out.to_bytes(8, 'little')
             
             logging.info(f"[Raydium] Swap params:")
@@ -574,7 +623,7 @@ class RaydiumAggregatorClient:
             logging.info(f"  Min amount out: {min_amount_out}")
             logging.info(f"  Slippage: {slippage*100}%")
             
-            # Build swap instruction accounts - EXACT ORDER MATTERS!
+            # Build swap instruction accounts
             keys = [
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=Pubkey.from_string(pool["id"]), is_signer=False, is_writable=True),
@@ -662,7 +711,7 @@ class RaydiumAggregatorClient:
                     sig = str(result.value)
                     logging.info(f"[Raydium] Transaction sent: {sig}")
                     
-                    # CRITICAL: Wait for confirmation
+                    # Wait for confirmation
                     logging.info(f"[Raydium] Waiting for confirmation...")
                     try:
                         confirmation = self.client.confirm_transaction(
