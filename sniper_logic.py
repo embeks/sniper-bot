@@ -799,7 +799,9 @@ async def stop_all_tasks():
             except asyncio.CancelledError:
                 pass
     TASKS.clear()
-    await send_telegram_alert("🛑 All sniper tasks stopped.")tok.get("v24hUSD", 0))
+    await send_telegram_alert(
+        f"🛑 All sniper tasks stopped. 24h USD: {tok.get('v24hUSD', 0)}"
+)
                         pair = {
                             "baseToken": {"address": mint},
                             "liquidity": {"usd": lp_usd},
