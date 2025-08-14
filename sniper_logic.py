@@ -799,48 +799,13 @@ async def stop_all_tasks():
             except asyncio.CancelledError:
                 pass
     TASKS.clear()
-    await send_telegram_alert("🛑 All sniper tasks stopped.")
-
-
-async def get_trending_pairs_birdeye():
-    """Fetch trending pairs from Birdeye"""
-    if not BIRDEYE_API_KEY:
-        return None
-
-    url = "https://public-api.birdeye.so/defi/tokenlist"
-
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(
-                timeout=30,
-                verify=False
-            ) as client:
-                headers = {
-                    "X-API-KEY": BIRDEYE_API_KEY,
-                    "accept": "application/json",
-                }
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    pairs = []
-                    # Map Birdeye token list into the DexScreener-like schema your
-                    # trending scanner expects (baseToken/liquidity/volume)
-                    for tok in data.get("data", {}).get("tokens", [])[:20]:
-                        mint = tok.get("address")
-                        if not mint:
-                            continue
-                        lp_usd = float(tok.get("liquidity", 0) or 0)
-                        vol_usd = float(tok.get("v24hUSD", 0) or 0)
-
+    await send_telegram_alert("🛑 All sniper tasks stopped.")tok.get("v24hUSD", 0))
                         pair = {
                             "baseToken": {"address": mint},
                             "liquidity": {"usd": lp_usd},
                             "volume": {"h24": vol_usd},
-                            # optional fields your scanner may read:
-                            # "priceChange": {"h1": 0, "h24": 0}
                         }
                         pairs.append(pair)
-
                     if pairs:
                         logging.info(f"[Trending] Birdeye returned {len(pairs)} tokens")
                     return pairs
@@ -849,7 +814,7 @@ async def get_trending_pairs_birdeye():
         except Exception as e:
             logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(2)
-
+    
     return None
 
 async def trending_scanner():
@@ -887,4 +852,4 @@ async def trending_scanner():
             for pair in pairs[:10]:
                 mint = pair.get("baseToken", {}).get("address")
                 lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                vol_usd = float(
+                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
