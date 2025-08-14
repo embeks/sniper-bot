@@ -605,7 +605,60 @@ async def get_trending_pairs_birdeye():
                         if not mint:
                             continue
                         lp_usd = float(tok.get("liquidity", 0))
-                        vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
+                        vol_usd = float(tok.get("v24hUSD", 0))
+                        pair = {
+                            "baseToken": {"address": mint},
+                            "liquidity": {"usd": lp_usd},
+                            "volume": {"h24": vol_usd},
+                        }
+                        pairs.append(pair)
+                    if pairs:
+                        logging.info(f"[Trending] Birdeye returned {len(pairs)} tokens")
+                    return pairs
+                else:
+                    logging.debug(f"Birdeye returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
+    return None
+
+async def trending_scanner():
+    """Scan for quality trending tokens"""
+    global seen_trending
+    consecutive_failures = 0
+    max_consecutive_failures = 5
+    
+    while True:
+        try:
+            if not is_bot_running():
+                await asyncio.sleep(5)
+                continue
+
+            pairs = await get_trending_pairs_dexscreener()
+            source = "DEXScreener"
+            
+            if not pairs:
+                pairs = await get_trending_pairs_birdeye()
+                source = "Birdeye"
+            
+            if not pairs:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logging.warning(f"[Trending Scanner] Both APIs unavailable")
+                    consecutive_failures = 0
+                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
+                continue
+            
+            consecutive_failures = 0
+            
+            processed = 0
+            quality_finds = 0
+            
+            for pair in pairs[:10]:
+                mint = pair.get("baseToken", {}).get("address")
+                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
                 
                 price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
                 price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
@@ -800,56 +853,3 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
-                        pair = {
-                            "baseToken": {"address": mint},
-                            "liquidity": {"usd": lp_usd},
-                            "volume": {"h24": vol_usd},
-                        }
-                        pairs.append(pair)
-                    if pairs:
-                        logging.info(f"[Trending] Birdeye returned {len(pairs)} tokens")
-                    return pairs
-                else:
-                    logging.debug(f"Birdeye returned status {resp.status_code}")
-        except Exception as e:
-            logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(2)
-    
-    return None
-
-async def trending_scanner():
-    """Scan for quality trending tokens"""
-    global seen_trending
-    consecutive_failures = 0
-    max_consecutive_failures = 5
-    
-    while True:
-        try:
-            if not is_bot_running():
-                await asyncio.sleep(5)
-                continue
-
-            pairs = await get_trending_pairs_dexscreener()
-            source = "DEXScreener"
-            
-            if not pairs:
-                pairs = await get_trending_pairs_birdeye()
-                source = "Birdeye"
-            
-            if not pairs:
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    logging.warning(f"[Trending Scanner] Both APIs unavailable")
-                    consecutive_failures = 0
-                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
-                continue
-            
-            consecutive_failures = 0
-            
-            processed = 0
-            quality_finds = 0
-            
-            for pair in pairs[:10]:
-                mint = pair.get("baseToken", {}).get("address")
-                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
