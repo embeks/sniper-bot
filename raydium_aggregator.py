@@ -1,4 +1,4 @@
-# raydium_aggregator.py - COMPLETE FIXED VERSION (NO MORE TIMEOUTS!)
+# raydium_aggregator.py - FIXED VERSION (NO MORE TIMEOUTS OR OFFSET ERRORS!)
 import os
 import json
 import logging
@@ -103,11 +103,16 @@ class RaydiumAggregatorClient:
                 socket.setdefaulttimeout(5)  # 5 second timeout
                 
                 try:
-                    # Get only the most recent pools (likely to have new tokens)
+                    # FIXED: Use correct parameters for get_program_accounts
+                    # Don't use 'offset', use proper filters
+                    filters = [
+                        {"dataSize": 752},  # V4 pool size
+                    ]
+                    
                     response = self.client.get_program_accounts(
                         RAYDIUM_AMM_PROGRAM_ID,
                         encoding="base64",
-                        data_slice={"offset": 0, "length": 752},  # Only get pool data
+                        filters=filters
                     )
                 finally:
                     socket.setdefaulttimeout(original_timeout)
@@ -367,11 +372,6 @@ class RaydiumAggregatorClient:
     def derive_market_authority(self, market_id: str) -> str:
         """Derive market authority - simplified version"""
         return str(RAYDIUM_AUTHORITY)
-    
-    def _find_pool_by_accounts(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """DEPRECATED - This is the old broken method, kept for compatibility but redirects to smart method"""
-        logging.warning(f"[Raydium] Using deprecated _find_pool_by_accounts, redirecting to smart search")
-        return self._find_pool_smart(token_mint, sol_mint)
     
     def _is_pool_initialized(self, pool_id: str) -> bool:
         """Check if a pool is initialized and has liquidity."""
