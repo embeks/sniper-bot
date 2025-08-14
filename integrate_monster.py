@@ -1,4 +1,3 @@
-
 """
 Integration layer - ELITE MONEY PRINTER VERSION - ALL BUGS FIXED
 Ready to print money with Elite mode working perfectly!
@@ -84,7 +83,7 @@ if not ELITE_MODULES_AVAILABLE:
             # Add random noise to avoid collisions
             return base_tip + random.uniform(0.00001, 0.00005)
     
-    # Embedded Speed Optimizer (FIXED)
+    # Embedded Speed Optimizer (FIXED WITH get_cached_pool METHOD)
     class SpeedOptimizer:
         def __init__(self):
             self.connection_pool = {}
@@ -116,7 +115,7 @@ if not ELITE_MODULES_AVAILABLE:
             self.cache_time[mint] = time.time()
         
         def get_cached_pool(self, mint: str) -> Optional[Dict]:
-            """Get cached pool if fresh - FIXED METHOD"""
+            """Get cached pool if fresh - FIXED METHOD THAT WAS MISSING"""
             if mint in self.cached_pools:
                 if time.time() - self.cache_time.get(mint, 0) < 60:  # 1 minute cache
                     return self.cached_pools[mint]
@@ -157,7 +156,7 @@ if not ELITE_MODULES_AVAILABLE:
             self.known_bots = set()
             
         async def count_competing_bots(self, mint: str) -> int:
-            """Estimate number of competing bots - FIXED METHOD NAME"""
+            """Estimate number of competing bots"""
             # Simplified - in production would analyze transaction patterns
             return random.randint(5, 20)
     
@@ -255,8 +254,8 @@ trend_predictor = TrendPrediction()
 # Configuration
 ENABLE_ELITE_FEATURES = os.getenv("ENABLE_ELITE_FEATURES", "true").lower() == "true"
 USE_JITO_BUNDLES = os.getenv("USE_JITO_BUNDLES", "true").lower() == "true"
-SIMULATE_BEFORE_BUY = os.getenv("SIMULATE_BEFORE_SEND", "true").lower() == "true"
-HONEYPOT_CHECK = os.getenv("HONEYPOT_CHECK", "true").lower() == "true"
+SIMULATE_BEFORE_BUY = os.getenv("SIMULATE_BEFORE_SEND", "false").lower() == "true"
+HONEYPOT_CHECK = os.getenv("HONEYPOT_CHECK", "false").lower() == "true"
 DYNAMIC_EXIT_STRATEGY = os.getenv("DYNAMIC_EXIT_STRATEGY", "true").lower() == "true"
 
 # ============================================
@@ -343,17 +342,22 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert("🛑 Bot stopped. Money printer: OFF")
                 
         elif text == "/status":
-            status_msg = get_bot_status_message()
-            elite_stats = f"\n\n🎯 ELITE STATS:\n"
-            elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
-            elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens) if 'pumpfun_tokens' in globals() else 0}\n"
-            elite_stats += f"• Migration Watch: {len(migration_watch_list) if 'migration_watch_list' in globals() else 0}\n"
-            elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
-            if revenue_optimizer.total_trades > 0:
-                elite_stats += f"• Win Rate: {(revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100):.1f}%"
-            
-            await send_telegram_alert(f"📊 Status:\n{status_msg}{elite_stats}")
-            
+            try:
+                from utils import daily_stats
+                status_msg = get_bot_status_message()
+                elite_stats = f"\n\n🎯 ELITE STATS:\n"
+                elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
+                elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens) if 'pumpfun_tokens' in globals() else 0}\n"
+                elite_stats += f"• Migration Watch: {len(migration_watch_list) if 'migration_watch_list' in globals() else 0}\n"
+                elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
+                if revenue_optimizer.total_trades > 0:
+                    elite_stats += f"• Win Rate: {(revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100):.1f}%"
+                
+                await send_telegram_alert(f"📊 Status:\n{status_msg}{elite_stats}")
+            except Exception as e:
+                # Fallback if status has issues
+                await send_telegram_alert(f"📊 Bot is {'running' if is_bot_running() else 'paused'}\n\nError getting full status: {str(e)[:100]}")
+                
         elif text.startswith("/forcebuy "):
             parts = text.split(" ")
             if len(parts) >= 2:
@@ -373,6 +377,14 @@ async def telegram_webhook(request: Request):
             ENABLE_ELITE_FEATURES = not ENABLE_ELITE_FEATURES
             status = "ON 🚀" if ENABLE_ELITE_FEATURES else "OFF"
             await send_telegram_alert(f"🎯 Elite Features: {status}")
+            
+        elif text == "/launch":
+            # Launch the sniper if not already running
+            if is_bot_running():
+                await send_telegram_alert("🚀 Launching sniper systems...")
+                asyncio.create_task(start_elite_sniper())
+            else:
+                await send_telegram_alert("⛔ Bot is paused. Use /start first.")
             
         elif text == "/pumpfun":
             # Show PumpFun tracking status
@@ -404,6 +416,7 @@ async def telegram_webhook(request: Request):
 /wallet - Check wallet balance
 /forcebuy <MINT> - Force buy a token
 /elite - Toggle elite features
+/launch - Launch sniper systems
 /pumpfun - PumpFun tracking status
 /ping - Test commands
 /help - Show this message
@@ -445,7 +458,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... - Potential honeypot detected")
                 return False
         
-        # 2. COMPETITION ANALYSIS (FIXED)
+        # 2. COMPETITION ANALYSIS
         try:
             competition_level = await mev_protection.estimate_competition_level(mint)
             competitor_count = await competitor_analyzer.count_competing_bots(mint)
@@ -461,7 +474,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             amount_sol = force_amount
             ai_score = 1.0  # Max score for forced buys
         else:
-            # Check cached pool data first (FIXED)
+            # Check cached pool data first
             cached_pool = speed_optimizer.get_cached_pool(mint)
             
             # Get pool data
@@ -495,7 +508,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 pass
             
             # Minimum score check
-            min_score = float(os.getenv("MIN_AI_SCORE", 0.3))
+            min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
             if ai_score < min_score:
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
@@ -622,7 +635,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             except:
                 ai_score = 0.5
             
-            min_score = float(os.getenv("MIN_AI_SCORE", 0.3))
+            min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
             if ai_score < min_score:
                 logging.info(f"[SKIP] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
@@ -767,7 +780,7 @@ async def start_elite_sniper():
     await send_telegram_alert(
         f"🚀 {mode} READY 🚀\n\n"
         f"Active Strategies: {len(tasks)}\n"
-        f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.25')}\n"
+        f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}\n"
         f"Min LP: {os.getenv('RUG_LP_THRESHOLD', '0.5')} SOL\n"
         f"PumpFun Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL\n\n"
         f"{'Elite Features: ACTIVE ⚡' if ENABLE_ELITE_FEATURES else ''}\n"
@@ -917,7 +930,7 @@ async def main():
     logging.info(f"PumpFun Migration: {os.getenv('ENABLE_PUMPFUN_MIGRATION', 'true')}")
     logging.info(f"Honeypot Check: {HONEYPOT_CHECK}")
     logging.info(f"Dynamic Exits: {DYNAMIC_EXIT_STRATEGY}")
-    logging.info(f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.25')}")
+    logging.info(f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}")
     logging.info(f"Buy Amount: {os.getenv('BUY_AMOUNT_SOL', '0.05')} SOL")
     logging.info(f"Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL")
     
