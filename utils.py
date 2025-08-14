@@ -220,21 +220,29 @@ def get_bot_status_message() -> str:
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get ACCURATE liquidity info for a token - ELITE VERSION"""
+    """Get ACCURATE liquidity info for a token - FIXED VERSION"""
     try:
-        # Try to find the pool
-        pool = raydium.find_pool("So11111111111111111111111111111111111111112", mint)
+        # First, try to find the pool using the fixed Raydium client
+        sol_mint = "So11111111111111111111111111111111111111112"
+        
+        # Try both directions (token-SOL and SOL-token)
+        pool = raydium.find_pool_realtime(mint)
+        
         if pool:
             # Determine which vault has SOL
-            sol_mint = "So11111111111111111111111111111111111111112"
             if pool["baseMint"] == sol_mint:
                 sol_vault_key = pool["baseVault"]
-            else:
+            elif pool["quoteMint"] == sol_mint:
                 sol_vault_key = pool["quoteVault"]
+            else:
+                # This pool doesn't have SOL, check the reverse
+                logging.warning(f"[LP Check] Pool found but no SOL pair for {mint[:8]}...")
+                return {"liquidity": 0}
             
-            # Get SOL balance in the pool
+            # Get SOL balance in the pool vault
             sol_vault = Pubkey.from_string(sol_vault_key)
             response = rpc.get_balance(sol_vault)
+            
             if response and hasattr(response, 'value'):
                 sol_balance = response.value / 1e9
                 
@@ -243,11 +251,46 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
                     logging.info(f"[LP Check] {mint[:8]}... has {sol_balance:.2f} SOL liquidity")
                     return {"liquidity": sol_balance}
                 else:
-                    logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity")
+                    logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in pool")
                     return {"liquidity": 0}
+        else:
+            # No Raydium pool found, check Jupiter for liquidity
+            logging.info(f"[LP Check] No Raydium pool found for {mint[:8]}..., checking Jupiter")
+            
+            # Try to get a quote from Jupiter to determine if it's tradeable
+            try:
+                url = f"{JUPITER_BASE_URL}/v6/quote"
+                params = {
+                    "inputMint": sol_mint,
+                    "outputMint": mint,
+                    "amount": str(int(0.001 * 1e9)),  # Test with 0.001 SOL
+                    "slippageBps": "100",
+                    "onlyDirectRoutes": "false"
+                }
+                
+                async with httpx.AsyncClient(timeout=5) as client:
+                    response = await client.get(url, params=params)
+                    if response.status_code == 200:
+                        quote = response.json()
+                        # If we can get a quote, there's some liquidity
+                        if quote.get("outAmount"):
+                            # Estimate liquidity from price impact
+                            # This is a rough estimate
+                            price_impact = float(quote.get("priceImpactPct", 0))
+                            if price_impact < 1:  # Less than 1% impact
+                                estimated_lp = 10.0  # Decent liquidity
+                            elif price_impact < 5:
+                                estimated_lp = 2.0   # Low liquidity
+                            else:
+                                estimated_lp = 0.5   # Very low liquidity
+                            
+                            logging.info(f"[LP Check] {mint[:8]}... on Jupiter with estimated {estimated_lp:.2f} SOL liquidity")
+                            return {"liquidity": estimated_lp}
+            except Exception as e:
+                logging.debug(f"[LP Check] Jupiter check failed: {e}")
         
-        # If no pool found, check if it's too new
-        logging.info(f"[LP Check] No pool found yet for {mint[:8]}...")
+        # If we get here, no liquidity found anywhere
+        logging.info(f"[LP Check] No liquidity found for {mint[:8]}... on any DEX")
         return {"liquidity": 0}
         
     except Exception as e:
@@ -1052,7 +1095,29 @@ async def detect_pumpfun_migration(mint: str) -> bool:
 
 # Export for use in sniper_logic
 __all__ = [
-    # ... your existing exports ...
+    'is_valid_mint',
+    'buy_token',
+    'sell_token',
+    'log_skipped_token',
+    'send_telegram_alert',
+    'get_trending_mints',
+    'wait_and_auto_sell',
+    'get_liquidity_and_ownership',
+    'is_bot_running',
+    'start_bot',
+    'stop_bot',
+    'keypair',
+    'BUY_AMOUNT_SOL',
+    'BROKEN_TOKENS',
+    'mark_broken_token',
+    'daily_stats_reset_loop',
+    'update_last_activity',
+    'increment_stat',
+    'record_skip',
+    'listener_status',
+    'last_seen_token',
+    'get_wallet_summary',
+    'get_bot_status_message',
     'check_pumpfun_token_status',
     'detect_pumpfun_migration'
 ]
