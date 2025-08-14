@@ -376,7 +376,7 @@ async def mempool_listener(name, program_id=None):
                         pool_creations_found += 1
                         logging.info(f"[{name}] POOL CREATION DETECTED! Total found: {pool_creations_found}")
                         
-                        # Find token mints
+                        # FIXED: Better token mint detection - DON'T SKIP SEEN TOKENS FOR RAYDIUM/JUPITER
                         potential_mints = []
                         
                         for i, key in enumerate(account_keys):
@@ -386,21 +386,32 @@ async def mempool_listener(name, program_id=None):
                                 continue
                             if len(key) != 44:
                                 continue
-                            if key in seen_tokens:
-                                continue
                             
-                            try:
-                                Pubkey.from_string(key)
-                                potential_mints.append(key)
-                            except:
-                                continue
+                            # CRITICAL FIX: Don't skip seen tokens for Raydium/Jupiter
+                            # They might be PumpFun graduations we've seen before!
+                            if name in ["Raydium", "Jupiter"]:
+                                # For Raydium/Jupiter, always process even if seen
+                                # This catches PumpFun graduations
+                                try:
+                                    Pubkey.from_string(key)
+                                    potential_mints.append(key)
+                                except:
+                                    continue
+                            else:
+                                # For PumpFun/Moonshot, skip if already seen
+                                if key in seen_tokens:
+                                    continue
+                                try:
+                                    Pubkey.from_string(key)
+                                    potential_mints.append(key)
+                                except:
+                                    continue
                         
                         # Process potential mints
                         for potential_mint in potential_mints:
-                            if potential_mint in seen_tokens:
-                                continue
-                                
-                            seen_tokens.add(potential_mint)
+                            # Add to seen_tokens AFTER we process it (not before)
+                            if potential_mint not in seen_tokens:
+                                seen_tokens.add(potential_mint)
                             
                             # Track PumpFun tokens
                             if name == "PumpFun" and potential_mint not in pumpfun_tokens:
@@ -506,10 +517,9 @@ async def mempool_listener(name, program_id=None):
                                             os.environ["BUY_AMOUNT_SOL"] = original_amount
                                         
                             else:
-                                await send_telegram_alert(
-                                    f"👀 New {name} Launch\n"
-                                    f"Token: `{potential_mint[:16]}...`"
-                                )
+                                # For PumpFun/Moonshot, just track but don't buy
+                                if name in ["PumpFun", "Moonshot"]:
+                                    logging.info(f"[{name}] New launch tracked: {potential_mint[:8]}...")
                                 
                 except asyncio.TimeoutError:
                     continue
@@ -647,10 +657,6 @@ async def trending_scanner():
                 if consecutive_failures >= max_consecutive_failures:
                     logging.warning(f"[Trending Scanner] Both APIs unavailable")
                     consecutive_failures = 0
-                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
-                continue
-            
-            consecutive_failures = 0
             
             processed = 0
             quality_finds = 0
@@ -853,3 +859,7 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
+                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
+                continue
+            
+            consecutive_failures = 0
