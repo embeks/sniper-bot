@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import httpx
 import random
+from dexscreener_monitor import start_dexscreener_monitor
 
 from utils import (
     is_valid_mint, buy_token, log_skipped_token, send_telegram_alert,
@@ -865,6 +866,7 @@ async def rug_filter_passes(mint: str) -> bool:
 async def start_sniper():
     """Start the ELITE sniper bot with PumpFun migration detection and GRADUATION SCANNER"""
     mode_text = "Smart Balance + Migration Sniper + Graduation Scanner"
+    TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
     
     await send_telegram_alert(
         f"🚀 SNIPER LAUNCHING 🚀\n\n"
