@@ -18,6 +18,7 @@ from utils import (
     listener_status, last_seen_token
 )
 from solders.pubkey import Pubkey
+from raydium_aggregator import RaydiumAggregatorClient
 
 load_dotenv()
 
@@ -48,6 +49,10 @@ TASKS = []
 # Track PumpFun tokens and their migration status
 pumpfun_tokens = {}  # mint -> {"discovered": timestamp, "migrated": bool, "pool_id": str}
 migration_watch_list = set()  # Tokens close to graduation
+already_bought = set()  # Tokens we've already bought
+
+# Initialize Raydium client
+raydium = RaydiumAggregatorClient(RPC_URL)
 
 last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
 alert_cooldown_sec = 1800
@@ -81,6 +86,91 @@ async def check_pumpfun_graduation(mint: str) -> bool:
         logging.debug(f"[PumpFun] Graduation check error: {e}")
     
     return False
+
+# ============================================
+# NEW: GRADUATION SCANNER - BYPASSES DETECTION ISSUE
+# ============================================
+
+async def raydium_graduation_scanner():
+    """Check if PumpFun tokens graduated to Raydium - BYPASSES DETECTION ISSUE"""
+    if not ENABLE_PUMPFUN_MIGRATION:
+        logging.info("[Graduation Scanner] Disabled via config")
+        return
+        
+    await send_telegram_alert("🎓 Graduation Scanner ACTIVE - Checking every 30 seconds")
+    
+    while True:
+        try:
+            if not is_bot_running():
+                await asyncio.sleep(30)
+                continue
+            
+            # Get recent PumpFun tokens (last 100)
+            recent_tokens = list(pumpfun_tokens.keys())[-100:] if pumpfun_tokens else []
+            
+            for mint in recent_tokens:
+                if mint in already_bought:
+                    continue
+                    
+                # Try to find Raydium pool
+                try:
+                    pool = raydium.find_pool_realtime(mint)
+                    if pool:
+                        # Found a graduated token!
+                        logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has Raydium pool!")
+                        
+                        # Mark as migrated
+                        if mint in pumpfun_tokens:
+                            pumpfun_tokens[mint]["migrated"] = True
+                        
+                        # Check LP
+                        lp_data = await get_liquidity_and_ownership(mint)
+                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                        
+                        # Check if meets threshold
+                        if lp_amount >= RUG_LP_THRESHOLD:
+                            # BUY IT!
+                            already_bought.add(mint)
+                            
+                            await send_telegram_alert(
+                                f"🎓 GRADUATION DETECTED!\n\n"
+                                f"Token: `{mint}`\n"
+                                f"Liquidity: {lp_amount:.2f} SOL\n"
+                                f"Action: BUYING NOW!"
+                            )
+                            
+                            # Use migration buy amount
+                            original_amount = os.getenv("BUY_AMOUNT_SOL")
+                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                            
+                            try:
+                                success = await buy_token(mint)
+                                if success:
+                                    await send_telegram_alert(
+                                        f"✅ GRADUATION SNIPE SUCCESS!\n"
+                                        f"Token: {mint[:16]}...\n"
+                                        f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
+                                        f"Like JOYBAIT - potential 27x!"
+                                    )
+                                    asyncio.create_task(wait_and_auto_sell(mint))
+                                else:
+                                    await send_telegram_alert(f"❌ Graduation snipe failed for {mint[:16]}...")
+                            finally:
+                                if original_amount:
+                                    os.environ["BUY_AMOUNT_SOL"] = original_amount
+                        else:
+                            logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has pool but low LP: {lp_amount:.2f} SOL")
+                            
+                except Exception as e:
+                    # Pool check failed, token hasn't graduated yet
+                    pass
+            
+            # Check every 30 seconds
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logging.error(f"[Graduation Scanner] Error: {e}")
+            await asyncio.sleep(30)
 
 async def pumpfun_migration_monitor():
     """Monitor PumpFun tokens for migration to Raydium"""
@@ -189,7 +279,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with PumpFun tracking - FIXED POOL DETECTION"""
+    """Enhanced mempool listener with FIXED Raydium detection"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -297,65 +387,66 @@ async def mempool_listener(name, program_id=None):
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # FIXED: Better pool creation detection
+                        # ENHANCED POOL DETECTION WITH DEBUG
                         is_pool_creation = False
+                        
+                        # DEBUG: Log Raydium transactions
+                        if name == "Raydium" and transaction_counter % 50 == 0:
+                            logging.info(f"[RAYDIUM DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
+                            for log in logs[:2]:
+                                logging.info(f"[RAYDIUM DEBUG] Log sample: {log[:100]}")
+                        
                         for log in logs:
                             log_lower = log.lower()
                             
                             if name == "Raydium":
-                                # FIXED: Correct Raydium pool creation keywords
+                                # ENHANCED: More comprehensive Raydium pool detection
                                 if any(x in log_lower for x in [
-                                    "initialize2",           # Main pool initialization
-                                    "init_pc_amount",        # Pool creation with quote amount
-                                    "init_coin_amount",      # Pool creation with base amount
-                                    "initializepool",        # Alternative initialization
-                                    "create pool",           # Direct pool creation
-                                    "add liquidity"          # Initial liquidity add
+                                    "initialize2",           # V4 pools
+                                    "init_pc_amount",        
+                                    "init_coin_amount",      
+                                    "initializepool",        
+                                    "create pool",           
+                                    "add liquidity",         
+                                    # NEW ADDITIONS:
+                                    "initialize pool",       # V3 pools
+                                    "raydium add liquidity", 
+                                    "init_pool",            
+                                    "pool initialized",      
+                                    "swap pool created",     
+                                    "amm pool created",      
+                                    "liquidity pool",        
+                                    "new pool",
+                                    "openbook market",
+                                    "initialize_amm",        # AMM specific
+                                    "create_amm",           
+                                    "init amm"              
                                 ]):
                                     is_pool_creation = True
-                                    
-                                    # Special check: Is this a PumpFun migration?
-                                    for key in account_keys:
-                                        if key in pumpfun_tokens and not pumpfun_tokens[key].get("migrated", False):
-                                            # This is a PumpFun token creating a Raydium pool!
-                                            pumpfun_tokens[key]["migrated"] = True
-                                            migration_watch_list.discard(key)
-                                            
-                                            await send_telegram_alert(
-                                                f"🎊 PUMPFUN GRADUATION DETECTED 🎊\n\n"
-                                                f"Token: `{key}`\n"
-                                                f"Event: Creating Raydium Pool NOW!\n"
-                                                f"Action: PRIORITY SNIPE!"
-                                            )
-                                            
-                                            # Use higher amount for migration
-                                            original_amount = os.getenv("BUY_AMOUNT_SOL")
-                                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                                            
-                                            try:
-                                                success = await buy_token(key)
-                                                if success:
-                                                    await send_telegram_alert(
-                                                        f"✅ GRADUATION SNIPE SUCCESS!\n"
-                                                        f"Token: {key[:16]}...\n"
-                                                        f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
-                                                        f"Type: PumpFun Graduation"
-                                                    )
-                                                    asyncio.create_task(wait_and_auto_sell(key))
-                                            finally:
-                                                if original_amount:
-                                                    os.environ["BUY_AMOUNT_SOL"] = original_amount
-                                            break
+                                    logging.info(f"[RAYDIUM] Pool creation keyword found: {log[:100]}")
                                     break
+                                
+                                # NUCLEAR OPTION: If Raydium + many accounts
+                                if not is_pool_creation:
+                                    if "raydium" in log_lower and len(account_keys) > 15:
+                                        is_pool_creation = True
+                                        logging.info(f"[RAYDIUM] Nuclear detection: {len(account_keys)} accounts")
+                                        break
+                                
+                                # Check for any success with many accounts
+                                if not is_pool_creation:
+                                    if "success" in log_lower and len(account_keys) > 20:
+                                        is_pool_creation = True
+                                        logging.info(f"[RAYDIUM] Success with {len(account_keys)} accounts")
+                                        break
                             
                             elif name == "Jupiter":
-                                # FIXED: Correct Jupiter pool creation keywords
                                 if any(x in log_lower for x in [
-                                    "initialize_pool",       # Jupiter pool initialization
-                                    "create_pool",          # Direct pool creation
-                                    "createpool",           # Alternative format
-                                    "pool_created",         # Pool creation event
-                                    "new_pool"              # New pool event
+                                    "initialize_pool",       
+                                    "create_pool",          
+                                    "createpool",           
+                                    "pool_created",         
+                                    "new_pool"              
                                 ]):
                                     is_pool_creation = True
                                     break
@@ -376,7 +467,7 @@ async def mempool_listener(name, program_id=None):
                         pool_creations_found += 1
                         logging.info(f"[{name}] POOL CREATION DETECTED! Total found: {pool_creations_found}")
                         
-                        # FIXED: Better token mint detection - DON'T SKIP SEEN TOKENS FOR RAYDIUM/JUPITER
+                        # Process potential mints
                         potential_mints = []
                         
                         for i, key in enumerate(account_keys):
@@ -387,11 +478,8 @@ async def mempool_listener(name, program_id=None):
                             if len(key) != 44:
                                 continue
                             
-                            # CRITICAL FIX: Don't skip seen tokens for Raydium/Jupiter
-                            # They might be PumpFun graduations we've seen before!
+                            # For Raydium/Jupiter, always process even if seen (for graduations)
                             if name in ["Raydium", "Jupiter"]:
-                                # For Raydium/Jupiter, always process even if seen
-                                # This catches PumpFun graduations
                                 try:
                                     Pubkey.from_string(key)
                                     potential_mints.append(key)
@@ -409,7 +497,7 @@ async def mempool_listener(name, program_id=None):
                         
                         # Process potential mints
                         for potential_mint in potential_mints:
-                            # Add to seen_tokens AFTER we process it (not before)
+                            # Add to seen_tokens AFTER we process it
                             if potential_mint not in seen_tokens:
                                 seen_tokens.add(potential_mint)
                             
@@ -479,42 +567,46 @@ async def mempool_listener(name, program_id=None):
                                         "UNKNOWN": "❓"
                                     }.get(risk_level, "❓")
                                     
-                                    await send_telegram_alert(
-                                        f"{risk_emoji} NEW TOKEN DETECTED {risk_emoji}\n\n"
-                                        f"Platform: {name}\n"
-                                        f"Token: `{potential_mint}`\n"
-                                        f"Liquidity: {lp_amount:.2f} SOL\n"
-                                        f"Risk: {risk_level}\n"
-                                        f"Buy Amount: {buy_amount} SOL\n\n"
-                                        f"Attempting snipe..."
-                                    )
-                                    
-                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
-                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
-                                    
-                                    try:
-                                        success = await buy_token(potential_mint)
-                                        if success:
-                                            await send_telegram_alert(
-                                                f"✅ SNIPED ({risk_level} RISK)!\n"
-                                                f"Token: {potential_mint[:16]}...\n"
-                                                f"Amount: {buy_amount} SOL\n"
-                                                f"Monitoring for profits..."
-                                            )
-                                            asyncio.create_task(wait_and_auto_sell(potential_mint))
-                                            break
-                                        else:
-                                            await send_telegram_alert(
-                                                f"❌ Snipe failed\n"
-                                                f"Token: {potential_mint[:16]}..."
-                                            )
-                                            mark_broken_token(potential_mint, 0)
-                                    except Exception as e:
-                                        logging.error(f"[{name}] Buy error: {e}")
-                                        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
-                                    finally:
-                                        if original_amount:
-                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
+                                    # Only buy if meets threshold
+                                    if lp_amount >= RUG_LP_THRESHOLD:
+                                        await send_telegram_alert(
+                                            f"{risk_emoji} NEW TOKEN DETECTED {risk_emoji}\n\n"
+                                            f"Platform: {name}\n"
+                                            f"Token: `{potential_mint}`\n"
+                                            f"Liquidity: {lp_amount:.2f} SOL\n"
+                                            f"Risk: {risk_level}\n"
+                                            f"Buy Amount: {buy_amount} SOL\n\n"
+                                            f"Attempting snipe..."
+                                        )
+                                        
+                                        original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                        os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+                                        
+                                        try:
+                                            success = await buy_token(potential_mint)
+                                            if success:
+                                                await send_telegram_alert(
+                                                    f"✅ SNIPED ({risk_level} RISK)!\n"
+                                                    f"Token: {potential_mint[:16]}...\n"
+                                                    f"Amount: {buy_amount} SOL\n"
+                                                    f"Monitoring for profits..."
+                                                )
+                                                asyncio.create_task(wait_and_auto_sell(potential_mint))
+                                                break
+                                            else:
+                                                await send_telegram_alert(
+                                                    f"❌ Snipe failed\n"
+                                                    f"Token: {potential_mint[:16]}..."
+                                                )
+                                                mark_broken_token(potential_mint, 0)
+                                        except Exception as e:
+                                            logging.error(f"[{name}] Buy error: {e}")
+                                            await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
+                                        finally:
+                                            if original_amount:
+                                                os.environ["BUY_AMOUNT_SOL"] = original_amount
+                                    else:
+                                        logging.info(f"[{name}] Skipping {potential_mint[:8]}... - LP too low: {lp_amount:.2f} SOL")
                                         
                             else:
                                 # For PumpFun/Moonshot, just track but don't buy
@@ -771,18 +863,17 @@ async def rug_filter_passes(mint: str) -> bool:
         return False
 
 async def start_sniper():
-    """Start the ELITE sniper bot with PumpFun migration detection"""
-    mode_text = "Smart Balance + Migration Sniper" if ENABLE_PUMPFUN_MIGRATION else "Smart Balance"
+    """Start the ELITE sniper bot with PumpFun migration detection and GRADUATION SCANNER"""
+    mode_text = "Smart Balance + Migration Sniper + Graduation Scanner"
     
     await send_telegram_alert(
         f"🚀 SNIPER LAUNCHING 🚀\n\n"
         f"Mode: {mode_text}\n"
-        f"Safe LP: 2+ SOL = 0.03 SOL buy\n"
-        f"Medium LP: 0.5-2 SOL = 0.01 SOL buy\n"
-        f"Low LP: <0.5 SOL = 0.005 SOL buy\n"
+        f"Safe LP: {RUG_LP_THRESHOLD}+ SOL\n"
         f"Migration Snipe: {PUMPFUN_MIGRATION_BUY} SOL\n"
+        f"Graduation Scanner: ACTIVE\n"
         f"Targets: 2x/5x/10x\n\n"
-        f"Ready to catch launches & migrations! 🎯"
+        f"Ready to catch JOYBAIT-style 27x! 🎯"
     )
 
     if FORCE_TEST_MINT:
@@ -806,7 +897,9 @@ async def start_sniper():
     # Add PumpFun migration monitor
     if ENABLE_PUMPFUN_MIGRATION:
         TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
+        TASKS.append(asyncio.create_task(raydium_graduation_scanner()))  # NEW SCANNER!
         await send_telegram_alert("🎯 PumpFun Migration Monitor: ACTIVE")
+        await send_telegram_alert("🎓 Graduation Scanner: ACTIVE (checks every 30s)")
     
     await send_telegram_alert(f"🎯 ALL SYSTEMS ACTIVE - {mode_text}!")
 
