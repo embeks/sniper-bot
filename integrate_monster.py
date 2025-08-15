@@ -50,7 +50,7 @@ except ImportError:
 load_dotenv()
 
 # ============================================
-# EMBEDDED ELITE MODULES (FIXED VERSION)
+# EMBEDDED ELITE MODULES (FULLY FIXED VERSION)
 # ============================================
 
 if not ELITE_MODULES_AVAILABLE:
@@ -69,7 +69,7 @@ if not ELITE_MODULES_AVAILABLE:
             """Estimate competition for a token"""
             # Check if it's a PumpFun migration (high competition)
             try:
-                if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
+                if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
                     return "ultra"
             except:
                 pass
@@ -83,11 +83,11 @@ if not ELITE_MODULES_AVAILABLE:
             # Add random noise to avoid collisions
             return base_tip + random.uniform(0.00001, 0.00005)
     
-    # Embedded Speed Optimizer (FIXED WITH get_cached_pool METHOD)
+    # Embedded Speed Optimizer (FULLY FIXED)
     class SpeedOptimizer:
         def __init__(self):
             self.connection_pool = {}
-            self.cached_pools = {}  # FIXED: Initialize this
+            self.cached_pools = {}  # Initialize this
             self.cache_time = {}
             
         async def prewarm_connections(self):
@@ -115,7 +115,7 @@ if not ELITE_MODULES_AVAILABLE:
             self.cache_time[mint] = time.time()
         
         def get_cached_pool(self, mint: str) -> Optional[Dict]:
-            """Get cached pool if fresh - FIXED METHOD THAT WAS MISSING"""
+            """Get cached pool if fresh"""
             if mint in self.cached_pools:
                 if time.time() - self.cache_time.get(mint, 0) < 60:  # 1 minute cache
                     return self.cached_pools[mint]
@@ -150,7 +150,7 @@ if not ELITE_MODULES_AVAILABLE:
                 pass
             return False
     
-    # Embedded Competition Analysis (FIXED)
+    # Embedded Competition Analysis (FULLY FIXED)
     class CompetitorAnalysis:
         def __init__(self):
             self.known_bots = set()
@@ -166,7 +166,7 @@ if not ELITE_MODULES_AVAILABLE:
             """Calculate dynamic exit strategy"""
             # Check if it's a PumpFun graduate (proven token)
             try:
-                is_pumpfun = mint in pumpfun_tokens
+                is_pumpfun = 'pumpfun_tokens' in globals() and mint in pumpfun_tokens
             except:
                 is_pumpfun = False
             
@@ -201,7 +201,7 @@ if not ELITE_MODULES_AVAILABLE:
             """Analyze volume patterns"""
             # Simplified - check if it's a new launch
             try:
-                if mint in migration_watch_list:
+                if 'migration_watch_list' in globals() and mint in migration_watch_list:
                     return "pump_starting"  # PumpFun migrations often pump
             except:
                 pass
@@ -229,7 +229,7 @@ if not ELITE_MODULES_AVAILABLE:
             # Check PumpFun tokens near graduation
             for token in tokens:
                 try:
-                    if token in pumpfun_tokens:
+                    if 'pumpfun_tokens' in globals() and token in pumpfun_tokens:
                         status = await check_pumpfun_token_status(token)
                         if status and status.get("progress", 0) > 90:
                             return token  # About to graduate!
@@ -301,7 +301,7 @@ async def status():
     }
 
 # ============================================
-# TELEGRAM WEBHOOK HANDLER (FIXED)
+# TELEGRAM WEBHOOK HANDLER (FULLY FIXED)
 # ============================================
 
 @app.post("/webhook")
@@ -435,6 +435,21 @@ async def telegram_webhook(request: Request):
             
             await send_telegram_alert(tracking_info)
             
+        elif text == "/config":
+            # Show current configuration
+            config_msg = f"""
+⚙️ Current Configuration:
+RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', 'Not set')} SOL
+BUY_AMOUNT_SOL: {os.getenv('BUY_AMOUNT_SOL', '0.05')} SOL
+MIN_AI_SCORE: {os.getenv('MIN_AI_SCORE', '0.10')}
+MIN_LP_USD: {os.getenv('MIN_LP_USD', 'Not set')}
+MIN_VOLUME_USD: {os.getenv('MIN_VOLUME_USD', 'Not set')}
+PUMPFUN_MIGRATION_BUY: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL
+Elite Features: {'ON' if ENABLE_ELITE_FEATURES else 'OFF'}
+MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
+"""
+            await send_telegram_alert(config_msg)
+            
         elif text == "/ping":
             await send_telegram_alert("🏓 Pong! Elite bot operational! 💰")
             
@@ -449,6 +464,7 @@ async def telegram_webhook(request: Request):
 /elite - Toggle elite features
 /launch - Launch sniper systems
 /pumpfun - PumpFun tracking status
+/config - Show configuration
 /ping - Test commands
 /help - Show this message
 
@@ -468,7 +484,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
 # ============================================
-# ELITE BUY FUNCTION WITH ALL FEATURES (FIXED)
+# ELITE BUY FUNCTION WITH ALL FEATURES (FULLY FIXED)
 # ============================================
 
 async def elite_buy_token(mint: str, force_amount: float = None):
@@ -489,7 +505,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... - Potential honeypot detected")
                 return False
         
-        # 2. COMPETITION ANALYSIS
+        # 2. COMPETITION ANALYSIS (FIXED)
         try:
             competition_level = await mev_protection.estimate_competition_level(mint)
             competitor_count = await competitor_analyzer.count_competing_bots(mint)
@@ -505,8 +521,8 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             amount_sol = force_amount
             ai_score = 1.0  # Max score for forced buys
         else:
-            # Check cached pool data first
-            cached_pool = speed_optimizer.get_cached_pool(mint)
+            # Check cached pool data first (FIXED)
+            cached_pool = speed_optimizer.get_cached_pool(mint) if hasattr(speed_optimizer, 'get_cached_pool') else None
             
             # Get pool data
             if cached_pool:
@@ -516,7 +532,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 try:
                     from utils import get_liquidity_and_ownership
                     lp_data = await get_liquidity_and_ownership(mint)
-                    if lp_data:
+                    if lp_data and hasattr(speed_optimizer, 'cache_pool_data'):
                         speed_optimizer.cache_pool_data(mint, lp_data)
                 except:
                     lp_data = {}
@@ -532,7 +548,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             
             # Check if it's a PumpFun migration (auto high score)
             try:
-                if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
+                if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
                     ai_score = max(ai_score, 0.8)  # Minimum 0.8 score for migrations
                     logging.info(f"[ELITE] PumpFun migration detected - boosted score to {ai_score:.2f}")
             except:
@@ -850,8 +866,9 @@ async def elite_performance_monitor():
                 # Get list of recent tokens
                 recent_tokens = []
                 try:
-                    if 'pumpfun_tokens' in globals():
-                        recent_tokens = list(pumpfun_tokens.keys())[-20:] if pumpfun_tokens else []
+                    from sniper_logic import pumpfun_tokens
+                    if pumpfun_tokens:
+                        recent_tokens = list(pumpfun_tokens.keys())[-20:]
                 except:
                     pass
                     
