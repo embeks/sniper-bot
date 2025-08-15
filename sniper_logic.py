@@ -657,7 +657,13 @@ async def trending_scanner():
                 if consecutive_failures >= max_consecutive_failures:
                     logging.warning(f"[Trending Scanner] Both APIs unavailable")
                     consecutive_failures = 0
+                    await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
+                    continue
+                
+                await asyncio.sleep(TREND_SCAN_INTERVAL)
+                continue
             
+            consecutive_failures = 0
             processed = 0
             quality_finds = 0
             
@@ -721,6 +727,7 @@ async def trending_scanner():
                     
                     try:
                         # Use higher amount for PumpFun graduates
+                        original_amount = None
                         if is_pumpfun_grad:
                             original_amount = os.getenv("BUY_AMOUNT_SOL")
                             os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
@@ -859,7 +866,3 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
-                await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
-                continue
-            
-            consecutive_failures = 0
