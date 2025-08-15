@@ -87,7 +87,7 @@ if not ELITE_MODULES_AVAILABLE:
     class SpeedOptimizer:
         def __init__(self):
             self.connection_pool = {}
-            self.cached_pools = {}
+            self.cached_pools = {}  # FIXED: Initialize this
             self.cache_time = {}
             
         async def prewarm_connections(self):
@@ -293,7 +293,7 @@ async def status():
         "listeners": "active",
         "mode": "elite" if ENABLE_ELITE_FEATURES else "standard",
         "mev_protection": "active" if USE_JITO_BUNDLES else "disabled",
-        "cached_pools": len(speed_optimizer.cached_pools),
+        "cached_pools": len(speed_optimizer.cached_pools) if hasattr(speed_optimizer, 'cached_pools') else 0,
         "pumpfun_tracking": len(pumpfun_tokens) if 'pumpfun_tokens' in globals() else 0,
         "migration_watch": len(migration_watch_list) if 'migration_watch_list' in globals() else 0,
         "total_profit": f"{revenue_optimizer.total_profit:.2f} SOL",
@@ -301,7 +301,7 @@ async def status():
     }
 
 # ============================================
-# TELEGRAM WEBHOOK HANDLER
+# TELEGRAM WEBHOOK HANDLER (FIXED)
 # ============================================
 
 @app.post("/webhook")
@@ -343,21 +343,47 @@ async def telegram_webhook(request: Request):
                 
         elif text == "/status":
             try:
-                from utils import daily_stats
+                # FIXED: Proper status handling with error checking
                 status_msg = get_bot_status_message()
                 elite_stats = f"\n\n🎯 ELITE STATS:\n"
-                elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
-                elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens) if 'pumpfun_tokens' in globals() else 0}\n"
-                elite_stats += f"• Migration Watch: {len(migration_watch_list) if 'migration_watch_list' in globals() else 0}\n"
+                
+                # Check if attributes exist before accessing
+                if hasattr(speed_optimizer, 'cached_pools'):
+                    elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
+                else:
+                    elite_stats += f"• Cached Pools: 0\n"
+                
+                # Check pumpfun_tokens exists
+                try:
+                    from sniper_logic import pumpfun_tokens
+                    elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens)}\n"
+                except:
+                    elite_stats += f"• PumpFun Tracking: 0\n"
+                
+                # Check migration_watch_list exists
+                try:
+                    from sniper_logic import migration_watch_list
+                    elite_stats += f"• Migration Watch: {len(migration_watch_list)}\n"
+                except:
+                    elite_stats += f"• Migration Watch: 0\n"
+                
                 elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
+                
                 if revenue_optimizer.total_trades > 0:
-                    elite_stats += f"• Win Rate: {(revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100):.1f}%"
+                    win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
+                    elite_stats += f"• Win Rate: {win_rate:.1f}%"
+                else:
+                    elite_stats += f"• Win Rate: 0.0%"
                 
                 await send_telegram_alert(f"📊 Status:\n{status_msg}{elite_stats}")
             except Exception as e:
                 # Fallback if status has issues
-                await send_telegram_alert(f"📊 Bot is {'running' if is_bot_running() else 'paused'}\n\nError getting full status: {str(e)[:100]}")
-                
+                try:
+                    basic_status = f"📊 Bot is {'running' if is_bot_running() else 'paused'}"
+                    await send_telegram_alert(f"{basic_status}\n\nDetailed stats temporarily unavailable.")
+                except:
+                    await send_telegram_alert("📊 Bot status check failed. Bot may still be running.")
+                    
         elif text.startswith("/forcebuy "):
             parts = text.split(" ")
             if len(parts) >= 2:
@@ -389,18 +415,23 @@ async def telegram_webhook(request: Request):
         elif text == "/pumpfun":
             # Show PumpFun tracking status
             tracking_info = f"📈 PumpFun Tracking:\n\n"
-            tracking_info += f"Total Tracked: {len(pumpfun_tokens) if 'pumpfun_tokens' in globals() else 0}\n"
-            tracking_info += f"Migration Watch: {len(migration_watch_list) if 'migration_watch_list' in globals() else 0}\n"
             
-            if 'migration_watch_list' in globals() and migration_watch_list:
-                tracking_info += "\nTokens Near Graduation:\n"
-                for mint in list(migration_watch_list)[:5]:
-                    try:
-                        status = await check_pumpfun_token_status(mint)
-                        if status:
-                            tracking_info += f"• {mint[:8]}... ({status.get('progress', 0):.1f}%)\n"
-                    except:
-                        pass
+            try:
+                from sniper_logic import pumpfun_tokens, migration_watch_list
+                tracking_info += f"Total Tracked: {len(pumpfun_tokens)}\n"
+                tracking_info += f"Migration Watch: {len(migration_watch_list)}\n"
+                
+                if migration_watch_list:
+                    tracking_info += "\nTokens Near Graduation:\n"
+                    for mint in list(migration_watch_list)[:5]:
+                        try:
+                            status = await check_pumpfun_token_status(mint)
+                            if status:
+                                tracking_info += f"• {mint[:8]}... ({status.get('progress', 0):.1f}%)\n"
+                        except:
+                            pass
+            except:
+                tracking_info += "No PumpFun data available yet."
             
             await send_telegram_alert(tracking_info)
             
