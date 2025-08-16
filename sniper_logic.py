@@ -280,7 +280,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED Raydium detection"""
+    """Enhanced mempool listener with FIXED detection logic"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -388,10 +388,10 @@ async def mempool_listener(name, program_id=None):
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # ENHANCED POOL DETECTION WITH DEBUG
+                        # FIXED POOL DETECTION LOGIC
                         is_pool_creation = False
                         
-                        # DEBUG: Log Raydium transactions
+                        # DEBUG: Log every 50 transactions for Raydium
                         if name == "Raydium" and transaction_counter % 50 == 0:
                             logging.info(f"[RAYDIUM DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
                             for log in logs[:2]:
@@ -401,66 +401,67 @@ async def mempool_listener(name, program_id=None):
                             log_lower = log.lower()
                             
                             if name == "Raydium":
-                                # ENHANCED: More comprehensive Raydium pool detection
-                                if any(x in log_lower for x in [
-                                    "initialize2",           # V4 pools
-                                    "init_pc_amount",        
-                                    "init_coin_amount",      
-                                    "initializepool",        
-                                    "create pool",           
-                                    "add liquidity",         
-                                    # NEW ADDITIONS:
-                                    "initialize pool",       # V3 pools
-                                    "raydium add liquidity", 
-                                    "init_pool",            
-                                    "pool initialized",      
-                                    "swap pool created",     
-                                    "amm pool created",      
-                                    "liquidity pool",        
-                                    "new pool",
-                                    "openbook market",
-                                    "initialize_amm",        # AMM specific
-                                    "create_amm",           
-                                    "init amm"              
-                                ]):
-                                    is_pool_creation = True
-                                    logging.info(f"[RAYDIUM] Pool creation keyword found: {log[:100]}")
-                                    break
+                                # FIXED: More specific Raydium detection
+                                raydium_creation_keywords = [
+                                    "initialize2",
+                                    "init_pc_amount",
+                                    "init_coin_amount",
+                                    "ray_log: InitializeInstruction2",
+                                    "initialize_amm",
+                                    "create_amm_v4"
+                                ]
                                 
-                                # NUCLEAR OPTION: If Raydium + many accounts
-                                if not is_pool_creation:
-                                    if "raydium" in log_lower and len(account_keys) > 15:
-                                        is_pool_creation = True
-                                        logging.info(f"[RAYDIUM] Nuclear detection: {len(account_keys)} accounts")
-                                        break
+                                # Must have Raydium program AND creation keyword
+                                if "675kpx9mhtjs2zt1qfr1nyhuzelfqm9h24wfsut1mp8" in log_lower:
+                                    for keyword in raydium_creation_keywords:
+                                        if keyword in log_lower:
+                                            is_pool_creation = True
+                                            logging.info(f"[RAYDIUM] Pool creation detected via keyword: {keyword}")
+                                            break
                                 
-                                # Check for any success with many accounts
-                                if not is_pool_creation:
-                                    if "success" in log_lower and len(account_keys) > 20:
+                                # Additional check: many accounts + Raydium program
+                                if not is_pool_creation and len(account_keys) > 20:
+                                    if program_id in account_keys and "success" in log_lower:
                                         is_pool_creation = True
-                                        logging.info(f"[RAYDIUM] Success with {len(account_keys)} accounts")
-                                        break
+                                        logging.info(f"[RAYDIUM] Pool creation detected via account count: {len(account_keys)}")
                             
                             elif name == "Jupiter":
-                                if any(x in log_lower for x in [
-                                    "initialize_pool",       
-                                    "create_pool",          
-                                    "createpool",           
-                                    "pool_created",         
-                                    "new_pool"              
-                                ]):
-                                    is_pool_creation = True
-                                    break
+                                jupiter_keywords = [
+                                    "initialize_pool",
+                                    "create_pool",
+                                    "createpool",
+                                    "pool_created",
+                                    "new_pool"
+                                ]
+                                if "jup" in log_lower:
+                                    for keyword in jupiter_keywords:
+                                        if keyword in log_lower:
+                                            is_pool_creation = True
+                                            break
                             
                             elif name == "PumpFun":
-                                if "create" in log_lower:
-                                    is_pool_creation = True
-                                    break
+                                # FIXED: More specific PumpFun detection
+                                # Must mention PumpFun program specifically
+                                if "6ef8rrecth" in log_lower or "pump" in log_lower:
+                                    pumpfun_keywords = [
+                                        "create_token",
+                                        "token_created",
+                                        "bonding_curve",
+                                        "pump.fun"
+                                    ]
+                                    for keyword in pumpfun_keywords:
+                                        if keyword in log_lower:
+                                            is_pool_creation = True
+                                            break
+                                    
+                                    # Only check for generic "create" if PumpFun program is confirmed
+                                    if not is_pool_creation and "create" in log_lower and "token" in log_lower:
+                                        if program_id in account_keys:
+                                            is_pool_creation = True
                             
                             elif name == "Moonshot":
-                                if "launch" in log_lower or "initialize" in log_lower:
+                                if ("launch" in log_lower or "initialize" in log_lower) and "moon" in log_lower:
                                     is_pool_creation = True
-                                    break
                         
                         if not is_pool_creation:
                             continue
