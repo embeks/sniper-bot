@@ -280,7 +280,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED detection logic"""
+    """Enhanced mempool listener with FIXED detection logic and FIXED WebSocket subscription"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -320,13 +320,22 @@ async def mempool_listener(name, program_id=None):
                 max_size=10**7
             )
             
+            # CRITICAL FIX: Request transaction details to get account keys
             await ws.send(json.dumps({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "logsSubscribe",
                 "params": [
-                    {"mentions": [program_id]},
-                    {"commitment": "processed"}
+                    {
+                        "mentions": [program_id]
+                    },
+                    {
+                        "commitment": "processed",
+                        "encoding": "jsonParsed",  # ADDED: Get parsed JSON
+                        "transactionDetails": "full",  # ADDED: Get full transaction details
+                        "showRewards": False,
+                        "maxSupportedTransactionVersion": 0
+                    }
                 ]
             }))
             
@@ -373,7 +382,24 @@ async def mempool_listener(name, program_id=None):
                         result = data.get("params", {}).get("result", {})
                         value = result.get("value", {})
                         logs = value.get("logs", [])
-                        account_keys = value.get("accountKeys", [])
+                        
+                        # FIXED: Try multiple ways to get account keys
+                        account_keys = []
+                        
+                        # Method 1: Direct accountKeys
+                        if "accountKeys" in value and value["accountKeys"]:
+                            account_keys = value["accountKeys"]
+                        
+                        # Method 2: From transaction.message
+                        elif "transaction" in value:
+                            tx = value["transaction"]
+                            if "message" in tx and "accountKeys" in tx["message"]:
+                                account_keys = tx["message"]["accountKeys"]
+                        
+                        # Method 3: From accounts array
+                        elif "accounts" in value:
+                            account_keys = value["accounts"]
+                        
                         signature = value.get("signature", "")
                         
                         if signature in processed_txs:
@@ -388,14 +414,14 @@ async def mempool_listener(name, program_id=None):
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
+                        # DEBUG: Log account keys status every 50 transactions
+                        if transaction_counter % 50 == 0:
+                            logging.info(f"[{name} DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
+                            if len(account_keys) > 0:
+                                logging.info(f"[{name} DEBUG] Sample account: {account_keys[0][:8] if account_keys else 'none'}...")
+                        
                         # FIXED POOL DETECTION LOGIC
                         is_pool_creation = False
-                        
-                        # DEBUG: Log every 50 transactions for Raydium
-                        if name == "Raydium" and transaction_counter % 50 == 0:
-                            logging.info(f"[RAYDIUM DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
-                            for log in logs[:2]:
-                                logging.info(f"[RAYDIUM DEBUG] Log sample: {log[:100]}")
                         
                         for log in logs:
                             log_lower = log.lower()
@@ -408,11 +434,12 @@ async def mempool_listener(name, program_id=None):
                                     "init_coin_amount",
                                     "ray_log: InitializeInstruction2",
                                     "initialize_amm",
-                                    "create_amm_v4"
+                                    "create_amm_v4",
+                                    "initialize pool"
                                 ]
                                 
                                 # Must have Raydium program AND creation keyword
-                                if "675kpx9mhtjs2zt1qfr1nyhuzelfqm9h24wfsut1mp8" in log_lower:
+                                if "675kpx9mhtjs2zt1qfr1nyhuzelfqm9h24wfsut1mp8" in log_lower or "raydium" in log_lower:
                                     for keyword in raydium_creation_keywords:
                                         if keyword in log_lower:
                                             is_pool_creation = True
@@ -421,7 +448,7 @@ async def mempool_listener(name, program_id=None):
                                 
                                 # Additional check: many accounts + Raydium program
                                 if not is_pool_creation and len(account_keys) > 20:
-                                    if program_id in account_keys and "success" in log_lower:
+                                    if "success" in log_lower and "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" in str(account_keys):
                                         is_pool_creation = True
                                         logging.info(f"[RAYDIUM] Pool creation detected via account count: {len(account_keys)}")
                             
@@ -437,6 +464,7 @@ async def mempool_listener(name, program_id=None):
                                     for keyword in jupiter_keywords:
                                         if keyword in log_lower:
                                             is_pool_creation = True
+                                            logging.info(f"[JUPITER] Pool creation detected via keyword: {keyword}")
                                             break
                             
                             elif name == "PumpFun":
@@ -452,16 +480,19 @@ async def mempool_listener(name, program_id=None):
                                     for keyword in pumpfun_keywords:
                                         if keyword in log_lower:
                                             is_pool_creation = True
+                                            logging.info(f"[PUMPFUN] Token creation detected via keyword: {keyword}")
                                             break
                                     
                                     # Only check for generic "create" if PumpFun program is confirmed
                                     if not is_pool_creation and "create" in log_lower and "token" in log_lower:
-                                        if program_id in account_keys:
+                                        if "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" in str(account_keys):
                                             is_pool_creation = True
+                                            logging.info(f"[PUMPFUN] Token creation detected via create + token")
                             
                             elif name == "Moonshot":
                                 if ("launch" in log_lower or "initialize" in log_lower) and "moon" in log_lower:
                                     is_pool_creation = True
+                                    logging.info(f"[MOONSHOT] Token launch detected")
                         
                         if not is_pool_creation:
                             continue
@@ -469,10 +500,18 @@ async def mempool_listener(name, program_id=None):
                         pool_creations_found += 1
                         logging.info(f"[{name}] POOL CREATION DETECTED! Total found: {pool_creations_found}")
                         
-                        # Process potential mints
+                        # Process potential mints only if we have account keys
+                        if len(account_keys) == 0:
+                            logging.warning(f"[{name}] Pool creation detected but no account keys available")
+                            continue
+                        
                         potential_mints = []
                         
                         for i, key in enumerate(account_keys):
+                            # Handle different account key formats
+                            if isinstance(key, dict):
+                                key = key.get("pubkey", "") or key.get("address", "")
+                            
                             if key in SYSTEM_PROGRAMS:
                                 continue
                             if key == "So11111111111111111111111111111111111111112":
