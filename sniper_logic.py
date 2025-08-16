@@ -68,6 +68,77 @@ SYSTEM_PROGRAMS = [
     "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
 ]
 
+# ============================================
+# FIX: Function to fetch transaction accounts when WebSocket doesn't provide them
+# ============================================
+
+async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> list:
+    """
+    Fetch full transaction details to get account keys
+    Since Helius WebSocket doesn't provide account keys, we fetch them separately
+    """
+    try:
+        if not rpc_url:
+            rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
+            # Try Helius first if available
+            if HELIUS_API:
+                rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+        
+        # Use httpx for async request
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [
+                        signature,
+                        {
+                            "encoding": "json",
+                            "maxSupportedTransactionVersion": 0
+                        }
+                    ]
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "result" in data and data["result"]:
+                    result = data["result"]
+                    
+                    # Extract account keys from transaction
+                    account_keys = []
+                    
+                    # Try to get from transaction.message.accountKeys
+                    if "transaction" in result:
+                        tx = result["transaction"]
+                        if "message" in tx:
+                            msg = tx["message"]
+                            
+                            # Get static account keys
+                            if "accountKeys" in msg:
+                                for key in msg["accountKeys"]:
+                                    if isinstance(key, str):
+                                        account_keys.append(key)
+                                    elif isinstance(key, dict) and "pubkey" in key:
+                                        account_keys.append(key["pubkey"])
+                            
+                            # Get keys from address lookup tables if present
+                            if "addressTableLookups" in msg:
+                                for lookup in msg["addressTableLookups"]:
+                                    if "accountKey" in lookup:
+                                        account_keys.append(lookup["accountKey"])
+                    
+                    logging.info(f"[TX FETCH] Got {len(account_keys)} accounts for {signature[:8]}...")
+                    return account_keys
+        
+        return []
+        
+    except Exception as e:
+        logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
+        return []
+
 async def check_pumpfun_graduation(mint: str) -> bool:
     """Check if a PumpFun token is ready to graduate"""
     try:
@@ -280,7 +351,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED detection logic and FIXED WebSocket subscription"""
+    """Enhanced mempool listener with FIXED detection logic - NOW FETCHES FULL TRANSACTIONS"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -320,22 +391,14 @@ async def mempool_listener(name, program_id=None):
                 max_size=10**7
             )
             
-            # CRITICAL FIX: Request transaction details to get account keys
+            # Subscribe to logs (WebSocket won't give us account keys, but we'll fetch them separately)
             await ws.send(json.dumps({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "logsSubscribe",
                 "params": [
-                    {
-                        "mentions": [program_id]
-                    },
-                    {
-                        "commitment": "processed",
-                        "encoding": "jsonParsed",  # ADDED: Get parsed JSON
-                        "transactionDetails": "full",  # ADDED: Get full transaction details
-                        "showRewards": False,
-                        "maxSupportedTransactionVersion": 0
-                    }
+                    {"mentions": [program_id]},
+                    {"commitment": "processed"}
                 ]
             }))
             
@@ -382,24 +445,7 @@ async def mempool_listener(name, program_id=None):
                         result = data.get("params", {}).get("result", {})
                         value = result.get("value", {})
                         logs = value.get("logs", [])
-                        
-                        # FIXED: Try multiple ways to get account keys
-                        account_keys = []
-                        
-                        # Method 1: Direct accountKeys
-                        if "accountKeys" in value and value["accountKeys"]:
-                            account_keys = value["accountKeys"]
-                        
-                        # Method 2: From transaction.message
-                        elif "transaction" in value:
-                            tx = value["transaction"]
-                            if "message" in tx and "accountKeys" in tx["message"]:
-                                account_keys = tx["message"]["accountKeys"]
-                        
-                        # Method 3: From accounts array
-                        elif "accounts" in value:
-                            account_keys = value["accounts"]
-                        
+                        account_keys = value.get("accountKeys", [])  # This will be empty from WebSocket
                         signature = value.get("signature", "")
                         
                         if signature in processed_txs:
@@ -414,11 +460,9 @@ async def mempool_listener(name, program_id=None):
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # DEBUG: Log account keys status every 50 transactions
+                        # DEBUG: Log every 50 transactions
                         if transaction_counter % 50 == 0:
                             logging.info(f"[{name} DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
-                            if len(account_keys) > 0:
-                                logging.info(f"[{name} DEBUG] Sample account: {account_keys[0][:8] if account_keys else 'none'}...")
                         
                         # FIXED POOL DETECTION LOGIC
                         is_pool_creation = False
@@ -427,7 +471,7 @@ async def mempool_listener(name, program_id=None):
                             log_lower = log.lower()
                             
                             if name == "Raydium":
-                                # FIXED: More specific Raydium detection
+                                # More specific Raydium detection
                                 raydium_creation_keywords = [
                                     "initialize2",
                                     "init_pc_amount",
@@ -445,12 +489,6 @@ async def mempool_listener(name, program_id=None):
                                             is_pool_creation = True
                                             logging.info(f"[RAYDIUM] Pool creation detected via keyword: {keyword}")
                                             break
-                                
-                                # Additional check: many accounts + Raydium program
-                                if not is_pool_creation and len(account_keys) > 20:
-                                    if "success" in log_lower and "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" in str(account_keys):
-                                        is_pool_creation = True
-                                        logging.info(f"[RAYDIUM] Pool creation detected via account count: {len(account_keys)}")
                             
                             elif name == "Jupiter":
                                 jupiter_keywords = [
@@ -468,8 +506,7 @@ async def mempool_listener(name, program_id=None):
                                             break
                             
                             elif name == "PumpFun":
-                                # FIXED: More specific PumpFun detection
-                                # Must mention PumpFun program specifically
+                                # More specific PumpFun detection
                                 if "6ef8rrecth" in log_lower or "pump" in log_lower:
                                     pumpfun_keywords = [
                                         "create_token",
@@ -485,9 +522,8 @@ async def mempool_listener(name, program_id=None):
                                     
                                     # Only check for generic "create" if PumpFun program is confirmed
                                     if not is_pool_creation and "create" in log_lower and "token" in log_lower:
-                                        if "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" in str(account_keys):
-                                            is_pool_creation = True
-                                            logging.info(f"[PUMPFUN] Token creation detected via create + token")
+                                        is_pool_creation = True
+                                        logging.info(f"[PUMPFUN] Token creation detected via create + token")
                             
                             elif name == "Moonshot":
                                 if ("launch" in log_lower or "initialize" in log_lower) and "moon" in log_lower:
@@ -500,11 +536,18 @@ async def mempool_listener(name, program_id=None):
                         pool_creations_found += 1
                         logging.info(f"[{name}] POOL CREATION DETECTED! Total found: {pool_creations_found}")
                         
-                        # Process potential mints only if we have account keys
+                        # CRITICAL FIX: Fetch full transaction since WebSocket doesn't provide account keys
                         if len(account_keys) == 0:
-                            logging.warning(f"[{name}] Pool creation detected but no account keys available")
-                            continue
+                            logging.info(f"[{name}] No account keys from WebSocket, fetching full transaction...")
+                            account_keys = await fetch_transaction_accounts(signature)
+                            
+                            if len(account_keys) == 0:
+                                logging.warning(f"[{name}] Could not fetch account keys for transaction")
+                                continue
+                            else:
+                                logging.info(f"[{name}] Successfully fetched {len(account_keys)} accounts")
                         
+                        # Process potential mints
                         potential_mints = []
                         
                         for i, key in enumerate(account_keys):
