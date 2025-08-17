@@ -428,7 +428,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with quality filtering"""
+    """Enhanced mempool listener with FIXED detection logic"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -541,58 +541,97 @@ async def mempool_listener(name, program_id=None):
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # STRICT POOL DETECTION - Only real pools
+                        # ================== FIXED DETECTION LOGIC ==================
                         is_pool_creation = False
                         
                         if name == "Raydium":
-                            # Look for specific Raydium pool creation patterns
+                            # STRICT Raydium pool creation detection
                             raydium_indicators = 0
-                            has_initialize = False
-                            has_create = False
+                            has_init_pool = False
+                            has_create_pool = False
+                            has_liquidity = False
                             
                             for log in logs:
                                 log_lower = log.lower()
                                 
-                                if "initialize" in log_lower and "pool" in log_lower:
-                                    has_initialize = True
-                                    raydium_indicators += 2
+                                # Look for specific Raydium pool initialization
+                                if "initialize" in log_lower and ("pool" in log_lower or "amm" in log_lower):
+                                    has_init_pool = True
+                                    raydium_indicators += 3
                                 
+                                # Look for pool creation
                                 if "create" in log_lower and ("pool" in log_lower or "amm" in log_lower):
-                                    has_create = True
+                                    has_create_pool = True
+                                    raydium_indicators += 3
+                                
+                                # Look for liquidity addition (essential for new pools)
+                                if "add_liquidity" in log_lower or "deposit" in log_lower:
+                                    has_liquidity = True
                                     raydium_indicators += 2
                                 
-                                if "add_liquidity" in log_lower or "init_pc_amount" in log_lower:
-                                    raydium_indicators += 1
+                                # Raydium-specific instruction names
+                                if any(x in log_lower for x in ["init_pc_amount", "init_coin_amount", "opentime"]):
+                                    raydium_indicators += 2
                             
-                            # Need strong indicators for pool creation
-                            if raydium_indicators >= 4 and (has_initialize or has_create):
-                                is_pool_creation = True
-                                logging.info(f"[RAYDIUM] VERIFIED pool creation with {raydium_indicators} indicators")
+                            # Need multiple strong indicators for real pool creation
+                            if raydium_indicators >= 5 and (has_init_pool or has_create_pool):
+                                # Additional validation: check instruction count
+                                # Real pool creations have many instructions (usually 10+)
+                                if len(logs) >= 10:
+                                    is_pool_creation = True
+                                    logging.info(f"[RAYDIUM] VERIFIED pool creation - Score: {raydium_indicators}, Logs: {len(logs)}")
                         
                         elif name == "PumpFun":
-                            # PumpFun has clear token creation patterns
+                            # PumpFun ONLY for NEW token creation, not trades
+                            pumpfun_create_indicators = 0
+                            
                             for log in logs:
                                 log_lower = log.lower()
-                                if "pump" in log_lower and ("create" in log_lower or "token" in log_lower or "launch" in log_lower):
+                                
+                                # PumpFun specific creation patterns
+                                if "create" in log_lower and ("token" in log_lower or "coin" in log_lower):
+                                    pumpfun_create_indicators += 3
+                                
+                                if "initialize" in log_lower and "mint" in log_lower:
+                                    pumpfun_create_indicators += 2
+                                
+                                # PumpFun uses "launch" for new tokens
+                                if "launch" in log_lower:
+                                    pumpfun_create_indicators += 3
+                                
+                                # Bonding curve initialization is key indicator
+                                if "bonding" in log_lower and ("init" in log_lower or "create" in log_lower):
+                                    pumpfun_create_indicators += 4
+                            
+                            # PumpFun token creation needs strong indicators
+                            # AND should NOT be a simple swap (which has fewer logs)
+                            if pumpfun_create_indicators >= 3 and len(logs) >= 5:
+                                # Filter out swaps - they have different patterns
+                                is_swap = any("swap" in log.lower() or "trade" in log.lower() for log in logs)
+                                if not is_swap:
                                     is_pool_creation = True
-                                    break
+                                    logging.info(f"[PUMPFUN] NEW TOKEN CREATION - Score: {pumpfun_create_indicators}")
                         
                         elif name == "Moonshot":
+                            # Moonshot token launches
                             for log in logs:
                                 log_lower = log.lower()
-                                if "moon" in log_lower and ("launch" in log_lower or "initialize" in log_lower):
-                                    is_pool_creation = True
-                                    break
+                                if ("moon" in log_lower or "launch" in log_lower) and ("create" in log_lower or "initialize" in log_lower):
+                                    if len(logs) >= 5:  # Real launches have multiple logs
+                                        is_pool_creation = True
+                                        break
                         
-                        # Skip Jupiter noise - it's too unreliable
                         elif name == "Jupiter":
-                            continue  # Skip all Jupiter mempool events
+                            # Skip Jupiter entirely - too noisy and unreliable
+                            continue
+                        
+                        # ================== END FIXED DETECTION LOGIC ==================
                         
                         if not is_pool_creation:
                             continue
                         
                         pool_creations_found += 1
-                        logging.info(f"[{name}] POOL CREATION DETECTED! Total found: {pool_creations_found}")
+                        logging.info(f"[{name}] REAL POOL/TOKEN CREATION DETECTED! Total found: {pool_creations_found}")
                         
                         # Fetch full transaction if needed
                         if len(account_keys) == 0:
