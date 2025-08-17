@@ -39,20 +39,18 @@ RISKY_BUY_AMOUNT = 0.01
 ULTRA_RISKY_BUY_AMOUNT = 0.005
 
 # PumpFun Migration Settings
-PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.05))  # Higher amount for migrations
-PUMPFUN_GRADUATION_MC = 69420  # ~$69k market cap trigger
+PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.05))
+PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
 
 seen_tokens = set()
 BLACKLIST = set()
 TASKS = []
 
-# Track PumpFun tokens and their migration status
-pumpfun_tokens = {}  # mint -> {"discovered": timestamp, "migrated": bool, "pool_id": str}
-migration_watch_list = set()  # Tokens close to graduation
-already_bought = set()  # Tokens we've already bought
+pumpfun_tokens = {}
+migration_watch_list = set()
+already_bought = set()
 
-# Initialize Raydium client
 raydium = RaydiumAggregatorClient(RPC_URL)
 
 last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
@@ -68,23 +66,14 @@ SYSTEM_PROGRAMS = [
     "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
 ]
 
-# ============================================
-# FIX: Function to fetch transaction accounts when WebSocket doesn't provide them
-# ============================================
-
 async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> list:
-    """
-    Fetch full transaction details to get account keys
-    Since Helius WebSocket doesn't provide account keys, we fetch them separately
-    """
+    """Fetch full transaction details to get account keys"""
     try:
         if not rpc_url:
             rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
-            # Try Helius first if available
             if HELIUS_API:
                 rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
         
-        # Use httpx for async request
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(
                 rpc_url,
@@ -106,17 +95,13 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
                 data = response.json()
                 if "result" in data and data["result"]:
                     result = data["result"]
-                    
-                    # Extract account keys from transaction
                     account_keys = []
                     
-                    # Try to get from transaction.message.accountKeys
                     if "transaction" in result:
                         tx = result["transaction"]
                         if "message" in tx:
                             msg = tx["message"]
                             
-                            # Get static account keys
                             if "accountKeys" in msg:
                                 for key in msg["accountKeys"]:
                                     if isinstance(key, str):
@@ -124,7 +109,6 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
                                     elif isinstance(key, dict) and "pubkey" in key:
                                         account_keys.append(key["pubkey"])
                             
-                            # Get keys from address lookup tables if present
                             if "addressTableLookups" in msg:
                                 for lookup in msg["addressTableLookups"]:
                                     if "accountKey" in lookup:
@@ -142,7 +126,6 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
 async def check_pumpfun_graduation(mint: str) -> bool:
     """Check if a PumpFun token is ready to graduate"""
     try:
-        # Check market cap via API
         url = f"https://frontend-api.pump.fun/coins/{mint}"
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(url)
@@ -150,8 +133,7 @@ async def check_pumpfun_graduation(mint: str) -> bool:
                 data = response.json()
                 market_cap = data.get("usd_market_cap", 0)
                 
-                # Check if approaching graduation threshold
-                if market_cap > PUMPFUN_GRADUATION_MC * 0.9:  # 90% of graduation
+                if market_cap > PUMPFUN_GRADUATION_MC * 0.9:
                     logging.info(f"[PumpFun] {mint[:8]}... approaching graduation: ${market_cap:.0f}")
                     return True
     except Exception as e:
@@ -159,12 +141,8 @@ async def check_pumpfun_graduation(mint: str) -> bool:
     
     return False
 
-# ============================================
-# NEW: GRADUATION SCANNER - BYPASSES DETECTION ISSUE
-# ============================================
-
 async def raydium_graduation_scanner():
-    """Check if PumpFun tokens graduated to Raydium - BYPASSES DETECTION ISSUE"""
+    """Check if PumpFun tokens graduated to Raydium"""
     if not ENABLE_PUMPFUN_MIGRATION:
         logging.info("[Graduation Scanner] Disabled via config")
         return
@@ -177,31 +155,24 @@ async def raydium_graduation_scanner():
                 await asyncio.sleep(30)
                 continue
             
-            # Get recent PumpFun tokens (last 100)
             recent_tokens = list(pumpfun_tokens.keys())[-100:] if pumpfun_tokens else []
             
             for mint in recent_tokens:
                 if mint in already_bought:
                     continue
                     
-                # Try to find Raydium pool
                 try:
                     pool = raydium.find_pool_realtime(mint)
                     if pool:
-                        # Found a graduated token!
                         logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has Raydium pool!")
                         
-                        # Mark as migrated
                         if mint in pumpfun_tokens:
                             pumpfun_tokens[mint]["migrated"] = True
                         
-                        # Check LP
                         lp_data = await get_liquidity_and_ownership(mint)
                         lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
                         
-                        # Check if meets threshold
                         if lp_amount >= RUG_LP_THRESHOLD:
-                            # BUY IT!
                             already_bought.add(mint)
                             
                             await send_telegram_alert(
@@ -211,7 +182,6 @@ async def raydium_graduation_scanner():
                                 f"Action: BUYING NOW!"
                             )
                             
-                            # Use migration buy amount
                             original_amount = os.getenv("BUY_AMOUNT_SOL")
                             os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
                             
@@ -234,10 +204,8 @@ async def raydium_graduation_scanner():
                             logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has pool but low LP: {lp_amount:.2f} SOL")
                             
                 except Exception as e:
-                    # Pool check failed, token hasn't graduated yet
                     pass
             
-            # Check every 30 seconds
             await asyncio.sleep(30)
             
         except Exception as e:
@@ -258,14 +226,11 @@ async def pumpfun_migration_monitor():
                 await asyncio.sleep(10)
                 continue
             
-            # Check tokens on watch list
             for mint in list(migration_watch_list):
                 if mint in pumpfun_tokens and not pumpfun_tokens[mint].get("migrated", False):
-                    # Check if it has migrated to Raydium
                     lp_data = await get_liquidity_and_ownership(mint)
                     
                     if lp_data and lp_data.get("liquidity", 0) > 0:
-                        # MIGRATION DETECTED!
                         pumpfun_tokens[mint]["migrated"] = True
                         migration_watch_list.discard(mint)
                         
@@ -277,7 +242,6 @@ async def pumpfun_migration_monitor():
                             f"Action: SNIPING NOW!"
                         )
                         
-                        # Execute migration snipe with higher amount
                         original_amount = os.getenv("BUY_AMOUNT_SOL")
                         os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
                         
@@ -297,11 +261,10 @@ async def pumpfun_migration_monitor():
                             if original_amount:
                                 os.environ["BUY_AMOUNT_SOL"] = original_amount
             
-            # Periodically check PumpFun API for tokens near graduation
-            if int(time.time()) % 60 == 0:  # Every minute
+            if int(time.time()) % 60 == 0:
                 await scan_pumpfun_graduations()
             
-            await asyncio.sleep(5)  # Check every 5 seconds
+            await asyncio.sleep(5)
             
         except Exception as e:
             logging.error(f"[Migration Monitor] Error: {e}")
@@ -310,7 +273,6 @@ async def pumpfun_migration_monitor():
 async def scan_pumpfun_graduations():
     """Scan PumpFun for tokens about to graduate"""
     try:
-        # Get trending PumpFun tokens
         url = "https://frontend-api.pump.fun/coins?offset=0&limit=50&sort=usd_market_cap&order=desc"
         
         async with httpx.AsyncClient(timeout=10) as client:
@@ -318,15 +280,14 @@ async def scan_pumpfun_graduations():
             if response.status_code == 200:
                 coins = response.json()
                 
-                for coin in coins[:20]:  # Check top 20 by market cap
+                for coin in coins[:20]:
                     mint = coin.get("mint")
                     market_cap = coin.get("usd_market_cap", 0)
                     
                     if not mint:
                         continue
                     
-                    # Track if approaching graduation
-                    if market_cap > PUMPFUN_GRADUATION_MC * 0.8:  # 80% of graduation threshold
+                    if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
                         if mint not in pumpfun_tokens:
                             pumpfun_tokens[mint] = {
                                 "discovered": time.time(),
@@ -338,7 +299,7 @@ async def scan_pumpfun_graduations():
                             migration_watch_list.add(mint)
                             logging.info(f"[PumpFun] Added {mint[:8]}... to migration watch (MC: ${market_cap:.0f})")
                             
-                            if market_cap > PUMPFUN_GRADUATION_MC * 0.95:  # 95% - very close!
+                            if market_cap > PUMPFUN_GRADUATION_MC * 0.95:
                                 await send_telegram_alert(
                                     f"⚠️ GRADUATION IMMINENT\n\n"
                                     f"Token: `{mint}`\n"
@@ -351,7 +312,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED detection logic - NOW FETCHES FULL TRANSACTIONS"""
+    """Enhanced mempool listener with FIXED detection and diagnostics"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -364,7 +325,6 @@ async def mempool_listener(name, program_id=None):
     heartbeat_interval = 30
     max_inactive = 300
     
-    # Set program ID based on listener name
     if program_id is None:
         if name == "Raydium":
             program_id = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
@@ -391,7 +351,6 @@ async def mempool_listener(name, program_id=None):
                 max_size=10**7
             )
             
-            # Subscribe to logs (WebSocket won't give us account keys, but we'll fetch them separately)
             await ws.send(json.dumps({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -445,7 +404,7 @@ async def mempool_listener(name, program_id=None):
                         result = data.get("params", {}).get("result", {})
                         value = result.get("value", {})
                         logs = value.get("logs", [])
-                        account_keys = value.get("accountKeys", [])  # This will be empty from WebSocket
+                        account_keys = value.get("accountKeys", [])
                         signature = value.get("signature", "")
                         
                         if signature in processed_txs:
@@ -457,78 +416,102 @@ async def mempool_listener(name, program_id=None):
                         
                         transaction_counter += 1
                         
+                        # DIAGNOSTIC LOGGING - Shows what we're getting
+                        if transaction_counter % 50 == 0:
+                            logging.info(f"[{name} DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
+                            
+                            # Show sample logs for Raydium to understand what's coming through
+                            if name == "Raydium" and transaction_counter % 200 == 0 and len(logs) > 10:
+                                logging.info(f"[{name} DIAGNOSTIC] Sample logs from transaction:")
+                                for log in logs[:3]:
+                                    logging.info(f"  Log: {log[:100]}")
+                                
+                                # Check if ANY relevant keywords exist
+                                all_logs_text = " ".join(logs).lower()
+                                potential_keywords = ["pool", "initialize", "create", "liquidity", "amm", "swap", "init"]
+                                found_keywords = [kw for kw in potential_keywords if kw in all_logs_text]
+                                if found_keywords:
+                                    logging.info(f"[{name} DIAGNOSTIC] Found keywords: {found_keywords}")
+                                    logging.info(f"[{name} DIAGNOSTIC] Signature: {signature}")
+                        
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # DEBUG: Log every 50 transactions
-                        if transaction_counter % 50 == 0:
-                            logging.info(f"[{name} DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
-                        
-                        # FIXED POOL DETECTION LOGIC
+                        # RELAXED POOL DETECTION - More likely to catch pools
                         is_pool_creation = False
                         
-                        for log in logs:
-                            log_lower = log.lower()
+                        # Special logging for high-activity transactions
+                        if len(logs) > 50:
+                            logging.info(f"[{name} HIGH ACTIVITY] Transaction with {len(logs)} logs - Signature: {signature}")
+                        
+                        # RELAXED DETECTION LOGIC
+                        if name == "Raydium":
+                            # Count indicators instead of requiring exact matches
+                            raydium_indicators = 0
                             
-                            if name == "Raydium":
-                                # More specific Raydium detection
-                                raydium_creation_keywords = [
-                                    "initialize2",
-                                    "init_pc_amount",
-                                    "init_coin_amount",
-                                    "ray_log: InitializeInstruction2",
-                                    "initialize_amm",
-                                    "create_amm_v4",
-                                    "initialize pool"
+                            for log in logs:
+                                log_lower = log.lower()
+                                
+                                # Check for Raydium program mention
+                                if "675kpx9mhtjs2zt1qfr1nyhuzelfqm9h24wfsut1mp8" in log_lower or "raydium" in log_lower:
+                                    raydium_indicators += 1
+                                
+                                # Check for pool-related keywords
+                                pool_keywords = [
+                                    "initialize", "init", "create", "pool", "liquidity", 
+                                    "amm", "add_liquidity", "new_pool", "swap_pool",
+                                    "initialize2", "init_pc_amount", "init_coin_amount"
                                 ]
                                 
-                                # Must have Raydium program AND creation keyword
-                                if "675kpx9mhtjs2zt1qfr1nyhuzelfqm9h24wfsut1mp8" in log_lower or "raydium" in log_lower:
-                                    for keyword in raydium_creation_keywords:
-                                        if keyword in log_lower:
-                                            is_pool_creation = True
-                                            logging.info(f"[RAYDIUM] Pool creation detected via keyword: {keyword}")
-                                            break
+                                for keyword in pool_keywords:
+                                    if keyword in log_lower:
+                                        raydium_indicators += 1
+                                        logging.info(f"[RAYDIUM] Found keyword: {keyword}")
+                                        break
+                                
+                                # High activity transactions with success
+                                if "success" in log_lower and len(logs) > 30:
+                                    raydium_indicators += 1
                             
-                            elif name == "Jupiter":
+                            # If we have multiple indicators, it's likely a pool
+                            if raydium_indicators >= 2:
+                                is_pool_creation = True
+                                logging.info(f"[RAYDIUM] POOL DETECTED with {raydium_indicators} indicators!")
+                                logging.info(f"[RAYDIUM] Signature: {signature}")
+                        
+                        elif name == "Jupiter":
+                            # Relaxed Jupiter detection
+                            for log in logs:
+                                log_lower = log.lower()
                                 jupiter_keywords = [
-                                    "initialize_pool",
-                                    "create_pool",
-                                    "createpool",
-                                    "pool_created",
-                                    "new_pool"
+                                    "initialize_pool", "create_pool", "createpool",
+                                    "pool_created", "new_pool", "jupiter"
                                 ]
-                                if "jup" in log_lower:
-                                    for keyword in jupiter_keywords:
-                                        if keyword in log_lower:
-                                            is_pool_creation = True
-                                            logging.info(f"[JUPITER] Pool creation detected via keyword: {keyword}")
-                                            break
-                            
-                            elif name == "PumpFun":
-                                # More specific PumpFun detection
-                                if "6ef8rrecth" in log_lower or "pump" in log_lower:
-                                    pumpfun_keywords = [
-                                        "create_token",
-                                        "token_created",
-                                        "bonding_curve",
-                                        "pump.fun"
-                                    ]
-                                    for keyword in pumpfun_keywords:
-                                        if keyword in log_lower:
-                                            is_pool_creation = True
-                                            logging.info(f"[PUMPFUN] Token creation detected via keyword: {keyword}")
-                                            break
-                                    
-                                    # Only check for generic "create" if PumpFun program is confirmed
-                                    if not is_pool_creation and "create" in log_lower and "token" in log_lower:
-                                        is_pool_creation = True
-                                        logging.info(f"[PUMPFUN] Token creation detected via create + token")
-                            
-                            elif name == "Moonshot":
-                                if ("launch" in log_lower or "initialize" in log_lower) and "moon" in log_lower:
+                                if any(keyword in log_lower for keyword in jupiter_keywords):
                                     is_pool_creation = True
-                                    logging.info(f"[MOONSHOT] Token launch detected")
+                                    logging.info(f"[JUPITER] Pool creation detected!")
+                                    break
+                        
+                        elif name == "PumpFun":
+                            # Relaxed PumpFun detection
+                            for log in logs:
+                                log_lower = log.lower()
+                                if ("pump" in log_lower or "6ef8rrecth" in log_lower):
+                                    pumpfun_keywords = [
+                                        "create", "token", "bonding", "curve", "launch"
+                                    ]
+                                    if any(keyword in log_lower for keyword in pumpfun_keywords):
+                                        is_pool_creation = True
+                                        logging.info(f"[PUMPFUN] Token creation detected!")
+                                        break
+                        
+                        elif name == "Moonshot":
+                            for log in logs:
+                                log_lower = log.lower()
+                                if "moon" in log_lower and any(kw in log_lower for kw in ["launch", "initialize", "create"]):
+                                    is_pool_creation = True
+                                    logging.info(f"[MOONSHOT] Token launch detected!")
+                                    break
                         
                         if not is_pool_creation:
                             continue
@@ -551,7 +534,6 @@ async def mempool_listener(name, program_id=None):
                         potential_mints = []
                         
                         for i, key in enumerate(account_keys):
-                            # Handle different account key formats
                             if isinstance(key, dict):
                                 key = key.get("pubkey", "") or key.get("address", "")
                             
@@ -562,7 +544,6 @@ async def mempool_listener(name, program_id=None):
                             if len(key) != 44:
                                 continue
                             
-                            # For Raydium/Jupiter, always process even if seen (for graduations)
                             if name in ["Raydium", "Jupiter"]:
                                 try:
                                     Pubkey.from_string(key)
@@ -570,7 +551,6 @@ async def mempool_listener(name, program_id=None):
                                 except:
                                     continue
                             else:
-                                # For PumpFun/Moonshot, skip if already seen
                                 if key in seen_tokens:
                                     continue
                                 try:
@@ -581,11 +561,9 @@ async def mempool_listener(name, program_id=None):
                         
                         # Process potential mints
                         for potential_mint in potential_mints:
-                            # Add to seen_tokens AFTER we process it
                             if potential_mint not in seen_tokens:
                                 seen_tokens.add(potential_mint)
                             
-                            # Track PumpFun tokens
                             if name == "PumpFun" and potential_mint not in pumpfun_tokens:
                                 pumpfun_tokens[potential_mint] = {
                                     "discovered": time.time(),
@@ -601,7 +579,6 @@ async def mempool_listener(name, program_id=None):
                             if name in ["Raydium", "Jupiter"] and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     
-                                    # Smart balance LP check
                                     await asyncio.sleep(0.2)
                                     
                                     lp_amount = 0
@@ -651,7 +628,6 @@ async def mempool_listener(name, program_id=None):
                                         "UNKNOWN": "❓"
                                     }.get(risk_level, "❓")
                                     
-                                    # Only buy if meets threshold
                                     if lp_amount >= RUG_LP_THRESHOLD:
                                         await send_telegram_alert(
                                             f"{risk_emoji} NEW TOKEN DETECTED {risk_emoji}\n\n"
@@ -693,7 +669,6 @@ async def mempool_listener(name, program_id=None):
                                         logging.info(f"[{name}] Skipping {potential_mint[:8]}... - LP too low: {lp_amount:.2f} SOL")
                                         
                             else:
-                                # For PumpFun/Moonshot, just track but don't buy
                                 if name in ["PumpFun", "Moonshot"]:
                                     logging.info(f"[{name}] New launch tracked: {potential_mint[:8]}...")
                                 
@@ -854,10 +829,8 @@ async def trending_scanner():
                 if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
                     continue
                 
-                # Check if it's a graduated PumpFun token
                 is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
                 
-                # Lower thresholds for PumpFun graduations
                 min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
                 min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
                 
@@ -881,7 +854,6 @@ async def trending_scanner():
                 is_mooning = price_change_h1 > 50 or price_change_h24 > 100
                 has_momentum = price_change_h1 > 20 and vol_usd > 50000
                 
-                # Always consider PumpFun graduations as quality
                 if is_mooning or has_momentum or is_pumpfun_grad:
                     quality_finds += 1
                     
@@ -902,7 +874,6 @@ async def trending_scanner():
                     )
                     
                     try:
-                        # Use higher amount for PumpFun graduates
                         original_amount = None
                         if is_pumpfun_grad:
                             original_amount = os.getenv("BUY_AMOUNT_SOL")
@@ -934,9 +905,8 @@ async def rug_filter_passes(mint: str) -> bool:
         data = await get_liquidity_and_ownership(mint)
         min_lp = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
         
-        # Lower threshold for PumpFun graduates
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
-            min_lp = min_lp / 2  # Half the normal threshold
+            min_lp = min_lp / 2
         
         if not data or data.get("liquidity", 0) < min_lp:
             logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp})")
@@ -947,7 +917,7 @@ async def rug_filter_passes(mint: str) -> bool:
         return False
 
 async def start_sniper():
-    """Start the ELITE sniper bot with PumpFun migration detection and GRADUATION SCANNER"""
+    """Start the ELITE sniper bot"""
     mode_text = "Smart Balance + Migration Sniper + Graduation Scanner"
     TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
     
@@ -979,10 +949,9 @@ async def start_sniper():
         asyncio.create_task(trending_scanner())
     ])
     
-    # Add PumpFun migration monitor
     if ENABLE_PUMPFUN_MIGRATION:
         TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
-        TASKS.append(asyncio.create_task(raydium_graduation_scanner()))  # NEW SCANNER!
+        TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
         await send_telegram_alert("🎯 PumpFun Migration Monitor: ACTIVE")
         await send_telegram_alert("🎓 Graduation Scanner: ACTIVE (checks every 30s)")
     
@@ -1001,7 +970,6 @@ async def start_sniper_with_forced_token(mint: str):
             await send_telegram_alert(f"❌ {mint} is blacklisted or broken")
             return
 
-        # Check if it's a PumpFun token
         is_pumpfun = mint in pumpfun_tokens
         buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
         
