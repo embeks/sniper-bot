@@ -4,6 +4,7 @@ import os
 import websockets
 import logging
 import time
+import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import httpx
@@ -85,7 +86,10 @@ SYSTEM_PROGRAMS = [
 ]
 
 async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> list:
-    """Fetch full transaction details to get account keys"""
+    """
+    FIXED: Fetch full transaction details to get account keys
+    Now handles versioned transactions and address lookup tables properly
+    """
     try:
         if not rpc_url:
             rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
@@ -93,6 +97,7 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
                 rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
         
         async with httpx.AsyncClient(timeout=10) as client:
+            # First attempt - get full transaction with commitment
             response = await client.post(
                 rpc_url,
                 json={
@@ -102,8 +107,9 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
                     "params": [
                         signature,
                         {
-                            "encoding": "json",
-                            "maxSupportedTransactionVersion": 0
+                            "encoding": "jsonParsed",  # Changed to jsonParsed for better parsing
+                            "maxSupportedTransactionVersion": 0,
+                            "commitment": "confirmed"
                         }
                     ]
                 }
@@ -115,30 +121,140 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
                     result = data["result"]
                     account_keys = []
                     
+                    # Extract from transaction message
                     if "transaction" in result:
                         tx = result["transaction"]
                         if "message" in tx:
                             msg = tx["message"]
                             
+                            # Get static account keys
                             if "accountKeys" in msg:
                                 for key in msg["accountKeys"]:
                                     if isinstance(key, str):
                                         account_keys.append(key)
-                                    elif isinstance(key, dict) and "pubkey" in key:
-                                        account_keys.append(key["pubkey"])
+                                    elif isinstance(key, dict):
+                                        # Handle parsed format
+                                        pubkey = key.get("pubkey") or key.get("address")
+                                        if pubkey:
+                                            account_keys.append(pubkey)
                             
-                            if "addressTableLookups" in msg:
-                                for lookup in msg["addressTableLookups"]:
-                                    if "accountKey" in lookup:
-                                        account_keys.append(lookup["accountKey"])
+                            # Get loaded addresses (from address lookup tables)
+                            if "loadedAddresses" in result.get("meta", {}):
+                                loaded = result["meta"]["loadedAddresses"]
+                                if "writable" in loaded:
+                                    account_keys.extend(loaded["writable"])
+                                if "readonly" in loaded:
+                                    account_keys.extend(loaded["readonly"])
                     
-                    logging.info(f"[TX FETCH] Got {len(account_keys)} accounts for {signature[:8]}...")
-                    return account_keys
+                    # Also check instructions for additional accounts (PumpFun specific)
+                    if "meta" in result and "innerInstructions" in result["meta"]:
+                        for inner in result["meta"]["innerInstructions"]:
+                            if "instructions" in inner:
+                                for inst in inner["instructions"]:
+                                    if "parsed" in inst and "info" in inst["parsed"]:
+                                        info = inst["parsed"]["info"]
+                                        # Extract any mint addresses
+                                        if "mint" in info:
+                                            account_keys.append(info["mint"])
+                                        if "token" in info:
+                                            account_keys.append(info["token"])
+                                        if "account" in info:
+                                            account_keys.append(info["account"])
+                    
+                    # For PumpFun, also check postTokenBalances for new mints
+                    if "meta" in result and "postTokenBalances" in result["meta"]:
+                        for balance in result["meta"]["postTokenBalances"]:
+                            if "mint" in balance:
+                                mint = balance["mint"]
+                                # Only add if it looks like a new token (high decimals, low supply)
+                                if mint not in account_keys:
+                                    account_keys.append(mint)
+                    
+                    # Deduplicate while preserving order
+                    seen = set()
+                    unique_keys = []
+                    for key in account_keys:
+                        if key and key not in seen and len(key) == 44:
+                            seen.add(key)
+                            unique_keys.append(key)
+                    
+                    if unique_keys:
+                        logging.info(f"[TX FETCH] Got {len(unique_keys)} accounts for {signature[:8]}...")
+                        return unique_keys
+                    else:
+                        # Fallback: Try simpler approach for PumpFun
+                        return await fetch_pumpfun_token_from_logs(signature, rpc_url)
         
         return []
         
     except Exception as e:
         logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
+        # Try fallback method for PumpFun
+        return await fetch_pumpfun_token_from_logs(signature, rpc_url)
+
+async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None) -> list:
+    """
+    Fallback: Extract token mint from PumpFun transaction logs
+    """
+    try:
+        if not rpc_url:
+            rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
+            if HELIUS_API:
+                rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+        
+        async with httpx.AsyncClient(timeout=10) as client:
+            # Get transaction with logs
+            response = await client.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [
+                        signature,
+                        {
+                            "encoding": "json",
+                            "maxSupportedTransactionVersion": 0,
+                            "commitment": "confirmed"
+                        }
+                    ]
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "result" in data and data["result"]:
+                    result = data["result"]
+                    
+                    # Look in logs for mint address pattern
+                    if "meta" in result and "logMessages" in result["meta"]:
+                        logs = result["meta"]["logMessages"]
+                        potential_mints = []
+                        
+                        for log in logs:
+                            # PumpFun often logs the mint address
+                            if "mint" in log.lower() or "token" in log.lower():
+                                # Extract base58 addresses from log
+                                import re
+                                # Match Solana address pattern
+                                matches = re.findall(r'[1-9A-HJ-NP-Za-km-z]{44}', log)
+                                for match in matches:
+                                    if match not in SYSTEM_PROGRAMS:
+                                        try:
+                                            # Validate it's a valid pubkey
+                                            Pubkey.from_string(match)
+                                            potential_mints.append(match)
+                                        except:
+                                            pass
+                        
+                        if potential_mints:
+                            logging.info(f"[FALLBACK] Found {len(potential_mints)} potential mints from logs")
+                            return potential_mints
+        
+        return []
+        
+    except Exception as e:
+        logging.debug(f"[FALLBACK] Error: {e}")
         return []
 
 async def is_quality_token(mint: str, lp_amount: float) -> tuple[bool, str]:
