@@ -103,6 +103,15 @@ REDUCED_HOURS = list(range(6, 21))  # 6 AM - 9 PM AEST (be pickier)
 MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", 60))  # Check every 60 seconds
 MAX_MOMENTUM_TOKENS = 20  # Check top 20 gainers
 
+# ============================================
+# TEST MODE CONFIGURATION (NEW!)
+# ============================================
+ENABLE_TEST_MODE = os.getenv("ENABLE_TEST_MODE", "false").lower() == "true"
+TEST_MODE_LP_THRESHOLD = float(os.getenv("TEST_MODE_LP_THRESHOLD", 1.5))
+TEST_MODE_BUY_AMOUNT = float(os.getenv("TEST_MODE_BUY_AMOUNT", 0.005))
+TEST_MODE_MAX_DAILY = int(os.getenv("TEST_MODE_MAX_DAILY", 10))
+test_mode_buys_today = 0  # Track daily test buys
+
 # Track momentum tokens
 momentum_analyzed = {}  # token -> {score, timestamp, bought}
 momentum_bought = set()  # Prevent duplicate buys
@@ -533,192 +542,192 @@ async def verify_pool_exists(mint: str) -> bool:
         return False
 
 async def check_pumpfun_graduation(mint: str) -> bool:
-    """Check if a PumpFun token is ready to graduate"""
-    try:
-        url = f"https://frontend-api.pump.fun/coins/{mint}"
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                market_cap = data.get("usd_market_cap", 0)
-                
-                if market_cap > PUMPFUN_GRADUATION_MC * 0.9:
-                    logging.info(f"[PumpFun] {mint[:8]}... approaching graduation: ${market_cap:.0f}")
-                    return True
-    except Exception as e:
-        logging.debug(f"[PumpFun] Graduation check error: {e}")
-    
-    return False
+   """Check if a PumpFun token is ready to graduate"""
+   try:
+       url = f"https://frontend-api.pump.fun/coins/{mint}"
+       async with httpx.AsyncClient(timeout=5) as client:
+           response = await client.get(url)
+           if response.status_code == 200:
+               data = response.json()
+               market_cap = data.get("usd_market_cap", 0)
+               
+               if market_cap > PUMPFUN_GRADUATION_MC * 0.9:
+                   logging.info(f"[PumpFun] {mint[:8]}... approaching graduation: ${market_cap:.0f}")
+                   return True
+   except Exception as e:
+       logging.debug(f"[PumpFun] Graduation check error: {e}")
+   
+   return False
 
 async def raydium_graduation_scanner():
-    """Check if PumpFun tokens graduated to Raydium"""
-    if not ENABLE_PUMPFUN_MIGRATION:
-        logging.info("[Graduation Scanner] Disabled via config")
-        return
-        
-    await send_telegram_alert("🎓 Graduation Scanner ACTIVE - Checking every 30 seconds")
-    
-    while True:
-        try:
-            if not is_bot_running():
-                await asyncio.sleep(30)
-                continue
-            
-            recent_tokens = list(pumpfun_tokens.keys())[-100:] if pumpfun_tokens else []
-            
-            for mint in recent_tokens:
-                if mint in already_bought:
-                    continue
-                    
-                try:
-                    pool = raydium.find_pool_realtime(mint)
-                    if pool:
-                        logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has Raydium pool!")
-                        
-                        if mint in pumpfun_tokens:
-                            pumpfun_tokens[mint]["migrated"] = True
-                        
-                        lp_data = await get_liquidity_and_ownership(mint)
-                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
-                        
-                        if lp_amount >= RUG_LP_THRESHOLD:
-                            already_bought.add(mint)
-                            
-                            await send_telegram_alert(
-                                f"🎓 GRADUATION DETECTED!\n\n"
-                                f"Token: `{mint}`\n"
-                                f"Liquidity: {lp_amount:.2f} SOL\n"
-                                f"Action: BUYING NOW!"
-                            )
-                            
-                            original_amount = os.getenv("BUY_AMOUNT_SOL")
-                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                            
-                            try:
-                                success = await buy_token(mint)
-                                if success:
-                                    await send_telegram_alert(
-                                        f"✅ GRADUATION SNIPE SUCCESS!\n"
-                                        f"Token: {mint[:16]}...\n"
-                                        f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
-                                        f"Like JOYBAIT - potential 27x!"
-                                    )
-                                    asyncio.create_task(wait_and_auto_sell(mint))
-                                else:
-                                    await send_telegram_alert(f"❌ Graduation snipe failed for {mint[:16]}...")
-                            finally:
-                                if original_amount:
-                                    os.environ["BUY_AMOUNT_SOL"] = original_amount
-                        else:
-                            logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has pool but low LP: {lp_amount:.2f} SOL")
-                            
-                except Exception as e:
-                    pass
-            
-            await asyncio.sleep(30)
-            
-        except Exception as e:
-            logging.error(f"[Graduation Scanner] Error: {e}")
-            await asyncio.sleep(30)
+   """Check if PumpFun tokens graduated to Raydium"""
+   if not ENABLE_PUMPFUN_MIGRATION:
+       logging.info("[Graduation Scanner] Disabled via config")
+       return
+       
+   await send_telegram_alert("🎓 Graduation Scanner ACTIVE - Checking every 30 seconds")
+   
+   while True:
+       try:
+           if not is_bot_running():
+               await asyncio.sleep(30)
+               continue
+           
+           recent_tokens = list(pumpfun_tokens.keys())[-100:] if pumpfun_tokens else []
+           
+           for mint in recent_tokens:
+               if mint in already_bought:
+                   continue
+                   
+               try:
+                   pool = raydium.find_pool_realtime(mint)
+                   if pool:
+                       logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has Raydium pool!")
+                       
+                       if mint in pumpfun_tokens:
+                           pumpfun_tokens[mint]["migrated"] = True
+                       
+                       lp_data = await get_liquidity_and_ownership(mint)
+                       lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                       
+                       if lp_amount >= RUG_LP_THRESHOLD:
+                           already_bought.add(mint)
+                           
+                           await send_telegram_alert(
+                               f"🎓 GRADUATION DETECTED!\n\n"
+                               f"Token: `{mint}`\n"
+                               f"Liquidity: {lp_amount:.2f} SOL\n"
+                               f"Action: BUYING NOW!"
+                           )
+                           
+                           original_amount = os.getenv("BUY_AMOUNT_SOL")
+                           os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                           
+                           try:
+                               success = await buy_token(mint)
+                               if success:
+                                   await send_telegram_alert(
+                                       f"✅ GRADUATION SNIPE SUCCESS!\n"
+                                       f"Token: {mint[:16]}...\n"
+                                       f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
+                                       f"Like JOYBAIT - potential 27x!"
+                                   )
+                                   asyncio.create_task(wait_and_auto_sell(mint))
+                               else:
+                                   await send_telegram_alert(f"❌ Graduation snipe failed for {mint[:16]}...")
+                           finally:
+                               if original_amount:
+                                   os.environ["BUY_AMOUNT_SOL"] = original_amount
+                       else:
+                           logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has pool but low LP: {lp_amount:.2f} SOL")
+                           
+               except Exception as e:
+                   pass
+           
+           await asyncio.sleep(30)
+           
+       except Exception as e:
+           logging.error(f"[Graduation Scanner] Error: {e}")
+           await asyncio.sleep(30)
 
 async def pumpfun_migration_monitor():
-    """Monitor PumpFun tokens for migration to Raydium"""
-    if not ENABLE_PUMPFUN_MIGRATION:
-        logging.info("[Migration Monitor] Disabled via config")
-        return
-        
-    await send_telegram_alert("🎯 PumpFun Migration Monitor ACTIVE")
-    
-    while True:
-        try:
-            if not is_bot_running():
-                await asyncio.sleep(10)
-                continue
-            
-            for mint in list(migration_watch_list):
-                if mint in pumpfun_tokens and not pumpfun_tokens[mint].get("migrated", False):
-                    lp_data = await get_liquidity_and_ownership(mint)
-                    
-                    if lp_data and lp_data.get("liquidity", 0) > 0:
-                        pumpfun_tokens[mint]["migrated"] = True
-                        migration_watch_list.discard(mint)
-                        
-                        await send_telegram_alert(
-                            f"🚨 PUMPFUN MIGRATION DETECTED 🚨\n\n"
-                            f"Token: `{mint}`\n"
-                            f"Status: Graduated to Raydium!\n"
-                            f"Liquidity: {lp_data.get('liquidity', 0):.2f} SOL\n"
-                            f"Action: SNIPING NOW!"
-                        )
-                        
-                        original_amount = os.getenv("BUY_AMOUNT_SOL")
-                        os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                        
-                        try:
-                            success = await buy_token(mint)
-                            if success:
-                                await send_telegram_alert(
-                                    f"✅ MIGRATION SNIPE SUCCESS!\n"
-                                    f"Token: {mint[:16]}...\n"
-                                    f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
-                                    f"Type: PumpFun → Raydium Migration"
-                                )
-                                asyncio.create_task(wait_and_auto_sell(mint))
-                            else:
-                                await send_telegram_alert(f"❌ Migration snipe failed for {mint[:16]}...")
-                        finally:
-                            if original_amount:
-                                os.environ["BUY_AMOUNT_SOL"] = original_amount
-            
-            if int(time.time()) % 60 == 0:
-                await scan_pumpfun_graduations()
-            
-            await asyncio.sleep(5)
-            
-        except Exception as e:
-            logging.error(f"[Migration Monitor] Error: {e}")
-            await asyncio.sleep(10)
+   """Monitor PumpFun tokens for migration to Raydium"""
+   if not ENABLE_PUMPFUN_MIGRATION:
+       logging.info("[Migration Monitor] Disabled via config")
+       return
+       
+   await send_telegram_alert("🎯 PumpFun Migration Monitor ACTIVE")
+   
+   while True:
+       try:
+           if not is_bot_running():
+               await asyncio.sleep(10)
+               continue
+           
+           for mint in list(migration_watch_list):
+               if mint in pumpfun_tokens and not pumpfun_tokens[mint].get("migrated", False):
+                   lp_data = await get_liquidity_and_ownership(mint)
+                   
+                   if lp_data and lp_data.get("liquidity", 0) > 0:
+                       pumpfun_tokens[mint]["migrated"] = True
+                       migration_watch_list.discard(mint)
+                       
+                       await send_telegram_alert(
+                           f"🚨 PUMPFUN MIGRATION DETECTED 🚨\n\n"
+                           f"Token: `{mint}`\n"
+                           f"Status: Graduated to Raydium!\n"
+                           f"Liquidity: {lp_data.get('liquidity', 0):.2f} SOL\n"
+                           f"Action: SNIPING NOW!"
+                       )
+                       
+                       original_amount = os.getenv("BUY_AMOUNT_SOL")
+                       os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                       
+                       try:
+                           success = await buy_token(mint)
+                           if success:
+                               await send_telegram_alert(
+                                   f"✅ MIGRATION SNIPE SUCCESS!\n"
+                                   f"Token: {mint[:16]}...\n"
+                                   f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
+                                   f"Type: PumpFun → Raydium Migration"
+                               )
+                               asyncio.create_task(wait_and_auto_sell(mint))
+                           else:
+                               await send_telegram_alert(f"❌ Migration snipe failed for {mint[:16]}...")
+                       finally:
+                           if original_amount:
+                               os.environ["BUY_AMOUNT_SOL"] = original_amount
+           
+           if int(time.time()) % 60 == 0:
+               await scan_pumpfun_graduations()
+           
+           await asyncio.sleep(5)
+           
+       except Exception as e:
+           logging.error(f"[Migration Monitor] Error: {e}")
+           await asyncio.sleep(10)
 
 async def scan_pumpfun_graduations():
-    """Scan PumpFun for tokens about to graduate"""
-    try:
-        url = "https://frontend-api.pump.fun/coins?offset=0&limit=50&sort=usd_market_cap&order=desc"
-        
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                coins = response.json()
-                
-                for coin in coins[:20]:
-                    mint = coin.get("mint")
-                    market_cap = coin.get("usd_market_cap", 0)
-                    
-                    if not mint:
-                        continue
-                    
-                    if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
-                        if mint not in pumpfun_tokens:
-                            pumpfun_tokens[mint] = {
-                                "discovered": time.time(),
-                                "migrated": False,
-                                "market_cap": market_cap
-                            }
-                        
-                        if mint not in migration_watch_list:
-                            migration_watch_list.add(mint)
-                            logging.info(f"[PumpFun] Added {mint[:8]}... to migration watch (MC: ${market_cap:.0f})")
-                            
-                            if market_cap > PUMPFUN_GRADUATION_MC * 0.95:
-                                await send_telegram_alert(
-                                    f"⚠️ GRADUATION IMMINENT\n\n"
-                                    f"Token: `{mint}`\n"
-                                    f"Market Cap: ${market_cap:,.0f}\n"
-                                    f"Graduation at: $69,420\n"
-                                    f"Status: {(market_cap/PUMPFUN_GRADUATION_MC)*100:.1f}% complete\n\n"
-                                    f"Monitoring for Raydium migration..."
-                                )
-    except Exception as e:
-        logging.error(f"[PumpFun Scan] Error: {e}")
+   """Scan PumpFun for tokens about to graduate"""
+   try:
+       url = "https://frontend-api.pump.fun/coins?offset=0&limit=50&sort=usd_market_cap&order=desc"
+       
+       async with httpx.AsyncClient(timeout=10) as client:
+           response = await client.get(url)
+           if response.status_code == 200:
+               coins = response.json()
+               
+               for coin in coins[:20]:
+                   mint = coin.get("mint")
+                   market_cap = coin.get("usd_market_cap", 0)
+                   
+                   if not mint:
+                       continue
+                   
+                   if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
+                       if mint not in pumpfun_tokens:
+                           pumpfun_tokens[mint] = {
+                               "discovered": time.time(),
+                               "migrated": False,
+                               "market_cap": market_cap
+                           }
+                       
+                       if mint not in migration_watch_list:
+                           migration_watch_list.add(mint)
+                           logging.info(f"[PumpFun] Added {mint[:8]}... to migration watch (MC: ${market_cap:.0f})")
+                           
+                           if market_cap > PUMPFUN_GRADUATION_MC * 0.95:
+                               await send_telegram_alert(
+                                   f"⚠️ GRADUATION IMMINENT\n\n"
+                                   f"Token: `{mint}`\n"
+                                   f"Market Cap: ${market_cap:,.0f}\n"
+                                   f"Graduation at: $69,420\n"
+                                   f"Status: {(market_cap/PUMPFUN_GRADUATION_MC)*100:.1f}% complete\n\n"
+                                   f"Monitoring for Raydium migration..."
+                               )
+   except Exception as e:
+       logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
    """Enhanced mempool listener with FIXED detection logic"""
@@ -973,17 +982,19 @@ async def mempool_listener(name, program_id=None):
                                }
                                logging.info(f"[PumpFun] Tracking new token: {potential_mint[:8]}...")
                            
-                           # Only buy from tradeable platforms
-                           if name in ["Raydium"] and is_bot_running():
+                           # CRITICAL CHANGE: Allow buying from Raydium AND PumpFun
+                           if name in ["Raydium", "PumpFun"] and is_bot_running():
                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                    
                                    # Add delay to let pool settle
                                    await asyncio.sleep(float(os.getenv("MEMPOOL_DELAY_MS", 200)) / 1000)
                                    
-                                   # Verify pool exists
-                                   if not await verify_pool_exists(potential_mint):
-                                       logging.info(f"[{name}] No verified pool for {potential_mint[:8]}...")
-                                       continue
+                                   # Skip pool verification for PumpFun (they don't have traditional pools)
+                                   if name == "Raydium":
+                                       # Verify pool exists for Raydium
+                                       if not await verify_pool_exists(potential_mint):
+                                           logging.info(f"[{name}] No verified pool for {potential_mint[:8]}...")
+                                           continue
                                    
                                    # Get liquidity with timeout
                                    lp_amount = 0
@@ -995,40 +1006,82 @@ async def mempool_listener(name, program_id=None):
                                            lp_amount = lp_data.get("liquidity", 0)
                                    except asyncio.TimeoutError:
                                        logging.info(f"[{name}] LP check timeout")
-                                       continue
+                                       # For PumpFun, continue with default small amount
+                                       if name == "PumpFun":
+                                           lp_amount = 0.1  # Assume minimal liquidity
+                                       else:
+                                           continue
                                    except Exception as e:
                                        logging.debug(f"[{name}] LP check error: {e}")
-                                       continue
+                                       if name == "PumpFun":
+                                           lp_amount = 0.1  # Assume minimal liquidity
+                                       else:
+                                           continue
                                    
-                                   # Quality check
-                                   is_quality, reason = await is_quality_token(potential_mint, lp_amount)
+                                   # Quality check (relaxed for PumpFun)
+                                   if name == "PumpFun":
+                                       # PumpFun tokens are higher risk, always use tiny positions
+                                       is_quality = True
+                                       reason = "PumpFun early entry"
+                                   else:
+                                       is_quality, reason = await is_quality_token(potential_mint, lp_amount)
                                    
-                                   if not is_quality:
+                                   if not is_quality and name != "PumpFun":
                                        logging.info(f"[{name}] Skipping {potential_mint[:8]}... - {reason}")
                                        record_skip("quality_check")
                                        continue
                                    
-                                   # Determine risk level and buy amount
-                                   if lp_amount >= RUG_LP_THRESHOLD * 2:
-                                       risk_level = "SAFE"
-                                       buy_amount = SAFE_BUY_AMOUNT
-                                   elif lp_amount >= RUG_LP_THRESHOLD:
-                                       risk_level = "MEDIUM"
-                                       buy_amount = RISKY_BUY_AMOUNT
+                                   # NEW TEST MODE LOGIC FOR POSITION SIZING
+                                   global test_mode_buys_today
+                                   
+                                   if ENABLE_TEST_MODE:
+                                       # Check if we've hit daily limit for test buys
+                                       if test_mode_buys_today >= TEST_MODE_MAX_DAILY:
+                                           logging.info(f"[{name}] Test mode daily limit reached ({TEST_MODE_MAX_DAILY})")
+                                           continue
+                                       
+                                       # Determine risk level and buy amount with TEST MODE
+                                       if lp_amount >= RUG_LP_THRESHOLD * 2:
+                                           risk_level = "SAFE"
+                                           buy_amount = SAFE_BUY_AMOUNT
+                                       elif lp_amount >= RUG_LP_THRESHOLD:
+                                           risk_level = "MEDIUM"
+                                           buy_amount = RISKY_BUY_AMOUNT
+                                       elif lp_amount >= TEST_MODE_LP_THRESHOLD or name == "PumpFun":
+                                           risk_level = "TEST"
+                                           buy_amount = TEST_MODE_BUY_AMOUNT
+                                           test_mode_buys_today += 1  # Increment test buy counter
+                                       else:
+                                           logging.info(f"[{name}] Below test threshold: {lp_amount:.2f} SOL")
+                                           continue  # Skip if below test threshold
                                    else:
-                                       risk_level = "HIGH"
-                                       buy_amount = ULTRA_RISKY_BUY_AMOUNT
+                                       # Original logic if test mode disabled
+                                       if lp_amount >= RUG_LP_THRESHOLD * 2:
+                                           risk_level = "SAFE"
+                                           buy_amount = SAFE_BUY_AMOUNT
+                                       elif lp_amount >= RUG_LP_THRESHOLD:
+                                           risk_level = "MEDIUM"
+                                           buy_amount = RISKY_BUY_AMOUNT
+                                       else:
+                                           risk_level = "HIGH"
+                                           buy_amount = ULTRA_RISKY_BUY_AMOUNT
+                                   
+                                   # Special handling for PumpFun early buys
+                                   if name == "PumpFun" and os.getenv("PUMPFUN_EARLY_BUY", "false").lower() == "true":
+                                       buy_amount = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.005))
+                                       risk_level = "PUMPFUN_EARLY"
                                    
                                    # Mark as attempted
                                    recent_buy_attempts[potential_mint] = time.time()
                                    
                                    await send_telegram_alert(
-                                       f"✅ QUALITY TOKEN DETECTED ✅\n\n"
+                                       f"✅ {'TEST MODE' if risk_level == 'TEST' else 'QUALITY'} TOKEN DETECTED ✅\n\n"
                                        f"Platform: {name}\n"
                                        f"Token: `{potential_mint}`\n"
                                        f"Liquidity: {lp_amount:.2f} SOL\n"
                                        f"Risk: {risk_level}\n"
-                                       f"Buy Amount: {buy_amount} SOL\n\n"
+                                       f"Buy Amount: {buy_amount} SOL\n"
+                                       f"Test Buys Today: {test_mode_buys_today}/{TEST_MODE_MAX_DAILY}\n\n" if ENABLE_TEST_MODE else ""
                                        f"Attempting snipe..."
                                    )
                                    
@@ -1043,7 +1096,7 @@ async def mempool_listener(name, program_id=None):
                                                BLACKLIST.add(potential_mint)
                                            
                                            await send_telegram_alert(
-                                               f"✅ SNIPED QUALITY TOKEN!\n"
+                                               f"✅ {'TEST MODE' if risk_level == 'TEST' else ''} SNIPED {'PUMPFUN' if name == 'PumpFun' else 'QUALITY'} TOKEN!\n"
                                                f"Token: {potential_mint[:16]}...\n"
                                                f"Amount: {buy_amount} SOL\n"
                                                f"Risk: {risk_level}\n"
@@ -1665,6 +1718,7 @@ async def check_momentum_score(mint: str) -> dict:
        logging.error(f"Error checking momentum score: {e}")
    
    return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
+
 async def start_sniper():
    """Start the ELITE sniper bot with MOMENTUM SCANNER"""
    mode_text = "ELITE Money Printer Mode + Momentum Scanner"
@@ -1681,7 +1735,8 @@ async def start_sniper():
        f"Quality filters: ACTIVE ✅\n"
        f"Duplicate prevention: ACTIVE ✅\n"
        f"Pool verification: ACTIVE ✅\n"
-       f"MOMENTUM SCANNER: ACTIVE 🔥\n\n"
+       f"MOMENTUM SCANNER: ACTIVE 🔥\n"
+       f"TEST MODE: {'ACTIVE' if ENABLE_TEST_MODE else 'DISABLED'}\n\n"
        f"Ready to print money! 🎯"
    )
 
