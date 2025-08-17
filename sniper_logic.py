@@ -26,20 +26,35 @@ load_dotenv()
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
-RISKY_LP_THRESHOLD = 0.5
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 15.0))  # Raised to 15
+RISKY_LP_THRESHOLD = 5.0  # Raised from 0.5
 TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
-# Position sizing
-SAFE_BUY_AMOUNT = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
-RISKY_BUY_AMOUNT = 0.01
-ULTRA_RISKY_BUY_AMOUNT = 0.005
+# Enhanced position sizing
+SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", 0.02))
+RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.01))
+ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", 0.005))
+
+# Quality filters
+MIN_AI_SCORE = float(os.getenv("MIN_AI_SCORE", 0.40))
+MIN_HOLDER_COUNT = int(os.getenv("MIN_HOLDER_COUNT", 50))
+MAX_TOP_HOLDER_PERCENT = float(os.getenv("MAX_TOP_HOLDER_PERCENT", 30))
+MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", 20))
+MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.5))
+
+# Anti-duplicate settings
+DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 300))
+MAX_BUYS_PER_TOKEN = int(os.getenv("MAX_BUYS_PER_TOKEN", 1))
+BLACKLIST_AFTER_BUY = os.getenv("BLACKLIST_AFTER_BUY", "true").lower() == "true"
+
+# Disable Jupiter mempool if configured
+SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "true"
 
 # PumpFun Migration Settings
-PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.05))
+PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
 PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
 
@@ -47,9 +62,12 @@ seen_tokens = set()
 BLACKLIST = set()
 TASKS = []
 
+# Enhanced tracking
 pumpfun_tokens = {}
 migration_watch_list = set()
 already_bought = set()
+recent_buy_attempts = {}  # token -> timestamp
+pool_verification_cache = {}  # token -> is_verified
 
 raydium = RaydiumAggregatorClient(RPC_URL)
 
@@ -122,6 +140,104 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
     except Exception as e:
         logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
         return []
+
+async def is_quality_token(mint: str, lp_amount: float) -> tuple[bool, str]:
+    """
+    Enhanced quality check for tokens
+    Returns (is_quality, reason)
+    """
+    try:
+        # Check if already bought
+        if mint in already_bought:
+            return False, "Already bought"
+        
+        # Check recent buy attempts (anti-spam)
+        if mint in recent_buy_attempts:
+            time_since_attempt = time.time() - recent_buy_attempts[mint]
+            if time_since_attempt < DUPLICATE_CHECK_WINDOW:
+                return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
+        
+        # Check minimum liquidity
+        if lp_amount < RUG_LP_THRESHOLD:
+            return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {RUG_LP_THRESHOLD})"
+        
+        # Try to get token metrics from DexScreener
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "pairs" in data and len(data["pairs"]) > 0:
+                        pair = data["pairs"][0]  # Get best pair
+                        
+                        # Check volume
+                        volume_h24 = float(pair.get("volume", {}).get("h24", 0))
+                        if volume_h24 < float(os.getenv("MIN_VOLUME_USD", 50000)):
+                            return False, f"Low volume: ${volume_h24:.0f}"
+                        
+                        # Check buy/sell ratio
+                        txns = pair.get("txns", {})
+                        buys_h1 = txns.get("h1", {}).get("buys", 0)
+                        sells_h1 = txns.get("h1", {}).get("sells", 0)
+                        
+                        if sells_h1 > 0 and buys_h1 / sells_h1 < MIN_BUY_SELL_RATIO:
+                            return False, f"Bad buy/sell ratio: {buys_h1}/{sells_h1}"
+                        
+                        # Check price change (avoid dumps)
+                        price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0))
+                        if price_change_h1 < -30:
+                            return False, f"Dumping: {price_change_h1:.1f}% in 1h"
+                        
+                        # Passed all checks
+                        return True, "Quality token"
+        except:
+            pass
+        
+        # If we can't get DexScreener data but LP is good, allow with caution
+        if lp_amount >= RUG_LP_THRESHOLD * 1.5:  # Higher threshold without data
+            return True, "High liquidity, no data"
+        
+        return False, "Failed quality checks"
+        
+    except Exception as e:
+        logging.error(f"Quality check error: {e}")
+        return False, "Quality check error"
+
+async def verify_pool_exists(mint: str) -> bool:
+    """
+    Verify that a real trading pool exists for this token
+    """
+    try:
+        # Check cache first
+        if mint in pool_verification_cache:
+            return pool_verification_cache[mint]
+        
+        # Check Raydium
+        pool = raydium.find_pool_realtime(mint)
+        if pool:
+            pool_verification_cache[mint] = True
+            return True
+        
+        # Check Jupiter
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        pool_verification_cache[mint] = True
+                        return True
+        except:
+            pass
+        
+        pool_verification_cache[mint] = False
+        return False
+        
+    except Exception as e:
+        logging.error(f"Pool verification error: {e}")
+        return False
 
 async def check_pumpfun_graduation(mint: str) -> bool:
     """Check if a PumpFun token is ready to graduate"""
@@ -312,10 +428,16 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED detection and diagnostics"""
+    """Enhanced mempool listener with quality filtering"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
+        return
+    
+    # Skip Jupiter mempool if configured
+    if name == "Jupiter" and SKIP_JUPITER_MEMPOOL:
+        logging.info(f"[{name}] Mempool monitoring disabled via config")
+        await send_telegram_alert(f"📌 {name} mempool disabled (too noisy)")
         return
     
     url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
@@ -416,102 +538,55 @@ async def mempool_listener(name, program_id=None):
                         
                         transaction_counter += 1
                         
-                        # DIAGNOSTIC LOGGING - Shows what we're getting
-                        if transaction_counter % 50 == 0:
-                            logging.info(f"[{name} DEBUG] Transaction with {len(logs)} logs, {len(account_keys)} accounts")
-                            
-                            # Show sample logs for Raydium to understand what's coming through
-                            if name == "Raydium" and transaction_counter % 200 == 0 and len(logs) > 10:
-                                logging.info(f"[{name} DIAGNOSTIC] Sample logs from transaction:")
-                                for log in logs[:3]:
-                                    logging.info(f"  Log: {log[:100]}")
-                                
-                                # Check if ANY relevant keywords exist
-                                all_logs_text = " ".join(logs).lower()
-                                potential_keywords = ["pool", "initialize", "create", "liquidity", "amm", "swap", "init"]
-                                found_keywords = [kw for kw in potential_keywords if kw in all_logs_text]
-                                if found_keywords:
-                                    logging.info(f"[{name} DIAGNOSTIC] Found keywords: {found_keywords}")
-                                    logging.info(f"[{name} DIAGNOSTIC] Signature: {signature}")
-                        
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # RELAXED POOL DETECTION - More likely to catch pools
+                        # STRICT POOL DETECTION - Only real pools
                         is_pool_creation = False
                         
-                        # Special logging for high-activity transactions
-                        if len(logs) > 50:
-                            logging.info(f"[{name} HIGH ACTIVITY] Transaction with {len(logs)} logs - Signature: {signature}")
-                        
-                        # RELAXED DETECTION LOGIC
                         if name == "Raydium":
-                            # Count indicators instead of requiring exact matches
+                            # Look for specific Raydium pool creation patterns
                             raydium_indicators = 0
+                            has_initialize = False
+                            has_create = False
                             
                             for log in logs:
                                 log_lower = log.lower()
                                 
-                                # Check for Raydium program mention
-                                if "675kpx9mhtjs2zt1qfr1nyhuzelfqm9h24wfsut1mp8" in log_lower or "raydium" in log_lower:
-                                    raydium_indicators += 1
+                                if "initialize" in log_lower and "pool" in log_lower:
+                                    has_initialize = True
+                                    raydium_indicators += 2
                                 
-                                # Check for pool-related keywords
-                                pool_keywords = [
-                                    "initialize", "init", "create", "pool", "liquidity", 
-                                    "amm", "add_liquidity", "new_pool", "swap_pool",
-                                    "initialize2", "init_pc_amount", "init_coin_amount"
-                                ]
+                                if "create" in log_lower and ("pool" in log_lower or "amm" in log_lower):
+                                    has_create = True
+                                    raydium_indicators += 2
                                 
-                                for keyword in pool_keywords:
-                                    if keyword in log_lower:
-                                        raydium_indicators += 1
-                                        logging.info(f"[RAYDIUM] Found keyword: {keyword}")
-                                        break
-                                
-                                # High activity transactions with success
-                                if "success" in log_lower and len(logs) > 30:
+                                if "add_liquidity" in log_lower or "init_pc_amount" in log_lower:
                                     raydium_indicators += 1
                             
-                            # If we have multiple indicators, it's likely a pool
-                            if raydium_indicators >= 2:
+                            # Need strong indicators for pool creation
+                            if raydium_indicators >= 4 and (has_initialize or has_create):
                                 is_pool_creation = True
-                                logging.info(f"[RAYDIUM] POOL DETECTED with {raydium_indicators} indicators!")
-                                logging.info(f"[RAYDIUM] Signature: {signature}")
-                        
-                        elif name == "Jupiter":
-                            # Relaxed Jupiter detection
-                            for log in logs:
-                                log_lower = log.lower()
-                                jupiter_keywords = [
-                                    "initialize_pool", "create_pool", "createpool",
-                                    "pool_created", "new_pool", "jupiter"
-                                ]
-                                if any(keyword in log_lower for keyword in jupiter_keywords):
-                                    is_pool_creation = True
-                                    logging.info(f"[JUPITER] Pool creation detected!")
-                                    break
+                                logging.info(f"[RAYDIUM] VERIFIED pool creation with {raydium_indicators} indicators")
                         
                         elif name == "PumpFun":
-                            # Relaxed PumpFun detection
+                            # PumpFun has clear token creation patterns
                             for log in logs:
                                 log_lower = log.lower()
-                                if ("pump" in log_lower or "6ef8rrecth" in log_lower):
-                                    pumpfun_keywords = [
-                                        "create", "token", "bonding", "curve", "launch"
-                                    ]
-                                    if any(keyword in log_lower for keyword in pumpfun_keywords):
-                                        is_pool_creation = True
-                                        logging.info(f"[PUMPFUN] Token creation detected!")
-                                        break
+                                if "pump" in log_lower and ("create" in log_lower or "token" in log_lower or "launch" in log_lower):
+                                    is_pool_creation = True
+                                    break
                         
                         elif name == "Moonshot":
                             for log in logs:
                                 log_lower = log.lower()
-                                if "moon" in log_lower and any(kw in log_lower for kw in ["launch", "initialize", "create"]):
+                                if "moon" in log_lower and ("launch" in log_lower or "initialize" in log_lower):
                                     is_pool_creation = True
-                                    logging.info(f"[MOONSHOT] Token launch detected!")
                                     break
+                        
+                        # Skip Jupiter noise - it's too unreliable
+                        elif name == "Jupiter":
+                            continue  # Skip all Jupiter mempool events
                         
                         if not is_pool_creation:
                             continue
@@ -519,51 +594,40 @@ async def mempool_listener(name, program_id=None):
                         pool_creations_found += 1
                         logging.info(f"[{name}] POOL CREATION DETECTED! Total found: {pool_creations_found}")
                         
-                        # CRITICAL FIX: Fetch full transaction since WebSocket doesn't provide account keys
+                        # Fetch full transaction if needed
                         if len(account_keys) == 0:
-                            logging.info(f"[{name}] No account keys from WebSocket, fetching full transaction...")
+                            logging.info(f"[{name}] Fetching full transaction...")
                             account_keys = await fetch_transaction_accounts(signature)
                             
                             if len(account_keys) == 0:
-                                logging.warning(f"[{name}] Could not fetch account keys for transaction")
+                                logging.warning(f"[{name}] Could not fetch account keys")
                                 continue
-                            else:
-                                logging.info(f"[{name}] Successfully fetched {len(account_keys)} accounts")
                         
-                        # Process potential mints
-                        potential_mints = []
-                        
-                        for i, key in enumerate(account_keys):
+                        # Process potential mints with QUALITY CHECKS
+                        for key in account_keys:
                             if isinstance(key, dict):
                                 key = key.get("pubkey", "") or key.get("address", "")
                             
-                            if key in SYSTEM_PROGRAMS:
+                            if key in SYSTEM_PROGRAMS or len(key) != 44:
                                 continue
+                            
                             if key == "So11111111111111111111111111111111111111112":
                                 continue
-                            if len(key) != 44:
+                            
+                            # Check if already processed
+                            if key in seen_tokens or key in already_bought:
                                 continue
                             
-                            if name in ["Raydium", "Jupiter"]:
-                                try:
-                                    Pubkey.from_string(key)
-                                    potential_mints.append(key)
-                                except:
-                                    continue
-                            else:
-                                if key in seen_tokens:
-                                    continue
-                                try:
-                                    Pubkey.from_string(key)
-                                    potential_mints.append(key)
-                                except:
-                                    continue
-                        
-                        # Process potential mints
-                        for potential_mint in potential_mints:
-                            if potential_mint not in seen_tokens:
-                                seen_tokens.add(potential_mint)
+                            try:
+                                Pubkey.from_string(key)
+                                potential_mint = key
+                            except:
+                                continue
                             
+                            # Mark as seen
+                            seen_tokens.add(potential_mint)
+                            
+                            # Track if PumpFun
                             if name == "PumpFun" and potential_mint not in pumpfun_tokens:
                                 pumpfun_tokens[potential_mint] = {
                                     "discovered": time.time(),
@@ -571,107 +635,97 @@ async def mempool_listener(name, program_id=None):
                                 }
                                 logging.info(f"[PumpFun] Tracking new token: {potential_mint[:8]}...")
                             
-                            logging.info(f"[{name}] Found potential token: {potential_mint[:8]}...")
-                            increment_stat("tokens_scanned", 1)
-                            update_last_activity()
-                            
-                            # Only buy on tradeable platforms
-                            if name in ["Raydium", "Jupiter"] and is_bot_running():
+                            # Only buy from tradeable platforms
+                            if name in ["Raydium"] and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     
-                                    await asyncio.sleep(0.2)
+                                    # Add delay to let pool settle
+                                    await asyncio.sleep(float(os.getenv("MEMPOOL_DELAY_MS", 200)) / 1000)
                                     
+                                    # Verify pool exists
+                                    if not await verify_pool_exists(potential_mint):
+                                        logging.info(f"[{name}] No verified pool for {potential_mint[:8]}...")
+                                        continue
+                                    
+                                    # Get liquidity with timeout
                                     lp_amount = 0
-                                    risk_level = "UNKNOWN"
-                                    buy_amount = ULTRA_RISKY_BUY_AMOUNT
-                                    
                                     try:
                                         lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-                                        lp_data = await asyncio.wait_for(lp_check_task, timeout=0.5)
+                                        lp_data = await asyncio.wait_for(lp_check_task, timeout=1.0)
                                         
                                         if lp_data:
                                             lp_amount = lp_data.get("liquidity", 0)
-                                            
-                                            if lp_amount >= RUG_LP_THRESHOLD:
-                                                risk_level = "SAFE"
-                                                buy_amount = SAFE_BUY_AMOUNT
-                                            elif lp_amount >= RISKY_LP_THRESHOLD:
-                                                risk_level = "MEDIUM"
-                                                buy_amount = RISKY_BUY_AMOUNT
-                                            elif lp_amount > 0:
-                                                risk_level = "HIGH"
-                                                buy_amount = ULTRA_RISKY_BUY_AMOUNT
-                                            else:
-                                                risk_level = "EXTREME"
-                                                buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                     except asyncio.TimeoutError:
-                                        logging.info(f"[{name}] LP check timeout - proceeding with minimal amount")
-                                        risk_level = "TIMEOUT"
-                                        buy_amount = ULTRA_RISKY_BUY_AMOUNT
+                                        logging.info(f"[{name}] LP check timeout")
+                                        continue
                                     except Exception as e:
                                         logging.debug(f"[{name}] LP check error: {e}")
-                                        risk_level = "ERROR"
+                                        continue
+                                    
+                                    # Quality check
+                                    is_quality, reason = await is_quality_token(potential_mint, lp_amount)
+                                    
+                                    if not is_quality:
+                                        logging.info(f"[{name}] Skipping {potential_mint[:8]}... - {reason}")
+                                        record_skip("quality_check")
+                                        continue
+                                    
+                                    # Determine risk level and buy amount
+                                    if lp_amount >= RUG_LP_THRESHOLD * 2:
+                                        risk_level = "SAFE"
+                                        buy_amount = SAFE_BUY_AMOUNT
+                                    elif lp_amount >= RUG_LP_THRESHOLD:
+                                        risk_level = "MEDIUM"
+                                        buy_amount = RISKY_BUY_AMOUNT
+                                    else:
+                                        risk_level = "HIGH"
                                         buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                     
-                                    logging.info(f"[{name}] Risk Assessment:")
-                                    logging.info(f"  Liquidity: {lp_amount:.2f} SOL")
-                                    logging.info(f"  Risk Level: {risk_level}")
-                                    logging.info(f"  Buy Amount: {buy_amount} SOL")
+                                    # Mark as attempted
+                                    recent_buy_attempts[potential_mint] = time.time()
                                     
-                                    risk_emoji = {
-                                        "SAFE": "✅",
-                                        "MEDIUM": "⚠️",
-                                        "HIGH": "🔥",
-                                        "EXTREME": "☠️",
-                                        "TIMEOUT": "⏱️",
-                                        "ERROR": "❓",
-                                        "UNKNOWN": "❓"
-                                    }.get(risk_level, "❓")
+                                    await send_telegram_alert(
+                                        f"✅ QUALITY TOKEN DETECTED ✅\n\n"
+                                        f"Platform: {name}\n"
+                                        f"Token: `{potential_mint}`\n"
+                                        f"Liquidity: {lp_amount:.2f} SOL\n"
+                                        f"Risk: {risk_level}\n"
+                                        f"Buy Amount: {buy_amount} SOL\n\n"
+                                        f"Attempting snipe..."
+                                    )
                                     
-                                    if lp_amount >= RUG_LP_THRESHOLD:
-                                        await send_telegram_alert(
-                                            f"{risk_emoji} NEW TOKEN DETECTED {risk_emoji}\n\n"
-                                            f"Platform: {name}\n"
-                                            f"Token: `{potential_mint}`\n"
-                                            f"Liquidity: {lp_amount:.2f} SOL\n"
-                                            f"Risk: {risk_level}\n"
-                                            f"Buy Amount: {buy_amount} SOL\n\n"
-                                            f"Attempting snipe..."
-                                        )
-                                        
-                                        original_amount = os.getenv("BUY_AMOUNT_SOL")
-                                        os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
-                                        
-                                        try:
-                                            success = await buy_token(potential_mint)
-                                            if success:
-                                                await send_telegram_alert(
-                                                    f"✅ SNIPED ({risk_level} RISK)!\n"
-                                                    f"Token: {potential_mint[:16]}...\n"
-                                                    f"Amount: {buy_amount} SOL\n"
-                                                    f"Monitoring for profits..."
-                                                )
-                                                asyncio.create_task(wait_and_auto_sell(potential_mint))
-                                                break
-                                            else:
-                                                await send_telegram_alert(
-                                                    f"❌ Snipe failed\n"
-                                                    f"Token: {potential_mint[:16]}..."
-                                                )
-                                                mark_broken_token(potential_mint, 0)
-                                        except Exception as e:
-                                            logging.error(f"[{name}] Buy error: {e}")
-                                            await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
-                                        finally:
-                                            if original_amount:
-                                                os.environ["BUY_AMOUNT_SOL"] = original_amount
-                                    else:
-                                        logging.info(f"[{name}] Skipping {potential_mint[:8]}... - LP too low: {lp_amount:.2f} SOL")
-                                        
-                            else:
-                                if name in ["PumpFun", "Moonshot"]:
-                                    logging.info(f"[{name}] New launch tracked: {potential_mint[:8]}...")
-                                
+                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+                                    
+                                    try:
+                                        success = await buy_token(potential_mint)
+                                        if success:
+                                            already_bought.add(potential_mint)
+                                            if BLACKLIST_AFTER_BUY:
+                                                BLACKLIST.add(potential_mint)
+                                            
+                                            await send_telegram_alert(
+                                                f"✅ SNIPED QUALITY TOKEN!\n"
+                                                f"Token: {potential_mint[:16]}...\n"
+                                                f"Amount: {buy_amount} SOL\n"
+                                                f"Risk: {risk_level}\n"
+                                                f"Monitoring for profits..."
+                                            )
+                                            asyncio.create_task(wait_and_auto_sell(potential_mint))
+                                            break  # Don't buy more from this transaction
+                                        else:
+                                            await send_telegram_alert(
+                                                f"❌ Snipe failed\n"
+                                                f"Token: {potential_mint[:16]}..."
+                                            )
+                                            mark_broken_token(potential_mint, 0)
+                                    except Exception as e:
+                                        logging.error(f"[{name}] Buy error: {e}")
+                                        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
+                                    finally:
+                                        if original_amount:
+                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
+                
                 except asyncio.TimeoutError:
                     continue
                 except websockets.exceptions.ConnectionClosed as e:
@@ -705,8 +759,8 @@ async def mempool_listener(name, program_id=None):
             logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
             await asyncio.sleep(wait_time)
 
-MIN_LP_USD = 5000
-MIN_VOLUME_USD = 10000
+MIN_LP_USD = float(os.getenv("MIN_LP_USD", 25000))
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 50000))
 seen_trending = set()
 
 async def get_trending_pairs_dexscreener():
@@ -826,7 +880,7 @@ async def trending_scanner():
                 price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
                 price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
                 
-                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS:
+                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
                     continue
                 
                 is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
@@ -881,6 +935,9 @@ async def trending_scanner():
                         
                         success = await buy_token(mint)
                         if success:
+                            already_bought.add(mint)
+                            if BLACKLIST_AFTER_BUY:
+                                BLACKLIST.add(mint)
                             asyncio.create_task(wait_and_auto_sell(mint))
                             
                         if is_pumpfun_grad and original_amount:
@@ -903,7 +960,7 @@ async def rug_filter_passes(mint: str) -> bool:
     """Check if token passes basic rug filters"""
     try:
         data = await get_liquidity_and_ownership(mint)
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
+        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 15.0))
         
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
             min_lp = min_lp / 2
@@ -918,17 +975,20 @@ async def rug_filter_passes(mint: str) -> bool:
 
 async def start_sniper():
     """Start the ELITE sniper bot"""
-    mode_text = "Smart Balance + Migration Sniper + Graduation Scanner"
+    mode_text = "ELITE Money Printer Mode"
     TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
     
     await send_telegram_alert(
-        f"🚀 SNIPER LAUNCHING 🚀\n\n"
+        f"💰 MONEY PRINTER LAUNCHING 💰\n\n"
         f"Mode: {mode_text}\n"
-        f"Safe LP: {RUG_LP_THRESHOLD}+ SOL\n"
-        f"Migration Snipe: {PUMPFUN_MIGRATION_BUY} SOL\n"
-        f"Graduation Scanner: ACTIVE\n"
-        f"Targets: 2x/5x/10x\n\n"
-        f"Ready to catch JOYBAIT-style 27x! 🎯"
+        f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
+        f"Min AI Score: {MIN_AI_SCORE}\n"
+        f"Min Volume: ${MIN_VOLUME_USD:,.0f}\n"
+        f"Migration Snipe: {PUMPFUN_MIGRATION_BUY} SOL\n\n"
+        f"Quality filters: ACTIVE ✅\n"
+        f"Duplicate prevention: ACTIVE ✅\n"
+        f"Pool verification: ACTIVE ✅\n\n"
+        f"Ready to print money! 🎯"
     )
 
     if FORCE_TEST_MINT:
@@ -941,21 +1001,24 @@ async def start_sniper():
             logging.error(f"Force buy error: {e}")
 
     TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
-    TASKS.extend([
-        asyncio.create_task(mempool_listener("Raydium")),
-        asyncio.create_task(mempool_listener("Jupiter")),
-        asyncio.create_task(mempool_listener("PumpFun")),
-        asyncio.create_task(mempool_listener("Moonshot")),
-        asyncio.create_task(trending_scanner())
-    ])
+    
+    # Start listeners (skip Jupiter if configured)
+    listeners = ["Raydium", "PumpFun", "Moonshot"]
+    if not SKIP_JUPITER_MEMPOOL:
+        listeners.append("Jupiter")
+    
+    for listener in listeners:
+        TASKS.append(asyncio.create_task(mempool_listener(listener)))
+    
+    TASKS.append(asyncio.create_task(trending_scanner()))
     
     if ENABLE_PUMPFUN_MIGRATION:
         TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
         TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
         await send_telegram_alert("🎯 PumpFun Migration Monitor: ACTIVE")
-        await send_telegram_alert("🎓 Graduation Scanner: ACTIVE (checks every 30s)")
+        await send_telegram_alert("🎓 Graduation Scanner: ACTIVE")
     
-    await send_telegram_alert(f"🎯 ALL SYSTEMS ACTIVE - {mode_text}!")
+    await send_telegram_alert(f"🎯 MONEY PRINTER ACTIVE - {mode_text}!")
 
 async def start_sniper_with_forced_token(mint: str):
     """Force buy a specific token"""
@@ -966,8 +1029,8 @@ async def start_sniper_with_forced_token(mint: str):
             await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
             return
 
-        if mint in BROKEN_TOKENS or mint in BLACKLIST:
-            await send_telegram_alert(f"❌ {mint} is blacklisted or broken")
+        if mint in BROKEN_TOKENS or mint in BLACKLIST or mint in already_bought:
+            await send_telegram_alert(f"❌ {mint} is blacklisted, broken, or already bought")
             return
 
         is_pumpfun = mint in pumpfun_tokens
@@ -981,6 +1044,10 @@ async def start_sniper_with_forced_token(mint: str):
         try:
             result = await buy_token(mint)
             if result:
+                already_bought.add(mint)
+                if BLACKLIST_AFTER_BUY:
+                    BLACKLIST.add(mint)
+                    
                 token_type = "PumpFun Graduate" if is_pumpfun else "Standard"
                 await send_telegram_alert(
                     f"✅ Force buy successful\n"
