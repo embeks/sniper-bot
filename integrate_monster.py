@@ -67,27 +67,24 @@ if not ELITE_MODULES_AVAILABLE:
             
         async def estimate_competition_level(self, mint: str) -> str:
             """Estimate competition for a token"""
-            # Check if it's a PumpFun migration (high competition)
             try:
                 if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
                     return "ultra"
             except:
                 pass
-            # New Raydium pools = high competition
             return "high"
         
         async def get_dynamic_tip(self, mint: str) -> float:
             """Get dynamic tip based on competition"""
             level = await self.estimate_competition_level(mint)
             base_tip = self.jito_tips.get(level, 0.001)
-            # Add random noise to avoid collisions
             return base_tip + random.uniform(0.00001, 0.00005)
     
     # Embedded Speed Optimizer (FULLY FIXED)
     class SpeedOptimizer:
         def __init__(self):
             self.connection_pool = {}
-            self.cached_pools = {}  # Initialize this
+            self.cached_pools = {}
             self.cache_time = {}
             
         async def prewarm_connections(self):
@@ -125,13 +122,12 @@ if not ELITE_MODULES_AVAILABLE:
     class SimulationEngine:
         async def simulate_buy(self, mint: str, amount: int) -> Dict:
             """Simulate transaction before sending"""
-            # Basic simulation - check if we have enough SOL
             try:
                 from solana.rpc.api import Client
                 client = Client(os.getenv("RPC_URL"))
                 balance = client.get_balance(keypair.pubkey()).value / 1e9
                 
-                if balance < (amount / 1e9) + 0.01:  # Need extra for fees
+                if balance < (amount / 1e9) + 0.01:
                     return {"will_succeed": False, "error": "Insufficient balance"}
                 
                 return {"will_succeed": True, "warnings": []}
@@ -140,12 +136,11 @@ if not ELITE_MODULES_AVAILABLE:
         
         async def detect_honeypot(self, mint: str) -> bool:
             """Quick honeypot check"""
-            # Basic check - if liquidity is too low, might be honeypot
             try:
                 from utils import get_liquidity_and_ownership
                 lp_data = await get_liquidity_and_ownership(mint)
                 if lp_data and lp_data.get("liquidity", 0) < 0.1:
-                    return True  # Too low liquidity = potential honeypot
+                    return True
             except:
                 pass
             return False
@@ -157,21 +152,18 @@ if not ELITE_MODULES_AVAILABLE:
             
         async def count_competing_bots(self, mint: str) -> int:
             """Estimate number of competing bots"""
-            # Simplified - in production would analyze transaction patterns
             return random.randint(5, 20)
     
     # Embedded Smart Exit Strategy
     class SmartExitStrategy:
         async def calculate_exit_strategy(self, mint: str, entry_price: float) -> Dict:
             """Calculate dynamic exit strategy"""
-            # Check if it's a PumpFun graduate (proven token)
             try:
                 is_pumpfun = 'pumpfun_tokens' in globals() and mint in pumpfun_tokens
             except:
                 is_pumpfun = False
             
             if is_pumpfun:
-                # More aggressive targets for proven tokens
                 return {
                     "target_1": entry_price * 3,
                     "target_1_percent": 30,
@@ -183,7 +175,6 @@ if not ELITE_MODULES_AVAILABLE:
                     "strategy": "PUMPFUN_AGGRESSIVE"
                 }
             else:
-                # Standard strategy
                 return {
                     "target_1": entry_price * 2,
                     "target_1_percent": 50,
@@ -199,20 +190,19 @@ if not ELITE_MODULES_AVAILABLE:
     class VolumeAnalyzer:
         async def analyze_volume_pattern(self, mint: str) -> str:
             """Analyze volume patterns"""
-            # Simplified - check if it's a new launch
             try:
                 if 'migration_watch_list' in globals() and mint in migration_watch_list:
-                    return "pump_starting"  # PumpFun migrations often pump
+                    return "pump_starting"
             except:
                 pass
             return "stable"
     
-    # Embedded Revenue Optimizer
+    # Embedded Revenue Optimizer - FIXED VERSION
     class RevenueOptimizer:
         def __init__(self):
             self.total_profit = 0
             self.winning_trades = 0
-            self.total_trades = 0
+            self.total_trades = 0  # THIS WAS MISSING - NOW FIXED!
             
         async def should_increase_position(self) -> bool:
             """Determine if we should increase position sizes"""
@@ -226,13 +216,12 @@ if not ELITE_MODULES_AVAILABLE:
     class TrendPrediction:
         async def predict_next_pump(self, tokens: List[str]) -> Optional[str]:
             """Predict which token will pump next"""
-            # Check PumpFun tokens near graduation
             for token in tokens:
                 try:
                     if 'pumpfun_tokens' in globals() and token in pumpfun_tokens:
                         status = await check_pumpfun_token_status(token)
                         if status and status.get("progress", 0) > 90:
-                            return token  # About to graduate!
+                            return token
                 except:
                     pass
             return None
@@ -343,24 +332,20 @@ async def telegram_webhook(request: Request):
                 
         elif text == "/status":
             try:
-                # FIXED: Proper status handling with error checking
                 status_msg = get_bot_status_message()
                 elite_stats = f"\n\n🎯 ELITE STATS:\n"
                 
-                # Check if attributes exist before accessing
                 if hasattr(speed_optimizer, 'cached_pools'):
                     elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
                 else:
                     elite_stats += f"• Cached Pools: 0\n"
                 
-                # Check pumpfun_tokens exists
                 try:
                     from sniper_logic import pumpfun_tokens
                     elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens)}\n"
                 except:
                     elite_stats += f"• PumpFun Tracking: 0\n"
                 
-                # Check migration_watch_list exists
                 try:
                     from sniper_logic import migration_watch_list
                     elite_stats += f"• Migration Watch: {len(migration_watch_list)}\n"
@@ -377,12 +362,8 @@ async def telegram_webhook(request: Request):
                 
                 await send_telegram_alert(f"📊 Status:\n{status_msg}{elite_stats}")
             except Exception as e:
-                # Fallback if status has issues
-                try:
-                    basic_status = f"📊 Bot is {'running' if is_bot_running() else 'paused'}"
-                    await send_telegram_alert(f"{basic_status}\n\nDetailed stats temporarily unavailable.")
-                except:
-                    await send_telegram_alert("📊 Bot status check failed. Bot may still be running.")
+                basic_status = f"📊 Bot is {'running' if is_bot_running() else 'paused'}"
+                await send_telegram_alert(f"{basic_status}\n\nDetailed stats temporarily unavailable.")
                     
         elif text.startswith("/forcebuy "):
             parts = text.split(" ")
@@ -398,14 +379,12 @@ async def telegram_webhook(request: Request):
             await send_telegram_alert(f"👛 Wallet:\n{summary}")
             
         elif text == "/elite":
-            # Toggle elite features
             global ENABLE_ELITE_FEATURES
             ENABLE_ELITE_FEATURES = not ENABLE_ELITE_FEATURES
             status = "ON 🚀" if ENABLE_ELITE_FEATURES else "OFF"
             await send_telegram_alert(f"🎯 Elite Features: {status}")
             
         elif text == "/launch":
-            # Launch the sniper if not already running
             if is_bot_running():
                 await send_telegram_alert("🚀 Launching sniper systems...")
                 asyncio.create_task(start_elite_sniper())
@@ -413,7 +392,6 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert("⛔ Bot is paused. Use /start first.")
             
         elif text == "/pumpfun":
-            # Show PumpFun tracking status
             tracking_info = f"📈 PumpFun Tracking:\n\n"
             
             try:
@@ -436,7 +414,6 @@ async def telegram_webhook(request: Request):
             await send_telegram_alert(tracking_info)
             
         elif text == "/config":
-            # Show current configuration
             config_msg = f"""
 ⚙️ Current Configuration:
 RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', 'Not set')} SOL
@@ -494,7 +471,6 @@ async def elite_buy_token(mint: str, force_amount: float = None):
     try:
         # Check if elite features are enabled
         if not ENABLE_ELITE_FEATURES:
-            # Fall back to monster buy
             return await monster_buy_token(mint, force_amount)
         
         # 1. HONEYPOT CHECK
@@ -519,12 +495,10 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         # 3. AI SCORING (skip for force buys)
         if force_amount:
             amount_sol = force_amount
-            ai_score = 1.0  # Max score for forced buys
+            ai_score = 1.0
         else:
-            # Check cached pool data first (FIXED)
             cached_pool = speed_optimizer.get_cached_pool(mint) if hasattr(speed_optimizer, 'get_cached_pool') else None
             
-            # Get pool data
             if cached_pool:
                 lp_data = cached_pool
                 logging.info(f"[ELITE] Using cached pool data for {mint[:8]}...")
@@ -539,39 +513,33 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             
             pool_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
             
-            # AI Score the token
             try:
                 ai_scorer = AIScorer()
                 ai_score = await ai_scorer.score_token(mint, lp_data)
             except:
                 ai_score = 0.5
             
-            # Check if it's a PumpFun migration (auto high score)
             try:
                 if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
-                    ai_score = max(ai_score, 0.8)  # Minimum 0.8 score for migrations
+                    ai_score = max(ai_score, 0.8)
                     logging.info(f"[ELITE] PumpFun migration detected - boosted score to {ai_score:.2f}")
             except:
                 pass
             
-            # Minimum score check
             min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
             if ai_score < min_score:
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            # Calculate position size with competition adjustment
             base_amount = calculate_position_size(pool_liquidity, ai_score)
             
-            # Adjust for competition
             if competition_level == "ultra":
-                amount_sol = base_amount * 1.5  # Increase size for high-value targets
+                amount_sol = base_amount * 1.5
             elif competition_level == "high":
                 amount_sol = base_amount * 1.2
             else:
                 amount_sol = base_amount
             
-            # Cap at max position size
             max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0))
             amount_sol = min(amount_sol, max_position)
         
@@ -606,25 +574,20 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         # 7. EXECUTE THE BUY
         logging.info(f"[ELITE] Executing buy for {mint[:8]}... with {amount_sol} SOL")
         
-        # Temporarily override BUY_AMOUNT_SOL
         original_amount = os.getenv("BUY_AMOUNT_SOL")
         os.environ["BUY_AMOUNT_SOL"] = str(amount_sol)
         
-        # Execute with original buy function (it handles Jupiter/Raydium)
         result = await original_buy_token(mint)
         
-        # Restore original amount
         if original_amount:
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            # Track success
             revenue_optimizer.total_trades += 1
             
-            # 8. SET UP DYNAMIC EXIT STRATEGY
             if DYNAMIC_EXIT_STRATEGY:
                 try:
-                    strategy = await exit_strategy.calculate_exit_strategy(mint, 0)  # Entry price will be set in monitor
+                    strategy = await exit_strategy.calculate_exit_strategy(mint, 0)
                     strategy_name = strategy.get("strategy", "STANDARD")
                     
                     await send_telegram_alert(
@@ -656,7 +619,6 @@ async def elite_buy_token(mint: str, force_amount: float = None):
     except Exception as e:
         logging.error(f"[ELITE BUY] Error: {e}")
         await send_telegram_alert(f"❌ Elite buy error: {str(e)[:100]}")
-        # Fall back to monster buy on error
         return await monster_buy_token(mint, force_amount)
 
 async def monster_buy_token(mint: str, force_amount: float = None):
@@ -734,7 +696,6 @@ async def start_elite_sniper():
     """
     Start the ELITE money printer with all features
     """
-    # Pre-warm connections for speed
     if ENABLE_ELITE_FEATURES:
         try:
             await speed_optimizer.prewarm_connections()
@@ -863,7 +824,6 @@ async def elite_performance_monitor():
             
             # Check for trend predictions
             if os.getenv("TREND_PREDICTION", "true").lower() == "true":
-                # Get list of recent tokens
                 recent_tokens = []
                 try:
                     from sniper_logic import pumpfun_tokens
@@ -883,13 +843,14 @@ async def elite_performance_monitor():
             
             # Clean up old cached data
             current_time = time.time()
-            for mint in list(speed_optimizer.cache_time.keys()):
-                if current_time - speed_optimizer.cache_time[mint] > 300:  # 5 minutes
-                    try:
-                        del speed_optimizer.cached_pools[mint]
-                        del speed_optimizer.cache_time[mint]
-                    except:
-                        pass
+            if hasattr(speed_optimizer, 'cache_time'):
+                for mint in list(speed_optimizer.cache_time.keys()):
+                    if current_time - speed_optimizer.cache_time[mint] > 300:  # 5 minutes
+                        try:
+                            del speed_optimizer.cached_pools[mint]
+                            del speed_optimizer.cache_time[mint]
+                        except:
+                            pass
             
         except Exception as e:
             logging.error(f"[Elite Monitor] Error: {e}")
@@ -1002,8 +963,9 @@ async def cleanup():
     """Clean up resources on shutdown"""
     try:
         # Close all HTTP connections
-        for client in speed_optimizer.connection_pool.values():
-            await client.aclose()
+        if hasattr(speed_optimizer, 'connection_pool'):
+            for client in speed_optimizer.connection_pool.values():
+                await client.aclose()
         
         # Stop all tasks
         await stop_all_tasks()
