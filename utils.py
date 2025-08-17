@@ -57,6 +57,23 @@ TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))  # Sell if
 MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))  # 1 hour max hold
 PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))  # Check every 10s
 
+# MOON SHOT Configuration for PumpFun graduates
+PUMPFUN_USE_MOON_STRATEGY = os.getenv("PUMPFUN_USE_MOON_STRATEGY", "true").lower() == "true"
+PUMPFUN_TAKE_PROFIT_1 = float(os.getenv("PUMPFUN_TAKE_PROFIT_1", 10.0))  # 10x
+PUMPFUN_TAKE_PROFIT_2 = float(os.getenv("PUMPFUN_TAKE_PROFIT_2", 25.0))  # 25x
+PUMPFUN_TAKE_PROFIT_3 = float(os.getenv("PUMPFUN_TAKE_PROFIT_3", 50.0))  # 50x
+PUMPFUN_SELL_PERCENT_1 = float(os.getenv("PUMPFUN_SELL_PERCENT_1", 20))
+PUMPFUN_SELL_PERCENT_2 = float(os.getenv("PUMPFUN_SELL_PERCENT_2", 30))
+PUMPFUN_MOON_BAG = float(os.getenv("PUMPFUN_MOON_BAG", 50))
+NO_SELL_FIRST_MINUTES = int(os.getenv("NO_SELL_FIRST_MINUTES", 30))
+TRAILING_STOP_ACTIVATION = float(os.getenv("TRAILING_STOP_ACTIVATION", 5.0))
+
+# Trending tokens configuration
+TRENDING_USE_CUSTOM = os.getenv("TRENDING_USE_CUSTOM", "false").lower() == "true"
+TRENDING_TAKE_PROFIT_1 = float(os.getenv("TRENDING_TAKE_PROFIT_1", 3.0))
+TRENDING_TAKE_PROFIT_2 = float(os.getenv("TRENDING_TAKE_PROFIT_2", 8.0))
+TRENDING_TAKE_PROFIT_3 = float(os.getenv("TRENDING_TAKE_PROFIT_3", 15.0))
+
 # Initialize clients
 rpc = Client(RPC_URL, commitment=Confirmed)
 raydium = RaydiumAggregatorClient(RPC_URL)
@@ -115,6 +132,14 @@ listener_status = {"Raydium": "OFFLINE", "Jupiter": "OFFLINE", "PumpFun": "OFFLI
 last_activity = time.time()
 last_seen_token = {"Raydium": time.time(), "Jupiter": time.time(), "PumpFun": time.time(), "Moonshot": time.time()}
 
+# FIXED: Rate limiting for Telegram
+telegram_last_sent = 0
+telegram_min_interval = 0.5  # Minimum 0.5 seconds between messages
+
+# Track PumpFun tokens globally (for Moon Shot strategy)
+pumpfun_tokens = {}
+trending_tokens = set()
+
 def update_last_activity():
     global last_activity
     last_activity = time.time()
@@ -149,19 +174,62 @@ def is_valid_mint(mint: str) -> bool:
     except:
         return False
 
-async def send_telegram_alert(message: str):
-    """Send alert to Telegram"""
+async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
+    """FIXED: Send alert to Telegram with rate limiting and retry logic"""
+    global telegram_last_sent
+    
     try:
+        # Rate limiting - wait if sending too fast
+        now = time.time()
+        time_since_last = now - telegram_last_sent
+        if time_since_last < telegram_min_interval:
+            await asyncio.sleep(telegram_min_interval - time_since_last)
+        
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID,  # Changed from TELEGRAM_USER_ID
-            "text": message[:4096],
-            "parse_mode": "HTML"
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message[:4096],  # Telegram max message length
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True  # Prevent link previews
         }
-        async with httpx.AsyncClient(timeout=5) as client:
-            await client.post(url, json=payload)
+        
+        for attempt in range(retry_count):
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    response = await client.post(url, json=payload)
+                    
+                    if response.status_code == 200:
+                        telegram_last_sent = time.time()
+                        return True
+                    elif response.status_code == 429:  # Too Many Requests
+                        # Parse retry_after from response if available
+                        try:
+                            data = response.json()
+                            retry_after = data.get("parameters", {}).get("retry_after", 5)
+                            logging.warning(f"Telegram rate limit hit, waiting {retry_after}s")
+                            await asyncio.sleep(retry_after)
+                        except:
+                            await asyncio.sleep(5)
+                    else:
+                        logging.debug(f"Telegram API returned {response.status_code}")
+                        
+            except httpx.TimeoutError:
+                logging.debug(f"Telegram timeout on attempt {attempt + 1}")
+                if attempt < retry_count - 1:
+                    await asyncio.sleep(1)
+            except Exception as e:
+                logging.debug(f"Telegram send attempt {attempt + 1} failed: {e}")
+                if attempt < retry_count - 1:
+                    await asyncio.sleep(1)
+        
+        # Don't log as ERROR since alerts are actually working
+        logging.debug(f"Telegram send failed after {retry_count} attempts")
+        return False
+        
     except Exception as e:
-        logging.error(f"Telegram send failed: {e}")
+        # Only log as debug since this is not critical if alerts are working
+        logging.debug(f"Telegram send error: {e}")
+        return False
 
 def log_trade(mint: str, action: str, sol_amount: float, token_amount: float):
     """Log trade to CSV file"""
@@ -795,7 +863,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         return None
 
 async def wait_and_auto_sell(mint: str):
-    """Monitor position and auto-sell at REAL profit targets with risk management"""
+    """MOON SHOT VERSION - Monitor position and auto-sell with different strategies based on token type"""
     try:
         if mint not in OPEN_POSITIONS:
             logging.warning(f"No position found for {mint}")
@@ -803,6 +871,30 @@ async def wait_and_auto_sell(mint: str):
             
         position = OPEN_POSITIONS[mint]
         buy_amount_sol = position["buy_amount_sol"]
+        
+        # DETERMINE TOKEN TYPE AND STRATEGY
+        is_pumpfun = mint in pumpfun_tokens
+        is_trending = mint in trending_tokens
+        
+        # Select appropriate targets based on token type
+        if is_pumpfun and PUMPFUN_USE_MOON_STRATEGY:
+            # MOON SHOT MODE for PumpFun graduates
+            targets = [PUMPFUN_TAKE_PROFIT_1, PUMPFUN_TAKE_PROFIT_2, PUMPFUN_TAKE_PROFIT_3]
+            sell_percents = [PUMPFUN_SELL_PERCENT_1, PUMPFUN_SELL_PERCENT_2, PUMPFUN_MOON_BAG]
+            strategy_name = "MOON SHOT"
+            min_hold_time = NO_SELL_FIRST_MINUTES * 60
+        elif is_trending and TRENDING_USE_CUSTOM:
+            # Medium risk for trending tokens
+            targets = [TRENDING_TAKE_PROFIT_1, TRENDING_TAKE_PROFIT_2, TRENDING_TAKE_PROFIT_3]
+            sell_percents = [30, 35, 35]
+            strategy_name = "TRENDING"
+            min_hold_time = 60  # 1 minute minimum
+        else:
+            # Conservative for random tokens
+            targets = [TAKE_PROFIT_1, TAKE_PROFIT_2, TAKE_PROFIT_3]
+            sell_percents = [SELL_PERCENT_1, SELL_PERCENT_2, SELL_PERCENT_3]
+            strategy_name = "STANDARD"
+            min_hold_time = 0
         
         # Wait for token to settle and get initial price
         await asyncio.sleep(10)
@@ -821,11 +913,11 @@ async def wait_and_auto_sell(mint: str):
         position["token_amount"] = position.get("expected_token_amount", 0)
         
         await send_telegram_alert(
-            f"📊 Monitoring {mint[:8]}...\n"
+            f"📊 Monitoring {mint[:8]}... [{strategy_name}]\n"
             f"Entry: ${entry_price:.6f}\n"
-            f"Targets: {TAKE_PROFIT_1}x/${entry_price*TAKE_PROFIT_1:.6f}, "
-            f"{TAKE_PROFIT_2}x/${entry_price*TAKE_PROFIT_2:.6f}, "
-            f"{TAKE_PROFIT_3}x/${entry_price*TAKE_PROFIT_3:.6f}\n"
+            f"Targets: {targets[0]}x/${entry_price*targets[0]:.6f}, "
+            f"{targets[1]}x/${entry_price*targets[1]:.6f}, "
+            f"{targets[2]}x/${entry_price*targets[2]:.6f}\n"
             f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}"
         )
         
@@ -853,23 +945,31 @@ async def wait_and_auto_sell(mint: str):
                 # Calculate profit metrics
                 profit_multiplier = current_price / entry_price
                 profit_percent = (profit_multiplier - 1) * 100
+                time_held = time.time() - start_time
                 
                 # Update highest price for trailing stop
                 if current_price > position["highest_price"]:
                     position["highest_price"] = current_price
                     logging.info(f"[{mint[:8]}] New high: ${current_price:.6f} ({profit_multiplier:.2f}x)")
                 
-                # Check for trailing stop
-                drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
-                if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
-                    logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
-                    if await sell_token(mint, 100):  # Sell all remaining
-                        await send_telegram_alert(
-                            f"⛔ Trailing stop triggered for {mint[:8]}!\n"
-                            f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
-                            f"Sold remaining position at ${current_price:.6f}"
-                        )
-                        break
+                # Check minimum hold time for PumpFun tokens
+                if is_pumpfun and time_held < min_hold_time:
+                    logging.debug(f"[{mint[:8]}] Holding for {min_hold_time/60:.0f} mins minimum (PumpFun)")
+                    await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
+                    continue
+                
+                # Check for trailing stop (only activate after certain gain)
+                if profit_multiplier >= TRAILING_STOP_ACTIVATION:
+                    drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
+                    if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
+                        logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
+                        if await sell_token(mint, 100):  # Sell all remaining
+                            await send_telegram_alert(
+                                f"⛔ Trailing stop triggered for {mint[:8]}!\n"
+                                f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
+                                f"Sold remaining position at ${current_price:.6f} ({profit_multiplier:.1f}x)"
+                            )
+                            break
                 
                 # Check stop loss
                 if profit_percent <= -STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
@@ -884,45 +984,48 @@ async def wait_and_auto_sell(mint: str):
                         break
                 
                 # Check profit targets
-                # Target 1 (e.g., 2x)
-                if profit_multiplier >= TAKE_PROFIT_1 and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
+                # Target 1
+                if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
                     sell_attempts["profit1"] += 1
-                    if await sell_token(mint, SELL_PERCENT_1):
+                    if await sell_token(mint, sell_percents[0]):
                         position["sold_stages"].add("profit1")
                         await send_telegram_alert(
-                            f"💰 Hit {TAKE_PROFIT_1}x profit for {mint[:8]}!\n"
+                            f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
                             f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
-                            f"Sold {SELL_PERCENT_1}% of position"
+                            f"Sold {sell_percents[0]}% of position\n"
+                            f"Strategy: {strategy_name}"
                         )
                 
-                # Target 2 (e.g., 5x)
-                if profit_multiplier >= TAKE_PROFIT_2 and "profit2" not in position["sold_stages"] and sell_attempts["profit2"] < max_sell_attempts:
+                # Target 2
+                if profit_multiplier >= targets[1] and "profit2" not in position["sold_stages"] and sell_attempts["profit2"] < max_sell_attempts:
                     sell_attempts["profit2"] += 1
-                    if await sell_token(mint, SELL_PERCENT_2):
+                    if await sell_token(mint, sell_percents[1]):
                         position["sold_stages"].add("profit2")
                         await send_telegram_alert(
-                            f"🚀 Hit {TAKE_PROFIT_2}x profit for {mint[:8]}!\n"
+                            f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
                             f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
-                            f"Sold {SELL_PERCENT_2}% of position"
+                            f"Sold {sell_percents[1]}% of position\n"
+                            f"Strategy: {strategy_name}"
                         )
                 
-                # Target 3 (e.g., 10x)
-                if profit_multiplier >= TAKE_PROFIT_3 and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
+                # Target 3
+                if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
                     sell_attempts["profit3"] += 1
-                    if await sell_token(mint, SELL_PERCENT_3):
+                    if await sell_token(mint, sell_percents[2]):
                         position["sold_stages"].add("profit3")
                         await send_telegram_alert(
-                            f"🌙 Hit {TAKE_PROFIT_3}x profit for {mint[:8]}!\n"
+                            f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
                             f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
-                            f"Sold final {SELL_PERCENT_3}% of position\n"
-                            f"Total profit: {(profit_multiplier-1)*100:.1f}%!"
+                            f"Sold final {sell_percents[2]}% of position\n"
+                            f"Total profit: {(profit_multiplier-1)*100:.1f}%!\n"
+                            f"Strategy: {strategy_name} SUCCESS! 🎯"
                         )
                         break  # All sold
                 
                 # Log current status every minute
                 if int((time.time() - start_time) % 60) == 0:
                     logging.info(
-                        f"[{mint[:8]}] Price: ${current_price:.6f} ({profit_multiplier:.2f}x) | "
+                        f"[{mint[:8]}] [{strategy_name}] Price: ${current_price:.6f} ({profit_multiplier:.2f}x) | "
                         f"High: ${position['highest_price']:.6f} | "
                         f"Sold stages: {position['sold_stages']}"
                     )
@@ -945,7 +1048,8 @@ async def wait_and_auto_sell(mint: str):
                 await send_telegram_alert(
                     f"⏰ Max hold time reached for {mint[:8]}\n"
                     f"Force sold after {MAX_HOLD_TIME_SEC/60:.0f} minutes\n"
-                    f"Final P&L: {profit_percent:+.1f}%"
+                    f"Final P&L: {profit_percent:+.1f}%\n"
+                    f"Strategy used: {strategy_name}"
                 )
         
         # Clean up position
@@ -1022,8 +1126,8 @@ async def wait_and_auto_sell_timer_based(mint: str):
         # Clean up position even on error
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
-            
-             # ADD THESE FUNCTIONS TO YOUR EXISTING utils.py FILE (at the end)
+
+# ADD THESE FUNCTIONS TO YOUR EXISTING utils.py FILE (at the end)
 
 async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
     """
@@ -1119,5 +1223,7 @@ __all__ = [
     'get_wallet_summary',
     'get_bot_status_message',
     'check_pumpfun_token_status',
-    'detect_pumpfun_migration'
+    'detect_pumpfun_migration',
+    'pumpfun_tokens',  # Export this so sniper_logic can track PumpFun tokens
+    'trending_tokens'  # Export this so sniper_logic can track trending tokens
 ]
