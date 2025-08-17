@@ -5,6 +5,8 @@ import websockets
 import logging
 import time
 import re
+import base64
+from base58 import b58encode, b58decode
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import httpx
@@ -87,8 +89,8 @@ SYSTEM_PROGRAMS = [
 
 async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> list:
     """
-    FIXED: Fetch full transaction details to get account keys
-    Now handles versioned transactions and address lookup tables properly
+    ENHANCED: Fetch full transaction details to get account keys
+    Handles all PumpFun transaction types
     """
     try:
         if not rpc_url:
@@ -97,95 +99,140 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
                 rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
         
         async with httpx.AsyncClient(timeout=10) as client:
-            # First attempt - get full transaction with commitment
-            response = await client.post(
-                rpc_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getTransaction",
-                    "params": [
-                        signature,
-                        {
-                            "encoding": "jsonParsed",  # Changed to jsonParsed for better parsing
-                            "maxSupportedTransactionVersion": 0,
-                            "commitment": "confirmed"
+            # Try jsonParsed first for better structure
+            for encoding in ["jsonParsed", "json"]:
+                try:
+                    response = await client.post(
+                        rpc_url,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getTransaction",
+                            "params": [
+                                signature,
+                                {
+                                    "encoding": encoding,
+                                    "maxSupportedTransactionVersion": 0,
+                                    "commitment": "confirmed"
+                                }
+                            ]
                         }
-                    ]
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "result" in data and data["result"]:
-                    result = data["result"]
-                    account_keys = []
+                    )
                     
-                    # Extract from transaction message
-                    if "transaction" in result:
-                        tx = result["transaction"]
-                        if "message" in tx:
-                            msg = tx["message"]
+                    if response.status_code == 200:
+                        data = response.json()
+                        if "result" in data and data["result"]:
+                            result = data["result"]
+                            account_keys = []
                             
-                            # Get static account keys
-                            if "accountKeys" in msg:
-                                for key in msg["accountKeys"]:
-                                    if isinstance(key, str):
-                                        account_keys.append(key)
-                                    elif isinstance(key, dict):
-                                        # Handle parsed format
-                                        pubkey = key.get("pubkey") or key.get("address")
-                                        if pubkey:
-                                            account_keys.append(pubkey)
+                            # Extract from transaction message
+                            if "transaction" in result:
+                                tx = result["transaction"]
+                                if "message" in tx:
+                                    msg = tx["message"]
+                                    
+                                    # Get static account keys
+                                    if "accountKeys" in msg:
+                                        for key in msg["accountKeys"]:
+                                            if isinstance(key, str):
+                                                account_keys.append(key)
+                                            elif isinstance(key, dict):
+                                                # Handle parsed format
+                                                pubkey = key.get("pubkey") or key.get("address")
+                                                if pubkey:
+                                                    account_keys.append(pubkey)
+                                    
+                                    # Get instructions for additional accounts
+                                    if "instructions" in msg:
+                                        for inst in msg["instructions"]:
+                                            if isinstance(inst, dict):
+                                                # Check parsed instructions
+                                                if "parsed" in inst and "info" in inst["parsed"]:
+                                                    info = inst["parsed"]["info"]
+                                                    for field in ["mint", "token", "account", "source", "destination"]:
+                                                        if field in info:
+                                                            val = info[field]
+                                                            if isinstance(val, str) and len(val) == 44:
+                                                                account_keys.append(val)
+                                                
+                                                # Check accounts array
+                                                if "accounts" in inst:
+                                                    for acc in inst["accounts"]:
+                                                        if isinstance(acc, str) and len(acc) == 44:
+                                                            account_keys.append(acc)
+                                                        elif isinstance(acc, int):
+                                                            # Account index - need to resolve
+                                                            pass
                             
                             # Get loaded addresses (from address lookup tables)
-                            if "loadedAddresses" in result.get("meta", {}):
-                                loaded = result["meta"]["loadedAddresses"]
-                                if "writable" in loaded:
-                                    account_keys.extend(loaded["writable"])
-                                if "readonly" in loaded:
-                                    account_keys.extend(loaded["readonly"])
-                    
-                    # Also check instructions for additional accounts (PumpFun specific)
-                    if "meta" in result and "innerInstructions" in result["meta"]:
-                        for inner in result["meta"]["innerInstructions"]:
-                            if "instructions" in inner:
-                                for inst in inner["instructions"]:
-                                    if "parsed" in inst and "info" in inst["parsed"]:
-                                        info = inst["parsed"]["info"]
-                                        # Extract any mint addresses
-                                        if "mint" in info:
-                                            account_keys.append(info["mint"])
-                                        if "token" in info:
-                                            account_keys.append(info["token"])
-                                        if "account" in info:
-                                            account_keys.append(info["account"])
-                    
-                    # For PumpFun, also check postTokenBalances for new mints
-                    if "meta" in result and "postTokenBalances" in result["meta"]:
-                        for balance in result["meta"]["postTokenBalances"]:
-                            if "mint" in balance:
-                                mint = balance["mint"]
-                                # Only add if it looks like a new token (high decimals, low supply)
-                                if mint not in account_keys:
-                                    account_keys.append(mint)
-                    
-                    # Deduplicate while preserving order
-                    seen = set()
-                    unique_keys = []
-                    for key in account_keys:
-                        if key and key not in seen and len(key) == 44:
-                            seen.add(key)
-                            unique_keys.append(key)
-                    
-                    if unique_keys:
-                        logging.info(f"[TX FETCH] Got {len(unique_keys)} accounts for {signature[:8]}...")
-                        return unique_keys
-                    else:
-                        # Fallback: Try simpler approach for PumpFun
-                        return await fetch_pumpfun_token_from_logs(signature, rpc_url)
-        
-        return []
+                            if "meta" in result:
+                                meta = result["meta"]
+                                
+                                # Check loadedAddresses
+                                if "loadedAddresses" in meta:
+                                    loaded = meta["loadedAddresses"]
+                                    if "writable" in loaded:
+                                        account_keys.extend(loaded["writable"])
+                                    if "readonly" in loaded:
+                                        account_keys.extend(loaded["readonly"])
+                                
+                                # Check innerInstructions for nested accounts
+                                if "innerInstructions" in meta:
+                                    for inner in meta["innerInstructions"]:
+                                        if "instructions" in inner:
+                                            for inst in inner["instructions"]:
+                                                if "parsed" in inst and "info" in inst["parsed"]:
+                                                    info = inst["parsed"]["info"]
+                                                    for field in ["mint", "token", "account", "authority", "destination"]:
+                                                        if field in info:
+                                                            val = info[field]
+                                                            if isinstance(val, str) and len(val) == 44:
+                                                                account_keys.append(val)
+                                
+                                # IMPORTANT: Check postTokenBalances for new mints
+                                if "postTokenBalances" in meta:
+                                    for balance in meta["postTokenBalances"]:
+                                        if "mint" in balance:
+                                            mint = balance["mint"]
+                                            if mint not in account_keys:
+                                                account_keys.append(mint)
+                                
+                                # Also check preTokenBalances (sometimes new tokens appear here)
+                                if "preTokenBalances" in meta:
+                                    for balance in meta["preTokenBalances"]:
+                                        if "mint" in balance:
+                                            mint = balance["mint"]
+                                            # Check if this might be a new token
+                                            if mint not in account_keys and mint not in SYSTEM_PROGRAMS:
+                                                account_keys.append(mint)
+                            
+                            # Deduplicate while preserving order
+                            seen = set()
+                            unique_keys = []
+                            for key in account_keys:
+                                if key and key not in seen and len(key) == 44 and key not in SYSTEM_PROGRAMS:
+                                    try:
+                                        # Validate it's a real pubkey
+                                        Pubkey.from_string(key)
+                                        seen.add(key)
+                                        unique_keys.append(key)
+                                    except:
+                                        pass
+                            
+                            if unique_keys:
+                                logging.info(f"[TX FETCH] Got {len(unique_keys)} accounts for {signature[:8]}...")
+                                return unique_keys
+                            
+                            # If no accounts found with this encoding, try the next one
+                            continue
+                            
+                except Exception as e:
+                    logging.debug(f"[TX FETCH] {encoding} encoding failed: {e}")
+                    continue
+            
+            # If all encodings failed, try the fallback
+            logging.debug(f"[TX FETCH] All encodings failed, trying fallback for {signature[:8]}...")
+            return await fetch_pumpfun_token_from_logs(signature, rpc_url)
         
     except Exception as e:
         logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
@@ -194,7 +241,7 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None) -> lis
 
 async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None) -> list:
     """
-    Fallback: Extract token mint from PumpFun transaction logs
+    Enhanced Fallback: Extract token mint from PumpFun transaction logs and raw data
     """
     try:
         if not rpc_url:
@@ -203,7 +250,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None) -> 
                 rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
         
         async with httpx.AsyncClient(timeout=10) as client:
-            # Get transaction with logs
+            # Get transaction with base64 encoding for raw data
             response = await client.post(
                 rpc_url,
                 json={
@@ -213,7 +260,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None) -> 
                     "params": [
                         signature,
                         {
-                            "encoding": "json",
+                            "encoding": "base64",
                             "maxSupportedTransactionVersion": 0,
                             "commitment": "confirmed"
                         }
@@ -225,31 +272,67 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None) -> 
                 data = response.json()
                 if "result" in data and data["result"]:
                     result = data["result"]
+                    potential_mints = []
                     
-                    # Look in logs for mint address pattern
+                    # Try to decode base64 and find addresses
+                    if "transaction" in result:
+                        # Get the base64 transaction data
+                        tx_data = result["transaction"]
+                        if isinstance(tx_data, list) and len(tx_data) > 0:
+                            try:
+                                # Decode base64
+                                raw_bytes = base64.b64decode(tx_data[0])
+                                # Convert to string to search for patterns
+                                raw_str = raw_bytes.hex()
+                                
+                                # Look for potential public keys in hex (32 bytes = 64 hex chars)
+                                # This is a rough heuristic but can work
+                                for i in range(0, len(raw_str) - 64, 2):
+                                    potential_hex = raw_str[i:i+64]
+                                    try:
+                                        # Convert hex to bytes then to base58
+                                        key_bytes = bytes.fromhex(potential_hex)
+                                        b58_key = b58encode(key_bytes).decode('utf-8')
+                                        
+                                        if len(b58_key) >= 43 and len(b58_key) <= 44:
+                                            # Validate it's a real pubkey
+                                            try:
+                                                Pubkey.from_string(b58_key)
+                                                if b58_key not in SYSTEM_PROGRAMS:
+                                                    potential_mints.append(b58_key)
+                                            except:
+                                                pass
+                                    except:
+                                        pass
+                            except Exception as e:
+                                logging.debug(f"[FALLBACK] Base64 decode error: {e}")
+                    
+                    # Also check logs for addresses
                     if "meta" in result and "logMessages" in result["meta"]:
                         logs = result["meta"]["logMessages"]
-                        potential_mints = []
                         
                         for log in logs:
-                            # PumpFun often logs the mint address
-                            if "mint" in log.lower() or "token" in log.lower():
+                            # Look for mint/token mentions
+                            if any(keyword in log.lower() for keyword in ["mint", "token", "create", "initialize"]):
                                 # Extract base58 addresses from log
-                                import re
                                 # Match Solana address pattern
-                                matches = re.findall(r'[1-9A-HJ-NP-Za-km-z]{44}', log)
+                                matches = re.findall(r'[1-9A-HJ-NP-Za-km-z]{43,44}', log)
                                 for match in matches:
-                                    if match not in SYSTEM_PROGRAMS:
+                                    if match not in SYSTEM_PROGRAMS and len(match) == 44:
                                         try:
                                             # Validate it's a valid pubkey
                                             Pubkey.from_string(match)
-                                            potential_mints.append(match)
+                                            if match not in potential_mints:
+                                                potential_mints.append(match)
                                         except:
                                             pass
-                        
-                        if potential_mints:
-                            logging.info(f"[FALLBACK] Found {len(potential_mints)} potential mints from logs")
-                            return potential_mints
+                    
+                    # Deduplicate
+                    unique_mints = list(dict.fromkeys(potential_mints))
+                    
+                    if unique_mints:
+                        logging.info(f"[FALLBACK] Found {len(unique_mints)} potential mints from logs/raw data")
+                        return unique_mints[:5]  # Return top 5 to avoid spam
         
         return []
         
