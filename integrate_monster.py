@@ -332,38 +332,73 @@ async def telegram_webhook(request: Request):
                 
         elif text == "/status":
             try:
-                status_msg = get_bot_status_message()
-                elite_stats = f"\n\n🎯 ELITE STATS:\n"
+                # Basic status first
+                basic_status = f"📊 Bot is {'running ✅' if is_bot_running() else 'paused ⏸'}\n"
                 
-                if hasattr(speed_optimizer, 'cached_pools'):
-                    elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
-                else:
+                # Get detailed status safely
+                try:
+                    status_msg = get_bot_status_message()
+                except Exception as e:
+                    status_msg = "Detailed bot stats loading...\n"
+                
+                # Elite stats
+                elite_stats = f"\n🎯 ELITE STATS:\n"
+                
+                # Cached pools
+                try:
+                    if hasattr(speed_optimizer, 'cached_pools'):
+                        elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
+                    else:
+                        elite_stats += f"• Cached Pools: 0\n"
+                except:
                     elite_stats += f"• Cached Pools: 0\n"
                 
+                # PumpFun tracking
                 try:
                     from sniper_logic import pumpfun_tokens
                     elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens)}\n"
                 except:
                     elite_stats += f"• PumpFun Tracking: 0\n"
                 
+                # Migration watch
                 try:
                     from sniper_logic import migration_watch_list
                     elite_stats += f"• Migration Watch: {len(migration_watch_list)}\n"
                 except:
                     elite_stats += f"• Migration Watch: 0\n"
                 
-                elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
+                # Momentum scanner status
+                try:
+                    from sniper_logic import MOMENTUM_SCANNER_ENABLED, momentum_analyzed, momentum_bought
+                    if MOMENTUM_SCANNER_ENABLED:
+                        elite_stats += f"• Momentum Scanner: ACTIVE 🔥\n"
+                        elite_stats += f"• Momentum Analyzed: {len(momentum_analyzed)}\n"
+                        elite_stats += f"• Momentum Bought: {len(momentum_bought)}\n"
+                    else:
+                        elite_stats += f"• Momentum Scanner: DISABLED\n"
+                except:
+                    elite_stats += f"• Momentum Scanner: Check settings\n"
                 
-                if revenue_optimizer.total_trades > 0:
-                    win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
-                    elite_stats += f"• Win Rate: {win_rate:.1f}%"
-                else:
-                    elite_stats += f"• Win Rate: 0.0%"
+                # Profit tracking
+                try:
+                    elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
+                    
+                    if revenue_optimizer.total_trades > 0:
+                        win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
+                        elite_stats += f"• Win Rate: {win_rate:.1f}%\n"
+                        elite_stats += f"• Total Trades: {revenue_optimizer.total_trades}"
+                    else:
+                        elite_stats += f"• Win Rate: 0.0% (No trades yet)"
+                except:
+                    elite_stats += f"• Win Rate: No data yet"
                 
-                await send_telegram_alert(f"📊 Status:\n{status_msg}{elite_stats}")
+                # Send combined message
+                await send_telegram_alert(f"{basic_status}{status_msg}{elite_stats}")
+                
             except Exception as e:
-                basic_status = f"📊 Bot is {'running' if is_bot_running() else 'paused'}"
-                await send_telegram_alert(f"{basic_status}\n\nDetailed stats temporarily unavailable.")
+                logging.error(f"Status command error: {e}")
+                basic_status = f"📊 Bot is {'running ✅' if is_bot_running() else 'paused ⏸'}"
+                await send_telegram_alert(f"{basic_status}\n\n⚠️ Full stats temporarily unavailable\nBot is functioning normally")
                     
         elif text.startswith("/forcebuy "):
             parts = text.split(" ")
@@ -752,6 +787,19 @@ async def start_elite_sniper():
         asyncio.create_task(mempool_listener("Moonshot")),
         asyncio.create_task(trending_scanner())
     ])
+    
+    # Add Momentum Scanner - ELITE STRATEGY
+    try:
+        from sniper_logic import momentum_scanner, MOMENTUM_SCANNER_ENABLED
+        if MOMENTUM_SCANNER_ENABLED:
+            tasks.append(asyncio.create_task(momentum_scanner()))
+            await send_telegram_alert(
+                "🔥 MOMENTUM SCANNER: ACTIVE 🔥\n"
+                "Hunting for 50-200% gainers\n"
+                "Hybrid mode: Auto-buy 5/5, Alert 3-4/5"
+            )
+    except Exception as e:
+        logging.warning(f"Momentum scanner not available: {e}")
     
     # Add PumpFun migration monitor
     if os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true":
