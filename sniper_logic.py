@@ -1676,6 +1676,9 @@ async def start_sniper_with_forced_token(mint: str):
             await send_telegram_alert(f"❌ {mint} is blacklisted, broken, or already bought")
             return
 
+        # Initialize is_pumpfun first
+        is_pumpfun = mint in pumpfun_tokens
+        
         # CHECK MOMENTUM SCORE FOR FORCE BUYS
         momentum_data = await check_momentum_score(mint)
         if momentum_data["score"] > 0:
@@ -1691,10 +1694,9 @@ async def start_sniper_with_forced_token(mint: str):
             if momentum_data['score'] >= 3:
                 buy_amount = momentum_data['recommendation']
             else:
-                buy_amount = BUY_AMOUNT_SOL
+                buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
         else:
-            # Check if it's a PumpFun token
-            is_pumpfun = mint in pumpfun_tokens
+            # Use default amounts
             buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
         
         logging.info(f"[FORCEBUY] Attempting forced buy for {mint} with {buy_amount} SOL")
@@ -1710,7 +1712,7 @@ async def start_sniper_with_forced_token(mint: str):
                     BLACKLIST.add(mint)
                     
                 token_type = "PumpFun Graduate" if is_pumpfun else "Standard"
-                if momentum_data["score"] >= 3:
+                if momentum_data.get("score", 0) >= 3:
                     token_type = f"Momentum Play (Score: {momentum_data['score']}/5)"
                     
                 await send_telegram_alert(
@@ -1725,6 +1727,12 @@ async def start_sniper_with_forced_token(mint: str):
         finally:
             if original_amount:
                 os.environ["BUY_AMOUNT_SOL"] = original_amount
+            
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        await send_telegram_alert(f"❌ Force buy error: {e}")
+        logging.exception(f"[FORCEBUY] Exception: {e}\n{tb}")
             
     except Exception as e:
         import traceback
