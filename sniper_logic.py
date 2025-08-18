@@ -1039,15 +1039,20 @@ async def mempool_listener(name, program_id=None):
                                        if test_mode_buys_today >= TEST_MODE_MAX_DAILY:
                                            logging.info(f"[{name}] Test mode daily limit reached ({TEST_MODE_MAX_DAILY})")
                                            continue
-                                       
+                                       # SPECIAL HANDLING FOR PUMPFUN - ALWAYS USE TEST MODE
+                                       if name == "PumpFun":
+                                        risk_level = "PUMPFUN_EARLY"
+                                        buy_amount = TEST_MODE_BUY_AMOUNT
+                                         test_mode_buys_today += 1
                                        # Determine risk level and buy amount with TEST MODE
+                                        
                                        if lp_amount >= RUG_LP_THRESHOLD * 2:
                                            risk_level = "SAFE"
                                            buy_amount = SAFE_BUY_AMOUNT
                                        elif lp_amount >= RUG_LP_THRESHOLD:
                                            risk_level = "MEDIUM"
                                            buy_amount = RISKY_BUY_AMOUNT
-                                       elif lp_amount >= TEST_MODE_LP_THRESHOLD or name == "PumpFun":
+                                       elif lp_amount >= TEST_MODE_LP_THRESHOLD:
                                            risk_level = "TEST"
                                            buy_amount = TEST_MODE_BUY_AMOUNT
                                            test_mode_buys_today += 1  # Increment test buy counter
