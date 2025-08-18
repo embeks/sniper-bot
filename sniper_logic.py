@@ -1006,15 +1006,15 @@ async def mempool_listener(name, program_id=None):
                                            lp_amount = lp_data.get("liquidity", 0)
                                    except asyncio.TimeoutError:
                                        logging.info(f"[{name}] LP check timeout")
-                                       # For PumpFun, continue with default small amount
+                                       # For PumpFun, continue with 0 liquidity (they start with 0)
                                        if name == "PumpFun":
-                                           lp_amount = 0.1  # Assume minimal liquidity
+                                           lp_amount = 0  # PumpFun tokens have NO liquidity at start
                                        else:
                                            continue
                                    except Exception as e:
                                        logging.debug(f"[{name}] LP check error: {e}")
                                        if name == "PumpFun":
-                                           lp_amount = 0.1  # Assume minimal liquidity
+                                           lp_amount = 0  # PumpFun tokens have NO liquidity at start
                                        else:
                                            continue
                                    
@@ -1031,7 +1031,7 @@ async def mempool_listener(name, program_id=None):
                                        record_skip("quality_check")
                                        continue
                                    
-                                   # NEW TEST MODE LOGIC FOR POSITION SIZING
+                                   # ============== FIXED POSITION SIZING FOR PUMPFUN ==============
                                    global test_mode_buys_today
                                    
                                    if ENABLE_TEST_MODE:
@@ -1039,14 +1039,15 @@ async def mempool_listener(name, program_id=None):
                                        if test_mode_buys_today >= TEST_MODE_MAX_DAILY:
                                            logging.info(f"[{name}] Test mode daily limit reached ({TEST_MODE_MAX_DAILY})")
                                            continue
+                                       
                                        # SPECIAL HANDLING FOR PUMPFUN - ALWAYS USE TEST MODE
                                        if name == "PumpFun":
-                                        risk_level = "PUMPFUN_EARLY"
-                                        buy_amount = TEST_MODE_BUY_AMOUNT
-                                         test_mode_buys_today += 1
-                                       # Determine risk level and buy amount with TEST MODE
-                                        
-                                       if lp_amount >= RUG_LP_THRESHOLD * 2:
+                                           risk_level = "PUMPFUN_EARLY"
+                                           buy_amount = TEST_MODE_BUY_AMOUNT
+                                           test_mode_buys_today += 1
+                                           logging.info(f"[PumpFun] Using TEST MODE: {buy_amount} SOL")
+                                       # Regular token risk assessment
+                                       elif lp_amount >= RUG_LP_THRESHOLD * 2:
                                            risk_level = "SAFE"
                                            buy_amount = SAFE_BUY_AMOUNT
                                        elif lp_amount >= RUG_LP_THRESHOLD:
@@ -1055,13 +1056,17 @@ async def mempool_listener(name, program_id=None):
                                        elif lp_amount >= TEST_MODE_LP_THRESHOLD:
                                            risk_level = "TEST"
                                            buy_amount = TEST_MODE_BUY_AMOUNT
-                                           test_mode_buys_today += 1  # Increment test buy counter
+                                           test_mode_buys_today += 1
                                        else:
                                            logging.info(f"[{name}] Below test threshold: {lp_amount:.2f} SOL")
-                                           continue  # Skip if below test threshold
+                                           continue
                                    else:
                                        # Original logic if test mode disabled
-                                       if lp_amount >= RUG_LP_THRESHOLD * 2:
+                                       if name == "PumpFun":
+                                           # PumpFun always uses ultra risky amount when test mode is off
+                                           risk_level = "PUMPFUN_EARLY"
+                                           buy_amount = ULTRA_RISKY_BUY_AMOUNT
+                                       elif lp_amount >= RUG_LP_THRESHOLD * 2:
                                            risk_level = "SAFE"
                                            buy_amount = SAFE_BUY_AMOUNT
                                        elif lp_amount >= RUG_LP_THRESHOLD:
@@ -1071,22 +1076,17 @@ async def mempool_listener(name, program_id=None):
                                            risk_level = "HIGH"
                                            buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                    
-                                   # Special handling for PumpFun early buys
-                                   if name == "PumpFun" and os.getenv("PUMPFUN_EARLY_BUY", "false").lower() == "true":
-                                       buy_amount = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.005))
-                                       risk_level = "PUMPFUN_EARLY"
-                                   
                                    # Mark as attempted
                                    recent_buy_attempts[potential_mint] = time.time()
                                    
                                    await send_telegram_alert(
-                                       f"✅ {'TEST MODE' if risk_level == 'TEST' else 'QUALITY'} TOKEN DETECTED ✅\n\n"
+                                       f"✅ {'TEST MODE' if ENABLE_TEST_MODE and risk_level in ['TEST', 'PUMPFUN_EARLY'] else 'QUALITY'} TOKEN DETECTED ✅\n\n"
                                        f"Platform: {name}\n"
                                        f"Token: `{potential_mint}`\n"
                                        f"Liquidity: {lp_amount:.2f} SOL\n"
                                        f"Risk: {risk_level}\n"
                                        f"Buy Amount: {buy_amount} SOL\n"
-                                       f"Test Buys Today: {test_mode_buys_today}/{TEST_MODE_MAX_DAILY}\n\n" if ENABLE_TEST_MODE else ""
+                                       f"{'Test Buys Today: ' + str(test_mode_buys_today) + '/' + str(TEST_MODE_MAX_DAILY) if ENABLE_TEST_MODE else ''}\n\n"
                                        f"Attempting snipe..."
                                    )
                                    
@@ -1101,7 +1101,7 @@ async def mempool_listener(name, program_id=None):
                                                BLACKLIST.add(potential_mint)
                                            
                                            await send_telegram_alert(
-                                               f"✅ {'TEST MODE' if risk_level == 'TEST' else ''} SNIPED {'PUMPFUN' if name == 'PumpFun' else 'QUALITY'} TOKEN!\n"
+                                               f"✅ {'TEST MODE' if ENABLE_TEST_MODE and risk_level in ['TEST', 'PUMPFUN_EARLY'] else ''} SNIPED {'PUMPFUN' if name == 'PumpFun' else 'QUALITY'} TOKEN!\n"
                                                f"Token: {potential_mint[:16]}...\n"
                                                f"Amount: {buy_amount} SOL\n"
                                                f"Risk: {risk_level}\n"
