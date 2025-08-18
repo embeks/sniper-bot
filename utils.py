@@ -1,3 +1,4 @@
+
 import os
 import json
 import logging
@@ -729,6 +730,14 @@ async def buy_token(mint: str):
                 
                 increment_stat("snipes_succeeded", 1)
                 log_trade(mint, "BUY_PUMPFUN", test_amount, 0)
+                
+                await send_telegram_alert(
+                    f"✅ PUMPFUN SNIPE SUCCESS!\n"
+                    f"Token: {mint[:16]}...\n"
+                    f"Amount: {test_amount} SOL\n"
+                    f"TX: https://solscan.io/tx/{pumpfun_sig}"
+                )
+                
                 return True
             else:
                 # If PumpFun direct buy fails, don't try other methods
@@ -736,19 +745,18 @@ async def buy_token(mint: str):
                 record_skip("buy_failed")
                 return False
         
-        # For non-PumpFun tokens or graduated PumpFun tokens, check minimum liquidity
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 5.0))
-        
-        if current_liquidity < min_lp and not is_pumpfun:
-            await send_telegram_alert(
-                f"⚠️ Skipping low LP token\n"
-                f"Token: {mint[:8]}...\n"
-                f"LP: {current_liquidity:.2f} SOL\n"
-                f"Min required: {min_lp} SOL"
-            )
-            log_skipped_token(mint, f"Low liquidity: {current_liquidity:.2f} SOL")
-            record_skip("low_lp")
-            return False
+        # For non-PumpFun tokens or graduated PumpFun tokens, check if liquidity exists
+        if is_pumpfun:
+            # Check if PumpFun token has 0 liquidity (not graduated yet)
+            current_liquidity = 0
+            try:
+                lp_data = await get_liquidity_and_ownership(mint)
+                current_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
+            except:
+                current_liquidity = 0
+        else:
+            # Regular token - already checked liquidity above
+            current_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
 
         # ========== TRY JUPITER FIRST (works for 95% of tokens) ==========
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
