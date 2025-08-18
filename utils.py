@@ -1,4 +1,3 @@
-
 import os
 import json
 import logging
@@ -605,93 +604,8 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         logging.error(f"[Jupiter] Sell execution error: {e}")
         return None
 
-# ===== NEW PUMPFUN DIRECT BUY FUNCTION =====
-async def buy_token_pumpfun_direct(mint: str, sol_amount: float, slippage: int = 500) -> Optional[str]:
-    """
-    Buy tokens directly through PumpFun's bonding curve
-    REQUIRED for tokens that haven't graduated to Raydium yet
-    Always uses TEST MODE amounts for safety
-    """
-    try:
-        # ALWAYS use test mode for PumpFun direct buys (they're risky!)
-        actual_amount = min(sol_amount, 0.005)  # Cap at 0.005 SOL for safety
-        logging.info(f"[PumpFun Direct] Buying {mint[:8]}... with {actual_amount} SOL (TEST MODE)")
-        
-        # PumpFun API endpoint for buying
-        url = "https://pumpportal.fun/api/trade-local"
-        
-        # Build the transaction data
-        payload = {
-            "publicKey": wallet_pubkey,
-            "action": "buy",
-            "mint": mint,
-            "amount": int(actual_amount * 1e9),  # Convert to lamports
-            "denominatedInSol": "true",
-            "slippage": slippage,
-            "priorityFee": 0.00005,  # Small priority fee
-            "pool": "pump"
-        }
-        
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Get the unsigned transaction from PumpFun
-            response = await client.post(url, json=payload)
-            
-            if response.status_code != 200:
-                logging.error(f"[PumpFun Direct] API error: {response.status_code} - {response.text}")
-                return None
-            
-            data = response.json()
-            
-            # Check if we got a transaction
-            if not data or isinstance(data, list) and len(data) == 0:
-                logging.error("[PumpFun Direct] No transaction returned")
-                return None
-            
-            # The response is base64 encoded transaction
-            tx_base64 = data if isinstance(data, str) else data[0]
-            
-            # Decode and sign the transaction
-            tx_bytes = base64.b64decode(tx_base64)
-            tx = VersionedTransaction.from_bytes(tx_bytes)
-            
-            # Sign with our keypair
-            signed_tx = VersionedTransaction(tx.message, [keypair])
-            
-            # Send transaction
-            logging.info("[PumpFun Direct] Sending buy transaction...")
-            result = rpc.send_transaction(
-                signed_tx,
-                opts=TxOpts(
-                    skip_preflight=True,
-                    preflight_commitment=Confirmed,
-                    max_retries=3
-                )
-            )
-            
-            if result.value:
-                sig = str(result.value)
-                logging.info(f"[PumpFun Direct] Transaction sent: {sig}")
-                
-                await send_telegram_alert(
-                    f"🎯 PumpFun Direct Buy Success!\n"
-                    f"Token: {mint[:8]}...\n"
-                    f"Amount: {actual_amount} SOL (TEST MODE)\n"
-                    f"TX: https://solscan.io/tx/{sig}"
-                )
-                
-                return sig
-            else:
-                logging.error(f"[PumpFun Direct] Transaction failed: {result}")
-                return None
-                
-    except Exception as e:
-        logging.error(f"[PumpFun Direct] Buy error: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        return None
-
 async def buy_token(mint: str):
-    """Execute buy transaction for a token - NOW WITH PUMPFUN DIRECT SUPPORT!"""
+    """Execute buy transaction for a token - NOW WITH JUPITER!"""
     amount = int(BUY_AMOUNT_SOL * 1e9)  # Convert SOL to lamports
 
     try:
@@ -704,59 +618,20 @@ async def buy_token(mint: str):
         increment_stat("snipes_attempted", 1)
         update_last_activity()
         
-        # Check if this is a PumpFun token
-        is_pumpfun = mint in pumpfun_tokens
-        
         # ELITE: Quick liquidity check before buying
         lp_data = await get_liquidity_and_ownership(mint)
-        current_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
+        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 5.0))
         
-        # If it's a PumpFun token with 0 liquidity, use direct buy
-        if is_pumpfun and current_liquidity == 0:
-            logging.info(f"[Buy] PumpFun token with 0 liquidity detected, using direct buy")
-            
-            # Use TEST MODE amount for PumpFun
-            test_amount = 0.005  # Always use small amount for PumpFun
-            pumpfun_sig = await buy_token_pumpfun_direct(mint, test_amount)
-            
-            if pumpfun_sig:
-                OPEN_POSITIONS[mint] = {
-                    "expected_token_amount": 0,
-                    "buy_amount_sol": test_amount,
-                    "sold_stages": set(),
-                    "buy_sig": pumpfun_sig,
-                    "is_pumpfun": True
-                }
-                
-                increment_stat("snipes_succeeded", 1)
-                log_trade(mint, "BUY_PUMPFUN", test_amount, 0)
-                
-                await send_telegram_alert(
-                    f"✅ PUMPFUN SNIPE SUCCESS!\n"
-                    f"Token: {mint[:16]}...\n"
-                    f"Amount: {test_amount} SOL\n"
-                    f"TX: https://solscan.io/tx/{pumpfun_sig}"
-                )
-                
-                return True
-            else:
-                # If PumpFun direct buy fails, don't try other methods
-                await send_telegram_alert(f"⚠️ PumpFun direct buy failed for {mint[:8]}...")
-                record_skip("buy_failed")
-                return False
-        
-        # For non-PumpFun tokens or graduated PumpFun tokens, check if liquidity exists
-        if is_pumpfun:
-            # Check if PumpFun token has 0 liquidity (not graduated yet)
-            current_liquidity = 0
-            try:
-                lp_data = await get_liquidity_and_ownership(mint)
-                current_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
-            except:
-                current_liquidity = 0
-        else:
-            # Regular token - already checked liquidity above
-            current_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
+        if lp_data and lp_data.get("liquidity", 0) < min_lp:
+            await send_telegram_alert(
+                f"⚠️ Skipping low LP token\n"
+                f"Token: {mint[:8]}...\n"
+                f"LP: {lp_data.get('liquidity', 0):.2f} SOL\n"
+                f"Min required: {min_lp} SOL"
+            )
+            log_skipped_token(mint, f"Low liquidity: {lp_data.get('liquidity', 0):.2f} SOL")
+            record_skip("low_lp")
+            return False
 
         # ========== TRY JUPITER FIRST (works for 95% of tokens) ==========
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
@@ -998,7 +873,7 @@ async def wait_and_auto_sell(mint: str):
         buy_amount_sol = position["buy_amount_sol"]
         
         # DETERMINE TOKEN TYPE AND STRATEGY
-        is_pumpfun = mint in pumpfun_tokens or position.get("is_pumpfun", False)
+        is_pumpfun = mint in pumpfun_tokens
         is_trending = mint in trending_tokens
         
         # Select appropriate targets based on token type
