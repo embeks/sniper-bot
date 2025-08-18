@@ -50,6 +50,52 @@ except ImportError:
 load_dotenv()
 
 # ============================================
+# FIXED POSITION SIZING FUNCTION
+# ============================================
+
+def calculate_position_size_fixed(pool_liquidity_sol: float, ai_score: float = 0.5, force_buy: bool = False) -> float:
+    """
+    FIXED: Calculate optimal position size based on liquidity AND AI confidence
+    Now handles zero liquidity and force buys properly
+    """
+    base_amount = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+    
+    # FIXED: For force buys, always return at least base amount
+    if force_buy:
+        return max(base_amount, 0.03)
+    
+    # Testing mode - use small amount
+    if base_amount <= 0.05:
+        return base_amount
+    
+    # FIXED: Handle zero or very low liquidity
+    if pool_liquidity_sol < 0.1:
+        # Return minimum viable amount
+        return float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.01"))
+    
+    # Liquidity-based sizing
+    if pool_liquidity_sol < 5:
+        max_size = 0.05  # Very small for low liquidity
+    elif pool_liquidity_sol < 20:
+        max_size = 0.1
+    elif pool_liquidity_sol < 50:
+        max_size = 0.5
+    elif pool_liquidity_sol < 100:
+        max_size = 1.0
+    elif pool_liquidity_sol < 500:
+        max_size = 2.0
+    else:
+        max_size = min(5.0, pool_liquidity_sol * 0.03)
+    
+    # Adjust by AI confidence (0.5-1.5x multiplier)
+    confidence_multiplier = 0.5 + ai_score
+    final_size = min(base_amount, max_size * confidence_multiplier)
+    
+    # FIXED: Never return less than minimum
+    min_amount = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.01"))
+    return max(round(final_size, 3), min_amount)
+
+# ============================================
 # EMBEDDED ELITE MODULES (FULLY FIXED VERSION)
 # ============================================
 
@@ -481,11 +527,11 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 /help - Show this message
 
 💡 Elite Features Active:
-• MEV Protection
-• PumpFun Migration Sniper
-• Dynamic Exit Strategies
-• Competition Analysis
-• Speed Optimizations
+- MEV Protection
+- PumpFun Migration Sniper
+- Dynamic Exit Strategies
+- Competition Analysis
+- Speed Optimizations
 """
             await send_telegram_alert(help_text)
             
@@ -502,14 +548,18 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 async def elite_buy_token(mint: str, force_amount: float = None):
     """
     ELITE buy with MEV protection, simulation, and AI scoring - FULLY FIXED
+    Now properly handles force buys and zero liquidity situations
     """
     try:
         # Check if elite features are enabled
         if not ENABLE_ELITE_FEATURES:
             return await monster_buy_token(mint, force_amount)
         
-        # 1. HONEYPOT CHECK
-        if HONEYPOT_CHECK and not force_amount:
+        # FIXED: Determine if this is a force buy
+        is_force_buy = force_amount is not None and force_amount > 0
+        
+        # 1. HONEYPOT CHECK (skip for force buys)
+        if HONEYPOT_CHECK and not is_force_buy:
             is_honeypot = await simulator.detect_honeypot(mint)
             if is_honeypot:
                 logging.info(f"[ELITE] Skipping potential honeypot: {mint[:8]}...")
@@ -519,7 +569,11 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         # 2. COMPETITION ANALYSIS (FIXED)
         try:
             competition_level = await mev_protection.estimate_competition_level(mint)
-            competitor_count = await competitor_analyzer.count_competing_bots(mint)
+            # FIXED: Use the correct method name
+            if hasattr(competitor_analyzer, 'count_competing_bots'):
+                competitor_count = await competitor_analyzer.count_competing_bots(mint)
+            else:
+                competitor_count = 10  # Default fallback
         except Exception as e:
             logging.warning(f"Competition analysis error: {e}, using defaults")
             competition_level = "medium"
@@ -528,9 +582,9 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         logging.info(f"[ELITE] Competition: {competition_level}, Estimated bots: {competitor_count}")
         
         # 3. AI SCORING (skip for force buys)
-        if force_amount:
+        if is_force_buy:
             amount_sol = force_amount
-            ai_score = 1.0
+            ai_score = 1.0  # Max score for force buys
         else:
             cached_pool = speed_optimizer.get_cached_pool(mint) if hasattr(speed_optimizer, 'get_cached_pool') else None
             
@@ -566,8 +620,15 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            base_amount = calculate_position_size(pool_liquidity, ai_score)
+            # FIXED: Use the new position sizing function
+            base_amount = calculate_position_size_fixed(pool_liquidity, ai_score, is_force_buy)
             
+            # FIXED: Ensure base_amount is never zero
+            if base_amount < 0.01:
+                base_amount = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+                logging.warning(f"[ELITE] Base amount too low, using default: {base_amount}")
+            
+            # Adjust for competition
             if competition_level == "ultra":
                 amount_sol = base_amount * 1.5
             elif competition_level == "high":
@@ -575,8 +636,18 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             else:
                 amount_sol = base_amount
             
+            # FIXED: Final safety check
+            if amount_sol < 0.01:
+                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+                logging.warning(f"[ELITE] Final amount too low, using fallback: {amount_sol}")
+            
             max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0))
             amount_sol = min(amount_sol, max_position)
+        
+        # FIXED: Final validation
+        if amount_sol == 0 or amount_sol < 0.01:
+            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+            logging.error(f"[ELITE] CRITICAL: Amount was {amount_sol}, forced to {amount_sol}")
         
         # 4. SIMULATE TRANSACTION
         if SIMULATE_BEFORE_BUY:
@@ -658,7 +729,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
 
 async def monster_buy_token(mint: str, force_amount: float = None):
     """
-    Original monster buy function as fallback
+    Original monster buy function as fallback - ALSO FIXED
     """
     try:
         if force_amount:
@@ -684,9 +755,14 @@ async def monster_buy_token(mint: str, force_amount: float = None):
                 logging.info(f"[SKIP] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            amount_sol = calculate_position_size(pool_liquidity, ai_score)
+            # FIXED: Use the new position sizing function
+            amount_sol = calculate_position_size_fixed(pool_liquidity, ai_score, force_amount is not None)
             if amount_sol == 0:
                 amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+        
+        # FIXED: Final validation
+        if amount_sol < 0.01:
+            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
         
         await send_telegram_alert(
             f"🎯 EXECUTING BUY\n\n"
