@@ -1,5 +1,5 @@
 """
-Integration layer - ELITE MONEY PRINTER VERSION - ALL BUGS FIXED INCLUDING PUMPFUN
+Integration layer - ELITE MONEY PRINTER VERSION - ALL BUGS FIXED
 Ready to print money with Elite mode working perfectly!
 """
 
@@ -496,30 +496,20 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
         return {"ok": True}
 
 # ============================================
-# ELITE BUY FUNCTION WITH PUMPFUN FIX
+# ELITE BUY FUNCTION WITH ALL FEATURES (FULLY FIXED)
 # ============================================
 
 async def elite_buy_token(mint: str, force_amount: float = None):
     """
-    ELITE buy with MEV protection, simulation, and AI scoring - PUMPFUN FIXED
+    ELITE buy with MEV protection, simulation, and AI scoring - FULLY FIXED
     """
     try:
         # Check if elite features are enabled
         if not ENABLE_ELITE_FEATURES:
             return await monster_buy_token(mint, force_amount)
         
-        # ===== PUMPFUN FIX: Check if this is a PumpFun token FIRST =====
-        is_pumpfun_token = False
-        try:
-            # Check if mint is in pumpfun_tokens
-            if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens:
-                is_pumpfun_token = True
-                logging.info(f"[ELITE] PumpFun token detected: {mint[:8]}...")
-        except Exception as e:
-            logging.debug(f"PumpFun check error: {e}")
-        
-        # 1. HONEYPOT CHECK (skip for PumpFun tokens)
-        if HONEYPOT_CHECK and not force_amount and not is_pumpfun_token:
+        # 1. HONEYPOT CHECK
+        if HONEYPOT_CHECK and not force_amount:
             is_honeypot = await simulator.detect_honeypot(mint)
             if is_honeypot:
                 logging.info(f"[ELITE] Skipping potential honeypot: {mint[:8]}...")
@@ -537,12 +527,11 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         
         logging.info(f"[ELITE] Competition: {competition_level}, Estimated bots: {competitor_count}")
         
-        # 3. GET LIQUIDITY DATA (but don't fail PumpFun tokens for low liquidity)
-        pool_liquidity = 0
-        lp_data = {}
-        
-        if not is_pumpfun_token:
-            # Only check liquidity for non-PumpFun tokens
+        # 3. AI SCORING (skip for force buys)
+        if force_amount:
+            amount_sol = force_amount
+            ai_score = 1.0
+        else:
             cached_pool = speed_optimizer.get_cached_pool(mint) if hasattr(speed_optimizer, 'get_cached_pool') else None
             
             if cached_pool:
@@ -559,34 +548,12 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             
             pool_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
             
-            # ===== CRITICAL FIX: Skip liquidity check for PumpFun tokens =====
-            # Liquidity check only for non-PumpFun tokens
-            min_lp_threshold = float(os.getenv("RUG_LP_THRESHOLD", 5.0))
-            if pool_liquidity < min_lp_threshold and not force_amount:
-                logging.info(f"[SKIP] {mint}: Low liquidity: {pool_liquidity:.2f} SOL")
-                return False
-        else:
-            # PumpFun tokens have no initial liquidity, that's normal
-            logging.info(f"[ELITE] PumpFun token - skipping liquidity check")
-            pool_liquidity = 0  # PumpFun tokens start with 0 liquidity
-        
-        # 4. AI SCORING (skip for force buys or adjust for PumpFun)
-        if force_amount:
-            amount_sol = force_amount
-            ai_score = 1.0
-        else:
             try:
                 ai_scorer = AIScorer()
                 ai_score = await ai_scorer.score_token(mint, lp_data)
             except:
                 ai_score = 0.5
             
-            # Boost score for PumpFun tokens (they're higher risk but higher reward)
-            if is_pumpfun_token:
-                ai_score = max(ai_score, 0.7)  # Minimum 0.7 score for PumpFun
-                logging.info(f"[ELITE] PumpFun token - boosted AI score to {ai_score:.2f}")
-            
-            # Check for graduated PumpFun tokens
             try:
                 if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
                     ai_score = max(ai_score, 0.8)
@@ -599,33 +566,27 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            # Calculate position size based on token type
-            if is_pumpfun_token:
-                # PumpFun tokens always use small test amounts
-                amount_sol = float(os.getenv("TEST_MODE_BUY_AMOUNT", 0.005))
-                logging.info(f"[ELITE] PumpFun position size: {amount_sol} SOL (test mode)")
+            base_amount = calculate_position_size(pool_liquidity, ai_score)
+            
+            if competition_level == "ultra":
+                amount_sol = base_amount * 1.5
+            elif competition_level == "high":
+                amount_sol = base_amount * 1.2
             else:
-                base_amount = calculate_position_size(pool_liquidity, ai_score)
-                
-                if competition_level == "ultra":
-                    amount_sol = base_amount * 1.5
-                elif competition_level == "high":
-                    amount_sol = base_amount * 1.2
-                else:
-                    amount_sol = base_amount
-                
-                max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0))
-                amount_sol = min(amount_sol, max_position)
+                amount_sol = base_amount
+            
+            max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0))
+            amount_sol = min(amount_sol, max_position)
         
-        # 5. SIMULATE TRANSACTION (skip for PumpFun - they're too new to simulate properly)
-        if SIMULATE_BEFORE_BUY and not is_pumpfun_token:
+        # 4. SIMULATE TRANSACTION
+        if SIMULATE_BEFORE_BUY:
             sim_result = await simulator.simulate_buy(mint, int(amount_sol * 1e9))
             if not sim_result.get("will_succeed", True):
                 logging.warning(f"[ELITE] Simulation failed: {sim_result.get('error')}")
                 await send_telegram_alert(f"⚠️ Simulation failed for {mint[:8]}...: {sim_result.get('error')}")
                 return False
         
-        # 6. GET DYNAMIC JITO TIP
+        # 5. GET DYNAMIC JITO TIP
         jito_tip = 0
         if USE_JITO_BUNDLES:
             try:
@@ -634,21 +595,18 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             except:
                 jito_tip = 0.002
         
-        # 7. SEND BUY ALERT
-        token_type = "PUMPFUN" if is_pumpfun_token else "STANDARD"
+        # 6. SEND BUY ALERT
         await send_telegram_alert(
             f"🎯 ELITE BUY EXECUTING\n\n"
             f"Token: {mint[:8]}...\n"
-            f"Type: {token_type}\n"
             f"Amount: {amount_sol:.3f} SOL\n"
             f"AI Score: {ai_score:.2f}\n"
             f"Competition: {competition_level} ({competitor_count} bots)\n"
             f"Jito Tip: {jito_tip:.5f} SOL\n"
-            f"Liquidity: {pool_liquidity:.2f} SOL\n"
             f"Executing NOW..."
         )
         
-        # 8. EXECUTE THE BUY
+        # 7. EXECUTE THE BUY
         logging.info(f"[ELITE] Executing buy for {mint[:8]}... with {amount_sol} SOL")
         
         original_amount = os.getenv("BUY_AMOUNT_SOL")
@@ -670,7 +628,6 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                     await send_telegram_alert(
                         f"✅ ELITE BUY SUCCESS\n"
                         f"Token: {mint[:8]}...\n"
-                        f"Type: {token_type}\n"
                         f"Amount: {amount_sol:.3f} SOL\n"
                         f"Exit Strategy: {strategy_name}\n\n"
                         f"Monitoring for profits! 💰"
@@ -701,23 +658,13 @@ async def elite_buy_token(mint: str, force_amount: float = None):
 
 async def monster_buy_token(mint: str, force_amount: float = None):
     """
-    Original monster buy function as fallback - WITH PUMPFUN SUPPORT
+    Original monster buy function as fallback
     """
     try:
-        # Check if this is a PumpFun token
-        is_pumpfun_token = False
-        try:
-            if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens:
-                is_pumpfun_token = True
-                logging.info(f"[MONSTER BUY] PumpFun token detected: {mint[:8]}...")
-        except:
-            pass
-        
         if force_amount:
             logging.info(f"[MONSTER BUY] Force buying {mint[:8]}... with {force_amount} SOL")
             amount_sol = force_amount
         else:
-            # Get liquidity data
             try:
                 from utils import get_liquidity_and_ownership
                 lp_data = await get_liquidity_and_ownership(mint)
@@ -726,42 +673,24 @@ async def monster_buy_token(mint: str, force_amount: float = None):
                 pool_liquidity = 0
                 lp_data = {}
             
-            # Skip liquidity check for PumpFun tokens
-            if not is_pumpfun_token:
-                min_lp_threshold = float(os.getenv("RUG_LP_THRESHOLD", 5.0))
-                if pool_liquidity < min_lp_threshold:
-                    logging.info(f"[SKIP] {mint}: Low liquidity: {pool_liquidity:.2f} SOL")
-                    return False
-            
-            # AI scoring
             try:
                 ai_scorer = AIScorer()
                 ai_score = await ai_scorer.score_token(mint, lp_data)
             except:
                 ai_score = 0.5
             
-            # Boost score for PumpFun tokens
-            if is_pumpfun_token:
-                ai_score = max(ai_score, 0.7)
-            
             min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
             if ai_score < min_score:
                 logging.info(f"[SKIP] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            # Position sizing
-            if is_pumpfun_token:
-                amount_sol = float(os.getenv("TEST_MODE_BUY_AMOUNT", 0.005))
-            else:
-                amount_sol = calculate_position_size(pool_liquidity, ai_score)
-                if amount_sol == 0:
-                    amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+            amount_sol = calculate_position_size(pool_liquidity, ai_score)
+            if amount_sol == 0:
+                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
         
-        token_type = "PUMPFUN" if is_pumpfun_token else "STANDARD"
         await send_telegram_alert(
             f"🎯 EXECUTING BUY\n\n"
             f"Token: {mint[:8]}...\n"
-            f"Type: {token_type}\n"
             f"Amount: {amount_sol} SOL\n"
             f"Executing NOW..."
         )
@@ -780,7 +709,6 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             await send_telegram_alert(
                 f"✅ BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
-                f"Type: {token_type}\n"
                 f"Amount: {amount_sol} SOL\n\n"
                 f"Monitoring for profit targets!"
             )
@@ -813,7 +741,6 @@ async def start_elite_sniper():
     features_list = []
     features_list.append("✅ Smart Token Detection")
     features_list.append("✅ PumpFun Migration Sniper")
-    features_list.append("✅ PumpFun Direct Buy Support")
     features_list.append("✅ Dynamic Position Sizing")
     features_list.append("✅ Multi-DEX Support")
     features_list.append("✅ Auto Profit Taking")
@@ -911,8 +838,7 @@ async def start_elite_sniper():
         f"Active Strategies: {len(tasks)}\n"
         f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}\n"
         f"Min LP: {os.getenv('RUG_LP_THRESHOLD', '0.5')} SOL\n"
-        f"PumpFun Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL\n"
-        f"PumpFun Test Buy: {os.getenv('TEST_MODE_BUY_AMOUNT', '0.005')} SOL\n\n"
+        f"PumpFun Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL\n\n"
         f"{'Elite Features: ACTIVE ⚡' if ENABLE_ELITE_FEATURES else ''}\n"
         f"Hunting for profits... 💰"
     )
@@ -1042,7 +968,6 @@ async def main():
 ║  Features:                               ║
 ║  • MEV Protection (Jito Bundles)        ║
 ║  • PumpFun Migration Sniper             ║
-║  • PumpFun Direct Buy Support           ║
 ║  • Competition Analysis                 ║
 ║  • Speed Optimizations                  ║
 ║  • Dynamic Exit Strategies              ║
@@ -1065,7 +990,6 @@ async def main():
     logging.info(f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}")
     logging.info(f"Buy Amount: {os.getenv('BUY_AMOUNT_SOL', '0.05')} SOL")
     logging.info(f"Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL")
-    logging.info(f"PumpFun Test Buy: {os.getenv('TEST_MODE_BUY_AMOUNT', '0.005')} SOL")
     
     # Run with web server and webhook
     await run_bot_with_web_server()
