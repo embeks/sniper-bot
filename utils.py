@@ -830,11 +830,23 @@ async def get_token_decimals(mint: str) -> int:
     return 9
 
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price in USD - FULLY FIXED VERSION with proper decimal handling"""
+    """Get current token price in USD - FULLY FIXED VERSION with stablecoin handling"""
     try:
         # Get token decimals - CRITICAL FOR CORRECT PRICE
         token_decimals = await get_token_decimals(mint)
         logging.debug(f"[Price] Using {token_decimals} decimals for {mint[:8]}...")
+        
+        # CRITICAL FIX: Handle stablecoins specially - they should always be $1.00
+        STABLECOIN_MINTS = {
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
+            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
+            "7kbnvuGBxxj8AG9qp8Scn56muWGaRaFqxg1FsRp3PaFT": "UXD",  # UXD Stablecoin
+            "USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX": "USDH",   # USDH
+        }
+        
+        if mint in STABLECOIN_MINTS:
+            logging.info(f"[Price] {STABLECOIN_MINTS[mint]} stablecoin detected, returning $1.00")
+            return 1.0
         
         # Try DexScreener FIRST (most reliable for new tokens)
         try:
@@ -849,6 +861,12 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
                         if pairs[0].get("priceUsd"):
                             price = float(pairs[0]["priceUsd"])
+                            
+                            # Additional sanity check for stablecoins
+                            # If DexScreener returns a price way off from $1 for known stablecoins
+                            if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
+                                logging.warning(f"[Price] DexScreener returned ${price:.4f} for {STABLECOIN_MINTS[mint]}, forcing to $1.00")
+                                return 1.0
                             
                             # DexScreener returns the correct USD price per token
                             if price > 0:
@@ -870,6 +888,12 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         data = response.json()
                         if "data" in data and "value" in data["data"]:
                             price = float(data["data"]["value"])
+                            
+                            # Sanity check for stablecoins
+                            if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
+                                logging.warning(f"[Price] Birdeye returned ${price:.4f} for {STABLECOIN_MINTS[mint]}, forcing to $1.00")
+                                return 1.0
+                            
                             # Birdeye also returns price correctly adjusted
                             if price > 0:
                                 logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye, {token_decimals} decimals)")
@@ -887,6 +911,12 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                     if mint in data.get("data", {}):
                         price_data = data["data"][mint]
                         price = float(price_data.get("price", 0))
+                        
+                        # Sanity check for stablecoins
+                        if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
+                            logging.warning(f"[Price] Jupiter Price API returned ${price:.4f} for {STABLECOIN_MINTS[mint]}, forcing to $1.00")
+                            return 1.0
+                        
                         if price > 0:
                             logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter Price API, {token_decimals} decimals)")
                             return price
@@ -917,16 +947,11 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         # Price per token = (SOL spent * SOL price) / tokens received
                         price = (sol_spent * sol_price) / tokens_received
                         
-                        # Special handling for stablecoins - they should be near $1
-                        if mint in ["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]:
-                            # USDC or USDT - if price is way off, it's likely a decimal issue
-                            if price > 100 or price < 0.01:
-                                logging.warning(f"[Price] Stablecoin price seems wrong: ${price:.8f}, adjusting...")
-                                # Try to correct it
-                                if price > 100:
-                                    price = price / 1000  # Likely off by 1000x
-                                elif price < 0.01:
-                                    price = price * 1000
+                        # Final sanity check for stablecoins
+                        if mint in STABLECOIN_MINTS:
+                            if price > 2.0 or price < 0.5:
+                                logging.warning(f"[Price] Jupiter quote calculated ${price:.4f} for {STABLECOIN_MINTS[mint]}, forcing to $1.00")
+                                return 1.0
                         
                         logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter calculated, {token_decimals} decimals)")
                         return price
