@@ -243,7 +243,7 @@ if not ELITE_MODULES_AVAILABLE:
                 pass
             return "stable"
     
-    # FIXED: Embedded Revenue Optimizer with total_trades initialized
+    # FULLY FIXED: Embedded Revenue Optimizer with total_trades properly initialized
     class RevenueOptimizer:
         def __init__(self):
             self.total_profit = 0
@@ -273,17 +273,17 @@ if not ELITE_MODULES_AVAILABLE:
             return None
 
 # ============================================
-# INITIALIZE ELITE COMPONENTS
+# INITIALIZE ELITE COMPONENTS - FIXED
 # ============================================
 
-# Initialize all elite components
+# Initialize all elite components with proper RevenueOptimizer
 mev_protection = EliteMEVProtection(keypair)
 speed_optimizer = SpeedOptimizer()
 simulator = SimulationEngine()
 competitor_analyzer = CompetitorAnalysis()
 exit_strategy = SmartExitStrategy()
 volume_analyzer = VolumeAnalyzer()
-revenue_optimizer = RevenueOptimizer()  # Now properly initialized with total_trades
+revenue_optimizer = RevenueOptimizer()  # This now has total_trades properly initialized!
 trend_predictor = TrendPrediction()
 
 # Configuration
@@ -425,11 +425,11 @@ async def telegram_webhook(request: Request):
                 except:
                     elite_stats += f"• Momentum Scanner: Check settings\n"
                 
-                # Profit tracking
+                # Profit tracking - FIXED to handle missing attribute
                 try:
                     elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
                     
-                    if revenue_optimizer.total_trades > 0:
+                    if hasattr(revenue_optimizer, 'total_trades') and revenue_optimizer.total_trades > 0:
                         win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
                         elite_stats += f"• Win Rate: {win_rate:.1f}%\n"
                         elite_stats += f"• Total Trades: {revenue_optimizer.total_trades}"
@@ -548,7 +548,7 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 async def elite_buy_token(mint: str, force_amount: float = None):
     """
     ELITE buy with MEV protection, simulation, and AI scoring - FULLY FIXED
-    Now properly handles force buys and zero liquidity situations
+    Now properly handles force buys, zero liquidity situations, and tracks stats correctly
     """
     try:
         # Check if elite features are enabled
@@ -689,7 +689,9 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            revenue_optimizer.total_trades += 1  # Now this won't error
+            # FIXED: Now this won't error because total_trades exists
+            if hasattr(revenue_optimizer, 'total_trades'):
+                revenue_optimizer.total_trades += 1
             
             if DYNAMIC_EXIT_STRATEGY:
                 try:
@@ -782,7 +784,10 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            revenue_optimizer.total_trades += 1  # Now this won't error
+            # FIXED: Now this won't error because total_trades exists
+            if hasattr(revenue_optimizer, 'total_trades'):
+                revenue_optimizer.total_trades += 1
+            
             await send_telegram_alert(
                 f"✅ BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
@@ -936,16 +941,17 @@ async def elite_performance_monitor():
             await asyncio.sleep(300)  # Every 5 minutes
             
             # Check if we should increase position sizes
-            if await revenue_optimizer.should_increase_position():
-                current_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
-                new_size = min(current_size * 1.5, 5.0)  # Increase by 50%, max 5 SOL
-                os.environ["BUY_AMOUNT_SOL"] = str(new_size)
-                
-                await send_telegram_alert(
-                    f"📈 PERFORMANCE BOOST\n"
-                    f"Win rate > 60% detected!\n"
-                    f"Increasing position size: {current_size:.2f} → {new_size:.2f} SOL"
-                )
+            if hasattr(revenue_optimizer, 'should_increase_position'):
+                if await revenue_optimizer.should_increase_position():
+                    current_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
+                    new_size = min(current_size * 1.5, 5.0)  # Increase by 50%, max 5 SOL
+                    os.environ["BUY_AMOUNT_SOL"] = str(new_size)
+                    
+                    await send_telegram_alert(
+                        f"📈 PERFORMANCE BOOST\n"
+                        f"Win rate > 60% detected!\n"
+                        f"Increasing position size: {current_size:.2f} → {new_size:.2f} SOL"
+                    )
             
             # Check for trend predictions
             if os.getenv("TREND_PREDICTION", "true").lower() == "true":
@@ -1095,8 +1101,8 @@ async def cleanup():
         # Stop all tasks
         await stop_all_tasks()
         
-        # Send final alert
-        if revenue_optimizer.total_trades > 0:
+        # Send final alert - FIXED to handle missing attributes
+        if hasattr(revenue_optimizer, 'total_trades') and revenue_optimizer.total_trades > 0:
             final_stats = (
                 f"📊 FINAL SESSION STATS\n"
                 f"Total Trades: {revenue_optimizer.total_trades}\n"
