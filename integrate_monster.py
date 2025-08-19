@@ -243,12 +243,12 @@ if not ELITE_MODULES_AVAILABLE:
                 pass
             return "stable"
     
-    # Embedded Revenue Optimizer - FIXED VERSION
+    # FIXED: Embedded Revenue Optimizer with total_trades initialized
     class RevenueOptimizer:
         def __init__(self):
             self.total_profit = 0
             self.winning_trades = 0
-            self.total_trades = 0  # THIS WAS MISSING - NOW FIXED!
+            self.total_trades = 0  # FIXED: Added missing attribute
             
         async def should_increase_position(self) -> bool:
             """Determine if we should increase position sizes"""
@@ -283,7 +283,7 @@ simulator = SimulationEngine()
 competitor_analyzer = CompetitorAnalysis()
 exit_strategy = SmartExitStrategy()
 volume_analyzer = VolumeAnalyzer()
-revenue_optimizer = RevenueOptimizer()
+revenue_optimizer = RevenueOptimizer()  # Now properly initialized with total_trades
 trend_predictor = TrendPrediction()
 
 # Configuration
@@ -689,7 +689,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            revenue_optimizer.total_trades += 1
+            revenue_optimizer.total_trades += 1  # Now this won't error
             
             if DYNAMIC_EXIT_STRATEGY:
                 try:
@@ -782,6 +782,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
+            revenue_optimizer.total_trades += 1  # Now this won't error
             await send_telegram_alert(
                 f"✅ BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
