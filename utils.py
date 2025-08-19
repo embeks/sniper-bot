@@ -786,9 +786,31 @@ async def sell_token(mint: str, percent: float = 100.0):
         return False
 
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price in USD - ELITE VERSION optimized for what actually works"""
+    """Get current token price in USD - FIXED VERSION with proper decimal handling"""
     try:
-        # Try DexScreener FIRST (most reliable for new tokens and no DNS issues)
+        # FIX: Get token decimals first to calculate price correctly
+        token_decimals = 9  # Default to 9 decimals (most SPL tokens)
+        
+        # Try to get actual decimals from token account
+        try:
+            mint_pubkey = Pubkey.from_string(mint)
+            mint_info = rpc.get_account_info(mint_pubkey)
+            if mint_info and mint_info.value:
+                # SPL Token mint accounts have decimals at offset 44
+                data = mint_info.value.data
+                if isinstance(data, list) and len(data) > 0:
+                    import base64
+                    if isinstance(data[0], str):
+                        decoded = base64.b64decode(data[0])
+                    else:
+                        decoded = bytes(data[0])
+                    if len(decoded) > 44:
+                        token_decimals = decoded[44]
+                        logging.debug(f"[Price] Token {mint[:8]}... has {token_decimals} decimals")
+        except Exception as e:
+            logging.debug(f"[Price] Could not get decimals for {mint[:8]}..., using default 9")
+        
+        # Try DexScreener FIRST (most reliable for new tokens)
         try:
             dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
             
@@ -801,13 +823,16 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
                         if pairs[0].get("priceUsd"):
                             price = float(pairs[0]["priceUsd"])
+                            
+                            # FIX: DexScreener already returns the price per token in USD correctly
+                            # No need to adjust for decimals as it's already done
                             if price > 0:
-                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f}")
+                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (DexScreener)")
                                 return price
         except Exception as e:
             logging.debug(f"[Price] DexScreener error: {e}")
         
-        # Try Birdeye if configured (great for established tokens)
+        # Try Birdeye if configured
         if BIRDEYE_API_KEY:
             try:
                 url = f"https://public-api.birdeye.so/defi/price?address={mint}"
@@ -820,21 +845,21 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         data = response.json()
                         if "data" in data and "value" in data["data"]:
                             price = float(data["data"]["value"])
+                            # Birdeye also returns price correctly adjusted
                             if price > 0:
                                 logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye)")
                                 return price
             except Exception as e:
                 logging.debug(f"[Price] Birdeye error: {e}")
         
-        # Only try Jupiter as LAST resort (since it has DNS issues on Render)
-        # But use the quote API which might work better than price API
+        # Try Jupiter as LAST resort - with decimal adjustment
         try:
-            # Get a quote for 0.001 SOL to derive price
+            # Get a quote for 1 SOL to derive price
             quote_url = f"{JUPITER_BASE_URL}/v6/quote"
             params = {
                 "inputMint": "So11111111111111111111111111111111111111112",
                 "outputMint": mint,
-                "amount": str(int(0.001 * 1e9)),
+                "amount": str(int(1 * 1e9)),  # 1 SOL
                 "slippageBps": "100"
             }
             
@@ -843,18 +868,35 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                 if response.status_code == 200:
                     quote = response.json()
                     if "outAmount" in quote and float(quote["outAmount"]) > 0:
-                        # Calculate price assuming SOL = $150
-                        sol_price = 150.0
-                        tokens_received = float(quote["outAmount"]) / 1e9
-                        sol_spent = 0.001
+                        # FIX: Properly calculate price with decimals
+                        sol_price = 150.0  # Assume SOL = $150
+                        tokens_received = float(quote["outAmount"]) / (10 ** token_decimals)
+                        sol_spent = 1.0
+                        
+                        # Price per token = (SOL spent * SOL price) / tokens received
                         price = (sol_spent * sol_price) / tokens_received
-                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated)")
+                        
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter calculated, {token_decimals} decimals)")
                         return price
         except Exception as e:
-            # Don't log Jupiter errors since we know DNS is broken
+            logging.debug(f"[Price] Jupiter error: {e}")
+        
+        # If all else fails, try Jupiter Price API directly
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        price_data = data["data"][mint]
+                        price = float(price_data.get("price", 0))
+                        if price > 0:
+                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter Price API)")
+                            return price
+        except:
             pass
         
-        # If we get here, all price sources failed
         logging.warning(f"[Price] Could not get price for {mint[:8]} from any source")
         return None
         
