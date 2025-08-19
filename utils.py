@@ -1263,47 +1263,47 @@ async def detect_pumpfun_migration(mint: str) -> bool:
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
-                    data = resp.json
-if mint in data.get("data", {}):
-                       logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
-                       return True
-       except:
-           pass
-           
-   except Exception as e:
-       logging.error(f"Migration detection error: {e}")
-   
-   return False
+                    data = resp.json()  # FIXED: Added parentheses
+                    if mint in data.get("data", {}):
+                        logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
+                        return True
+        except:
+            pass
+            
+    except Exception as e:
+        logging.error(f"Migration detection error: {e}")
+    
+    return False
 
 # Export for use in sniper_logic
 __all__ = [
-   'is_valid_mint',
-   'buy_token',
-   'sell_token',
-   'log_skipped_token',
-   'send_telegram_alert',
-   'get_trending_mints',
-   'wait_and_auto_sell',
-   'get_liquidity_and_ownership',
-   'is_bot_running',
-   'start_bot',
-   'stop_bot',
-   'keypair',
-   'BUY_AMOUNT_SOL',
-   'BROKEN_TOKENS',
-   'mark_broken_token',
-   'daily_stats_reset_loop',
-   'update_last_activity',
-   'increment_stat',
-   'record_skip',
-   'listener_status',
-   'last_seen_token',
-   'get_wallet_summary',
-   'get_bot_status_message',
-   'check_pumpfun_token_status',
-   'detect_pumpfun_migration',
-   'pumpfun_tokens',  # Export this so sniper_logic can track PumpFun tokens
-   'trending_tokens',  # Export this so sniper_logic can track trending tokens
-   'get_token_price_usd',  # Export the fixed price function
-   'get_token_decimals'  # Export decimals function
+    'is_valid_mint',
+    'buy_token',
+    'sell_token',
+    'log_skipped_token',
+    'send_telegram_alert',
+    'get_trending_mints',
+    'wait_and_auto_sell',
+    'get_liquidity_and_ownership',
+    'is_bot_running',
+    'start_bot',
+    'stop_bot',
+    'keypair',
+    'BUY_AMOUNT_SOL',
+    'BROKEN_TOKENS',
+    'mark_broken_token',
+    'daily_stats_reset_loop',
+    'update_last_activity',
+    'increment_stat',
+    'record_skip',
+    'listener_status',
+    'last_seen_token',
+    'get_wallet_summary',
+    'get_bot_status_message',
+    'check_pumpfun_token_status',
+    'detect_pumpfun_migration',
+    'pumpfun_tokens',  # Export this so sniper_logic can track PumpFun tokens
+    'trending_tokens',  # Export this so sniper_logic can track trending tokens
+    'get_token_price_usd',  # Export the fixed price function
+    'get_token_decimals'  # Export decimals function
 ]
