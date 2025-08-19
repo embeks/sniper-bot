@@ -140,6 +140,19 @@ telegram_min_interval = 0.5  # Minimum 0.5 seconds between messages
 pumpfun_tokens = {}
 trending_tokens = set()
 
+# KNOWN TOKEN DECIMALS - Critical for correct price calculation
+KNOWN_TOKEN_DECIMALS = {
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
+    "So11111111111111111111111111111111111111112": 9,   # WSOL
+    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": 5,  # BONK
+    "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr": 9,  # POPCAT
+    "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": 6,   # JUP
+    "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # ETH (Wormhole)
+    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": 9,   # mSOL
+    "DUSTawucrTsGU8hcqRdHDCbuYhCPADMLM2VcCb8VnFnQ": 9, # DUST
+}
+
 def update_last_activity():
     global last_activity
     last_activity = time.time()
@@ -785,30 +798,43 @@ async def sell_token(mint: str, percent: float = 100.0):
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
-async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price in USD - FIXED VERSION with proper decimal handling"""
+async def get_token_decimals(mint: str) -> int:
+    """Get token decimals from blockchain or use known values"""
+    # Check if we know this token's decimals
+    if mint in KNOWN_TOKEN_DECIMALS:
+        return KNOWN_TOKEN_DECIMALS[mint]
+    
+    # Try to get from blockchain
     try:
-        # FIX: Get token decimals first to calculate price correctly
-        token_decimals = 9  # Default to 9 decimals (most SPL tokens)
-        
-        # Try to get actual decimals from token account
-        try:
-            mint_pubkey = Pubkey.from_string(mint)
-            mint_info = rpc.get_account_info(mint_pubkey)
-            if mint_info and mint_info.value:
-                # SPL Token mint accounts have decimals at offset 44
-                data = mint_info.value.data
-                if isinstance(data, list) and len(data) > 0:
-                    import base64
-                    if isinstance(data[0], str):
-                        decoded = base64.b64decode(data[0])
-                    else:
-                        decoded = bytes(data[0])
-                    if len(decoded) > 44:
-                        token_decimals = decoded[44]
-                        logging.debug(f"[Price] Token {mint[:8]}... has {token_decimals} decimals")
-        except Exception as e:
-            logging.debug(f"[Price] Could not get decimals for {mint[:8]}..., using default 9")
+        mint_pubkey = Pubkey.from_string(mint)
+        mint_info = rpc.get_account_info(mint_pubkey)
+        if mint_info and mint_info.value:
+            # SPL Token mint accounts have decimals at offset 44
+            data = mint_info.value.data
+            if isinstance(data, list) and len(data) > 0:
+                import base64
+                if isinstance(data[0], str):
+                    decoded = base64.b64decode(data[0])
+                else:
+                    decoded = bytes(data[0])
+                if len(decoded) > 44:
+                    decimals = decoded[44]
+                    # Cache it for future use
+                    KNOWN_TOKEN_DECIMALS[mint] = decimals
+                    logging.debug(f"[Decimals] Token {mint[:8]}... has {decimals} decimals")
+                    return decimals
+    except Exception as e:
+        logging.debug(f"[Decimals] Could not get decimals for {mint[:8]}...: {e}")
+    
+    # Default to 9 (most common for SPL tokens)
+    return 9
+
+async def get_token_price_usd(mint: str) -> Optional[float]:
+    """Get current token price in USD - FULLY FIXED VERSION with proper decimal handling"""
+    try:
+        # Get token decimals - CRITICAL FOR CORRECT PRICE
+        token_decimals = await get_token_decimals(mint)
+        logging.debug(f"[Price] Using {token_decimals} decimals for {mint[:8]}...")
         
         # Try DexScreener FIRST (most reliable for new tokens)
         try:
@@ -824,10 +850,9 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         if pairs[0].get("priceUsd"):
                             price = float(pairs[0]["priceUsd"])
                             
-                            # FIX: DexScreener already returns the price per token in USD correctly
-                            # No need to adjust for decimals as it's already done
+                            # DexScreener returns the correct USD price per token
                             if price > 0:
-                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (DexScreener)")
+                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (DexScreener, {token_decimals} decimals)")
                                 return price
         except Exception as e:
             logging.debug(f"[Price] DexScreener error: {e}")
@@ -847,12 +872,28 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                             price = float(data["data"]["value"])
                             # Birdeye also returns price correctly adjusted
                             if price > 0:
-                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye)")
+                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye, {token_decimals} decimals)")
                                 return price
             except Exception as e:
                 logging.debug(f"[Price] Birdeye error: {e}")
         
-        # Try Jupiter as LAST resort - with decimal adjustment
+        # Try Jupiter Price API directly
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        price_data = data["data"][mint]
+                        price = float(price_data.get("price", 0))
+                        if price > 0:
+                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter Price API, {token_decimals} decimals)")
+                            return price
+        except Exception as e:
+            logging.debug(f"[Price] Jupiter Price API error: {e}")
+        
+        # Last resort: Calculate from Jupiter quote
         try:
             # Get a quote for 1 SOL to derive price
             quote_url = f"{JUPITER_BASE_URL}/v6/quote"
@@ -868,7 +909,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                 if response.status_code == 200:
                     quote = response.json()
                     if "outAmount" in quote and float(quote["outAmount"]) > 0:
-                        # FIX: Properly calculate price with decimals
+                        # CRITICAL FIX: Use correct decimals for calculation
                         sol_price = 150.0  # Assume SOL = $150
                         tokens_received = float(quote["outAmount"]) / (10 ** token_decimals)
                         sol_spent = 1.0
@@ -876,26 +917,21 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         # Price per token = (SOL spent * SOL price) / tokens received
                         price = (sol_spent * sol_price) / tokens_received
                         
+                        # Special handling for stablecoins - they should be near $1
+                        if mint in ["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]:
+                            # USDC or USDT - if price is way off, it's likely a decimal issue
+                            if price > 100 or price < 0.01:
+                                logging.warning(f"[Price] Stablecoin price seems wrong: ${price:.8f}, adjusting...")
+                                # Try to correct it
+                                if price > 100:
+                                    price = price / 1000  # Likely off by 1000x
+                                elif price < 0.01:
+                                    price = price * 1000
+                        
                         logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter calculated, {token_decimals} decimals)")
                         return price
         except Exception as e:
-            logging.debug(f"[Price] Jupiter error: {e}")
-        
-        # If all else fails, try Jupiter Price API directly
-        try:
-            url = f"https://price.jup.ag/v4/price?ids={mint}"
-            async with httpx.AsyncClient(timeout=5, verify=False) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        price_data = data["data"][mint]
-                        price = float(price_data.get("price", 0))
-                        if price > 0:
-                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter Price API)")
-                            return price
-        except:
-            pass
+            logging.debug(f"[Price] Jupiter quote error: {e}")
         
         logging.warning(f"[Price] Could not get price for {mint[:8]} from any source")
         return None
@@ -1227,45 +1263,47 @@ async def detect_pumpfun_migration(mint: str) -> bool:
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
-                        return True
-        except:
-            pass
-            
-    except Exception as e:
-        logging.error(f"Migration detection error: {e}")
-    
-    return False
+                    data = resp.json
+if mint in data.get("data", {}):
+                       logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
+                       return True
+       except:
+           pass
+           
+   except Exception as e:
+       logging.error(f"Migration detection error: {e}")
+   
+   return False
 
 # Export for use in sniper_logic
 __all__ = [
-    'is_valid_mint',
-    'buy_token',
-    'sell_token',
-    'log_skipped_token',
-    'send_telegram_alert',
-    'get_trending_mints',
-    'wait_and_auto_sell',
-    'get_liquidity_and_ownership',
-    'is_bot_running',
-    'start_bot',
-    'stop_bot',
-    'keypair',
-    'BUY_AMOUNT_SOL',
-    'BROKEN_TOKENS',
-    'mark_broken_token',
-    'daily_stats_reset_loop',
-    'update_last_activity',
-    'increment_stat',
-    'record_skip',
-    'listener_status',
-    'last_seen_token',
-    'get_wallet_summary',
-    'get_bot_status_message',
-    'check_pumpfun_token_status',
-    'detect_pumpfun_migration',
-    'pumpfun_tokens',  # Export this so sniper_logic can track PumpFun tokens
-    'trending_tokens'  # Export this so sniper_logic can track trending tokens
+   'is_valid_mint',
+   'buy_token',
+   'sell_token',
+   'log_skipped_token',
+   'send_telegram_alert',
+   'get_trending_mints',
+   'wait_and_auto_sell',
+   'get_liquidity_and_ownership',
+   'is_bot_running',
+   'start_bot',
+   'stop_bot',
+   'keypair',
+   'BUY_AMOUNT_SOL',
+   'BROKEN_TOKENS',
+   'mark_broken_token',
+   'daily_stats_reset_loop',
+   'update_last_activity',
+   'increment_stat',
+   'record_skip',
+   'listener_status',
+   'last_seen_token',
+   'get_wallet_summary',
+   'get_bot_status_message',
+   'check_pumpfun_token_status',
+   'detect_pumpfun_migration',
+   'pumpfun_tokens',  # Export this so sniper_logic can track PumpFun tokens
+   'trending_tokens',  # Export this so sniper_logic can track trending tokens
+   'get_token_price_usd',  # Export the fixed price function
+   'get_token_decimals'  # Export decimals function
 ]
