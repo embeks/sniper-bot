@@ -69,6 +69,11 @@ PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
 PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.01))
 PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
+MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 1.0))  # Minimum LP for PumpFun tokens
+
+# Enhanced delays for pool initialization
+MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 500))  # Increased from 200
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 3.0))  # Time to wait for bonding curve
 
 # ============================================
 # MOMENTUM SCANNER CONFIGURATION (YOUR ELITE STRATEGY)
@@ -118,6 +123,7 @@ migration_watch_list = set()
 already_bought = set()
 recent_buy_attempts = {}  # token -> timestamp
 pool_verification_cache = {}  # token -> is_verified
+detected_pools = {}  # Store pool IDs for tokens
 
 raydium = RaydiumAggregatorClient(RPC_URL)
 
@@ -507,6 +513,11 @@ async def verify_pool_exists(mint: str) -> bool:
         if mint in pool_verification_cache:
             return pool_verification_cache[mint]
         
+        # Check if we have a detected pool ID
+        if mint in detected_pools:
+            pool_verification_cache[mint] = True
+            return True
+        
         # Check Raydium
         pool = raydium.find_pool_realtime(mint)
         if pool:
@@ -722,7 +733,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED detection logic"""
+    """Enhanced mempool listener with FIXED detection logic and pool validation"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -837,6 +848,7 @@ async def mempool_listener(name, program_id=None):
                         
                         # ================== FIXED DETECTION LOGIC ==================
                         is_pool_creation = False
+                        pool_id = None  # Track the pool ID
                         
                         if name == "Raydium":
                             # STRICT Raydium pool creation detection
@@ -878,6 +890,8 @@ async def mempool_listener(name, program_id=None):
                         elif name == "PumpFun":
                             # PumpFun ONLY for NEW token creation, not trades
                             pumpfun_create_indicators = 0
+                            has_mint_creation = False
+                            has_bonding = False
                             
                             for log in logs:
                                 log_lower = log.lower()
@@ -888,6 +902,7 @@ async def mempool_listener(name, program_id=None):
                                 
                                 if "initialize" in log_lower and "mint" in log_lower:
                                     pumpfun_create_indicators += 2
+                                    has_mint_creation = True
                                 
                                 # PumpFun uses "launch" for new tokens
                                 if "launch" in log_lower:
@@ -896,15 +911,18 @@ async def mempool_listener(name, program_id=None):
                                 # Bonding curve initialization is key indicator
                                 if "bonding" in log_lower and ("init" in log_lower or "create" in log_lower):
                                     pumpfun_create_indicators += 4
+                                    has_bonding = True
                             
                             # PumpFun token creation needs strong indicators
                             # AND should NOT be a simple swap (which has fewer logs)
                             if pumpfun_create_indicators >= 3 and len(logs) >= 5:
-                                # Filter out swaps - they have different patterns
-                                is_swap = any("swap" in log.lower() or "trade" in log.lower() for log in logs)
-                                if not is_swap:
-                                    is_pool_creation = True
-                                    logging.info(f"[PUMPFUN] NEW TOKEN CREATION - Score: {pumpfun_create_indicators}")
+                                # Additional validation: must have actual creation patterns
+                                if has_mint_creation or has_bonding:
+                                    # Filter out swaps - they have different patterns
+                                    is_swap = any("swap" in log.lower() or "trade" in log.lower() for log in logs)
+                                    if not is_swap:
+                                        is_pool_creation = True
+                                        logging.info(f"[PUMPFUN] NEW TOKEN CREATION - Score: {pumpfun_create_indicators}")
                         
                         elif name == "Moonshot":
                             # Moonshot token launches
@@ -942,6 +960,20 @@ async def mempool_listener(name, program_id=None):
                                 logging.warning(f"[{name}] Could not fetch account keys")
                                 continue
                         
+                        # For Raydium, try to identify the pool account
+                        if name == "Raydium" and account_keys:
+                            # The pool account is usually one of the writable accounts
+                            # Look for accounts that aren't system programs or token mints
+                            for key in account_keys:
+                                if isinstance(key, dict):
+                                    key = key.get("pubkey", "") or key.get("address", "")
+                                
+                                if key and len(key) == 44 and key not in SYSTEM_PROGRAMS:
+                                    # This might be the pool account
+                                    # We'll register it when we find the token mint
+                                    pool_id = key
+                                    break
+                        
                         # Process potential mints with QUALITY CHECKS
                         for key in account_keys:
                             if isinstance(key, dict):
@@ -974,7 +1006,13 @@ async def mempool_listener(name, program_id=None):
                                 }
                                 logging.info(f"[PumpFun] Tracking new token: {potential_mint[:8]}...")
                             
-                            # ========== CRITICAL FIX: ADD PUMPFUN BUY LOGIC ==========
+                            # Register Raydium pool if detected
+                            if name == "Raydium" and pool_id:
+                                detected_pools[potential_mint] = pool_id
+                                raydium.register_new_pool(pool_id, potential_mint)
+                                logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
+                            
+                            # ========== ENHANCED PUMPFUN BUY LOGIC WITH VALIDATION ==========
                             if name == "PumpFun" and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     # Skip if already bought
@@ -983,8 +1021,8 @@ async def mempool_listener(name, program_id=None):
                                     
                                     logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
                                     
-                                    # Small delay to let the bonding curve initialize
-                                    await asyncio.sleep(1.0)
+                                    # Longer delay for bonding curve initialization
+                                    await asyncio.sleep(PUMPFUN_INIT_DELAY)
                                     
                                     # Check if graduated or about to graduate
                                     graduated = await check_pumpfun_graduation(potential_mint)
@@ -995,13 +1033,22 @@ async def mempool_listener(name, program_id=None):
                                     lp_data = await get_liquidity_and_ownership(potential_mint)
                                     lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
                                     
-                                    # For PumpFun tokens, different thresholds apply
-                                    # Bonding curve tokens start with 0 liquidity
-                                    min_lp_for_pumpfun = 0.5 if not graduated else RUG_LP_THRESHOLD
+                                    # CRITICAL: Skip if no liquidity at all
+                                    if lp_amount == 0:
+                                        logging.info(f"[PUMPFUN] Skipping {potential_mint[:8]}... - No liquidity pool exists yet")
+                                        continue
                                     
-                                    # Skip if liquidity too low for graduated tokens
-                                    if graduated and lp_amount < min_lp_for_pumpfun:
-                                        logging.info(f"[PUMPFUN] Skipping {potential_mint[:8]}... - Low LP: {lp_amount:.2f} SOL")
+                                    # For PumpFun tokens, require minimum liquidity
+                                    min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN if not graduated else RUG_LP_THRESHOLD
+                                    
+                                    # Skip if liquidity too low
+                                    if lp_amount < min_lp_for_pumpfun:
+                                        logging.info(f"[PUMPFUN] Skipping {potential_mint[:8]}... - Low LP: {lp_amount:.2f} SOL (min: {min_lp_for_pumpfun})")
+                                        continue
+                                    
+                                    # Verify pool exists before buying
+                                    if not await verify_pool_exists(potential_mint):
+                                        logging.info(f"[PUMPFUN] No verified pool for {potential_mint[:8]}...")
                                         continue
                                     
                                     # Mark as attempted
@@ -1061,12 +1108,12 @@ async def mempool_listener(name, program_id=None):
                                         if original_amount:
                                             os.environ["BUY_AMOUNT_SOL"] = original_amount
                             
-                            # Only buy from Raydium (keep existing logic)
+                            # Only buy from Raydium with enhanced validation
                             elif name in ["Raydium"] and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     
                                     # Add delay to let pool settle
-                                    await asyncio.sleep(float(os.getenv("MEMPOOL_DELAY_MS", 200)) / 1000)
+                                    await asyncio.sleep(MEMPOOL_DELAY_MS / 1000)
                                     
                                     # Verify pool exists
                                     if not await verify_pool_exists(potential_mint):
@@ -1077,7 +1124,7 @@ async def mempool_listener(name, program_id=None):
                                     lp_amount = 0
                                     try:
                                         lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-                                        lp_data = await asyncio.wait_for(lp_check_task, timeout=1.0)
+                                        lp_data = await asyncio.wait_for(lp_check_task, timeout=2.0)
                                         
                                         if lp_data:
                                             lp_amount = lp_data.get("liquidity", 0)
@@ -1086,6 +1133,11 @@ async def mempool_listener(name, program_id=None):
                                         continue
                                     except Exception as e:
                                         logging.debug(f"[{name}] LP check error: {e}")
+                                        continue
+                                    
+                                    # CRITICAL: Skip if no liquidity
+                                    if lp_amount == 0:
+                                        logging.info(f"[{name}] Skipping {potential_mint[:8]}... - No liquidity (0 SOL)")
                                         continue
                                     
                                     # Quality check
@@ -1204,38 +1256,6 @@ async def get_trending_pairs_dexscreener():
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "Accept": "application/json",
                     "Cache-Control": "no-cache"
-                }
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    pairs = data.get("pairs", [])
-                    if pairs:
-                        logging.info(f"[Trending] DexScreener returned {len(pairs)} pairs")
-                    return pairs
-                else:
-                    logging.debug(f"DexScreener returned status {resp.status_code}")
-        except Exception as e:
-            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(2)
-    
-    return None
-
-async def get_trending_pairs_birdeye():
-    """Fetch trending pairs from Birdeye"""
-    if not BIRDEYE_API_KEY:
-        return None
-        
-    url = "https://public-api.birdeye.so/defi/tokenlist"
-    
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(
-                timeout=30,
-                verify=False
-            ) as client:
-                headers = {
-                    "X-API-KEY": BIRDEYE_API_KEY,
-                    "accept": "application/json"
                 }
                 resp = await client.get(url, headers=headers)
                 if resp.status_code == 200:
@@ -1895,3 +1915,35 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
+                    data = resp.json()
+                    pairs = data.get("pairs", [])
+                    if pairs:
+                        logging.info(f"[Trending] DexScreener returned {len(pairs)} pairs")
+                    return pairs
+                else:
+                    logging.debug(f"DexScreener returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
+    return None
+
+async def get_trending_pairs_birdeye():
+    """Fetch trending pairs from Birdeye"""
+    if not BIRDEYE_API_KEY:
+        return None
+        
+    url = "https://public-api.birdeye.so/defi/tokenlist"
+    
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(
+                timeout=30,
+                verify=False
+            ) as client:
+                headers = {
+                    "X-API-KEY": BIRDEYE_API_KEY,
+                    "accept": "application/json"
+                }
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
