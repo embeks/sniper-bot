@@ -66,6 +66,7 @@ SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "tru
 
 # PumpFun Migration Settings
 PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
+PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.01))
 PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
 
@@ -973,8 +974,95 @@ async def mempool_listener(name, program_id=None):
                                }
                                logging.info(f"[PumpFun] Tracking new token: {potential_mint[:8]}...")
                            
-                           # Only buy from tradeable platforms
-                           if name in ["Raydium"] and is_bot_running():
+                           # ========== CRITICAL FIX: ADD PUMPFUN BUY LOGIC ==========
+                           if name == "PumpFun" and is_bot_running():
+                               if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
+                                   # Skip if already bought
+                                   if potential_mint in already_bought:
+                                       continue
+                                   
+                                   logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
+                                   
+                                   # Small delay to let the bonding curve initialize
+                                   await asyncio.sleep(1.0)
+                                   
+                                   # Check if graduated or about to graduate
+                                   graduated = await check_pumpfun_graduation(potential_mint)
+                                   if graduated and potential_mint in pumpfun_tokens:
+                                       pumpfun_tokens[potential_mint]["migrated"] = True
+                                   
+                                   # Get liquidity (may be 0 for bonding curve tokens)
+                                   lp_data = await get_liquidity_and_ownership(potential_mint)
+                                   lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                                   
+                                   # For PumpFun tokens, different thresholds apply
+                                   # Bonding curve tokens start with 0 liquidity
+                                   min_lp_for_pumpfun = 0.5 if not graduated else RUG_LP_THRESHOLD
+                                   
+                                   # Skip if liquidity too low for graduated tokens
+                                   if graduated and lp_amount < min_lp_for_pumpfun:
+                                       logging.info(f"[PUMPFUN] Skipping {potential_mint[:8]}... - Low LP: {lp_amount:.2f} SOL")
+                                       continue
+                                   
+                                   # Mark as attempted
+                                   recent_buy_attempts[potential_mint] = time.time()
+                                   
+                                   # Determine buy amount based on graduation status
+                                   if graduated:
+                                       buy_amount = PUMPFUN_MIGRATION_BUY  # 0.1 SOL for graduates
+                                       buy_reason = "PumpFun Graduate"
+                                   else:
+                                       # For early PumpFun tokens, use small amount
+                                       buy_amount = PUMPFUN_EARLY_BUY  # 0.01 SOL for bonding curve
+                                       buy_reason = "PumpFun Early Entry"
+                                   
+                                   # Alert before buying
+                                   await send_telegram_alert(
+                                       f"🎯 PUMPFUN TOKEN DETECTED\n\n"
+                                       f"Token: `{potential_mint}`\n"
+                                       f"Status: {buy_reason}\n"
+                                       f"Liquidity: {lp_amount:.2f} SOL\n"
+                                       f"Buy Amount: {buy_amount} SOL\n\n"
+                                       f"Attempting snipe..."
+                                   )
+                                   
+                                   # Store original amount and set PumpFun amount
+                                   original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                   os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+                                   
+                                   try:
+                                       # Execute buy
+                                       success = await buy_token(potential_mint)
+                                       
+                                       if success:
+                                           already_bought.add(potential_mint)
+                                           if BLACKLIST_AFTER_BUY:
+                                               BLACKLIST.add(potential_mint)
+                                           
+                                           await send_telegram_alert(
+                                               f"✅ PUMPFUN SNIPE SUCCESS!\n"
+                                               f"Token: {potential_mint[:16]}...\n"
+                                               f"Amount: {buy_amount} SOL\n"
+                                               f"Type: {buy_reason}\n"
+                                               f"Monitoring for profits..."
+                                           )
+                                           asyncio.create_task(wait_and_auto_sell(potential_mint))
+                                           break  # Don't buy more from this transaction
+                                       else:
+                                           await send_telegram_alert(
+                                               f"❌ PumpFun snipe failed\n"
+                                               f"Token: {potential_mint[:16]}..."
+                                           )
+                                           mark_broken_token(potential_mint, 0)
+                                   except Exception as e:
+                                       logging.error(f"[PUMPFUN] Buy error: {e}")
+                                       await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
+                                   finally:
+                                       if original_amount:
+                                           os.environ["BUY_AMOUNT_SOL"] = original_amount
+                           
+                           # Only buy from Raydium (keep existing logic)
+                           elif name in ["Raydium"] and is_bot_running():
                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                    
                                    # Add delay to let pool settle
@@ -1204,95 +1292,6 @@ async def trending_scanner():
                    continue
                
                await asyncio.sleep(TREND_SCAN_INTERVAL)
-               continue
-           
-           consecutive_failures = 0
-           processed = 0
-           quality_finds = 0
-           
-           for pair in pairs[:10]:
-               mint = pair.get("baseToken", {}).get("address")
-               lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-               vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
-               
-               price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-               price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-               
-               if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
-                   continue
-               
-               is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
-               
-               min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
-               min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
-               
-               if lp_usd < min_lp:
-                   logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
-                   continue
-                   
-               if vol_usd < min_vol:
-                   logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
-                   continue
-               
-               if price_change_h1 < -30 and not is_pumpfun_grad:
-                   logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
-                   continue
-                   
-               seen_trending.add(mint)
-               processed += 1
-               increment_stat("tokens_scanned", 1)
-               update_last_activity()
-               
-               is_mooning = price_change_h1 > 50 or price_change_h24 > 100
-               has_momentum = price_change_h1 > 20 and vol_usd > 50000
-               
-               if is_mooning or has_momentum or is_pumpfun_grad:
-                   quality_finds += 1
-                   
-                   alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
-                   if is_pumpfun_grad:
-                       alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
-                   
-                   await send_telegram_alert(
-                       alert_msg +
-                       f"Token: `{mint}`\n"
-                       f"Liquidity: ${lp_usd:,.0f}\n"
-                       f"Volume 24h: ${vol_usd:,.0f}\n"
-                       f"Price Change:\n"
-                       f"• 1h: {price_change_h1:+.1f}%\n"
-                       f"• 24h: {price_change_h24:+.1f}%\n"
-                       f"Source: {source}\n\n"
-                       f"Attempting to buy..."
-                   )
-                   
-                   try:
-                       original_amount = None
-                       if is_pumpfun_grad:
-                           original_amount = os.getenv("BUY_AMOUNT_SOL")
-                           os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                       
-                       success = await buy_token(mint)
-                       if success:
-                           already_bought.add(mint)
-                           if BLACKLIST_AFTER_BUY:
-                               BLACKLIST.add(mint)
-                           asyncio.create_task(wait_and_auto_sell(mint))
-                           
-                       if is_pumpfun_grad and original_amount:
-                           os.environ["BUY_AMOUNT_SOL"] = original_amount
-                   except Exception as e:
-                       logging.error(f"[Trending] Buy error: {e}")
-               else:
-                   logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-           
-           if processed > 0:
-               logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
-                       
-           await asyncio.sleep(TREND_SCAN_INTERVAL)
-           
-       except Exception as e:
-           logging.error(f"[Trending Scanner ERROR] {e}")
-           await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 async def rug_filter_passes(mint: str) -> bool:
    """Check if token passes basic rug filters"""
@@ -1665,6 +1664,7 @@ async def check_momentum_score(mint: str) -> dict:
        logging.error(f"Error checking momentum score: {e}")
    
    return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
+
 async def start_sniper():
    """Start the ELITE sniper bot with MOMENTUM SCANNER"""
    mode_text = "ELITE Money Printer Mode + Momentum Scanner"
@@ -1806,3 +1806,92 @@ async def stop_all_tasks():
                pass
    TASKS.clear()
    await send_telegram_alert("🛑 All sniper tasks stopped.")
+               continue
+           
+           consecutive_failures = 0
+           processed = 0
+           quality_finds = 0
+           
+           for pair in pairs[:10]:
+               mint = pair.get("baseToken", {}).get("address")
+               lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
+               vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
+               
+               price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+               price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+               
+               if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
+                   continue
+               
+               is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
+               
+               min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
+               min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
+               
+               if lp_usd < min_lp:
+                   logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
+                   continue
+                   
+               if vol_usd < min_vol:
+                   logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
+                   continue
+               
+               if price_change_h1 < -30 and not is_pumpfun_grad:
+                   logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
+                   continue
+                   
+               seen_trending.add(mint)
+               processed += 1
+               increment_stat("tokens_scanned", 1)
+               update_last_activity()
+               
+               is_mooning = price_change_h1 > 50 or price_change_h24 > 100
+               has_momentum = price_change_h1 > 20 and vol_usd > 50000
+               
+               if is_mooning or has_momentum or is_pumpfun_grad:
+                   quality_finds += 1
+                   
+                   alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
+                   if is_pumpfun_grad:
+                       alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
+                   
+                   await send_telegram_alert(
+                       alert_msg +
+                       f"Token: `{mint}`\n"
+                       f"Liquidity: ${lp_usd:,.0f}\n"
+                       f"Volume 24h: ${vol_usd:,.0f}\n"
+                       f"Price Change:\n"
+                       f"• 1h: {price_change_h1:+.1f}%\n"
+                       f"• 24h: {price_change_h24:+.1f}%\n"
+                       f"Source: {source}\n\n"
+                       f"Attempting to buy..."
+                   )
+                   
+                   try:
+                       original_amount = None
+                       if is_pumpfun_grad:
+                           original_amount = os.getenv("BUY_AMOUNT_SOL")
+                           os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                       
+                       success = await buy_token(mint)
+                       if success:
+                           already_bought.add(mint)
+                           if BLACKLIST_AFTER_BUY:
+                               BLACKLIST.add(mint)
+                           asyncio.create_task(wait_and_auto_sell(mint))
+                           
+                       if is_pumpfun_grad and original_amount:
+                           os.environ["BUY_AMOUNT_SOL"] = original_amount
+                   except Exception as e:
+                       logging.error(f"[Trending] Buy error: {e}")
+               else:
+                   logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
+           
+           if processed > 0:
+               logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
+                       
+           await asyncio.sleep(TREND_SCAN_INTERVAL)
+           
+       except Exception as e:
+           logging.error(f"[Trending Scanner ERROR] {e}")
+           await asyncio.sleep(TREND_SCAN_INTERVAL)
