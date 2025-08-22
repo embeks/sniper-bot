@@ -1247,15 +1247,40 @@ async def get_trending_pairs_dexscreener():
     
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(
-                timeout=30, 
-                follow_redirects=True,
-                verify=False
-            ) as client:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "Accept": "application/json",
                     "Cache-Control": "no-cache"
+                }
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pairs = data.get("pairs", [])
+                    if pairs:
+                        logging.info(f"[Trending] DexScreener returned {len(pairs)} pairs")
+                    return pairs
+                else:
+                    logging.debug(f"DexScreener returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
+    return None
+
+async def get_trending_pairs_birdeye():
+    """Fetch trending pairs from Birdeye"""
+    if not BIRDEYE_API_KEY:
+        return None
+        
+    url = "https://public-api.birdeye.so/defi/tokenlist"
+    
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30, verify=False) as client:
+                headers = {
+                    "X-API-KEY": BIRDEYE_API_KEY,
+                    "accept": "application/json"
                 }
                 resp = await client.get(url, headers=headers)
                 if resp.status_code == 200:
@@ -1915,35 +1940,3 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
-                    data = resp.json()
-                    pairs = data.get("pairs", [])
-                    if pairs:
-                        logging.info(f"[Trending] DexScreener returned {len(pairs)} pairs")
-                    return pairs
-                else:
-                    logging.debug(f"DexScreener returned status {resp.status_code}")
-        except Exception as e:
-            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(2)
-    
-    return None
-
-async def get_trending_pairs_birdeye():
-    """Fetch trending pairs from Birdeye"""
-    if not BIRDEYE_API_KEY:
-        return None
-        
-    url = "https://public-api.birdeye.so/defi/tokenlist"
-    
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(
-                timeout=30,
-                verify=False
-            ) as client:
-                headers = {
-                    "X-API-KEY": BIRDEYE_API_KEY,
-                    "accept": "application/json"
-                }
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
