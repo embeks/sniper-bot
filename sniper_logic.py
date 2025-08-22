@@ -1931,7 +1931,7 @@ async def trending_scanner():
             
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
-                        
+            
             await asyncio.sleep(TREND_SCAN_INTERVAL)
             
         except Exception as e:
@@ -1942,7 +1942,7 @@ async def rug_filter_passes(mint: str) -> bool:
     """Check if token passes basic rug filters"""
     try:
         data = await get_liquidity_and_ownership(mint)
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 3.0))  # FIXED: Use actual env value
+        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
         
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
             min_lp = min_lp / 2
