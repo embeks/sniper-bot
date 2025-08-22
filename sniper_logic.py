@@ -1387,10 +1387,10 @@ async def mempool_listener(name, program_id=None):
                                     raydium_indicators += 3
                                     has_init_pool = True
                             
-                            # FIXED: Much more lenient thresholds
-                            if raydium_indicators >= 3 and (has_init_pool or has_create_pool or has_liquidity):
-                                # FIXED: Lower log requirement
-                                if len(logs) >= 5:  # Was 10
+                            # FIXED: NOW USES ENVIRONMENT VARIABLES
+                            if raydium_indicators >= RAYDIUM_MIN_INDICATORS and (has_init_pool or has_create_pool or has_liquidity):
+                                # FIXED: NOW USES ENVIRONMENT VARIABLES
+                                if len(logs) >= RAYDIUM_MIN_LOGS:
                                     is_pool_creation = True
                                     logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
                         
@@ -1424,8 +1424,8 @@ async def mempool_listener(name, program_id=None):
                                 if "pump" in log_lower and "fun" in log_lower:
                                     pumpfun_create_indicators += 1
                             
-                            # FIXED: Much more lenient thresholds
-                            if pumpfun_create_indicators >= 2 and len(logs) >= 3:  # Was 3 and 5
+                            # FIXED: NOW USES ENVIRONMENT VARIABLES
+                            if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS and len(logs) >= PUMPFUN_MIN_LOGS:
                                 # Don't filter out swaps too aggressively
                                 is_pool_creation = True
                                 logging.info(f"[PUMPFUN] TOKEN DETECTED - Score: {pumpfun_create_indicators}")
