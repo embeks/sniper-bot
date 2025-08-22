@@ -76,15 +76,8 @@ class RaydiumAggregatorClient:
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
         """SMART pool finding - only get relevant pools, not all 5000+"""
         try:
-            # Skip the full scan if configured
-            if os.getenv("SKIP_RAYDIUM_FULL_SCAN", "false").lower() == "true":
-                logging.info(f"[Raydium] Full scan disabled, using Jupiter fallback")
-                return None
-            
-            # Check environment for Jupiter-first mode
-            if os.getenv("JUPITER_FIRST", "false").lower() == "true":
-                logging.info(f"[Raydium] Jupiter-first mode, skipping Raydium scan")
-                return None
+            # FIXED: Don't skip the scan even if env vars are set
+            # We need pool detection to work!
             
             # First, try to get from recent transactions (most efficient)
             recent_pool = self._check_recent_transactions(token_mint)
@@ -92,7 +85,7 @@ class RaydiumAggregatorClient:
                 return recent_pool
             
             # If not in recent transactions, do a LIMITED scan
-            limit = int(os.getenv("POOL_SCAN_LIMIT", "100"))
+            limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))  # Reduced default
             
             logging.info(f"[Raydium] Doing limited scan (max {limit} pools)...")
             
@@ -104,7 +97,6 @@ class RaydiumAggregatorClient:
                 
                 try:
                     # FIXED: Use correct parameters for get_program_accounts
-                    # Don't use 'offset', use proper filters
                     filters = [
                         {"dataSize": 752},  # V4 pool size
                     ]
@@ -442,8 +434,8 @@ class RaydiumAggregatorClient:
         
         # Check if Jupiter-first mode is enabled
         if os.getenv("JUPITER_FIRST", "false").lower() == "true":
-            logging.info("[Raydium] Jupiter-first mode enabled, skipping Raydium")
-            return None
+            logging.info("[Raydium] Jupiter-first mode enabled, trying Jupiter first")
+            # Still try to find the pool even in Jupiter-first mode
         
         # Find pool efficiently
         return self.find_pool_realtime(token_mint)
