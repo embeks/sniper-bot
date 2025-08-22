@@ -450,7 +450,22 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple[bool, str]:
     try:
         # Check if already bought
         if mint in already_bought:
+    async def rug_filter_passes(mint: str) -> bool:
+    """Check if token passes basic rug filters"""
+    try:
+        data = await get_liquidity_and_ownership(mint)
+        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 3.0))  # FIXED: Use actual env value
+        
+        if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
+            min_lp = min_lp / 2
+        
+        if not data or data.get("liquidity", 0) < min_lp:
+            logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp})")
             return False
+        return True
+    except Exception as e:
+        logging.error(f"Rug check error for {mint}: {e}")
+        return False
 
 # ============================================
 # MOMENTUM SCANNER - ELITE TRADING STRATEGY
