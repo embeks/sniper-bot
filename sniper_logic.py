@@ -38,6 +38,29 @@ MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
 ACTIVE_LISTENERS = {}  # name -> task
 LISTENER_START_TIMES = {}  # name -> timestamp
 
+# ADD THIS TO PREVENT DETECTION LOOPS
+RECENT_DETECTIONS = {}  # signature -> timestamp
+DETECTION_COOLDOWN = 30  # seconds
+
+def is_duplicate_detection(signature: str) -> bool:
+    """Check if we've seen this transaction recently"""
+    current_time = time.time()
+    if signature in RECENT_DETECTIONS:
+        if current_time - RECENT_DETECTIONS[signature] < DETECTION_COOLDOWN:
+            return True
+    # Clean old entries
+    RECENT_DETECTIONS[signature] = current_time
+    if len(RECENT_DETECTIONS) > 1000:
+        # Clear old entries
+        to_remove = []
+        cutoff = current_time - 60
+        for sig, ts in RECENT_DETECTIONS.items():
+            if ts < cutoff:
+                to_remove.append(sig)
+        for sig in to_remove:
+            del RECENT_DETECTIONS[sig]
+    return False
+
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
@@ -48,34 +71,34 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 # ============================================
 # QUALITY THRESHOLDS - OPTIMIZED FOR HIGH WIN RATE
 # ============================================
-MIN_DETECTION_SCORE = 5                # Increased from 3
-RAYDIUM_MIN_INDICATORS = 4             # Increased from 3  
-RAYDIUM_MIN_LOGS = 15                  # Increased from 10
-PUMPFUN_MIN_INDICATORS = 3              # Increased from 2
-PUMPFUN_MIN_LOGS = 8                   # Increased from 5
+MIN_DETECTION_SCORE = int(os.getenv("MIN_DETECTION_SCORE", 5))  # Increased from 3
+RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 7))  # Increased from 4  
+RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 30))  # Increased from 15
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 4))  # Increased from 3
+PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 10))  # Increased from 8
 
 # Enhanced Quality Filters
-MIN_SOL_LIQUIDITY = 10.0                # Minimum 10 SOL liquidity
-MIN_LP_USD = 10000                      # $10k minimum USD liquidity
-MIN_VOLUME_USD = 5000                   # $5k minimum volume
-MIN_CONFIDENCE_SCORE = 70               # Minimum confidence score
-MAX_TOKEN_AGE_MINUTES = 3                # Only very fresh tokens
-MIN_VOLUME_LIQUIDITY_RATIO = 0.5        # Volume must be at least 50% of liquidity
+MIN_SOL_LIQUIDITY = float(os.getenv("MIN_SOL_LIQUIDITY", 15.0))  # Minimum 15 SOL liquidity
+MIN_LP_USD = float(os.getenv("MIN_LP_USD", 20000))  # $20k minimum USD liquidity
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 10000))  # $10k minimum volume
+MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", 70))  # Minimum confidence score
+MAX_TOKEN_AGE_MINUTES = 3  # Only very fresh tokens
+MIN_VOLUME_LIQUIDITY_RATIO = 0.5  # Volume must be at least 50% of liquidity
 
 # Quality filters from env with new defaults
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 10.0))
-RISKY_LP_THRESHOLD = 5.0
-MIN_LP_USD = float(os.getenv("MIN_LP_USD", 10000))
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 5000))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 15.0))  # Increased to 15 SOL
+RISKY_LP_THRESHOLD = 10.0
+MIN_LP_USD = float(os.getenv("MIN_LP_USD", 20000))
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 10000))
 
 # Enhanced position sizing
-SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", 0.1))
-RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.05))
+SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", 0.05))
+RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.03))
 ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", 0.02))
 
-# Buy Limits - UPDATE THESE
-MIN_BUY_COOLDOWN = int(os.getenv("MIN_BUY_COOLDOWN", 60))  # 1 minute between buys
-MAX_DAILY_BUYS = int(os.getenv("MAX_DAILY_BUYS", 30))
+# Buy Limits - STRICT LIMITS
+MIN_BUY_COOLDOWN = int(os.getenv("MIN_BUY_COOLDOWN", 120))  # 2 minutes between buys
+MAX_DAILY_BUYS = int(os.getenv("MAX_DAILY_BUYS", 20))  # Max 20 buys per day
 DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 600))
 
 # Trend scan settings
@@ -87,40 +110,40 @@ BLACKLIST_AFTER_BUY = os.getenv("BLACKLIST_AFTER_BUY", "true").lower() == "true"
 SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "true"
 
 # PumpFun Migration Settings
-PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.2))
+PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
 PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.02))
 PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
 MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 5.0))
 
 # Delays for pool initialization
-MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 500))
-PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 2.0))
+MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 1000))
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 3.0))
 
 # ============================================
-# MOMENTUM SCANNER CONFIGURATION (YOUR ELITE STRATEGY)
+# MOMENTUM SCANNER CONFIGURATION
 # ============================================
 
-# Core Settings
-MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "true").lower() == "true"
-MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "true").lower() == "true"
-MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 4))
-MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 2))
+# Core Settings - DISABLED BY DEFAULT
+MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "false").lower() == "true"
+MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "false").lower() == "true"
+MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 5))
+MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 4))
 
-# Your Golden Rules
-MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))  # 50% minimum
-MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))  # 200% maximum
-MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 10000))
-MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 500000))  # $500k max market cap
+# Momentum Rules
+MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))
+MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))
+MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 20000))
+MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 500000))
 MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", 100))
 MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", 2000))
 MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", 2))
 MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", 24))
 
 # Position Sizing
-MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.2))
-MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.15))
-MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.08))
+MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.1))
+MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.08))
+MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.05))
 MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", 0.02))
 
 # Trading Hours (AEST)
@@ -468,6 +491,32 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
         logging.debug(f"[FALLBACK] Error: {e}")
         return []
 
+async def validate_token_quality(mint: str, lp_amount: float) -> bool:
+    """Final quality gate before buying"""
+    # Minimum absolute requirements
+    if lp_amount < MIN_SOL_LIQUIDITY:  # Less than minimum liquidity
+        logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {MIN_SOL_LIQUIDITY})")
+        return False
+    
+    # Check if it's a real pool
+    if not await verify_pool_exists(mint):
+        logging.info(f"[QUALITY] Rejecting {mint[:8]} - No valid pool found")
+        return False
+    
+    # Check daily limit
+    if daily_stats["snipes_succeeded"] >= MAX_DAILY_BUYS:
+        logging.info(f"[QUALITY] Daily limit reached ({MAX_DAILY_BUYS} buys)")
+        return False
+    
+    # Check buy cooldown
+    global last_buy_time
+    if time.time() - last_buy_time < MIN_BUY_COOLDOWN:
+        cooldown_remaining = MIN_BUY_COOLDOWN - (time.time() - last_buy_time)
+        logging.info(f"[QUALITY] Buy cooldown active ({cooldown_remaining:.0f}s remaining)")
+        return False
+    
+    return True
+
 async def is_quality_token(mint: str, lp_amount: float) -> tuple:
     """
     Enhanced quality check with confidence scoring
@@ -601,9 +650,8 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
             # Continue without DexScreener data
         
         # Check confidence threshold
-        MIN_CONFIDENCE = int(os.getenv("MIN_CONFIDENCE_SCORE", 70))
-        if confidence_score < MIN_CONFIDENCE:
-            return False, f"Low confidence: {confidence_score}/100 (min: {MIN_CONFIDENCE})"
+        if confidence_score < MIN_CONFIDENCE_SCORE:
+            return False, f"Low confidence: {confidence_score}/100 (min: {MIN_CONFIDENCE_SCORE})"
         
         # Build quality summary
         quality_summary = f"Quality token (confidence: {confidence_score}/100)\n" + "\n".join(quality_signals[:5])
@@ -659,19 +707,19 @@ def determine_position_size(lp_amount: float, confidence_score: int, is_pumpfun:
     if is_pumpfun:
         # PumpFun graduates get special treatment
         if lp_amount >= 20:
-            return 0.2  # Large position for good liquidity
+            return 0.15  # Large position for good liquidity
         elif lp_amount >= 10:
-            return 0.15
-        else:
             return 0.1
+        else:
+            return 0.08
     
     # Regular tokens - conservative approach
     if lp_amount >= 50:
-        base = SAFE_BUY_AMOUNT * 2  # 0.2 SOL
+        base = SAFE_BUY_AMOUNT * 2  # 0.1 SOL
     elif lp_amount >= 20:
-        base = SAFE_BUY_AMOUNT  # 0.1 SOL
+        base = SAFE_BUY_AMOUNT  # 0.05 SOL
     elif lp_amount >= MIN_SOL_LIQUIDITY:
-        base = RISKY_BUY_AMOUNT  # 0.05 SOL
+        base = RISKY_BUY_AMOUNT  # 0.03 SOL
     else:
         base = ULTRA_RISKY_BUY_AMOUNT  # 0.02 SOL
     
@@ -688,7 +736,7 @@ def determine_position_size(lp_amount: float, confidence_score: int, is_pumpfun:
     final_amount = base * multiplier
     
     # Cap at maximum
-    max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 0.5))
+    max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 0.2))
     return min(round(final_amount, 3), max_position)
 
 async def verify_pool_exists(mint: str) -> bool:
@@ -987,9 +1035,12 @@ async def get_trending_pairs_birdeye():
     
     return None
 
+# Define trending_tokens globally
+trending_tokens = set()
+
 async def trending_scanner():
     """Scan for quality trending tokens"""
-    global seen_trending
+    global seen_trending, trending_tokens
     consecutive_failures = 0
     max_consecutive_failures = 5
     
@@ -1050,6 +1101,7 @@ async def trending_scanner():
                     continue
                     
                 seen_trending.add(mint)
+                trending_tokens.add(mint)  # Track trending tokens
                 processed += 1
                 increment_stat("tokens_scanned", 1)
                 update_last_activity()
@@ -1109,7 +1161,7 @@ async def rug_filter_passes(mint: str) -> bool:
     """Check if token passes basic rug filters"""
     try:
         data = await get_liquidity_and_ownership(mint)
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 10.0))
+        min_lp = RUG_LP_THRESHOLD
         
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
             min_lp = min_lp / 2
@@ -1123,7 +1175,7 @@ async def rug_filter_passes(mint: str) -> bool:
         return False
 
 # ============================================
-# MOMENTUM SCANNER - ELITE TRADING STRATEGY
+# MOMENTUM SCANNER - DISABLED BY DEFAULT
 # ============================================
 
 def detect_chart_pattern(price_data: list) -> str:
@@ -1168,7 +1220,7 @@ def detect_chart_pattern(price_data: list) -> str:
 
 async def score_momentum_token(token_data: dict) -> tuple:
     """
-    Score a token based on your exact momentum criteria
+    Score a token based on momentum criteria
     Returns: (score, [list of signals that passed])
     """
     score = 0
@@ -1193,7 +1245,7 @@ async def score_momentum_token(token_data: dict) -> tuple:
         price_history = token_data.get("priceHistory", [])
         pattern = detect_chart_pattern(price_history) if price_history else "unknown"
         
-        # ===== MOMENTUM RULES (YOUR CRITERIA) =====
+        # ===== MOMENTUM RULES =====
         
         # 1. Hour gain in sweet spot (50-200%)
         if MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN:
@@ -1216,6 +1268,7 @@ async def score_momentum_token(token_data: dict) -> tuple:
             if vol_liq_ratio > 2:
                 score += 1
                 signals.append(f"✅ Volume/Liq ratio: {vol_liq_ratio:.1f}")
+                # Continue from the momentum scanner section...
         
         # 4. Safe liquidity
         if liquidity_usd >= MOMENTUM_MIN_LIQUIDITY:
@@ -1300,7 +1353,7 @@ async def fetch_top_gainers() -> list:
 
 async def momentum_scanner():
     """
-    Elite Momentum Scanner - Finds pumping tokens with your exact criteria
+    Elite Momentum Scanner - Finds pumping tokens with exact criteria
     Implements the hybrid strategy for 70% win rate momentum plays
     """
     if not MOMENTUM_SCANNER_ENABLED:
@@ -1418,7 +1471,7 @@ async def momentum_scanner():
                                 f"Token: {token_symbol}\n"
                                 f"Amount: {position_size} SOL\n"
                                 f"Strategy: Momentum Play\n\n"
-                                f"Monitoring with your exit rules..."
+                                f"Monitoring with exit rules..."
                             )
                             # Start auto-sell
                             asyncio.create_task(wait_and_auto_sell(token_address))
@@ -1625,6 +1678,10 @@ async def mempool_listener(name, program_id=None):
                         account_keys = value.get("accountKeys", [])
                         signature = value.get("signature", "")
                         
+                        # CHECK FOR DUPLICATE DETECTION
+                        if is_duplicate_detection(signature):
+                            continue
+                        
                         if signature in processed_txs:
                             continue
                         processed_txs.add(signature)
@@ -1698,8 +1755,8 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"  Quality Score: {log_quality_score}")
                                 logging.info(f"  Has init: {has_init_pool}, Has create: {has_create_pool}, Has liquidity: {has_liquidity}")
                             
-                            # STRICTER REQUIREMENTS
-                            if raydium_indicators >= RAYDIUM_MIN_INDICATORS and len(logs) >= RAYDIUM_MIN_LOGS and log_quality_score >= 3:
+                            # STRICTER REQUIREMENTS WITH QUALITY CHECK
+                            if raydium_indicators >= RAYDIUM_MIN_INDICATORS and len(logs) >= RAYDIUM_MIN_LOGS and log_quality_score >= 5:
                                 is_pool_creation = True
                                 logging.info(f"[RAYDIUM] HIGH QUALITY POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}, Quality: {log_quality_score}")
                             else:
@@ -1788,7 +1845,7 @@ async def mempool_listener(name, program_id=None):
                             if key in SYSTEM_PROGRAMS or len(key) != 44:
                                 continue
                             
-                            if key == "So11111111111111111111111111111111111112":
+                            if key == "So11111111111111111111111111111111111111112":
                                 continue
                             
                             # Check if already processed
@@ -1804,7 +1861,7 @@ async def mempool_listener(name, program_id=None):
                             # Mark as seen
                             seen_tokens.add(potential_mint)
                             
-                            # PRE-BUY VALIDATION
+                            # QUALITY VALIDATION BEFORE BUY
                             if not await validate_before_buy(potential_mint, 0):
                                 continue
                             
@@ -1839,14 +1896,21 @@ async def mempool_listener(name, program_id=None):
                                     lp_data = await get_liquidity_and_ownership(potential_mint)
                                     lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
                                     
+                                    # ADD ZERO LIQUIDITY CHECK
                                     if lp_amount == 0:
-                                        logging.info(f"[PUMPFUN] New token {potential_mint[:8]}... - No LP yet, checking if tradeable")
-                                        lp_amount = 0.1
+                                        logging.warning(f"[PUMPFUN] ZERO LIQUIDITY DETECTED - SKIPPING {potential_mint[:8]}...")
+                                        record_skip("zero_liquidity")
+                                        continue
+                                    
+                                    # Final quality validation
+                                    if not await validate_token_quality(potential_mint, lp_amount):
+                                        continue
                                     
                                     min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN if not graduated else RUG_LP_THRESHOLD
                                     
-                                    if lp_amount < min_lp_for_pumpfun and lp_amount > 0:
-                                        logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL but proceeding cautiously")
+                                    if lp_amount < min_lp_for_pumpfun:
+                                        logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL (min: {min_lp_for_pumpfun})")
+                                        continue
                                     
                                     recent_buy_attempts[potential_mint] = time.time()
                                     last_buy_time = time.time()
@@ -1918,6 +1982,16 @@ async def mempool_listener(name, program_id=None):
                                         continue
                                     except Exception as e:
                                         logging.debug(f"[{name}] LP check error: {e}")
+                                        continue
+                                    
+                                    # ADD ZERO LIQUIDITY CHECK
+                                    if lp_amount == 0:
+                                        logging.warning(f"[{name}] ZERO LIQUIDITY DETECTED - SKIPPING {potential_mint[:8]}...")
+                                        record_skip("zero_liquidity")
+                                        continue
+                                    
+                                    # Final quality validation
+                                    if not await validate_token_quality(potential_mint, lp_amount):
                                         continue
                                     
                                     # ENHANCED QUALITY CHECK
@@ -2019,3 +2093,62 @@ async def mempool_listener(name, program_id=None):
             wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
             logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
             await asyncio.sleep(wait_time)
+
+# ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+async def start_sniper_with_forced_token(mint: str):
+    """Force buy a specific token"""
+    try:
+        logging.info(f"[FORCE BUY] Attempting to buy {mint}")
+        
+        # Check momentum score
+        momentum_data = await check_momentum_score(mint)
+        if momentum_data["score"] > 0:
+            await send_telegram_alert(
+                f"📊 Momentum Score: {momentum_data['score']}/5\n"
+                f"Signals:\n" + "\n".join(momentum_data["signals"][:3])
+            )
+        
+        success = await buy_token(mint)
+        if success:
+            already_bought.add(mint)
+            asyncio.create_task(wait_and_auto_sell(mint))
+            await send_telegram_alert(f"✅ Force buy successful for {mint[:16]}...")
+        else:
+            await send_telegram_alert(f"❌ Force buy failed for {mint[:16]}...")
+            
+    except Exception as e:
+        logging.error(f"Force buy error: {e}")
+        await send_telegram_alert(f"❌ Force buy error: {str(e)[:100]}")
+
+async def stop_all_tasks():
+    """Stop all running tasks"""
+    global TASKS
+    for task in TASKS:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    TASKS.clear()
+    logging.info("All tasks stopped")
+
+# Export functions for use in other modules
+__all__ = [
+    'mempool_listener',
+    'trending_scanner',
+    'momentum_scanner',
+    'pumpfun_migration_monitor',
+    'raydium_graduation_scanner',
+    'start_sniper_with_forced_token',
+    'stop_all_tasks',
+    'pumpfun_tokens',
+    'migration_watch_list',
+    'trending_tokens',
+    'MOMENTUM_SCANNER_ENABLED',
+    'momentum_analyzed',
+    'momentum_bought'
+]
