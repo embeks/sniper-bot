@@ -1289,10 +1289,13 @@ async def momentum_scanner():
                     elif score >= MIN_SCORE_ALERT:
                         # ALERT ONLY - Good setup needs approval
                         await send_telegram_alert(
-                            f"🔔 MOMENTUM OPPORTUNITY 🔔\n\n"
-                            f"Token: {token_symbol} ({token_address[:8]}...)\n"
-                            f"Score: {score}/5 ⭐\n"
-                            f"Suggested:
+    f"🔔 MOMENTUM OPPORTUNITY 🔔\n\n"
+    f"Token: {token_symbol} ({token_address[:8]}...)\n"
+    f"Score: {score}/5 ⭐\n"
+    f"Suggested: {MOMENTUM_POSITION_3_SCORE} SOL\n\n"
+    f"Signals:\n{chr(10).join(signals[:5])}\n\n"
+    f"Use /forcebuy {token_address} to execute"
+)
 
 async def get_trending_pairs_dexscreener():
     """Fetch trending pairs from DexScreener"""
