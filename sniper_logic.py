@@ -74,7 +74,7 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 MIN_DETECTION_SCORE = int(os.getenv("MIN_DETECTION_SCORE", 5))  # Increased from 3
 RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 7))  # Increased from 4  
 RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 30))  # Increased from 15
-PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 2))  # Lowered from 4 to detect more
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 4))  # Increased from 3
 PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 10))  # Increased from 8
 
 # Enhanced Quality Filters
