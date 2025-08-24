@@ -29,13 +29,14 @@ from monster_bot import (
     calculate_position_size
 )
 
-# Import your utils
+# Import your utils - FIXED IMPORT
 from utils import (
-    buy_token as original_buy_token,
+    buy_token as utils_buy_token,  # FIXED: Proper import
     send_telegram_alert, keypair, BUY_AMOUNT_SOL,
     is_bot_running, start_bot, stop_bot, 
     get_wallet_summary, get_bot_status_message,
-    check_pumpfun_token_status, detect_pumpfun_migration
+    check_pumpfun_token_status, detect_pumpfun_migration,
+    get_liquidity_and_ownership  # FIXED: Import this
 )
 
 # Import elite modules (embedded below if files don't exist)
@@ -282,7 +283,6 @@ if not ELITE_MODULES_AVAILABLE:
         async def detect_honeypot(self, mint: str) -> bool:
             """Quick honeypot check"""
             try:
-                from utils import get_liquidity_and_ownership
                 lp_data = await get_liquidity_and_ownership(mint)
                 if lp_data and lp_data.get("liquidity", 0) < 0.1:
                     return True
@@ -685,29 +685,49 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         if is_force_buy:
             amount_sol = force_amount
             ai_score = 1.0  # Max score for force buys
+            pool_liquidity = 10  # Assume reasonable liquidity for force buys
         else:
+            # FIXED: Better liquidity checking with retries
+            pool_liquidity = 0
+            max_retries = 3
+            
+            # Try cached data first
             cached_pool = speed_optimizer.get_cached_pool(mint) if hasattr(speed_optimizer, 'get_cached_pool') else None
-            
             if cached_pool:
-                lp_data = cached_pool
-                logging.info(f"[ELITE] Using cached pool data for {mint[:8]}...")
-            else:
-                try:
-                    from utils import get_liquidity_and_ownership
-                    lp_data = await get_liquidity_and_ownership(mint)
-                    if lp_data and hasattr(speed_optimizer, 'cache_pool_data'):
-                        speed_optimizer.cache_pool_data(mint, lp_data)
-                except:
-                    lp_data = {}
+                pool_liquidity = cached_pool.get("liquidity", 0)
+                logging.info(f"[ELITE] Using cached liquidity: {pool_liquidity:.2f} SOL")
             
-            pool_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
+            # If no cached data or zero liquidity, try fetching with retries
+            if pool_liquidity == 0:
+                for retry in range(max_retries):
+                    try:
+                        lp_data = await get_liquidity_and_ownership(mint)
+                        if lp_data:
+                            pool_liquidity = lp_data.get("liquidity", 0)
+                            if pool_liquidity > 0:
+                                logging.info(f"[ELITE] Got liquidity: {pool_liquidity:.2f} SOL (attempt {retry + 1})")
+                                # Cache the data
+                                if hasattr(speed_optimizer, 'cache_pool_data'):
+                                    speed_optimizer.cache_pool_data(mint, lp_data)
+                                break
+                        
+                        # Wait before retry if no liquidity found
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(2)
+                            logging.info(f"[ELITE] Retrying liquidity check for {mint[:8]}... (attempt {retry + 2})")
+                    except Exception as e:
+                        logging.debug(f"[ELITE] Liquidity check error on attempt {retry + 1}: {e}")
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(1)
             
+            # AI scoring
             try:
                 ai_scorer = AIScorer()
-                ai_score = await ai_scorer.score_token(mint, lp_data)
+                ai_score = await ai_scorer.score_token(mint, {"liquidity": pool_liquidity})
             except:
                 ai_score = 0.5
             
+            # Boost score for PumpFun migrations
             try:
                 if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
                     ai_score = max(ai_score, 0.8)
@@ -715,19 +735,29 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             except:
                 pass
             
+            # Check minimum AI score
             min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
             if ai_score < min_score:
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            # FIXED: Use the new position sizing function with quality tiers
+            # Calculate position size
             base_amount = calculate_position_size_fixed(pool_liquidity, ai_score, is_force_buy)
             
-            # FIXED: Check if position sizing returned 0 (skip signal)
+            # FIXED: Better handling of low liquidity
             if base_amount == 0:
-                logging.info(f"[ELITE] Skipping {mint[:8]}... - liquidity too low for safe entry")
-                # DON'T send alert here - just log and return
-                return False
+                # Check if it's a special case (PumpFun or trending)
+                is_special = False
+                try:
+                    if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens:
+                        is_special = True
+                        base_amount = 0.03  # Small position for PumpFun
+                except:
+                    pass
+                
+                if not is_special:
+                    logging.info(f"[ELITE] Skipping {mint[:8]}... - liquidity too low: {pool_liquidity:.2f} SOL")
+                    return False
             
             # Adjust for competition
             if competition_level == "ultra":
@@ -737,7 +767,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             else:
                 amount_sol = base_amount
             
-            # FIXED: Final safety check
+            # Final safety checks
             if amount_sol < 0.02:
                 amount_sol = 0.02
                 logging.warning(f"[ELITE] Minimum position size enforced: {amount_sol}")
@@ -745,7 +775,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 0.5))
             amount_sol = min(amount_sol, max_position)
         
-        # 4. SIMULATE TRANSACTION
+        # 4. SIMULATE TRANSACTION (optional)
         if SIMULATE_BEFORE_BUY:
             sim_result = await simulator.simulate_buy(mint, int(amount_sol * 1e9))
             if not sim_result.get("will_succeed", True):
@@ -773,25 +803,29 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             f"Executing NOW..."
         )
         
-        # 7. EXECUTE THE BUY
+        # 7. EXECUTE THE BUY - FULLY FIXED
         logging.info(f"[ELITE] Executing buy for {mint[:8]}... with {amount_sol} SOL")
         
+        # Store original amount
         original_amount = os.getenv("BUY_AMOUNT_SOL")
         os.environ["BUY_AMOUNT_SOL"] = str(amount_sol)
         
-        result = await original_buy_token(mint)
+        # FIXED: Use the properly imported buy function
+        result = await utils_buy_token(mint)
         
+        # Restore original amount
         if original_amount:
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            # FIXED: Now this won't error because total_trades exists
+            # Track successful trade
             if hasattr(revenue_optimizer, 'total_trades'):
                 revenue_optimizer.total_trades += 1
             
             # Track trade for performance analysis
             await performance_tracker.track_trade("elite", 0, amount_sol)  # Profit tracked later
             
+            # Setup exit strategy if enabled
             if DYNAMIC_EXIT_STRATEGY:
                 try:
                     strategy = await exit_strategy.calculate_exit_strategy(mint, 0)
@@ -825,7 +859,6 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         
     except Exception as e:
         logging.error(f"[ELITE BUY] Error: {e}")
-        # DON'T send alert for every error
         return False
 
 async def monster_buy_token(mint: str, force_amount: float = None):
@@ -837,14 +870,15 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             logging.info(f"[MONSTER BUY] Force buying {mint[:8]}... with {force_amount} SOL")
             amount_sol = force_amount
         else:
+            # Get liquidity
             try:
-                from utils import get_liquidity_and_ownership
                 lp_data = await get_liquidity_and_ownership(mint)
                 pool_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
             except:
                 pool_liquidity = 0
                 lp_data = {}
             
+            # AI scoring
             try:
                 ai_scorer = AIScorer()
                 ai_score = await ai_scorer.score_token(mint, lp_data)
@@ -856,13 +890,13 @@ async def monster_buy_token(mint: str, force_amount: float = None):
                 logging.info(f"[SKIP] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            # FIXED: Use the new position sizing function with quality tiers
+            # Calculate position size
             amount_sol = calculate_position_size_fixed(pool_liquidity, ai_score, force_amount is not None)
             if amount_sol == 0:
                 logging.info(f"[SKIP] Token {mint[:8]}... liquidity too low")
                 return False
         
-        # FIXED: Final validation
+        # Final validation
         if amount_sol < 0.02:
             amount_sol = 0.02
         
@@ -875,16 +909,18 @@ async def monster_buy_token(mint: str, force_amount: float = None):
         
         logging.info(f"[MONSTER BUY] Executing real buy for {mint[:8]}... with {amount_sol} SOL")
         
+        # Store and restore amount
         original_amount = os.getenv("BUY_AMOUNT_SOL")
         os.environ["BUY_AMOUNT_SOL"] = str(amount_sol)
         
-        result = await original_buy_token(mint)
+        # FIXED: Use the properly imported buy function
+        result = await utils_buy_token(mint)
         
         if original_amount:
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            # FIXED: Now this won't error because total_trades exists
+            # Track successful trade
             if hasattr(revenue_optimizer, 'total_trades'):
                 revenue_optimizer.total_trades += 1
             
