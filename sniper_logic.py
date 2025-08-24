@@ -8,11 +8,15 @@ import re
 import base64
 from base58 import b58encode, b58decode
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 import httpx
 import random
-from dexscreener_monitor import start_dexscreener_monitor
 
+# CRITICAL FIX: Load environment variables FIRST before any imports that use them
+from dotenv import load_dotenv
+load_dotenv()
+
+# Now import other modules AFTER environment is loaded
+from dexscreener_monitor import start_dexscreener_monitor
 from utils import (
     is_valid_mint, buy_token, log_skipped_token, send_telegram_alert,
     get_trending_mints, wait_and_auto_sell, get_liquidity_and_ownership,
@@ -23,8 +27,6 @@ from utils import (
 )
 from solders.pubkey import Pubkey
 from raydium_aggregator import RaydiumAggregator
-
-load_dotenv()
 
 # ============================================
 # CRITICAL FIX: Transaction cache to prevent infinite loops
@@ -65,6 +67,7 @@ def is_duplicate_detection(signature: str) -> bool:
             del RECENT_DETECTIONS[sig]
     return False
 
+# Environment variables - Now properly loaded before this point
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
@@ -73,56 +76,55 @@ SLIPPAGE_BPS = 100
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 # ============================================
-# QUALITY THRESHOLDS - OPTIMIZED FOR HIGH WIN RATE
+# QUALITY THRESHOLDS - ALL CONFIGURABLE VIA ENV
 # ============================================
-MIN_DETECTION_SCORE = int(os.getenv("MIN_DETECTION_SCORE", 5))  # Increased from 3
-RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 7))  # Increased from 4  
-RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 30))  # Increased from 15
-PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 4))  # Increased from 3
-PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 10))  # Increased from 8
+MIN_DETECTION_SCORE = int(os.getenv("MIN_DETECTION_SCORE", "5"))
+RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", "7"))
+RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", "30"))
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", "4"))
+PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", "10"))
 
-# Enhanced Quality Filters
-MIN_SOL_LIQUIDITY = float(os.getenv("MIN_SOL_LIQUIDITY", 15.0))  # Minimum 15 SOL liquidity
-MIN_LP_USD = float(os.getenv("MIN_LP_USD", 20000))  # $20k minimum USD liquidity
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 10000))  # $10k minimum volume
-MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", 30))  # Lowered from 70 to 30 for new tokens with high liquidity
+# Enhanced Quality Filters - ALL FROM ENV
+MIN_SOL_LIQUIDITY = float(os.getenv("MIN_SOL_LIQUIDITY", "15.0"))
+MIN_LP = float(os.getenv("MIN_LP", "15.0"))  # Added MIN_LP for compatibility
+MIN_LP_USD = float(os.getenv("MIN_LP_USD", "20000"))
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", "10000"))
+MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", "30"))
 MAX_TOKEN_AGE_MINUTES = 3  # Only very fresh tokens
 MIN_VOLUME_LIQUIDITY_RATIO = 0.5  # Volume must be at least 50% of liquidity
 
 # Quality filters from env with new defaults
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 15.0))  # Increased to 15 SOL
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", "15.0"))
 RISKY_LP_THRESHOLD = 10.0
-MIN_LP_USD = float(os.getenv("MIN_LP_USD", 20000))
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 10000))
 
 # Enhanced position sizing
-SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", 0.05))
-RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.03))
-ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", 0.02))
+SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", "0.05"))
+RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", "0.03"))
+ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.02"))
 
 # Buy Limits - STRICT LIMITS
-MIN_BUY_COOLDOWN = int(os.getenv("MIN_BUY_COOLDOWN", 120))  # 2 minutes between buys
-MAX_DAILY_BUYS = int(os.getenv("MAX_DAILY_BUYS", 20))  # Max 20 buys per day
-DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 600))
+MIN_BUY_COOLDOWN = int(os.getenv("MIN_BUY_COOLDOWN", "120"))
+MAX_DAILY_BUYS = int(os.getenv("MAX_DAILY_BUYS", "20"))
+DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", "600"))
 
 # Trend scan settings
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
-MAX_BUYS_PER_TOKEN = int(os.getenv("MAX_BUYS_PER_TOKEN", 1))
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", "60"))
+MAX_BUYS_PER_TOKEN = int(os.getenv("MAX_BUYS_PER_TOKEN", "1"))
 BLACKLIST_AFTER_BUY = os.getenv("BLACKLIST_AFTER_BUY", "true").lower() == "true"
 
 # Disable Jupiter mempool if configured
 SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "true"
 
 # PumpFun Migration Settings
-PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
-PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.02))
+PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", "0.1"))
+PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", "0.02"))
 PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
-MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 5.0))
+MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", "5.0"))
 
 # Delays for pool initialization
-MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 1000))
-PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 3.0))
+MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", "1000"))
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", "3.0"))
 
 # ============================================
 # MOMENTUM SCANNER CONFIGURATION
@@ -131,31 +133,31 @@ PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 3.0))
 # Core Settings - DISABLED BY DEFAULT
 MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "false").lower() == "true"
 MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "false").lower() == "true"
-MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 5))
-MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 4))
+MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", "5"))
+MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", "4"))
 
 # Momentum Rules
-MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))
-MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))
-MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 20000))
-MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 500000))
-MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", 100))
-MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", 2000))
-MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", 2))
-MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", 24))
+MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", "50"))
+MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", "200"))
+MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", "20000"))
+MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", "500000"))
+MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", "100"))
+MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", "2000"))
+MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", "2"))
+MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", "24"))
 
 # Position Sizing
-MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.1))
-MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.08))
-MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.05))
-MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", 0.02))
+MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", "0.1"))
+MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", "0.08"))
+MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", "0.05"))
+MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", "0.02"))
 
 # Trading Hours (AEST)
 PRIME_HOURS = [21, 22, 23, 0, 1, 2, 3]  # 9 PM - 3 AM AEST (US market active)
 REDUCED_HOURS = list(range(6, 21))  # 6 AM - 9 PM AEST (be pickier)
 
 # Scan Settings
-MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", 120))
+MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", "120"))
 MAX_MOMENTUM_TOKENS = 20  # Check top 20 gainers
 
 # Track momentum tokens
@@ -193,6 +195,19 @@ SYSTEM_PROGRAMS = [
     "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
     "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
 ]
+
+# Log current configuration at startup
+logging.info("=" * 60)
+logging.info("SNIPER CONFIGURATION LOADED:")
+logging.info(f"MIN_SOL_LIQUIDITY: {MIN_SOL_LIQUIDITY} SOL")
+logging.info(f"MIN_LP: {MIN_LP} SOL")
+logging.info(f"MIN_LP_USD: ${MIN_LP_USD}")
+logging.info(f"MIN_CONFIDENCE_SCORE: {MIN_CONFIDENCE_SCORE}/100")
+logging.info(f"RUG_LP_THRESHOLD: {RUG_LP_THRESHOLD} SOL")
+logging.info(f"MAX_DAILY_BUYS: {MAX_DAILY_BUYS}")
+logging.info(f"MIN_BUY_COOLDOWN: {MIN_BUY_COOLDOWN}s")
+logging.info(f"MOMENTUM_SCANNER: {MOMENTUM_SCANNER_ENABLED}")
+logging.info("=" * 60)
 
 # CRITICAL FIX: Extract liquidity from transaction data directly
 async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
@@ -578,9 +593,12 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
 
 async def validate_token_quality(mint: str, lp_amount: float) -> bool:
     """Final quality gate before buying"""
+    # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
+    min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+    
     # Minimum absolute requirements
-    if lp_amount < MIN_SOL_LIQUIDITY:  # Less than minimum liquidity
-        logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {MIN_SOL_LIQUIDITY})")
+    if lp_amount < min_liquidity:  # Less than minimum liquidity
+        logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {min_liquidity})")
         return False
     
     # Check if it's a real pool
@@ -621,11 +639,14 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         confidence_score = 0
         quality_signals = []
         
+        # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
+        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+        
         # CRITICAL: Minimum liquidity check (most important filter)
-        if lp_amount < MIN_SOL_LIQUIDITY:
+        if lp_amount < min_liquidity:
             # Exception for PumpFun graduates
             if mint not in pumpfun_tokens or not pumpfun_tokens[mint].get("migrated", False):
-                return False, f"Liquidity too low: {lp_amount:.2f} SOL (min: {MIN_SOL_LIQUIDITY})"
+                return False, f"Liquidity too low: {lp_amount:.2f} SOL (min: {min_liquidity})"
             else:
                 # PumpFun graduate - allow with lower liquidity but flag it
                 quality_signals.append(f"⚠️ PumpFun graduate with {lp_amount:.2f} SOL")
@@ -638,7 +659,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         elif lp_amount >= 20:
             confidence_score += 35
             quality_signals.append(f"✅ Good liquidity: {lp_amount:.2f} SOL")
-        elif lp_amount >= MIN_SOL_LIQUIDITY:
+        elif lp_amount >= min_liquidity:
             confidence_score += 25
             quality_signals.append(f"✅ Adequate liquidity: {lp_amount:.2f} SOL")
         else:
@@ -757,7 +778,8 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
     except Exception as e:
         logging.error(f"Quality check error: {e}")
         # If error but good liquidity, allow with caution
-        if lp_amount >= MIN_SOL_LIQUIDITY:
+        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+        if lp_amount >= min_liquidity:
             return True, f"Quality check error but good LP: {lp_amount:.2f} SOL"
         return False, "Quality check error"
 
@@ -776,8 +798,11 @@ async def validate_before_buy(mint: str, lp_amount: float) -> bool:
             logging.info(f"[VALIDATION] Buy cooldown active ({cooldown_remaining:.0f}s remaining)")
             return False
         
+        # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
+        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+        
         # Extra validation for low liquidity
-        if lp_amount < MIN_SOL_LIQUIDITY:
+        if lp_amount < min_liquidity:
             # Only allow for PumpFun graduates or trending tokens
             if mint not in pumpfun_tokens and mint not in trending_tokens:
                 logging.info(f"[VALIDATION] Rejecting low liquidity pool: {lp_amount:.2f} SOL")
@@ -814,7 +839,7 @@ def determine_position_size(lp_amount: float, confidence_score: int, is_pumpfun:
         base = SAFE_BUY_AMOUNT * 2  # 0.1 SOL
     elif lp_amount >= 20:
         base = SAFE_BUY_AMOUNT  # 0.05 SOL
-    elif lp_amount >= MIN_SOL_LIQUIDITY:
+    elif lp_amount >= (MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY):
         base = RISKY_BUY_AMOUNT  # 0.03 SOL
     else:
         base = ULTRA_RISKY_BUY_AMOUNT  # 0.02 SOL
@@ -832,7 +857,7 @@ def determine_position_size(lp_amount: float, confidence_score: int, is_pumpfun:
     final_amount = base * multiplier
     
     # Cap at maximum
-    max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 0.2))
+    max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", "0.2"))
     return min(round(final_amount, 3), max_position)
 
 async def verify_pool_exists(mint: str) -> bool:
