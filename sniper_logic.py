@@ -42,6 +42,10 @@ LISTENER_START_TIMES = {}  # name -> timestamp
 RECENT_DETECTIONS = {}  # signature -> timestamp
 DETECTION_COOLDOWN = 30  # seconds
 
+# CRITICAL FIX: Track if we've already sent startup messages
+STARTUP_MESSAGES_SENT = False
+BOT_START_TIME = time.time()
+
 def is_duplicate_detection(signature: str) -> bool:
     """Check if we've seen this transaction recently"""
     current_time = time.time()
@@ -1678,8 +1682,8 @@ async def mempool_listener(name, program_id=None):
     
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
-        # Only send alert if not recently sent
-        if name not in last_alert_sent or time.time() - last_alert_sent[name] > alert_cooldown_sec:
+        # Only send alert if this is the first startup (not a restart)
+        if name not in last_alert_sent:
             await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
             last_alert_sent[name] = time.time()
         return
@@ -1687,8 +1691,8 @@ async def mempool_listener(name, program_id=None):
     # Skip Jupiter mempool if configured
     if name == "Jupiter" and SKIP_JUPITER_MEMPOOL:
         logging.info(f"[{name}] Mempool monitoring disabled via config")
-        # Only send alert once
-        if name not in last_alert_sent or time.time() - last_alert_sent[name] > alert_cooldown_sec:
+        # Only send alert once at startup
+        if name not in last_alert_sent:
             await send_telegram_alert(f"📌 {name} mempool disabled (too noisy)")
             last_alert_sent[name] = time.time()
         return
@@ -1746,10 +1750,11 @@ async def mempool_listener(name, program_id=None):
             subscription_id = response_data["result"]
             logging.info(f"[{name}] Listener subscribed with ID: {subscription_id}")
             
-            # Send alert only once per session
-            if name not in last_alert_sent or time.time() - last_alert_sent[name] > alert_cooldown_sec:
+            # Only send success alert ONCE per session (not on reconnects)
+            current_time = time.time()
+            if name not in last_alert_sent or current_time - last_alert_sent[name] > 3600:  # Only once per hour
                 await send_telegram_alert(f"📱 {name} listener ACTIVE")
-                last_alert_sent[name] = time.time()
+                last_alert_sent[name] = current_time
             
             listener_status[name] = "ACTIVE"
             last_seen_token[name] = time.time()
