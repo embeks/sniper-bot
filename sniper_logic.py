@@ -81,7 +81,7 @@ PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 10))  # Increased from 8
 MIN_SOL_LIQUIDITY = float(os.getenv("MIN_SOL_LIQUIDITY", 15.0))  # Minimum 15 SOL liquidity
 MIN_LP_USD = float(os.getenv("MIN_LP_USD", 20000))  # $20k minimum USD liquidity
 MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 10000))  # $10k minimum volume
-MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", 70))  # Minimum confidence score
+MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", 30))  # Lowered from 70 to 30 for new tokens with high liquidity
 MAX_TOKEN_AGE_MINUTES = 3  # Only very fresh tokens
 MIN_VOLUME_LIQUIDITY_RATIO = 0.5  # Volume must be at least 50% of liquidity
 
@@ -716,6 +716,17 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         except Exception as e:
             logging.debug(f"DexScreener check failed: {e}")
             # Continue without DexScreener data
+        
+        # HIGH LIQUIDITY BONUS - For brand new tokens with excellent liquidity
+        if lp_amount >= 30:  # If liquidity is excellent (30+ SOL)
+            # Give significant bonus points for high liquidity new tokens
+            bonus_points = 35
+            confidence_score += bonus_points
+            quality_signals.append(f"✅ HIGH LIQUIDITY BONUS (+{bonus_points}): {lp_amount:.2f} SOL")
+        elif lp_amount >= 20:  # Good liquidity bonus
+            bonus_points = 20
+            confidence_score += bonus_points
+            quality_signals.append(f"✅ Good liquidity bonus (+{bonus_points}): {lp_amount:.2f} SOL")
         
         # Check confidence threshold
         if confidence_score < MIN_CONFIDENCE_SCORE:
