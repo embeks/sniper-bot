@@ -227,19 +227,32 @@ async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
                         balances = result["meta"]["postBalances"]
                         
                         # For Raydium pools, SOL is typically in accounts 4-7
-                        # Look for the largest balance that's not a system program
-                        max_balance = 0
+                        # Look for a reasonable balance (not system accounts with huge amounts)
+                        potential_liquidity = []
                         for i in range(min(len(balances), len(accounts))):
                             if i < len(accounts) and accounts[i] not in SYSTEM_PROGRAMS:
                                 balance_lamports = balances[i]
-                                if balance_lamports > 1000000000:  # More than 1 SOL
+                                # Filter out unrealistic amounts (>10000 SOL is suspicious)
+                                if 1000000000 < balance_lamports < 10000000000000:  # Between 1 SOL and 10,000 SOL
                                     balance_sol = balance_lamports / 1e9
-                                    if balance_sol > max_balance:
-                                        max_balance = balance_sol
+                                    potential_liquidity.append(balance_sol)
                         
-                        if max_balance > 0:
-                            logging.info(f"[LIQUIDITY] Extracted {max_balance:.2f} SOL from transaction")
-                            return max_balance
+                        # Return the most reasonable liquidity amount (usually 2nd largest after fees account)
+                        if potential_liquidity:
+                            potential_liquidity.sort()
+                            # Get median value to avoid outliers
+                            if len(potential_liquidity) > 2:
+                                liquidity = potential_liquidity[len(potential_liquidity)//2]
+                            else:
+                                liquidity = potential_liquidity[0]
+                            
+                            # Sanity check - cap at 1000 SOL for new pools
+                            if liquidity > 1000:
+                                logging.warning(f"[LIQUIDITY] Capping suspicious liquidity: {liquidity:.2f} SOL -> 0 SOL")
+                                return 0
+                            
+                            logging.info(f"[LIQUIDITY] Extracted {liquidity:.2f} SOL from transaction")
+                            return liquidity
                     
                     # Alternative: Check innerInstructions for transfer amounts
                     if "meta" in result and "innerInstructions" in result["meta"]:
@@ -249,7 +262,7 @@ async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
                                     if "parsed" in inst and inst["parsed"].get("type") == "transfer":
                                         info = inst["parsed"]["info"]
                                         lamports = info.get("lamports", 0)
-                                        if lamports > 1000000000:  # More than 1 SOL
+                                        if 1000000000 < lamports < 1000000000000:  # Between 1-1000 SOL
                                             sol_amount = lamports / 1e9
                                             logging.info(f"[LIQUIDITY] Found transfer of {sol_amount:.2f} SOL")
                                             return sol_amount
