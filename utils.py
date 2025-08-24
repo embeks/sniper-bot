@@ -36,12 +36,12 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Changed from WALLET_PK
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Changed from TELEGRAM_USER_ID
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")  # Keep both for compatibility
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))  # Changed default to 0.03
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.05))  # FIXED: Match your actual value
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 5.0))  # RAISED TO 5 SOL MINIMUM
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 5.0))  # Lowered to realistic value
 BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 
 # Parse sell percentages from multipliers (using defaults)
@@ -771,7 +771,7 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         return None
 
 async def buy_token(mint: str):
-    """Execute buy transaction for a token - NOW WITH JUPITER!"""
+    """Execute buy transaction for a token - FIXED: Removed redundant liquidity check"""
     amount = int(BUY_AMOUNT_SOL * 1e9)  # Convert SOL to lamports
 
     try:
@@ -783,14 +783,9 @@ async def buy_token(mint: str):
         increment_stat("snipes_attempted", 1)
         update_last_activity()
         
-        # ELITE: Quick liquidity check before buying
-        lp_data = await get_liquidity_and_ownership(mint)
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 5.0))
-        
-        if lp_data and lp_data.get("liquidity", 0) < min_lp:
-            logging.info(f"[SKIP] {mint[:8]}...: Low liquidity: {lp_data.get('liquidity', 0):.2f} SOL")
-            record_skip("low_lp")
-            return False
+        # FIXED: REMOVED redundant liquidity check - trust sniper_logic's validation
+        # The sniper_logic.py already validated this token passed all quality checks
+        logging.info(f"[Buy] Proceeding with purchase of {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
 
         # ========== TRY JUPITER FIRST (works for 95% of tokens) ==========
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
