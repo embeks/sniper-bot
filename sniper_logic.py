@@ -1255,8 +1255,7 @@ async def score_momentum_token(token_data: dict) -> tuple:
             signals.append(f"✅ 1h gain: {price_change_1h:.1f}%")
         elif price_change_1h > MOMENTUM_MAX_1H_GAIN:
             signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
-
-return (0, signals)  # Automatic disqualification
+            return (0, signals)  # Automatic disqualification
         
         # 2. Still pumping (5m green)
         if price_change_5m > 0:
