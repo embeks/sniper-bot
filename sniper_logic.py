@@ -265,8 +265,8 @@ async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
                             else:
                                 liquidity = potential_liquidity[0]
                             
-                            # Sanity check - cap at 1000 SOL for new pools
-                            if liquidity > 1000:
+                            # Sanity check - cap at 10000 SOL for new pools
+                            if liquidity > 10000:
                                 logging.warning(f"[LIQUIDITY] Capping suspicious liquidity: {liquidity:.2f} SOL -> 0 SOL")
                                 return 0
                             
