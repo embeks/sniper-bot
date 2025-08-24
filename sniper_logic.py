@@ -1218,6 +1218,7 @@ def detect_chart_pattern(price_data: list) -> str:
     
     return "unknown"
 
+# This should replace whatever is at line 372-373
 async def score_momentum_token(token_data: dict) -> tuple:
     """
     Score a token based on momentum criteria
@@ -1246,7 +1247,28 @@ async def score_momentum_token(token_data: dict) -> tuple:
         pattern = detect_chart_pattern(price_history) if price_history else "unknown"
         
         # ===== MOMENTUM RULES =====
-        # Continuation of momentum scanner scoring function...
+        
+        # 1. Hour gain in sweet spot (50-200%)
+        if MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN:
+            score += 1
+            signals.append(f"✅ 1h gain: {price_change_1h:.1f}%")
+        elif price_change_1h > MOMENTUM_MAX_1H_GAIN:
+            signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
+            return (0, signals)  # Automatic disqualification
+        
+        # 2. Still pumping (5m green)
+        if price_change_5m > 0:
+            score += 1
+            signals.append(f"✅ Still pumping: {price_change_5m:.1f}% on 5m")
+        else:
+            signals.append(f"⚠️ Cooling off: {price_change_5m:.1f}% on 5m")
+        
+        # 3. Volume/Liquidity ratio > 2 (good activity)
+        if liquidity_usd > 0:
+            vol_liq_ratio = volume_h24 / liquidity_usd
+            if vol_liq_ratio > 2:
+                score += 1
+                signals.append(f"✅ Volume/Liq ratio: {vol_liq_ratio:.1f}")
         
         # 4. Safe liquidity
         if liquidity_usd >= MOMENTUM_MIN_LIQUIDITY:
@@ -1280,7 +1302,6 @@ async def score_momentum_token(token_data: dict) -> tuple:
             score -= 1
         
         # 8. Check if NOT at ATH (bonus)
-        # Simple check: if 5m is negative but 1h is positive, might be pulling back
         if price_change_5m < 0 and price_change_1h > 50:
             score += 0.25
             signals.append("✅ Pulling back from high")
