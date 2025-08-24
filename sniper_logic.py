@@ -74,7 +74,7 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 MIN_DETECTION_SCORE = int(os.getenv("MIN_DETECTION_SCORE", 5))  # Increased from 3
 RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 7))  # Increased from 4  
 RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 30))  # Increased from 15
-PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 4))  # Increased from 3
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 2))  # Lowered from 4 to detect more
 PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 10))  # Increased from 8
 
 # Enhanced Quality Filters
@@ -1439,17 +1439,19 @@ async def momentum_scanner():
         logging.info("[Momentum Scanner] Disabled via configuration")
         return
     
+    # Send initial alert ONCE at startup only
     await send_telegram_alert(
         "🔥 MOMENTUM SCANNER ACTIVE 🔥\n\n"
         f"Mode: {'HYBRID AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERT ONLY'}\n"
         f"Auto-buy threshold: {MIN_SCORE_AUTO_BUY}/5\n"
         f"Alert threshold: {MIN_SCORE_ALERT}/5\n"
         f"Target: 50-200% gainers\n"
-        f"Position sizes: 0.02-0.2 SOL\n\n"
-        f"Hunting for pumps..."
+        f"Position sizes: 0.02-0.2 SOL"
     )
     
     consecutive_errors = 0
+    last_status_update = 0
+    status_update_interval = 3600  # Only update status once per hour
     
     while True:
         try:
@@ -1573,9 +1575,24 @@ async def momentum_scanner():
                     logging.error(f"Error analyzing momentum token: {e}")
                     continue
             
-            # Summary log
+            # Summary log (only log to console, not Telegram)
             if candidates_found > 0:
                 logging.info(f"[Momentum Scanner] Found {candidates_found} candidates this scan")
+            
+            # Send hourly status update if needed (optional)
+            current_time = time.time()
+            if current_time - last_status_update > status_update_interval:
+                last_status_update = current_time
+                # Only send if we've found something in the last hour
+                if momentum_analyzed and len(momentum_analyzed) > 0:
+                    recent_count = sum(1 for v in momentum_analyzed.values() 
+                                     if current_time - v.get("timestamp", 0) < 3600)
+                    if recent_count > 0:
+                        await send_telegram_alert(
+                            f"📊 Momentum Scanner Update\n"
+                            f"Analyzed {recent_count} tokens in last hour\n"
+                            f"Still hunting for 50-200% gainers..."
+                        )
             
             # Wait before next scan
             await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
