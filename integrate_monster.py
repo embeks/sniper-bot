@@ -1,5 +1,5 @@
 """
-Integration layer - ELITE MONEY PRINTER VERSION - ALL BUGS FIXED
+Integration layer - ELITE MONEY PRINTER VERSION - FIXED NO RESTARTS
 Ready to print money with Elite mode working perfectly!
 """
 
@@ -50,6 +50,23 @@ except ImportError:
 load_dotenv()
 
 # ============================================
+# FORCE OVERRIDE THRESHOLDS - FIX #1
+# ============================================
+os.environ["MIN_LP"] = "5.0"
+os.environ["RUG_LP_THRESHOLD"] = "5.0"
+os.environ["MIN_LP_USD"] = "700"
+os.environ["MIN_CONFIDENCE_SCORE"] = "20"
+os.environ["MIN_SOL_LIQUIDITY"] = "5.0"
+os.environ["RAYDIUM_MIN_INDICATORS"] = "4"
+os.environ["RAYDIUM_MIN_LOGS"] = "20"
+
+# ============================================
+# GLOBAL FLAG TO PREVENT RESTARTS - FIX #2
+# ============================================
+BOT_ALREADY_STARTED = False
+STARTUP_LOCK = asyncio.Lock()
+
+# ============================================
 # FIXED POSITION SIZING FUNCTION WITH QUALITY TIERS
 # ============================================
 
@@ -58,7 +75,7 @@ def calculate_position_size_fixed(pool_liquidity_sol: float, ai_score: float = 0
     FIXED: Calculate optimal position size based on liquidity AND AI confidence
     Now handles zero liquidity and force buys properly with quality tiers
     """
-    base_amount = float(os.getenv("BUY_AMOUNT_SOL", "0.04"))
+    base_amount = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
     
     # FIXED: For force buys, use smart sizing based on liquidity
     if force_buy:
@@ -230,7 +247,7 @@ if not ELITE_MODULES_AVAILABLE:
                         client = httpx.AsyncClient(timeout=5)
                         await client.get(endpoint + "/health", timeout=2)
                         self.connection_pool[endpoint] = client
-                        logging.info(f"[Speed] Pre-warmed connection to {endpoint[:30]}...")
+                        logging.info(f"Pre-warmed connection to {endpoint[:30]}...")
                     except:
                         pass
         
@@ -372,7 +389,7 @@ trend_predictor = TrendPrediction()
 ENABLE_ELITE_FEATURES = os.getenv("ENABLE_ELITE_FEATURES", "true").lower() == "true"
 USE_JITO_BUNDLES = os.getenv("USE_JITO_BUNDLES", "true").lower() == "true"
 SIMULATE_BEFORE_BUY = os.getenv("SIMULATE_BEFORE_SEND", "false").lower() == "true"
-HONEYPOT_CHECK = os.getenv("HONEYPOT_CHECK", "false").lower() == "true"
+HONEYPOT_CHECK = os.getenv("HONEYPOT_CHECK", "true").lower() == "true"
 DYNAMIC_EXIT_STRATEGY = os.getenv("DYNAMIC_EXIT_STRATEGY", "true").lower() == "true"
 
 # ============================================
@@ -579,11 +596,12 @@ async def telegram_webhook(request: Request):
         elif text == "/config":
             config_msg = f"""
 ⚙️ Current Configuration:
-RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', 'Not set')} SOL
+MIN_LP: {os.getenv('MIN_LP', '5.0')} SOL
+RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', '5.0')} SOL
 BUY_AMOUNT_SOL: {os.getenv('BUY_AMOUNT_SOL', '0.05')} SOL
 MIN_AI_SCORE: {os.getenv('MIN_AI_SCORE', '0.10')}
-MIN_LP_USD: {os.getenv('MIN_LP_USD', 'Not set')}
-MIN_VOLUME_USD: {os.getenv('MIN_VOLUME_USD', 'Not set')}
+MIN_LP_USD: {os.getenv('MIN_LP_USD', '700')}
+MIN_CONFIDENCE_SCORE: {os.getenv('MIN_CONFIDENCE_SCORE', '20')}
 PUMPFUN_MIGRATION_BUY: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL
 Elite Features: {'ON' if ENABLE_ELITE_FEATURES else 'OFF'}
 MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
@@ -708,7 +726,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             # FIXED: Check if position sizing returned 0 (skip signal)
             if base_amount == 0:
                 logging.info(f"[ELITE] Skipping {mint[:8]}... - liquidity too low for safe entry")
-                await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... - Liquidity below safe threshold")
+                # DON'T send alert here - just log and return
                 return False
             
             # Adjust for competition
@@ -807,8 +825,8 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         
     except Exception as e:
         logging.error(f"[ELITE BUY] Error: {e}")
-        await send_telegram_alert(f"❌ Elite buy error: {str(e)[:100]}")
-        return await monster_buy_token(mint, force_amount)
+        # DON'T send alert for every error
+        return False
 
 async def monster_buy_token(mint: str, force_amount: float = None):
     """
@@ -884,17 +902,26 @@ async def monster_buy_token(mint: str, force_amount: float = None):
         
     except Exception as e:
         logging.error(f"[MONSTER BUY] Error: {e}")
-        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
         return False
 
 # ============================================
-# ELITE MONSTER SNIPER LAUNCHER
+# ELITE MONSTER SNIPER LAUNCHER - FIX #3
 # ============================================
 
 async def start_elite_sniper():
     """
     Start the ELITE money printer with all features
+    FIXED: Prevent multiple starts
     """
+    global BOT_ALREADY_STARTED
+    
+    # FIX #3: Prevent multiple starts
+    async with STARTUP_LOCK:
+        if BOT_ALREADY_STARTED:
+            logging.warning("Bot already started, skipping duplicate initialization")
+            return
+        BOT_ALREADY_STARTED = True
+    
     if ENABLE_ELITE_FEATURES:
         try:
             await speed_optimizer.prewarm_connections()
@@ -946,7 +973,6 @@ async def start_elite_sniper():
     # Start core listeners
     tasks.extend([
         asyncio.create_task(mempool_listener("Raydium")),
-        asyncio.create_task(mempool_listener("Jupiter")),
         asyncio.create_task(mempool_listener("PumpFun")),
         asyncio.create_task(mempool_listener("Moonshot")),
         asyncio.create_task(trending_scanner())
@@ -1000,16 +1026,20 @@ async def start_elite_sniper():
     await send_telegram_alert(
         f"🚀 {mode} READY 🚀\n\n"
         f"Active Strategies: {len(tasks)}\n"
-        f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}\n"
-        f"Min LP: {os.getenv('RUG_LP_THRESHOLD', '10')} SOL\n"
-        f"PumpFun Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.2')} SOL\n\n"
+        f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.30')}\n"
+        f"Min LP: {os.getenv('MIN_LP', '5.0')} SOL\n"
+        f"PumpFun Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL\n\n"
         f"{'Elite Features: ACTIVE ⚡' if ENABLE_ELITE_FEATURES else ''}\n"
         f"Quality Filters: OPTIMIZED ✅\n"
         f"Hunting for profits... 💰"
     )
     
     # Run all tasks
-    await asyncio.gather(*tasks)
+    try:
+        await asyncio.gather(*tasks)
+    except Exception as e:
+        logging.error(f"Task error: {e}")
+        # Don't restart - just log the error
 
 # ============================================
 # ELITE PERFORMANCE MONITOR
@@ -1029,7 +1059,7 @@ async def elite_performance_monitor():
             # Check if we should increase position sizes
             if hasattr(revenue_optimizer, 'should_increase_position'):
                 if await revenue_optimizer.should_increase_position():
-                    current_size = float(os.getenv("BUY_AMOUNT_SOL", "0.04"))
+                    current_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
                     new_size = min(current_size * 1.5, 0.5)  # Increase by 50%, max 0.5 SOL
                     os.environ["BUY_AMOUNT_SOL"] = str(new_size)
                     
@@ -1164,11 +1194,11 @@ async def main():
     logging.info(f"PumpFun Migration: {os.getenv('ENABLE_PUMPFUN_MIGRATION', 'true')}")
     logging.info(f"Honeypot Check: {HONEYPOT_CHECK}")
     logging.info(f"Dynamic Exits: {DYNAMIC_EXIT_STRATEGY}")
-    logging.info(f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}")
-    logging.info(f"Buy Amount: {os.getenv('BUY_AMOUNT_SOL', '0.04')} SOL")
-    logging.info(f"Min LP: {os.getenv('RUG_LP_THRESHOLD', '10')} SOL")
-    logging.info(f"Min Confidence: {os.getenv('MIN_CONFIDENCE_SCORE', '70')}")
-    logging.info(f"Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.2')} SOL")
+    logging.info(f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.30')}")
+    logging.info(f"Buy Amount: {os.getenv('BUY_AMOUNT_SOL', '0.05')} SOL")
+    logging.info(f"Min LP: {os.getenv('MIN_LP', '5.0')} SOL")
+    logging.info(f"Min Confidence: {os.getenv('MIN_CONFIDENCE_SCORE', '20')}")
+    logging.info(f"Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL")
     
     # Run with web server and webhook
     await run_bot_with_web_server()
