@@ -190,6 +190,74 @@ SYSTEM_PROGRAMS = [
     "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
 ]
 
+# CRITICAL FIX: Extract liquidity from transaction data directly
+async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
+    """Extract liquidity amount directly from transaction data"""
+    try:
+        if not HELIUS_API:
+            return 0
+            
+        rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+        
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [
+                        signature,
+                        {
+                            "encoding": "jsonParsed",
+                            "maxSupportedTransactionVersion": 0,
+                            "commitment": "confirmed"
+                        }
+                    ]
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "result" in data and data["result"]:
+                    result = data["result"]
+                    
+                    # Check postBalances for SOL amounts
+                    if "meta" in result and "postBalances" in result["meta"]:
+                        balances = result["meta"]["postBalances"]
+                        
+                        # For Raydium pools, SOL is typically in accounts 4-7
+                        # Look for the largest balance that's not a system program
+                        max_balance = 0
+                        for i in range(min(len(balances), len(accounts))):
+                            if i < len(accounts) and accounts[i] not in SYSTEM_PROGRAMS:
+                                balance_lamports = balances[i]
+                                if balance_lamports > 1000000000:  # More than 1 SOL
+                                    balance_sol = balance_lamports / 1e9
+                                    if balance_sol > max_balance:
+                                        max_balance = balance_sol
+                        
+                        if max_balance > 0:
+                            logging.info(f"[LIQUIDITY] Extracted {max_balance:.2f} SOL from transaction")
+                            return max_balance
+                    
+                    # Alternative: Check innerInstructions for transfer amounts
+                    if "meta" in result and "innerInstructions" in result["meta"]:
+                        for inner in result["meta"]["innerInstructions"]:
+                            if "instructions" in inner:
+                                for inst in inner["instructions"]:
+                                    if "parsed" in inst and inst["parsed"].get("type") == "transfer":
+                                        info = inst["parsed"]["info"]
+                                        lamports = info.get("lamports", 0)
+                                        if lamports > 1000000000:  # More than 1 SOL
+                                            sol_amount = lamports / 1e9
+                                            logging.info(f"[LIQUIDITY] Found transfer of {sol_amount:.2f} SOL")
+                                            return sol_amount
+    except Exception as e:
+        logging.error(f"[LIQUIDITY] Error extracting from tx: {e}")
+    
+    return 0
+
 async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
     """
     FIXED: Fetch transaction details with loop prevention and caching
@@ -1828,6 +1896,9 @@ async def mempool_listener(name, program_id=None):
                                 logging.warning(f"[{name}] Could not fetch account keys")
                                 continue
                         
+                        # CRITICAL FIX: Extract liquidity directly from transaction
+                        tx_liquidity = await extract_liquidity_from_tx(signature, account_keys)
+                        
                         # For Raydium, try to identify the pool account
                         if name == "Raydium" and account_keys:
                             for key in account_keys:
@@ -1862,10 +1933,6 @@ async def mempool_listener(name, program_id=None):
                             # Mark as seen
                             seen_tokens.add(potential_mint)
                             
-                            # QUALITY VALIDATION BEFORE BUY
-                            if not await validate_before_buy(potential_mint, 0):
-                                continue
-                            
                             # Track if PumpFun
                             if name == "PumpFun" and potential_mint not in pumpfun_tokens:
                                 pumpfun_tokens[potential_mint] = {
@@ -1877,8 +1944,8 @@ async def mempool_listener(name, program_id=None):
                             # Register Raydium pool if detected
                             if name == "Raydium" and pool_id:
                                 detected_pools[potential_mint] = pool_id
-                                raydium.register_pool(pool_id, potential_mint, lp_amount=0)
-                                logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
+                                raydium.register_pool(pool_id, potential_mint, lp_amount=tx_liquidity)
+                                logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}... with {tx_liquidity:.2f} SOL")
                             
                             # QUALITY BUY LOGIC - PumpFun
                             if name == "PumpFun" and is_bot_running():
@@ -1895,7 +1962,12 @@ async def mempool_listener(name, program_id=None):
                                         pumpfun_tokens[potential_mint]["migrated"] = True
                                     
                                     lp_data = await get_liquidity_and_ownership(potential_mint)
-                                    lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                                    lp_amount = lp_data.get("liquidity", 0) if lp_data else tx_liquidity
+                                    
+                                    # Use tx_liquidity if regular check returns 0
+                                    if lp_amount == 0 and tx_liquidity > 0:
+                                        lp_amount = tx_liquidity
+                                        logging.info(f"[PUMPFUN] Using tx liquidity: {tx_liquidity:.2f} SOL")
                                     
                                     # ADD ZERO LIQUIDITY CHECK
                                     if lp_amount == 0:
@@ -1965,44 +2037,49 @@ async def mempool_listener(name, program_id=None):
                                         if original_amount:
                                             os.environ["BUY_AMOUNT_SOL"] = original_amount
                             
-                            # RAYDIUM BUY LOGIC WITH QUALITY CHECKS - FIXED INDENTATION
+                            # RAYDIUM BUY LOGIC WITH FIXED LIQUIDITY EXTRACTION
                             elif name in ["Raydium"] and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     
-                                    # ENHANCED LIQUIDITY CHECK WITH RETRIES
-                                    lp_amount = 0
-                                    max_retries = 3
-                                    total_wait = 0
+                                    # Use tx_liquidity first if available
+                                    lp_amount = tx_liquidity
                                     
-                                    for retry in range(max_retries):
-                                        try:
-                                            # Wait before checking (longer on first check)
-                                            if retry == 0:
-                                                await asyncio.sleep(2.0)  # Initial 2 second wait
-                                                total_wait += 2.0
-                                            else:
-                                                await asyncio.sleep(1.5)  # 1.5 seconds between retries
-                                                total_wait += 1.5
-                                            
-                                            lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-                                            lp_data = await asyncio.wait_for(lp_check_task, timeout=2.0)
-                                            
-                                            if lp_data:
-                                                lp_amount = lp_data.get("liquidity", 0)
-                                                if lp_amount > 0:
-                                                    logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL after {total_wait:.1f}s")
-                                                    break  # Found liquidity, proceed
+                                    # If no tx liquidity, try regular check with retries
+                                    if lp_amount == 0:
+                                        max_retries = 3
+                                        total_wait = 0
+                                        
+                                        for retry in range(max_retries):
+                                            try:
+                                                # Wait before checking (longer on first check)
+                                                if retry == 0:
+                                                    await asyncio.sleep(3.0)  # Initial 3 second wait
+                                                    total_wait += 3.0
                                                 else:
-                                                    logging.debug(f"[{name}] Retry {retry + 1}: Still 0 liquidity")
-                                                    
-                                        except asyncio.TimeoutError:
-                                            logging.debug(f"[{name}] LP check timeout on retry {retry + 1}")
-                                        except Exception as e:
-                                            logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
+                                                    await asyncio.sleep(2.0)  # 2 seconds between retries
+                                                    total_wait += 2.0
+                                                
+                                                lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
+                                                lp_data = await asyncio.wait_for(lp_check_task, timeout=3.0)
+                                                
+                                                if lp_data:
+                                                    lp_amount = lp_data.get("liquidity", 0)
+                                                    if lp_amount > 0:
+                                                        logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL after {total_wait:.1f}s")
+                                                        break  # Found liquidity, proceed
+                                                    else:
+                                                        logging.debug(f"[{name}] Retry {retry + 1}: Still 0 liquidity")
+                                                        
+                                            except asyncio.TimeoutError:
+                                                logging.debug(f"[{name}] LP check timeout on retry {retry + 1}")
+                                            except Exception as e:
+                                                logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
+                                    else:
+                                        logging.info(f"[{name}] Using tx liquidity: {lp_amount:.2f} SOL")
                                     
                                     # Final check - if still no liquidity after retries, skip
                                     if lp_amount == 0:
-                                        logging.warning(f"[{name}] ZERO LIQUIDITY after {max_retries} retries - SKIPPING {potential_mint[:8]}...")
+                                        logging.warning(f"[VALIDATION] Rejecting low liquidity pool: {lp_amount:.2f} SOL")
                                         record_skip("zero_liquidity_after_retries")
                                         continue
                                     
