@@ -1956,6 +1956,7 @@ async def mempool_listener(name, program_id=None):
                                     break
                         
                         # Process potential mints with QUALITY CHECKS
+                        tokens_from_this_tx = []  # Track tokens from this transaction
                         for key in account_keys:
                             if isinstance(key, dict):
                                 key = key.get("pubkey", "") or key.get("address", "")
@@ -1978,6 +1979,14 @@ async def mempool_listener(name, program_id=None):
                             
                             # Mark as seen
                             seen_tokens.add(potential_mint)
+                            tokens_from_this_tx.append(potential_mint)
+                        
+                        # Only process and alert ONCE per transaction, not per token
+                        if not tokens_from_this_tx:
+                            continue
+                            
+                        # Process only the first valid token to avoid spam
+                        for potential_mint in tokens_from_this_tx[:1]:  # Process only first token
                             
                             # Track if PumpFun
                             if name == "PumpFun" and potential_mint not in pumpfun_tokens:
