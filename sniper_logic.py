@@ -369,8 +369,7 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
         logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
         # Try fallback method for PumpFun with retry count
         return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
-
-async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
+        async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
     """
     FIXED: Fallback method with loop prevention
     """
@@ -867,6 +866,7 @@ async def raydium_graduation_scanner():
         except Exception as e:
             logging.error(f"[Graduation Scanner] Error: {e}")
             await asyncio.sleep(30)
+            # Continued from Part 2...
 
 async def pumpfun_migration_monitor():
     """Monitor PumpFun tokens for migration to Raydium"""
@@ -1246,29 +1246,7 @@ async def score_momentum_token(token_data: dict) -> tuple:
         pattern = detect_chart_pattern(price_history) if price_history else "unknown"
         
         # ===== MOMENTUM RULES =====
-        
-        # 1. Hour gain in sweet spot (50-200%)
-        if MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN:
-            score += 1
-            signals.append(f"✅ 1h gain: {price_change_1h:.1f}%")
-        elif price_change_1h > MOMENTUM_MAX_1H_GAIN:
-            signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
-            return (0, signals)  # Automatic disqualification
-        
-        # 2. Still pumping (5m green)
-        if price_change_5m > 0:
-            score += 1
-            signals.append(f"✅ Still pumping: {price_change_5m:.1f}% on 5m")
-        else:
-            signals.append(f"⚠️ Cooling off: {price_change_5m:.1f}% on 5m")
-        
-        # 3. Volume/Liquidity ratio > 2 (good activity)
-        if liquidity_usd > 0:
-            vol_liq_ratio = volume_h24 / liquidity_usd
-            if vol_liq_ratio > 2:
-                score += 1
-                signals.append(f"✅ Volume/Liq ratio: {vol_liq_ratio:.1f}")
-                # Continue from the momentum scanner section...
+        # Continuation of momentum scanner scoring function...
         
         # 4. Safe liquidity
         if liquidity_usd >= MOMENTUM_MIN_LIQUIDITY:
@@ -1697,7 +1675,7 @@ async def mempool_listener(name, program_id=None):
                         # ================== ENHANCED DETECTION LOGIC WITH QUALITY ==================
                         is_pool_creation = False
                         pool_id = None
-                        
+                        # Detection logic for different platforms
                         if name == "Raydium":
                             raydium_indicators = 0
                             has_init_pool = False
@@ -1879,7 +1857,7 @@ async def mempool_listener(name, program_id=None):
                                 raydium.register_pool(pool_id, potential_mint, lp_amount=0)
                                 logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
                             
-                            # QUALITY BUY LOGIC
+                            # QUALITY BUY LOGIC - PumpFun
                             if name == "PumpFun" and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     if potential_mint in already_bought:
@@ -1964,48 +1942,46 @@ async def mempool_listener(name, program_id=None):
                                         if original_amount:
                                             os.environ["BUY_AMOUNT_SOL"] = original_amount
                             
-                            # RAYDIUM BUY LOGIC WITH QUALITY CHECKS
-elif name in ["Raydium"] and is_bot_running():
-    if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
-        
-        # ENHANCED LIQUIDITY CHECK WITH RETRIES
-        lp_amount = 0
-        max_retries = 3
-        total_wait = 0
-        
-        for retry in range(max_retries):
-            try:
-                # Wait before checking (longer on first check)
-                if retry == 0:
-                    await asyncio.sleep(2.0)  # Initial 2 second wait
-                    total_wait += 2.0
-                else:
-                    await asyncio.sleep(1.5)  # 1.5 seconds between retries
-                    total_wait += 1.5
-                
-                lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-                lp_data = await asyncio.wait_for(lp_check_task, timeout=2.0)
-                
-                if lp_data:
-                    lp_amount = lp_data.get("liquidity", 0)
-                    if lp_amount > 0:
-                        logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL after {total_wait:.1f}s")
-                        break  # Found liquidity, proceed
-                    else:
-                        logging.debug(f"[{name}] Retry {retry + 1}: Still 0 liquidity")
-                        
-            except asyncio.TimeoutError:
-                logging.debug(f"[{name}] LP check timeout on retry {retry + 1}")
-            except Exception as e:
-                logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
-        
-        # Final check - if still no liquidity after retries, skip
-        if lp_amount == 0:
-            logging.warning(f"[{name}] ZERO LIQUIDITY after {max_retries} retries - SKIPPING {potential_mint[:8]}...")
-            record_skip("zero_liquidity_after_retries")
-            continue
-                            
-                            
+                            # RAYDIUM BUY LOGIC WITH QUALITY CHECKS - FIXED INDENTATION
+                            elif name in ["Raydium"] and is_bot_running():
+                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
+                                    
+                                    # ENHANCED LIQUIDITY CHECK WITH RETRIES
+                                    lp_amount = 0
+                                    max_retries = 3
+                                    total_wait = 0
+                                    
+                                    for retry in range(max_retries):
+                                        try:
+                                            # Wait before checking (longer on first check)
+                                            if retry == 0:
+                                                await asyncio.sleep(2.0)  # Initial 2 second wait
+                                                total_wait += 2.0
+                                            else:
+                                                await asyncio.sleep(1.5)  # 1.5 seconds between retries
+                                                total_wait += 1.5
+                                            
+                                            lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
+                                            lp_data = await asyncio.wait_for(lp_check_task, timeout=2.0)
+                                            
+                                            if lp_data:
+                                                lp_amount = lp_data.get("liquidity", 0)
+                                                if lp_amount > 0:
+                                                    logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL after {total_wait:.1f}s")
+                                                    break  # Found liquidity, proceed
+                                                else:
+                                                    logging.debug(f"[{name}] Retry {retry + 1}: Still 0 liquidity")
+                                                    
+                                        except asyncio.TimeoutError:
+                                            logging.debug(f"[{name}] LP check timeout on retry {retry + 1}")
+                                        except Exception as e:
+                                            logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
+                                    
+                                    # Final check - if still no liquidity after retries, skip
+                                    if lp_amount == 0:
+                                        logging.warning(f"[{name}] ZERO LIQUIDITY after {max_retries} retries - SKIPPING {potential_mint[:8]}...")
+                                        record_skip("zero_liquidity_after_retries")
+                                        continue
                                     
                                     # Final quality validation
                                     if not await validate_token_quality(potential_mint, lp_amount):
