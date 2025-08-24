@@ -369,7 +369,8 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
         logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
         # Try fallback method for PumpFun with retry count
         return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
-        async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
+
+async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
     """
     FIXED: Fallback method with loop prevention
     """
@@ -866,7 +867,8 @@ async def raydium_graduation_scanner():
         except Exception as e:
             logging.error(f"[Graduation Scanner] Error: {e}")
             await asyncio.sleep(30)
-            # Continued from Part 2...
+
+# Continuing from line ~860...
 
 async def pumpfun_migration_monitor():
     """Monitor PumpFun tokens for migration to Raydium"""
@@ -1218,7 +1220,6 @@ def detect_chart_pattern(price_data: list) -> str:
     
     return "unknown"
 
-# This should replace whatever is at line 372-373
 async def score_momentum_token(token_data: dict) -> tuple:
     """
     Score a token based on momentum criteria
@@ -1254,7 +1255,8 @@ async def score_momentum_token(token_data: dict) -> tuple:
             signals.append(f"✅ 1h gain: {price_change_1h:.1f}%")
         elif price_change_1h > MOMENTUM_MAX_1H_GAIN:
             signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
-            return (0, signals)  # Automatic disqualification
+
+return (0, signals)  # Automatic disqualification
         
         # 2. Still pumping (5m green)
         if price_change_5m > 0:
@@ -1696,6 +1698,7 @@ async def mempool_listener(name, program_id=None):
                         # ================== ENHANCED DETECTION LOGIC WITH QUALITY ==================
                         is_pool_creation = False
                         pool_id = None
+                        
                         # Detection logic for different platforms
                         if name == "Raydium":
                             raydium_indicators = 0
