@@ -1,4 +1,1239 @@
-break
+import asyncio
+import json
+import os
+import websockets
+import logging
+import time
+import re
+import base64
+from base58 import b58encode, b58decode
+from datetime import datetime, timedelta
+import httpx
+import random
+
+# CRITICAL FIX: Load environment variables FIRST before any imports that use them
+from dotenv import load_dotenv
+load_dotenv()
+
+# Now import other modules AFTER environment is loaded
+from dexscreener_monitor import start_dexscreener_monitor
+from utils import (
+    is_valid_mint, buy_token, log_skipped_token, send_telegram_alert,
+    get_trending_mints, wait_and_auto_sell, get_liquidity_and_ownership,
+    is_bot_running, keypair, BUY_AMOUNT_SOL, BROKEN_TOKENS,
+    mark_broken_token, daily_stats_reset_loop,
+    update_last_activity, increment_stat, record_skip,
+    listener_status, last_seen_token, daily_stats
+)
+from solders.pubkey import Pubkey
+from raydium_aggregator import RaydiumAggregator
+
+# ============================================
+# CRITICAL FIX: Transaction cache to prevent infinite loops
+# ============================================
+processed_signatures_cache = {}  # signature -> timestamp
+CACHE_CLEANUP_INTERVAL = 300  # Clean cache every 5 minutes
+last_cache_cleanup = time.time()
+MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
+
+# CRITICAL FIX: Track active listeners to prevent duplicates
+ACTIVE_LISTENERS = {}  # name -> task
+LISTENER_START_TIMES = {}  # name -> timestamp
+
+# ADD THIS TO PREVENT DETECTION LOOPS
+RECENT_DETECTIONS = {}  # signature -> timestamp
+DETECTION_COOLDOWN = 30  # seconds
+
+# CRITICAL FIX: Track if we've already sent startup messages
+STARTUP_MESSAGES_SENT = False
+BOT_START_TIME = time.time()
+
+# FIX: Track false positives separately
+FALSE_POSITIVE_TOKENS = {}  # token -> last_attempt_time
+FALSE_POSITIVE_COOLDOWN = 60  # Don't retry false positives for 60 seconds
+
+# Environment variables - Now properly loaded before this point
+FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+HELIUS_API = os.getenv("HELIUS_API")
+RPC_URL = os.getenv("RPC_URL")
+SLIPPAGE_BPS = 100
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+
+# ============================================
+# QUALITY THRESHOLDS - ALL CONFIGURABLE VIA ENV
+# ============================================
+MIN_DETECTION_SCORE = int(os.getenv("MIN_DETECTION_SCORE", "5"))
+RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", "7"))
+RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", "30"))
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", "4"))
+PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", "10"))
+
+# Enhanced Quality Filters - ALL FROM ENV
+MIN_SOL_LIQUIDITY = float(os.getenv("MIN_SOL_LIQUIDITY", "15.0"))
+MIN_LP = float(os.getenv("MIN_LP", "15.0"))  # Added MIN_LP for compatibility
+MIN_LP_USD = float(os.getenv("MIN_LP_USD", "20000"))
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", "10000"))
+MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", "30"))
+MAX_TOKEN_AGE_MINUTES = 3  # Only very fresh tokens
+MIN_VOLUME_LIQUIDITY_RATIO = 0.5  # Volume must be at least 50% of liquidity
+
+# Quality filters from env with new defaults
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", "15.0"))
+RISKY_LP_THRESHOLD = 10.0
+
+# Enhanced position sizing
+SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", "0.05"))
+RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", "0.03"))
+ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.02"))
+
+# Buy Limits - STRICT LIMITS
+MIN_BUY_COOLDOWN = int(os.getenv("MIN_BUY_COOLDOWN", "30"))  # Reduced from 120 since false positives won't trigger
+MAX_DAILY_BUYS = int(os.getenv("MAX_DAILY_BUYS", "20"))
+DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", "600"))
+
+# Trend scan settings
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", "60"))
+MAX_BUYS_PER_TOKEN = int(os.getenv("MAX_BUYS_PER_TOKEN", "1"))
+BLACKLIST_AFTER_BUY = os.getenv("BLACKLIST_AFTER_BUY", "true").lower() == "true"
+
+# Disable Jupiter mempool if configured
+SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "true"
+
+# PumpFun Migration Settings
+PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", "0.1"))
+PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", "0.02"))
+PUMPFUN_GRADUATION_MC = 69420
+ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
+MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", "5.0"))
+
+# Delays for pool initialization - INCREASED FOR BETTER SUCCESS
+MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", "1000"))
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", "8.0"))  # Increased from 3.0 to 8.0
+
+# ============================================
+# MOMENTUM SCANNER CONFIGURATION
+# ============================================
+
+# Core Settings - DISABLED BY DEFAULT
+MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "false").lower() == "true"
+MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "false").lower() == "true"
+MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", "5"))
+MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", "4"))
+
+# Momentum Rules
+MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", "50"))
+MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", "200"))
+MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", "20000"))
+MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", "500000"))
+MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", "100"))
+MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", "2000"))
+MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", "2"))
+MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", "24"))
+
+# Position Sizing
+MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", "0.1"))
+MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", "0.08"))
+MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", "0.05"))
+MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", "0.02"))
+
+# Trading Hours (AEST)
+PRIME_HOURS = [21, 22, 23, 0, 1, 2, 3]  # 9 PM - 3 AM AEST (US market active)
+REDUCED_HOURS = list(range(6, 21))  # 6 AM - 9 PM AEST (be pickier)
+
+# Scan Settings
+MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", "120"))
+MAX_MOMENTUM_TOKENS = 20  # Check top 20 gainers
+
+# Track momentum tokens
+momentum_analyzed = {}  # token -> {score, timestamp, bought}
+momentum_bought = set()  # Prevent duplicate buys
+
+# NEW: Buy cooldown and daily limits
+last_buy_time = 0
+
+seen_trending = set()
+seen_tokens = set()
+BLACKLIST = set()
+TASKS = []
+
+# Enhanced tracking
+pumpfun_tokens = {}
+migration_watch_list = set()
+already_bought = set()
+recent_buy_attempts = {}  # token -> timestamp
+pool_verification_cache = {}  # token -> is_verified
+detected_pools = {}  # Store pool IDs for tokens
+
+# Initialize Raydium with proper class
+raydium = RaydiumAggregator(RPC_URL)
+
+last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
+alert_cooldown_sec = 1800
+
+SYSTEM_PROGRAMS = [
+    "11111111111111111111111111111111",
+    "ComputeBudget111111111111111111111111111111",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+    "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+]
+
+# FIX: Specific Raydium pool creation log patterns
+RAYDIUM_POOL_CREATION_LOGS = [
+    "initializepool",
+    "initialize2",
+    "add_liquidity",
+    "create_pool",
+    "init_pc_amount",
+    "init_coin_amount"
+]
+
+# Define trending_tokens globally
+trending_tokens = set()
+
+# Log current configuration at startup
+logging.info("=" * 60)
+logging.info("SNIPER CONFIGURATION LOADED:")
+logging.info(f"MIN_SOL_LIQUIDITY: {MIN_SOL_LIQUIDITY} SOL")
+logging.info(f"MIN_LP: {MIN_LP} SOL")
+logging.info(f"MIN_LP_USD: ${MIN_LP_USD}")
+logging.info(f"MIN_CONFIDENCE_SCORE: {MIN_CONFIDENCE_SCORE}/100")
+logging.info(f"RUG_LP_THRESHOLD: {RUG_LP_THRESHOLD} SOL")
+logging.info(f"MAX_DAILY_BUYS: {MAX_DAILY_BUYS}")
+logging.info(f"MIN_BUY_COOLDOWN: {MIN_BUY_COOLDOWN}s")
+logging.info(f"MOMENTUM_SCANNER: {MOMENTUM_SCANNER_ENABLED}")
+logging.info("=" * 60)
+
+# ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+def is_duplicate_detection(signature: str) -> bool:
+    """Check if we've seen this transaction recently"""
+    current_time = time.time()
+    if signature in RECENT_DETECTIONS:
+        if current_time - RECENT_DETECTIONS[signature] < DETECTION_COOLDOWN:
+            return True
+    # Clean old entries
+    RECENT_DETECTIONS[signature] = current_time
+    if len(RECENT_DETECTIONS) > 1000:
+        # Clear old entries
+        to_remove = []
+        cutoff = current_time - 60
+        for sig, ts in RECENT_DETECTIONS.items():
+            if ts < cutoff:
+                to_remove.append(sig)
+        for sig in to_remove:
+            del RECENT_DETECTIONS[sig]
+    return False
+
+# ============================================
+# LIQUIDITY AND TRANSACTION FUNCTIONS
+# ============================================
+
+async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
+    """Extract liquidity amount directly from transaction data"""
+    try:
+        if not HELIUS_API:
+            return 0
+            
+        rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+        
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [
+                        signature,
+                        {
+                            "encoding": "jsonParsed",
+                            "maxSupportedTransactionVersion": 0,
+                            "commitment": "confirmed"
+                        }
+                    ]
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "result" in data and data["result"]:
+                    result = data["result"]
+                    
+                    # Check postBalances for SOL amounts
+                    if "meta" in result and "postBalances" in result["meta"]:
+                        balances = result["meta"]["postBalances"]
+                        
+                        # For Raydium pools, SOL is typically in accounts 4-7
+                        # Look for a reasonable balance (not system accounts with huge amounts)
+                        potential_liquidity = []
+                        for i in range(min(len(balances), len(accounts))):
+                            if i < len(accounts) and accounts[i] not in SYSTEM_PROGRAMS:
+                                balance_lamports = balances[i]
+                                # Filter out unrealistic amounts (>10000 SOL is suspicious)
+                                if 1000000000 < balance_lamports < 10000000000000:  # Between 1 SOL and 10,000 SOL
+                                    balance_sol = balance_lamports / 1e9
+                                    potential_liquidity.append(balance_sol)
+                        
+                        # Return the most reasonable liquidity amount (usually 2nd largest after fees account)
+                        if potential_liquidity:
+                            potential_liquidity.sort()
+                            # Get median value to avoid outliers
+                            if len(potential_liquidity) > 2:
+                                liquidity = potential_liquidity[len(potential_liquidity)//2]
+                            else:
+                                liquidity = potential_liquidity[0]
+                            
+                            # Sanity check - cap at 10000 SOL for new pools
+                            if liquidity > 10000:
+                                logging.warning(f"[LIQUIDITY] Capping suspicious liquidity: {liquidity:.2f} SOL -> 0 SOL")
+                                return 0
+                            
+                            logging.info(f"[LIQUIDITY] Extracted {liquidity:.2f} SOL from transaction")
+                            return liquidity
+                    
+                    # Alternative: Check innerInstructions for transfer amounts
+                    if "meta" in result and "innerInstructions" in result["meta"]:
+                        for inner in result["meta"]["innerInstructions"]:
+                            if "instructions" in inner:
+                                for inst in inner["instructions"]:
+                                    if "parsed" in inst and inst["parsed"].get("type") == "transfer":
+                                        info = inst["parsed"]["info"]
+                                        lamports = info.get("lamports", 0)
+                                        if 1000000000 < lamports < 1000000000000:  # Between 1-1000 SOL
+                                            sol_amount = lamports / 1e9
+                                            logging.info(f"[LIQUIDITY] Found transfer of {sol_amount:.2f} SOL")
+                                            return sol_amount
+    except Exception as e:
+        logging.error(f"[LIQUIDITY] Error extracting from tx: {e}")
+    
+    return 0
+
+async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
+    """
+    FIXED: Fetch transaction details with loop prevention and caching
+    """
+    global last_cache_cleanup
+    
+    # CRITICAL FIX 1: Prevent infinite loops
+    if retry_count > MAX_FETCH_RETRIES:
+        logging.warning(f"[TX FETCH] Max retries reached for {signature[:8]}...")
+        return []
+    
+    # CRITICAL FIX 2: Check cache first to prevent reprocessing
+    if signature in processed_signatures_cache:
+        logging.debug(f"[TX FETCH] Already processed {signature[:8]}...")
+        return []  # Don't reprocess
+    
+    # Mark as processing
+    processed_signatures_cache[signature] = time.time()
+    
+    # CRITICAL FIX 3: Clean cache periodically
+    current_time = time.time()
+    if current_time - last_cache_cleanup > CACHE_CLEANUP_INTERVAL:
+        old_sigs = [sig for sig, ts in processed_signatures_cache.items() 
+                   if current_time - ts > CACHE_CLEANUP_INTERVAL]
+        for sig in old_sigs:
+            del processed_signatures_cache[sig]
+        last_cache_cleanup = current_time
+        logging.debug(f"[TX FETCH] Cleaned {len(old_sigs)} old signatures from cache")
+    
+    try:
+        if not rpc_url:
+            rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
+            if HELIUS_API:
+                rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+        
+        # CRITICAL FIX 4: Add timeout for HTTP client
+        async with httpx.AsyncClient(timeout=5) as client:  # Reduced timeout from 10 to 5
+            # Try jsonParsed first for better structure
+            for encoding in ["jsonParsed", "json"]:
+                try:
+                    response = await client.post(
+                        rpc_url,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getTransaction",
+                            "params": [
+                                signature,
+                                {
+                                    "encoding": encoding,
+                                    "maxSupportedTransactionVersion": 0,
+                                    "commitment": "confirmed"
+                                }
+                            ]
+                        }
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if "result" in data and data["result"]:
+                            result = data["result"]
+                            account_keys = []
+                            
+                            # Extract from transaction message
+                            if "transaction" in result:
+                                tx = result["transaction"]
+                                if "message" in tx:
+                                    msg = tx["message"]
+                                    
+                                    # Get static account keys
+                                    if "accountKeys" in msg:
+                                        for key in msg["accountKeys"]:
+                                            if isinstance(key, str):
+                                                account_keys.append(key)
+                                            elif isinstance(key, dict):
+                                                # Handle parsed format
+                                                pubkey = key.get("pubkey") or key.get("address")
+                                                if pubkey:
+                                                    account_keys.append(pubkey)
+                                    
+                                    # Get instructions for additional accounts
+                                    if "instructions" in msg:
+                                        for inst in msg["instructions"]:
+                                            if isinstance(inst, dict):
+                                                # Check parsed instructions
+                                                if "parsed" in inst and "info" in inst["parsed"]:
+                                                    info = inst["parsed"]["info"]
+                                                    for field in ["mint", "token", "account", "source", "destination"]:
+                                                        if field in info:
+                                                            val = info[field]
+                                                            if isinstance(val, str) and len(val) == 44:
+                                                                account_keys.append(val)
+                                                
+                                                # Check accounts array
+                                                if "accounts" in inst:
+                                                    for acc in inst["accounts"]:
+                                                        if isinstance(acc, str) and len(acc) == 44:
+                                                            account_keys.append(acc)
+                            
+                            # Get loaded addresses (from address lookup tables)
+                            if "meta" in result:
+                                meta = result["meta"]
+                                
+                                # Check loadedAddresses
+                                if "loadedAddresses" in meta:
+                                    loaded = meta["loadedAddresses"]
+                                    if "writable" in loaded:
+                                        account_keys.extend(loaded["writable"])
+                                    if "readonly" in loaded:
+                                        account_keys.extend(loaded["readonly"])
+                                
+                                # Check innerInstructions for nested accounts
+                                if "innerInstructions" in meta:
+                                    for inner in meta["innerInstructions"]:
+                                        if "instructions" in inner:
+                                            for inst in inner["instructions"]:
+                                                if "parsed" in inst and "info" in inst["parsed"]:
+                                                    info = inst["parsed"]["info"]
+                                                    for field in ["mint", "token", "account", "authority", "destination"]:
+                                                        if field in info:
+                                                            val = info[field]
+                                                            if isinstance(val, str) and len(val) == 44:
+                                                                account_keys.append(val)
+                                
+                                # IMPORTANT: Check postTokenBalances for new mints
+                                if "postTokenBalances" in meta:
+                                    for balance in meta["postTokenBalances"]:
+                                        if "mint" in balance:
+                                            mint = balance["mint"]
+                                            if mint not in account_keys:
+                                                account_keys.append(mint)
+                                
+                                # Also check preTokenBalances (sometimes new tokens appear here)
+                                if "preTokenBalances" in meta:
+                                    for balance in meta["preTokenBalances"]:
+                                        if "mint" in balance:
+                                            mint = balance["mint"]
+                                            # Check if this might be a new token
+                                            if mint not in account_keys and mint not in SYSTEM_PROGRAMS:
+                                                account_keys.append(mint)
+                            
+                            # Deduplicate while preserving order
+                            seen = set()
+                            unique_keys = []
+                            for key in account_keys:
+                                if key and key not in seen and len(key) == 44 and key not in SYSTEM_PROGRAMS:
+                                    try:
+                                        # Validate it's a real pubkey
+                                        Pubkey.from_string(key)
+                                        seen.add(key)
+                                        unique_keys.append(key)
+                                    except:
+                                        pass
+                            
+                            if unique_keys:
+                                logging.info(f"[TX FETCH] Got {len(unique_keys)} accounts for {signature[:8]}...")
+                                return unique_keys
+                            
+                            # If no accounts found with this encoding, try the next one
+                            continue
+                            
+                except asyncio.TimeoutError:
+                    logging.warning(f"[TX FETCH] Timeout for {encoding} encoding")
+                    continue
+                except Exception as e:
+                    logging.debug(f"[TX FETCH] {encoding} encoding failed: {e}")
+                    continue
+            
+            # CRITICAL FIX 5: Pass retry_count to prevent infinite recursion
+            logging.debug(f"[TX FETCH] All encodings failed, trying fallback for {signature[:8]}...")
+            return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
+        
+    except asyncio.TimeoutError:
+        logging.error(f"[TX FETCH] Overall timeout for {signature[:8]}...")
+        return []
+    except Exception as e:
+        logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
+        # Try fallback method for PumpFun with retry count
+        return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
+
+async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
+    """
+    FIXED: Fallback method with loop prevention
+    """
+    # CRITICAL FIX: Prevent infinite loops
+    if retry_count > MAX_FETCH_RETRIES:
+        logging.warning(f"[FALLBACK] Max retries reached for {signature[:8]}...")
+        return []
+    
+    # Check if already processed
+    if signature in processed_signatures_cache:
+        return []
+    
+    try:
+        if not rpc_url:
+            rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
+            if HELIUS_API:
+                rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
+        
+        # Add timeout
+        async with httpx.AsyncClient(timeout=5) as client:
+            # Get transaction with base64 encoding for raw data
+            response = await client.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [
+                        signature,
+                        {
+                            "encoding": "base64",
+                            "maxSupportedTransactionVersion": 0,
+                            "commitment": "confirmed"
+                        }
+                    ]
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "result" in data and data["result"]:
+                    result = data["result"]
+                    potential_mints = []
+                    
+                    # Try to decode base64 and find addresses
+                    if "transaction" in result:
+                        # Get the base64 transaction data
+                        tx_data = result["transaction"]
+                        if isinstance(tx_data, list) and len(tx_data) > 0:
+                            try:
+                                # Decode base64
+                                raw_bytes = base64.b64decode(tx_data[0])
+                                # Convert to string to search for patterns
+                                raw_str = raw_bytes.hex()
+                                
+                                # Look for potential public keys in hex (32 bytes = 64 hex chars)
+                                # Limit search to prevent excessive processing
+                                max_checks = 100  # CRITICAL FIX: Limit iterations
+                                checks = 0
+                                for i in range(0, min(len(raw_str) - 64, max_checks * 2), 2):
+                                    if checks >= max_checks:
+                                        break
+                                    checks += 1
+                                    
+                                    potential_hex = raw_str[i:i+64]
+                                    try:
+                                        # Convert hex to bytes then to base58
+                                        key_bytes = bytes.fromhex(potential_hex)
+                                        b58_key = b58encode(key_bytes).decode('utf-8')
+                                        
+                                        if len(b58_key) >= 43 and len(b58_key) <= 44:
+                                            # Validate it's a real pubkey
+                                            try:
+                                                Pubkey.from_string(b58_key)
+                                                if b58_key not in SYSTEM_PROGRAMS:
+                                                    potential_mints.append(b58_key)
+                                            except:
+                                                pass
+                                    except:
+                                        pass
+                            except Exception as e:
+                                logging.debug(f"[FALLBACK] Base64 decode error: {e}")
+                    
+                    # Also check logs for addresses
+                    if "meta" in result and "logMessages" in result["meta"]:
+                        logs = result["meta"]["logMessages"]
+                        
+                        # Limit log processing
+                        for log in logs[:50]:  # CRITICAL FIX: Process max 50 logs
+                            # Look for mint/token mentions
+                            if any(keyword in log.lower() for keyword in ["mint", "token", "create", "initialize"]):
+                                # Extract base58 addresses from log
+                                # Match Solana address pattern
+                                matches = re.findall(r'[1-9A-HJ-NP-Za-km-z]{43,44}', log)
+                                for match in matches[:10]:  # CRITICAL FIX: Limit matches per log
+                                    if match not in SYSTEM_PROGRAMS and len(match) == 44:
+                                        try:
+                                            # Validate it's a valid pubkey
+                                            Pubkey.from_string(match)
+                                            if match not in potential_mints:
+                                                potential_mints.append(match)
+                                        except:
+                                            pass
+                    
+                    # Deduplicate
+                    unique_mints = list(dict.fromkeys(potential_mints))
+                    
+                    if unique_mints:
+                        logging.info(f"[FALLBACK] Found {len(unique_mints)} potential mints from logs/raw data")
+                        return unique_mints[:5]  # Return top 5 to avoid spam
+        
+        return []
+        
+    except asyncio.TimeoutError:
+        logging.error(f"[FALLBACK] Timeout for {signature[:8]}...")
+        return []
+    except Exception as e:
+        logging.debug(f"[FALLBACK] Error: {e}")
+        return []
+
+# ============================================
+# QUALITY VALIDATION FUNCTIONS
+# ============================================
+
+async def validate_token_quality(mint: str, lp_amount: float) -> bool:
+    """Final quality gate before buying - MODIFIED TO BE LESS STRICT"""
+    # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
+    min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+    
+    # Minimum absolute requirements
+    if lp_amount < min_liquidity:  # Less than minimum liquidity
+        logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {min_liquidity})")
+        return False
+    
+    # REMOVED: Pool verification requirement - causes too many false rejections
+    # The transaction liquidity is sufficient proof
+    
+    # Check daily limit
+    if daily_stats["snipes_succeeded"] >= MAX_DAILY_BUYS:
+        logging.info(f"[QUALITY] Daily limit reached ({MAX_DAILY_BUYS} buys)")
+        return False
+    
+    # Check buy cooldown
+    global last_buy_time
+    if time.time() - last_buy_time < MIN_BUY_COOLDOWN:
+        cooldown_remaining = MIN_BUY_COOLDOWN - (time.time() - last_buy_time)
+        logging.info(f"[QUALITY] Buy cooldown active ({cooldown_remaining:.0f}s remaining)")
+        return False
+    
+    return True
+  async def is_quality_token(mint: str, lp_amount: float) -> tuple:
+    """
+    Enhanced quality check with confidence scoring
+    Returns (is_quality, reason)
+    """
+    try:
+        # Check if already bought
+        if mint in already_bought:
+            return False, "Already bought"
+        
+        # Check recent buy attempts (anti-spam)
+        if mint in recent_buy_attempts:
+            time_since_attempt = time.time() - recent_buy_attempts[mint]
+            if time_since_attempt < DUPLICATE_CHECK_WINDOW:
+                return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
+        
+        confidence_score = 0
+        quality_signals = []
+        
+        # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
+        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+        
+        # CRITICAL: Minimum liquidity check (most important filter)
+        if lp_amount < min_liquidity:
+            # Exception for PumpFun graduates
+            if mint not in pumpfun_tokens or not pumpfun_tokens[mint].get("migrated", False):
+                return False, f"Liquidity too low: {lp_amount:.2f} SOL (min: {min_liquidity})"
+            else:
+                # PumpFun graduate - allow with lower liquidity but flag it
+                quality_signals.append(f"⚠️ PumpFun graduate with {lp_amount:.2f} SOL")
+                confidence_score += 20
+        
+        # Liquidity scoring (0-40 points)
+        if lp_amount >= 50:
+            confidence_score += 40
+            quality_signals.append(f"✅ Excellent liquidity: {lp_amount:.2f} SOL")
+        elif lp_amount >= 20:
+            confidence_score += 35
+            quality_signals.append(f"✅ Good liquidity: {lp_amount:.2f} SOL")
+        elif lp_amount >= min_liquidity:
+            confidence_score += 25
+            quality_signals.append(f"✅ Adequate liquidity: {lp_amount:.2f} SOL")
+        else:
+            confidence_score += 10
+            quality_signals.append(f"⚠️ Low liquidity: {lp_amount:.2f} SOL")
+        
+        # Try to get token metrics from DexScreener
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "pairs" in data and len(data["pairs"]) > 0:
+                        pair = data["pairs"][0]
+                        
+                        # Volume scoring (0-30 points)
+                        volume_h24 = float(pair.get("volume", {}).get("h24", 0))
+                        liquidity_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                        
+                        if volume_h24 >= 50000:
+                            confidence_score += 30
+                            quality_signals.append(f"✅ High volume: ${volume_h24:,.0f}")
+                        elif volume_h24 >= 20000:
+                            confidence_score += 25
+                            quality_signals.append(f"✅ Good volume: ${volume_h24:,.0f}")
+                        elif volume_h24 >= MIN_VOLUME_USD:
+                            confidence_score += 15
+                            quality_signals.append(f"✅ Adequate volume: ${volume_h24:,.0f}")
+                        else:
+                            quality_signals.append(f"⚠️ Low volume: ${volume_h24:,.0f}")
+                        
+                        # Volume/Liquidity ratio check
+                        if liquidity_usd > 0:
+                            vol_liq_ratio = volume_h24 / liquidity_usd
+                            if vol_liq_ratio < MIN_VOLUME_LIQUIDITY_RATIO:
+                                return False, f"Low activity: V/L ratio {vol_liq_ratio:.2f} (min: {MIN_VOLUME_LIQUIDITY_RATIO})"
+                            elif vol_liq_ratio > 2:
+                                confidence_score += 10
+                                quality_signals.append(f"✅ High activity: V/L ratio {vol_liq_ratio:.1f}")
+                        
+                        # Buy/Sell ratio scoring (0-20 points)
+                        txns = pair.get("txns", {})
+                        buys_h1 = txns.get("h1", {}).get("buys", 1)
+                        sells_h1 = txns.get("h1", {}).get("sells", 1)
+                        
+                        if sells_h1 > 0:
+                            ratio = buys_h1 / sells_h1
+                            if ratio > 3:
+                                confidence_score += 20
+                                quality_signals.append(f"✅ Excellent buy pressure: {ratio:.1f}")
+                            elif ratio > 2:
+                                confidence_score += 15
+                                quality_signals.append(f"✅ Good buy pressure: {ratio:.1f}")
+                            elif ratio > 1.5:
+                                confidence_score += 10
+                                quality_signals.append(f"✅ Positive buy pressure: {ratio:.1f}")
+                            elif ratio < 0.5:
+                                return False, f"Bad buy/sell ratio: {buys_h1}/{sells_h1}"
+                        
+                        # Price change check (avoid dumps)
+                        price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0))
+                        price_change_m5 = float(pair.get("priceChange", {}).get("m5", 0))
+                        
+                        if price_change_h1 < -50:
+                            return False, f"Dumping hard: {price_change_h1:.1f}% in 1h"
+                        elif price_change_h1 > 100:
+                            confidence_score += 10
+                            quality_signals.append(f"✅ Strong momentum: +{price_change_h1:.1f}% 1h")
+                        
+                        # Check token age
+                        created_at = pair.get("pairCreatedAt", 0)
+                        if created_at:
+                            age_minutes = (time.time() * 1000 - created_at) / (1000 * 60)
+                            if age_minutes > MAX_TOKEN_AGE_MINUTES:
+                                # Only enforce for non-trending tokens
+                                if price_change_h1 < 50:  # Not pumping
+                                    return False, f"Token too old: {age_minutes:.1f} minutes (max: {MAX_TOKEN_AGE_MINUTES})"
+                            else:
+                                confidence_score += 10
+                                quality_signals.append(f"✅ Fresh token: {age_minutes:.1f} minutes old")
+                        
+                        # Market cap check (avoid high caps)
+                        market_cap = float(pair.get("marketCap", 0))
+                        if market_cap > 0:
+                            if market_cap < 100000:
+                                confidence_score += 10
+                                quality_signals.append(f"✅ Low MC: ${market_cap:,.0f}")
+                            elif market_cap > 1000000:
+                                quality_signals.append(f"⚠️ High MC: ${market_cap:,.0f}")
+                        
+        except Exception as e:
+            logging.debug(f"DexScreener check failed: {e}")
+            # Continue without DexScreener data
+        
+        # HIGH LIQUIDITY BONUS - For brand new tokens with excellent liquidity
+        if lp_amount >= 30:  # If liquidity is excellent (30+ SOL)
+            # Give significant bonus points for high liquidity new tokens
+            bonus_points = 35
+            confidence_score += bonus_points
+            quality_signals.append(f"✅ HIGH LIQUIDITY BONUS (+{bonus_points}): {lp_amount:.2f} SOL")
+        elif lp_amount >= 20:  # Good liquidity bonus
+            bonus_points = 20
+            confidence_score += bonus_points
+            quality_signals.append(f"✅ Good liquidity bonus (+{bonus_points}): {lp_amount:.2f} SOL")
+        
+        # Check confidence threshold
+        if confidence_score < MIN_CONFIDENCE_SCORE:
+            return False, f"Low confidence: {confidence_score}/100 (min: {MIN_CONFIDENCE_SCORE})"
+        
+        # Build quality summary
+        quality_summary = f"Quality token (confidence: {confidence_score}/100)\n" + "\n".join(quality_signals[:5])
+        
+        return True, quality_summary
+        
+    except Exception as e:
+        logging.error(f"Quality check error: {e}")
+        # If error but good liquidity, allow with caution
+        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+        if lp_amount >= min_liquidity:
+            return True, f"Quality check error but good LP: {lp_amount:.2f} SOL"
+        return False, "Quality check error"
+
+async def validate_before_buy(mint: str, lp_amount: float) -> bool:
+    """Final validation before executing buy"""
+    try:
+        # Check daily limit
+        if daily_stats["snipes_succeeded"] >= MAX_DAILY_BUYS:
+            logging.info(f"[VALIDATION] Daily buy limit reached ({MAX_DAILY_BUYS})")
+            return False
+        
+        # Check buy cooldown
+        global last_buy_time
+        if time.time() - last_buy_time < MIN_BUY_COOLDOWN:
+            cooldown_remaining = MIN_BUY_COOLDOWN - (time.time() - last_buy_time)
+            logging.info(f"[VALIDATION] Buy cooldown active ({cooldown_remaining:.0f}s remaining)")
+            return False
+        
+        # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
+        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+        
+        # Extra validation for low liquidity
+        if lp_amount < min_liquidity:
+            # Only allow for PumpFun graduates or trending tokens
+            if mint not in pumpfun_tokens and mint not in trending_tokens:
+                logging.info(f"[VALIDATION] Rejecting low liquidity pool: {lp_amount:.2f} SOL")
+                return False
+        
+        # Check price impact
+        buy_amount = SAFE_BUY_AMOUNT if lp_amount >= 20 else RISKY_BUY_AMOUNT
+        impact = await raydium.estimate_price_impact(mint, buy_amount)
+        if impact > 10:  # More than 10% impact
+            logging.info(f"[VALIDATION] High price impact: {impact:.1f}%")
+            return False
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"[VALIDATION] Error: {e}")
+        return False
+
+def determine_position_size(lp_amount: float, confidence_score: int, is_pumpfun: bool = False) -> float:
+    """Determine optimal position size based on liquidity and confidence"""
+    
+    # Base amounts
+    if is_pumpfun:
+        # PumpFun graduates get special treatment
+        if lp_amount >= 20:
+            return 0.15  # Large position for good liquidity
+        elif lp_amount >= 10:
+            return 0.1
+        else:
+            return 0.08
+    
+    # Regular tokens - conservative approach
+    if lp_amount >= 50:
+        base = SAFE_BUY_AMOUNT * 2  # 0.1 SOL
+    elif lp_amount >= 20:
+        base = SAFE_BUY_AMOUNT  # 0.05 SOL
+    elif lp_amount >= (MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY):
+        base = RISKY_BUY_AMOUNT  # 0.03 SOL
+    else:
+        base = ULTRA_RISKY_BUY_AMOUNT  # 0.02 SOL
+    
+    # Adjust by confidence
+    if confidence_score >= 90:
+        multiplier = 1.5
+    elif confidence_score >= 80:
+        multiplier = 1.2
+    elif confidence_score >= 70:
+        multiplier = 1.0
+    else:
+        multiplier = 0.5
+    
+    final_amount = base * multiplier
+    
+    # Cap at maximum
+    max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", "0.2"))
+    return min(round(final_amount, 3), max_position)
+
+async def verify_pool_exists(mint: str) -> bool:
+    """
+    SIMPLIFIED: Just check if we can trade it, don't require pool verification
+    """
+    # If we have transaction liquidity, that's enough proof
+    return True  # SIMPLIFIED - trust the transaction data
+
+async def check_pumpfun_graduation(mint: str) -> bool:
+    """Check if a PumpFun token is ready to graduate"""
+    try:
+        url = f"https://frontend-api.pump.fun/coins/{mint}"
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                market_cap = data.get("usd_market_cap", 0)
+                
+                if market_cap > PUMPFUN_GRADUATION_MC * 0.9:
+                    logging.info(f"[PumpFun] {mint[:8]}... approaching graduation: ${market_cap:.0f}")
+                    return True
+    except Exception as e:
+        logging.debug(f"[PumpFun] Graduation check error: {e}")
+    
+    return False
+
+# ============================================
+# SCANNER FUNCTIONS
+# ============================================
+
+async def raydium_graduation_scanner():
+    """Check if PumpFun tokens graduated to Raydium"""
+    if not ENABLE_PUMPFUN_MIGRATION:
+        logging.info("[Graduation Scanner] Disabled via config")
+        return
+        
+    await send_telegram_alert("🎓 Graduation Scanner ACTIVE - Checking every 30 seconds")
+    
+    while True:
+        try:
+            if not is_bot_running():
+                await asyncio.sleep(30)
+                continue
+            
+            recent_tokens = list(pumpfun_tokens.keys())[-100:] if pumpfun_tokens else []
+            
+            for mint in recent_tokens:
+                if mint in already_bought:
+                    continue
+                    
+                try:
+                    pool = await raydium.find_pool_for_token(mint)
+                    if pool:
+                        logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has Raydium pool!")
+                        
+                        if mint in pumpfun_tokens:
+                            pumpfun_tokens[mint]["migrated"] = True
+                        
+                        lp_data = await get_liquidity_and_ownership(mint)
+                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                        
+                        if lp_amount >= RUG_LP_THRESHOLD:
+                            already_bought.add(mint)
+                            
+                            await send_telegram_alert(
+                                f"🎓 GRADUATION DETECTED!\n\n"
+                                f"Token: `{mint}`\n"
+                                f"Liquidity: {lp_amount:.2f} SOL\n"
+                                f"Action: BUYING NOW!"
+                            )
+                            
+                            original_amount = os.getenv("BUY_AMOUNT_SOL")
+                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                            
+                            try:
+                                success = await buy_token(mint)
+                                if success:
+                                    await send_telegram_alert(
+                                        f"✅ GRADUATION SNIPE SUCCESS!\n"
+                                        f"Token: {mint[:16]}...\n"
+                                        f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
+                                        f"Like JOYBAIT - potential 27x!"
+                                    )
+                                    asyncio.create_task(wait_and_auto_sell(mint))
+                                else:
+                                    await send_telegram_alert(f"❌ Graduation snipe failed for {mint[:16]}...")
+                            finally:
+                                if original_amount:
+                                    os.environ["BUY_AMOUNT_SOL"] = original_amount
+                        else:
+                            logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has pool but low LP: {lp_amount:.2f} SOL")
+                            
+                except Exception as e:
+                    pass
+            
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logging.error(f"[Graduation Scanner] Error: {e}")
+            await asyncio.sleep(30)
+
+async def pumpfun_migration_monitor():
+    """Monitor PumpFun tokens for migration to Raydium"""
+    if not ENABLE_PUMPFUN_MIGRATION:
+        logging.info("[Migration Monitor] Disabled via config")
+        return
+        
+    await send_telegram_alert("🎯 PumpFun Migration Monitor ACTIVE")
+    
+    while True:
+        try:
+            if not is_bot_running():
+                await asyncio.sleep(10)
+                continue
+            
+            for mint in list(migration_watch_list):
+                if mint in pumpfun_tokens and not pumpfun_tokens[mint].get("migrated", False):
+                    lp_data = await get_liquidity_and_ownership(mint)
+                    
+                    if lp_data and lp_data.get("liquidity", 0) > 0:
+                        pumpfun_tokens[mint]["migrated"] = True
+                        migration_watch_list.discard(mint)
+                        
+                        await send_telegram_alert(
+                            f"🚨 PUMPFUN MIGRATION DETECTED 🚨\n\n"
+                            f"Token: `{mint}`\n"
+                            f"Status: Graduated to Raydium!\n"
+                            f"Liquidity: {lp_data.get('liquidity', 0):.2f} SOL\n"
+                            f"Action: SNIPING NOW!"
+                        )
+                        
+                        original_amount = os.getenv("BUY_AMOUNT_SOL")
+                        os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                        
+                        try:
+                            success = await buy_token(mint)
+                            if success:
+                                await send_telegram_alert(
+                                    f"✅ MIGRATION SNIPE SUCCESS!\n"
+                                    f"Token: {mint[:16]}...\n"
+                                    f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
+                                    f"Type: PumpFun → Raydium Migration"
+                                )
+                                asyncio.create_task(wait_and_auto_sell(mint))
+                            else:
+                                await send_telegram_alert(f"❌ Migration snipe failed for {mint[:16]}...")
+                        finally:
+                            if original_amount:
+                                os.environ["BUY_AMOUNT_SOL"] = original_amount
+            
+            if int(time.time()) % 60 == 0:
+                await scan_pumpfun_graduations()
+            
+            await asyncio.sleep(5)
+            
+        except Exception as e:
+            logging.error(f"[Migration Monitor] Error: {e}")
+            await asyncio.sleep(10)
+
+async def scan_pumpfun_graduations():
+    """Scan PumpFun for tokens about to graduate"""
+    try:
+        url = "https://frontend-api.pump.fun/coins?offset=0&limit=50&sort=usd_market_cap&order=desc"
+        
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                coins = response.json()
+                
+                for coin in coins[:20]:
+                    mint = coin.get("mint")
+                    market_cap = coin.get("usd_market_cap", 0)
+                    
+                    if not mint:
+                        continue
+                    
+                    if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
+                        if mint not in pumpfun_tokens:
+                            pumpfun_tokens[mint] = {
+                                "discovered": time.time(),
+                                "migrated": False,
+                                "market_cap": market_cap
+                            }
+                        
+                        if mint not in migration_watch_list:
+                            migration_watch_list.add(mint)
+                            logging.info(f"[PumpFun] Added {mint[:8]}... to migration watch (MC: ${market_cap:.0f})")
+                            
+                            if market_cap > PUMPFUN_GRADUATION_MC * 0.95:
+                                await send_telegram_alert(
+                                    f"⚠️ GRADUATION IMMINENT\n\n"
+                                    f"Token: `{mint}`\n"
+                                    f"Market Cap: ${market_cap:,.0f}\n"
+                                    f"Graduation at: $69,420\n"
+                                    f"Status: {(market_cap/PUMPFUN_GRADUATION_MC)*100:.1f}% complete\n\n"
+                                    f"Monitoring for Raydium migration..."
+                                )
+    except Exception as e:
+        logging.error(f"[PumpFun Scan] Error: {e}")
+
+async def get_trending_pairs_dexscreener():
+    """Fetch trending pairs from DexScreener"""
+    url = "https://api.dexscreener.com/latest/dex/pairs/solana"
+    
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Cache-Control": "no-cache"
+                }
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pairs = data.get("pairs", [])
+                    if pairs:
+                        logging.info(f"[Trending] DexScreener returned {len(pairs)} pairs")
+                    return pairs
+                else:
+                    logging.debug(f"DexScreener returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
+    return None
+
+async def get_trending_pairs_birdeye():
+    """Fetch trending pairs from Birdeye"""
+    if not BIRDEYE_API_KEY:
+        return None
+        
+    url = "https://public-api.birdeye.so/defi/tokenlist"
+    
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30, verify=False) as client:
+                headers = {
+                    "X-API-KEY": BIRDEYE_API_KEY,
+                    "accept": "application/json"
+                }
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pairs = []
+                    for tok in data.get("data", {}).get("tokens", [])[:20]:
+                        mint = tok.get("address")
+                        if not mint:
+                            continue
+                        lp_usd = float(tok.get("liquidity", 0))
+                        vol_usd = float(tok.get("v24hUSD", 0))
+                        pair = {
+                            "baseToken": {"address": mint},
+                            "liquidity": {"usd": lp_usd},
+                            "volume": {"h24": vol_usd},
+                        }
+                        pairs.append(pair)
+                    if pairs:
+                        logging.info(f"[Trending] Birdeye returned {len(pairs)} tokens")
+                    return pairs
+                else:
+                    logging.debug(f"Birdeye returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
+    return None
+  async def trending_scanner():
+    """Scan for quality trending tokens"""
+    global seen_trending, trending_tokens
+    consecutive_failures = 0
+    max_consecutive_failures = 5
+    
+    while True:
+        try:
+            if not is_bot_running():
+                await asyncio.sleep(5)
+                continue
+
+            pairs = await get_trending_pairs_dexscreener()
+            source = "DEXScreener"
+            
+            if not pairs:
+                pairs = await get_trending_pairs_birdeye()
+                source = "Birdeye"
+            
+            if not pairs:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logging.warning(f"[Trending Scanner] Both APIs unavailable")
+                    consecutive_failures = 0
+                    await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
+                    continue
+                
+                await asyncio.sleep(TREND_SCAN_INTERVAL)
+                continue
+            
+            consecutive_failures = 0
+            processed = 0
+            quality_finds = 0
+            
+            for pair in pairs[:10]:
+                mint = pair.get("baseToken", {}).get("address")
+                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
+                
+                price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+                price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+                
+                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
+                    continue
+                
+                is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
+                
+                min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
+                min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
+                
+                if lp_usd < min_lp:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
+                    continue
+                    
+                if vol_usd < min_vol:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
+                    continue
+                
+                if price_change_h1 < -30 and not is_pumpfun_grad:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
+                    continue
+                    
+                seen_trending.add(mint)
+                trending_tokens.add(mint)  # Track trending tokens
+                processed += 1
+                increment_stat("tokens_scanned", 1)
+                update_last_activity()
+                
+                is_mooning = price_change_h1 > 50 or price_change_h24 > 100
+                has_momentum = price_change_h1 > 20 and vol_usd > 50000
+                
+                if is_mooning or has_momentum or is_pumpfun_grad:
+                    quality_finds += 1
+                    
+                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
+                    if is_pumpfun_grad:
+                        alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
+                    
+                    await send_telegram_alert(
+                        alert_msg +
+                        f"Token: `{mint}`\n"
+                        f"Liquidity: ${lp_usd:,.0f}\n"
+                        f"Volume 24h: ${vol_usd:,.0f}\n"
                         
                         # Process potential mints with QUALITY CHECKS
                         tokens_from_this_tx = []  # Track tokens from this transaction
@@ -383,621 +1618,58 @@ __all__ = [
     'MOMENTUM_SCANNER_ENABLED',
     'momentum_analyzed',
     'momentum_bought'
-]import asyncio
-import json
-import os
-import websockets
-import logging
-import time
-import re
-import base64
-from base58 import b58encode, b58decode
-from datetime import datetime, timedelta
-import httpx
-import random
-
-# CRITICAL FIX: Load environment variables FIRST before any imports that use them
-from dotenv import load_dotenv
-load_dotenv()
-
-# Now import other modules AFTER environment is loaded
-from dexscreener_monitor import start_dexscreener_monitor
-from utils import (
-    is_valid_mint, buy_token, log_skipped_token, send_telegram_alert,
-    get_trending_mints, wait_and_auto_sell, get_liquidity_and_ownership,
-    is_bot_running, keypair, BUY_AMOUNT_SOL, BROKEN_TOKENS,
-    mark_broken_token, daily_stats_reset_loop,
-    update_last_activity, increment_stat, record_skip,
-    listener_status, last_seen_token, daily_stats
-)
-from solders.pubkey import Pubkey
-from raydium_aggregator import RaydiumAggregator
-
-# ============================================
-# CRITICAL FIX: Transaction cache to prevent infinite loops
-# ============================================
-processed_signatures_cache = {}  # signature -> timestamp
-CACHE_CLEANUP_INTERVAL = 300  # Clean cache every 5 minutes
-last_cache_cleanup = time.time()
-MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
-
-# CRITICAL FIX: Track active listeners to prevent duplicates
-ACTIVE_LISTENERS = {}  # name -> task
-LISTENER_START_TIMES = {}  # name -> timestamp
-
-# ADD THIS TO PREVENT DETECTION LOOPS
-RECENT_DETECTIONS = {}  # signature -> timestamp
-DETECTION_COOLDOWN = 30  # seconds
-
-# CRITICAL FIX: Track if we've already sent startup messages
-STARTUP_MESSAGES_SENT = False
-BOT_START_TIME = time.time()
-
-# FIX: Track false positives separately
-FALSE_POSITIVE_TOKENS = {}  # token -> last_attempt_time
-FALSE_POSITIVE_COOLDOWN = 60  # Don't retry false positives for 60 seconds
-
-def is_duplicate_detection(signature: str) -> bool:
-    """Check if we've seen this transaction recently"""
-    current_time = time.time()
-    if signature in RECENT_DETECTIONS:
-        if current_time - RECENT_DETECTIONS[signature] < DETECTION_COOLDOWN:
-            return True
-    # Clean old entries
-    RECENT_DETECTIONS[signature] = current_time
-    if len(RECENT_DETECTIONS) > 1000:
-        # Clear old entries
-        to_remove = []
-        cutoff = current_time - 60
-        for sig, ts in RECENT_DETECTIONS.items():
-            if ts < cutoff:
-                to_remove.append(sig)
-        for sig in to_remove:
-            del RECENT_DETECTIONS[sig]
-    return False
-
-# Environment variables - Now properly loaded before this point
-FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
-TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-HELIUS_API = os.getenv("HELIUS_API")
-RPC_URL = os.getenv("RPC_URL")
-SLIPPAGE_BPS = 100
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-
-# ============================================
-# QUALITY THRESHOLDS - ALL CONFIGURABLE VIA ENV
-# ============================================
-MIN_DETECTION_SCORE = int(os.getenv("MIN_DETECTION_SCORE", "5"))
-RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", "7"))
-RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", "30"))
-PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", "4"))
-PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", "10"))
-
-# Enhanced Quality Filters - ALL FROM ENV
-MIN_SOL_LIQUIDITY = float(os.getenv("MIN_SOL_LIQUIDITY", "15.0"))
-MIN_LP = float(os.getenv("MIN_LP", "15.0"))  # Added MIN_LP for compatibility
-MIN_LP_USD = float(os.getenv("MIN_LP_USD", "20000"))
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", "10000"))
-MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", "30"))
-MAX_TOKEN_AGE_MINUTES = 3  # Only very fresh tokens
-MIN_VOLUME_LIQUIDITY_RATIO = 0.5  # Volume must be at least 50% of liquidity
-
-# Quality filters from env with new defaults
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", "15.0"))
-RISKY_LP_THRESHOLD = 10.0
-
-# Enhanced position sizing
-SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", "0.05"))
-RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", "0.03"))
-ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.02"))
-
-# Buy Limits - STRICT LIMITS
-MIN_BUY_COOLDOWN = int(os.getenv("MIN_BUY_COOLDOWN", "30"))  # Reduced from 120 since false positives won't trigger
-MAX_DAILY_BUYS = int(os.getenv("MAX_DAILY_BUYS", "20"))
-DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", "600"))
-
-# Trend scan settings
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", "60"))
-MAX_BUYS_PER_TOKEN = int(os.getenv("MAX_BUYS_PER_TOKEN", "1"))
-BLACKLIST_AFTER_BUY = os.getenv("BLACKLIST_AFTER_BUY", "true").lower() == "true"
-
-# Disable Jupiter mempool if configured
-SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "true"
-
-# PumpFun Migration Settings
-PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", "0.1"))
-PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", "0.02"))
-PUMPFUN_GRADUATION_MC = 69420
-ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
-MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", "5.0"))
-
-# Delays for pool initialization - INCREASED FOR BETTER SUCCESS
-MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", "1000"))
-PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", "8.0"))  # Increased from 3.0 to 8.0
-
-# ============================================
-# MOMENTUM SCANNER CONFIGURATION
-# ============================================
-
-# Core Settings - DISABLED BY DEFAULT
-MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "false").lower() == "true"
-MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "false").lower() == "true"
-MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", "5"))
-MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", "4"))
-
-# Momentum Rules
-MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", "50"))
-MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", "200"))
-MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", "20000"))
-MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", "500000"))
-MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", "100"))
-MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", "2000"))
-MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", "2"))
-MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", "24"))
-
-# Position Sizing
-MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", "0.1"))
-MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", "0.08"))
-MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", "0.05"))
-MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", "0.02"))
-
-# Trading Hours (AEST)
-PRIME_HOURS = [21, 22, 23, 0, 1, 2, 3]  # 9 PM - 3 AM AEST (US market active)
-REDUCED_HOURS = list(range(6, 21))  # 6 AM - 9 PM AEST (be pickier)
-
-# Scan Settings
-MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", "120"))
-MAX_MOMENTUM_TOKENS = 20  # Check top 20 gainers
-
-# Track momentum tokens
-momentum_analyzed = {}  # token -> {score, timestamp, bought}
-momentum_bought = set()  # Prevent duplicate buys
-
-# NEW: Buy cooldown and daily limits
-last_buy_time = 0
-
-seen_trending = set()
-seen_tokens = set()
-BLACKLIST = set()
-TASKS = []
-
-# Enhanced tracking
-pumpfun_tokens = {}
-migration_watch_list = set()
-already_bought = set()
-recent_buy_attempts = {}  # token -> timestamp
-pool_verification_cache = {}  # token -> is_verified
-detected_pools = {}  # Store pool IDs for tokens
-
-# Initialize Raydium with proper class
-raydium = RaydiumAggregator(RPC_URL)
-
-last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
-alert_cooldown_sec = 1800
-
-SYSTEM_PROGRAMS = [
-    "11111111111111111111111111111111",
-    "ComputeBudget111111111111111111111111111111",
-    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
-    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-    "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
-]
-
-# FIX: Specific Raydium pool creation log patterns
-RAYDIUM_POOL_CREATION_LOGS = [
-    "initializepool",
-    "initialize2",
-    "add_liquidity",
-    "create_pool",
-    "init_pc_amount",
-    "init_coin_amount"
-]
-
-# Log current configuration at startup
-logging.info("=" * 60)
-logging.info("SNIPER CONFIGURATION LOADED:")
-logging.info(f"MIN_SOL_LIQUIDITY: {MIN_SOL_LIQUIDITY} SOL")
-logging.info(f"MIN_LP: {MIN_LP} SOL")
-logging.info(f"MIN_LP_USD: ${MIN_LP_USD}")
-logging.info(f"MIN_CONFIDENCE_SCORE: {MIN_CONFIDENCE_SCORE}/100")
-logging.info(f"RUG_LP_THRESHOLD: {RUG_LP_THRESHOLD} SOL")
-logging.info(f"MAX_DAILY_BUYS: {MAX_DAILY_BUYS}")
-logging.info(f"MIN_BUY_COOLDOWN: {MIN_BUY_COOLDOWN}s")
-logging.info(f"MOMENTUM_SCANNER: {MOMENTUM_SCANNER_ENABLED}")
-logging.info("=" * 60)
-
-# CRITICAL FIX: Extract liquidity from transaction data directly
-async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
-    """Extract liquidity amount directly from transaction data"""
-    try:
-        if not HELIUS_API:
-            return 0
-            
-        rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
-        
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(
-                rpc_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getTransaction",
-                    "params": [
-                        signature,
-                        {
-                            "encoding": "jsonParsed",
-                            "maxSupportedTransactionVersion": 0,
-                            "commitment": "confirmed"
-                        }
-                    ]
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "result" in data and data["result"]:
-                    result = data["result"]
-                    
-                    # Check postBalances for SOL amounts
-                    if "meta" in result and "postBalances" in result["meta"]:
-                        balances = result["meta"]["postBalances"]
-                        
-                        # For Raydium pools, SOL is typically in accounts 4-7
-                        # Look for a reasonable balance (not system accounts with huge amounts)
-                        potential_liquidity = []
-                        for i in range(min(len(balances), len(accounts))):
-                            if i < len(accounts) and accounts[i] not in SYSTEM_PROGRAMS:
-                                balance_lamports = balances[i]
-                                # Filter out unrealistic amounts (>10000 SOL is suspicious)
-                                if 1000000000 < balance_lamports < 10000000000000:  # Between 1 SOL and 10,000 SOL
-                                    balance_sol = balance_lamports / 1e9
-                                    potential_liquidity.append(balance_sol)
-                        
-                        # Return the most reasonable liquidity amount (usually 2nd largest after fees account)
-                        if potential_liquidity:
-                            potential_liquidity.sort()
-                            # Get median value to avoid outliers
-                            if len(potential_liquidity) > 2:
-                                liquidity = potential_liquidity[len(potential_liquidity)//2]
-                            else:
-                                liquidity = potential_liquidity[0]
-                            
-                            # Sanity check - cap at 10000 SOL for new pools
-                            if liquidity > 10000:
-                                logging.warning(f"[LIQUIDITY] Capping suspicious liquidity: {liquidity:.2f} SOL -> 0 SOL")
-                                return 0
-                            
-                            logging.info(f"[LIQUIDITY] Extracted {liquidity:.2f} SOL from transaction")
-                            return liquidity
-                    
-                    # Alternative: Check innerInstructions for transfer amounts
-                    if "meta" in result and "innerInstructions" in result["meta"]:
-                        for inner in result["meta"]["innerInstructions"]:
-                            if "instructions" in inner:
-                                for inst in inner["instructions"]:
-                                    if "parsed" in inst and inst["parsed"].get("type") == "transfer":
-                                        info = inst["parsed"]["info"]
-                                        lamports = info.get("lamports", 0)
-                                        if 1000000000 < lamports < 1000000000000:  # Between 1-1000 SOL
-                                            sol_amount = lamports / 1e9
-                                            logging.info(f"[LIQUIDITY] Found transfer of {sol_amount:.2f} SOL")
-                                            return sol_amount
-    except Exception as e:
-        logging.error(f"[LIQUIDITY] Error extracting from tx: {e}")
-    
-    return 0
-
-async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
-    """
-    FIXED: Fetch transaction details with loop prevention and caching
-    """
-    global last_cache_cleanup
-    
-    # CRITICAL FIX 1: Prevent infinite loops
-    if retry_count > MAX_FETCH_RETRIES:
-        logging.warning(f"[TX FETCH] Max retries reached for {signature[:8]}...")
-        return []
-    
-    # CRITICAL FIX 2: Check cache first to prevent reprocessing
-    if signature in processed_signatures_cache:
-        logging.debug(f"[TX FETCH] Already processed {signature[:8]}...")
-        return []  # Don't reprocess
-    
-    # Mark as processing
-    processed_signatures_cache[signature] = time.time()
-    
-    # CRITICAL FIX 3: Clean cache periodically
-    current_time = time.time()
-    if current_time - last_cache_cleanup > CACHE_CLEANUP_INTERVAL:
-        old_sigs = [sig for sig, ts in processed_signatures_cache.items() 
-                   if current_time - ts > CACHE_CLEANUP_INTERVAL]
-        for sig in old_sigs:
-            del processed_signatures_cache[sig]
-        last_cache_cleanup = current_time
-        logging.debug(f"[TX FETCH] Cleaned {len(old_sigs)} old signatures from cache")
-    
-    try:
-        if not rpc_url:
-            rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
-            if HELIUS_API:
-                rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
-        
-        # CRITICAL FIX 4: Add timeout for HTTP client
-        async with httpx.AsyncClient(timeout=5) as client:  # Reduced timeout from 10 to 5
-            # Try jsonParsed first for better structure
-            for encoding in ["jsonParsed", "json"]:
-                try:
-                    response = await client.post(
-                        rpc_url,
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "getTransaction",
-                            "params": [
-                                signature,
-                                {
-                                    "encoding": encoding,
-                                    "maxSupportedTransactionVersion": 0,
-                                    "commitment": "confirmed"
-                                }
-                            ]
-                        }
+]:\n"
+                        f"• 1h: {price_change_h1:+.1f}%\n"
+                        f"• 24h: {price_change_h24:+.1f}%\n"
+                        f"Source: {source}\n\n"
+                        f"Attempting to buy..."
                     )
                     
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "result" in data and data["result"]:
-                            result = data["result"]
-                            account_keys = []
-                            
-                            # Extract from transaction message
-                            if "transaction" in result:
-                                tx = result["transaction"]
-                                if "message" in tx:
-                                    msg = tx["message"]
-                                    
-                                    # Get static account keys
-                                    if "accountKeys" in msg:
-                                        for key in msg["accountKeys"]:
-                                            if isinstance(key, str):
-                                                account_keys.append(key)
-                                            elif isinstance(key, dict):
-                                                # Handle parsed format
-                                                pubkey = key.get("pubkey") or key.get("address")
-                                                if pubkey:
-                                                    account_keys.append(pubkey)
-                                    
-                                    # Get instructions for additional accounts
-                                    if "instructions" in msg:
-                                        for inst in msg["instructions"]:
-                                            if isinstance(inst, dict):
-                                                # Check parsed instructions
-                                                if "parsed" in inst and "info" in inst["parsed"]:
-                                                    info = inst["parsed"]["info"]
-                                                    for field in ["mint", "token", "account", "source", "destination"]:
-                                                        if field in info:
-                                                            val = info[field]
-                                                            if isinstance(val, str) and len(val) == 44:
-                                                                account_keys.append(val)
-                                                
-                                                # Check accounts array
-                                                if "accounts" in inst:
-                                                    for acc in inst["accounts"]:
-                                                        if isinstance(acc, str) and len(acc) == 44:
-                                                            account_keys.append(acc)
-                            
-                            # Get loaded addresses (from address lookup tables)
-                            if "meta" in result:
-                                meta = result["meta"]
-                                
-                                # Check loadedAddresses
-                                if "loadedAddresses" in meta:
-                                    loaded = meta["loadedAddresses"]
-                                    if "writable" in loaded:
-                                        account_keys.extend(loaded["writable"])
-                                    if "readonly" in loaded:
-                                        account_keys.extend(loaded["readonly"])
-                                
-                                # Check innerInstructions for nested accounts
-                                if "innerInstructions" in meta:
-                                    for inner in meta["innerInstructions"]:
-                                        if "instructions" in inner:
-                                            for inst in inner["instructions"]:
-                                                if "parsed" in inst and "info" in inst["parsed"]:
-                                                    info = inst["parsed"]["info"]
-                                                    for field in ["mint", "token", "account", "authority", "destination"]:
-                                                        if field in info:
-                                                            val = info[field]
-                                                            if isinstance(val, str) and len(val) == 44:
-                                                                account_keys.append(val)
-                                
-                                # IMPORTANT: Check postTokenBalances for new mints
-                                if "postTokenBalances" in meta:
-                                    for balance in meta["postTokenBalances"]:
-                                        if "mint" in balance:
-                                            mint = balance["mint"]
-                                            if mint not in account_keys:
-                                                account_keys.append(mint)
-                                
-                                # Also check preTokenBalances (sometimes new tokens appear here)
-                                if "preTokenBalances" in meta:
-                                    for balance in meta["preTokenBalances"]:
-                                        if "mint" in balance:
-                                            mint = balance["mint"]
-                                            # Check if this might be a new token
-                                            if mint not in account_keys and mint not in SYSTEM_PROGRAMS:
-                                                account_keys.append(mint)
-                            
-                            # Deduplicate while preserving order
-                            seen = set()
-                            unique_keys = []
-                            for key in account_keys:
-                                if key and key not in seen and len(key) == 44 and key not in SYSTEM_PROGRAMS:
-                                    try:
-                                        # Validate it's a real pubkey
-                                        Pubkey.from_string(key)
-                                        seen.add(key)
-                                        unique_keys.append(key)
-                                    except:
-                                        pass
-                            
-                            if unique_keys:
-                                logging.info(f"[TX FETCH] Got {len(unique_keys)} accounts for {signature[:8]}...")
-                                return unique_keys
-                            
-                            # If no accounts found with this encoding, try the next one
-                            continue
-                            
-                except asyncio.TimeoutError:
-                    logging.warning(f"[TX FETCH] Timeout for {encoding} encoding")
-                    continue
-                except Exception as e:
-                    logging.debug(f"[TX FETCH] {encoding} encoding failed: {e}")
-                    continue
-            
-            # CRITICAL FIX 5: Pass retry_count to prevent infinite recursion
-            logging.debug(f"[TX FETCH] All encodings failed, trying fallback for {signature[:8]}...")
-            return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
-        
-    except asyncio.TimeoutError:
-        logging.error(f"[TX FETCH] Overall timeout for {signature[:8]}...")
-        return []
-    except Exception as e:
-        logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
-        # Try fallback method for PumpFun with retry count
-        return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
-
-async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
-    """
-    FIXED: Fallback method with loop prevention
-    """
-    # CRITICAL FIX: Prevent infinite loops
-    if retry_count > MAX_FETCH_RETRIES:
-        logging.warning(f"[FALLBACK] Max retries reached for {signature[:8]}...")
-        return []
-    
-    # Check if already processed
-    if signature in processed_signatures_cache:
-        return []
-    
-    try:
-        if not rpc_url:
-            rpc_url = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
-            if HELIUS_API:
-                rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API}"
-        
-        # Add timeout
-        async with httpx.AsyncClient(timeout=5) as client:
-            # Get transaction with base64 encoding for raw data
-            response = await client.post(
-                rpc_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getTransaction",
-                    "params": [
-                        signature,
-                        {
-                            "encoding": "base64",
-                            "maxSupportedTransactionVersion": 0,
-                            "commitment": "confirmed"
-                        }
-                    ]
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "result" in data and data["result"]:
-                    result = data["result"]
-                    potential_mints = []
-                    
-                    # Try to decode base64 and find addresses
-                    if "transaction" in result:
-                        # Get the base64 transaction data
-                        tx_data = result["transaction"]
-                        if isinstance(tx_data, list) and len(tx_data) > 0:
-                            try:
-                                # Decode base64
-                                raw_bytes = base64.b64decode(tx_data[0])
-                                # Convert to string to search for patterns
-                                raw_str = raw_bytes.hex()
-                                
-                                # Look for potential public keys in hex (32 bytes = 64 hex chars)
-                                # Limit search to prevent excessive processing
-                                max_checks = 100  # CRITICAL FIX: Limit iterations
-                                checks = 0
-                                for i in range(0, min(len(raw_str) - 64, max_checks * 2), 2):
-                                    if checks >= max_checks:
-                                        break
-                                    checks += 1
-                                    
-                                    potential_hex = raw_str[i:i+64]
-                                    try:
-                                        # Convert hex to bytes then to base58
-                                        key_bytes = bytes.fromhex(potential_hex)
-                                        b58_key = b58encode(key_bytes).decode('utf-8')
-                                        
-                                        if len(b58_key) >= 43 and len(b58_key) <= 44:
-                                            # Validate it's a real pubkey
-                                            try:
-                                                Pubkey.from_string(b58_key)
-                                                if b58_key not in SYSTEM_PROGRAMS:
-                                                    potential_mints.append(b58_key)
-                                            except:
-                                                pass
-                                    except:
-                                        pass
-                            except Exception as e:
-                                logging.debug(f"[FALLBACK] Base64 decode error: {e}")
-                    
-                    # Also check logs for addresses
-                    if "meta" in result and "logMessages" in result["meta"]:
-                        logs = result["meta"]["logMessages"]
+                    try:
+                        original_amount = None
+                        if is_pumpfun_grad:
+                            original_amount = os.getenv("BUY_AMOUNT_SOL")
+                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
                         
-                        # Limit log processing
-                        for log in logs[:50]:  # CRITICAL FIX: Process max 50 logs
-                            # Look for mint/token mentions
-                            if any(keyword in log.lower() for keyword in ["mint", "token", "create", "initialize"]):
-                                # Extract base58 addresses from log
-                                # Match Solana address pattern
-                                matches = re.findall(r'[1-9A-HJ-NP-Za-km-z]{43,44}', log)
-                                for match in matches[:10]:  # CRITICAL FIX: Limit matches per log
-                                    if match not in SYSTEM_PROGRAMS and len(match) == 44:
-                                        try:
-                                            # Validate it's a valid pubkey
-                                            Pubkey.from_string(match)
-                                            if match not in potential_mints:
-                                                potential_mints.append(match)
-                                        except:
-                                            pass
-                    
-                    # Deduplicate
-                    unique_mints = list(dict.fromkeys(potential_mints))
-                    
-                    if unique_mints:
-                        logging.info(f"[FALLBACK] Found {len(unique_mints)} potential mints from logs/raw data")
-                        return unique_mints[:5]  # Return top 5 to avoid spam
-        
-        return []
-        
-    except asyncio.TimeoutError:
-        logging.error(f"[FALLBACK] Timeout for {signature[:8]}...")
-        return []
-    except Exception as e:
-        logging.debug(f"[FALLBACK] Error: {e}")
-        return []
+                        success = await buy_token(mint)
+                        if success:
+                            already_bought.add(mint)
+                            if BLACKLIST_AFTER_BUY:
+                                BLACKLIST.add(mint)
+                            asyncio.create_task(wait_and_auto_sell(mint))
+                            
+                        if is_pumpfun_grad and original_amount:
+                            os.environ["BUY_AMOUNT_SOL"] = original_amount
+                    except Exception as e:
+                        logging.error(f"[Trending] Buy error: {e}")
+                else:
+                    logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
+            
+            if processed > 0:
+                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
+            
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
+            
+        except Exception as e:
+            logging.error(f"[Trending Scanner ERROR] {e}")
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
 
-async def validate_token_quality(mint: str, lp_amount: float) -> bool:
-    """Final quality gate before buying - MODIFIED TO BE LESS STRICT"""
-    # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
-    min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
-    
-    # Minimum absolute requirements
-    if lp_amount < min_liquidity:  # Less than minimum liquidity
-        logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {min_liquidity})")
+async def rug_filter_passes(mint: str) -> bool:
+    """Check if token passes basic rug filters"""
+    try:
+        data = await get_liquidity_and_ownership(mint)
+        min_lp = RUG_LP_THRESHOLD
+        
+        if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
+            min_lp = min_lp / 2
+        
+        if not data or data.get("liquidity", 0) < min_lp:
+            logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp})")
+            return False
+        return True
+    except Exception as e:
+        logging.error(f"Rug check error for {mint}: {e}")
+        return False
 
 # ============================================
 # MOMENTUM SCANNER - DISABLED BY DEFAULT
@@ -1010,6 +1682,38 @@ def detect_chart_pattern(price_data: list) -> str:
     """
     if not price_data or len(price_data) < 5:
         return "unknown"
+    
+    # Calculate changes between candles
+    changes = []
+    for i in range(1, len(price_data)):
+        change = ((price_data[i] - price_data[i-1]) / price_data[i-1]) * 100
+        changes.append(change)
+    
+    # Detect patterns
+    max_change = max(changes) if changes else 0
+    avg_change = sum(changes) / len(changes) if changes else 0
+    positive_candles = sum(1 for c in changes if c > 0)
+    
+    # Vertical pump (bad)
+    if max_change > 100:
+        return "vertical"
+    
+    # Pump and dump shape (bad)
+    if len(changes) > 2:
+        first_half = changes[:len(changes)//2]
+        second_half = changes[len(changes)//2:]
+        if sum(first_half) > 50 and sum(second_half) < -30:
+            return "pump_dump"
+    
+    # Steady climb (good)
+    if positive_candles >= len(changes) * 0.6 and 0 < avg_change < 20:
+        return "steady_climb"
+    
+    # Consolidating (good for entry)
+    if -5 < avg_change < 5 and max_change < 20:
+        return "consolidating"
+    
+    return "unknown"
 
 async def score_momentum_token(token_data: dict) -> tuple:
     """
@@ -1102,7 +1806,7 @@ async def score_momentum_token(token_data: dict) -> tuple:
         logging.error(f"Error scoring momentum token: {e}")
         return (0, [f"Error: {str(e)}"])
     
-
+    return (int(score), signals)
 
 async def fetch_top_gainers() -> list:
     """
@@ -1352,6 +2056,7 @@ async def check_momentum_score(mint: str) -> dict:
     except Exception as e:
         logging.error(f"Error checking momentum score: {e}")
     
+    return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
 
 # ============================================
 # MAIN MEMPOOL LISTENER WITH QUALITY CHECKS - CRITICAL FIX SECTION
@@ -1660,485 +2365,6 @@ async def mempool_listener(name, program_id=None):
                                 if key and len(key) == 44 and key not in SYSTEM_PROGRAMS:
                                     pool_id = key
                                     break
-    
-    # Calculate changes between candles
-    changes = []
-    for i in range(1, len(price_data)):
-        change = ((price_data[i] - price_data[i-1]) / price_data[i-1]) * 100
-        changes.append(change)
-    
-    # Detect patterns
-    max_change = max(changes) if changes else 0
-    avg_change = sum(changes) / len(changes) if changes else 0
-    positive_candles = sum(1 for c in changes if c > 0)
-    
-    # Vertical pump (bad)
-    if max_change > 100:
-        return "vertical"
-    
-    # Pump and dump shape (bad)
-    if len(changes) > 2:
-        first_half = changes[:len(changes)//2]
-        second_half = changes[len(changes)//2:]
-        if sum(first_half) > 50 and sum(second_half) < -30:
-            return "pump_dump"
-    
-    # Steady climb (good)
-    if positive_candles >= len(changes) * 0.6 and 0 < avg_change < 20:
-        return "steady_climb"
-    
-    # Consolidating (good for entry)
-    if -5 < avg_change < 5 and max_change < 20:
-        return "consolidating"
-    
-    return "unknown"
-    
-    # REMOVED: Pool verification requirement - causes too many false rejections
-    # The transaction liquidity is sufficient proof
-    
-    # Check daily limit
-    if daily_stats["snipes_succeeded"] >= MAX_DAILY_BUYS:
-        logging.info(f"[QUALITY] Daily limit reached ({MAX_DAILY_BUYS} buys)")
-        return False
-    
-    # Check buy cooldown
-    global last_buy_time
-    if time.time() - last_buy_time < MIN_BUY_COOLDOWN:
-        cooldown_remaining = MIN_BUY_COOLDOWN - (time.time() - last_buy_time)
-        logging.info(f"[QUALITY] Buy cooldown active ({cooldown_remaining:.0f}s remaining)")
-        return False
-    
-    return True
-
-async def is_quality_token(mint: str, lp_amount: float) -> tuple:
-    """
-    Enhanced quality check with confidence scoring
-    Returns (is_quality, reason)
-    """
-    try:
-        # Check if already bought
-        if mint in already_bought:
-            return False, "Already bought"
-        
-        # Check recent buy attempts (anti-spam)
-        if mint in recent_buy_attempts:
-            time_since_attempt = time.time() - recent_buy_attempts[mint]
-            if time_since_attempt < DUPLICATE_CHECK_WINDOW:
-                return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
-        
-        confidence_score = 0
-        quality_signals = []
-        
-        # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
-        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
-        
-        # CRITICAL: Minimum liquidity check (most important filter)
-        if lp_amount < min_liquidity:
-            # Exception for PumpFun graduates
-            if mint not in pumpfun_tokens or not pumpfun_tokens[mint].get("migrated", False):
-                return False, f"Liquidity too low: {lp_amount:.2f} SOL (min: {min_liquidity})"
-            else:
-                # PumpFun graduate - allow with lower liquidity but flag it
-                quality_signals.append(f"⚠️ PumpFun graduate with {lp_amount:.2f} SOL")
-                confidence_score += 20
-        
-        # Liquidity scoring (0-40 points)
-        if lp_amount >= 50:
-            confidence_score += 40
-            quality_signals.append(f"✅ Excellent liquidity: {lp_amount:.2f} SOL")
-        elif lp_amount >= 20:
-            confidence_score += 35
-            quality_signals.append(f"✅ Good liquidity: {lp_amount:.2f} SOL")
-        elif lp_amount >= min_liquidity:
-            confidence_score += 25
-            quality_signals.append(f"✅ Adequate liquidity: {lp_amount:.2f} SOL")
-        else:
-            confidence_score += 10
-            quality_signals.append(f"⚠️ Low liquidity: {lp_amount:.2f} SOL")
-        
-        # Try to get token metrics from DexScreener
-        try:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-            async with httpx.AsyncClient(timeout=5, verify=False) as client:
-                response = await client.get(url)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "pairs" in data and len(data["pairs"]) > 0:
-                        pair = data["pairs"][0]
-                        
-                        # Volume scoring (0-30 points)
-                        volume_h24 = float(pair.get("volume", {}).get("h24", 0))
-                        liquidity_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                        
-                        if volume_h24 >= 50000:
-                            confidence_score += 30
-                            quality_signals.append(f"✅ High volume: ${volume_h24:,.0f}")
-                        elif volume_h24 >= 20000:
-                            confidence_score += 25
-                            quality_signals.append(f"✅ Good volume: ${volume_h24:,.0f}")
-                        elif volume_h24 >= MIN_VOLUME_USD:
-                            confidence_score += 15
-                            quality_signals.append(f"✅ Adequate volume: ${volume_h24:,.0f}")
-                        else:
-                            quality_signals.append(f"⚠️ Low volume: ${volume_h24:,.0f}")
-                        
-                        # Volume/Liquidity ratio check
-                        if liquidity_usd > 0:
-                            vol_liq_ratio = volume_h24 / liquidity_usd
-                            if vol_liq_ratio < MIN_VOLUME_LIQUIDITY_RATIO:
-                                return False, f"Low activity: V/L ratio {vol_liq_ratio:.2f} (min: {MIN_VOLUME_LIQUIDITY_RATIO})"
-                            elif vol_liq_ratio > 2:
-                                confidence_score += 10
-                                quality_signals.append(f"✅ High activity: V/L ratio {vol_liq_ratio:.1f}")
-                        
-                        # Buy/Sell ratio scoring (0-20 points)
-                        txns = pair.get("txns", {})
-                        buys_h1 = txns.get("h1", {}).get("buys", 1)
-                        sells_h1 = txns.get("h1", {}).get("sells", 1)
-                        
-                        if sells_h1 > 0:
-                            ratio = buys_h1 / sells_h1
-                            if ratio > 3:
-                                confidence_score += 20
-                                quality_signals.append(f"✅ Excellent buy pressure: {ratio:.1f}")
-                            elif ratio > 2:
-                                confidence_score += 15
-                                quality_signals.append(f"✅ Good buy pressure: {ratio:.1f}")
-                            elif ratio > 1.5:
-                                confidence_score += 10
-                                quality_signals.append(f"✅ Positive buy pressure: {ratio:.1f}")
-                            elif ratio < 0.5:
-                                return False, f"Bad buy/sell ratio: {buys_h1}/{sells_h1}"
-                        
-                        # Price change check (avoid dumps)
-                        price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0))
-                        price_change_m5 = float(pair.get("priceChange", {}).get("m5", 0))
-                        
-                        if price_change_h1 < -50:
-                            return False, f"Dumping hard: {price_change_h1:.1f}% in 1h"
-                        elif price_change_h1 > 100:
-                            confidence_score += 10
-                            quality_signals.append(f"✅ Strong momentum: +{price_change_h1:.1f}% 1h")
-                        
-                        # Check token age
-                        created_at = pair.get("pairCreatedAt", 0)
-                        if created_at:
-                            age_minutes = (time.time() * 1000 - created_at) / (1000 * 60)
-                            if age_minutes > MAX_TOKEN_AGE_MINUTES:
-                                # Only enforce for non-trending tokens
-                                if price_change_h1 < 50:  # Not pumping
-                                    return False, f"Token too old: {age_minutes:.1f} minutes (max: {MAX_TOKEN_AGE_MINUTES})"
-                            else:
-                                confidence_score += 10
-                                quality_signals.append(f"✅ Fresh token: {age_minutes:.1f} minutes old")
-                        
-                        # Market cap check (avoid high caps)
-                        market_cap = float(pair.get("marketCap", 0))
-                        if market_cap > 0:
-                            if market_cap < 100000:
-                                confidence_score += 10
-                                quality_signals.append(f"✅ Low MC: ${market_cap:,.0f}")
-                            elif market_cap > 1000000:
-                                quality_signals.append(f"⚠️ High MC: ${market_cap:,.0f}")
-                        
-        except Exception as e:
-            logging.debug(f"DexScreener check failed: {e}")
-            # Continue without DexScreener data
-        
-        # HIGH LIQUIDITY BONUS - For brand new tokens with excellent liquidity
-        if lp_amount >= 30:  # If liquidity is excellent (30+ SOL)
-            # Give significant bonus points for high liquidity new tokens
-            bonus_points = 35
-            confidence_score += bonus_points
-            quality_signals.append(f"✅ HIGH LIQUIDITY BONUS (+{bonus_points}): {lp_amount:.2f} SOL")
-        elif lp_amount >= 20:  # Good liquidity bonus
-            bonus_points = 20
-            confidence_score += bonus_points
-            quality_signals.append(f"✅ Good liquidity bonus (+{bonus_points}): {lp_amount:.2f} SOL")
-        
-        # Check confidence threshold
-        if confidence_score < MIN_CONFIDENCE_SCORE:
-            return False, f"Low confidence: {confidence_score}/100 (min: {MIN_CONFIDENCE_SCORE})"
-        
-        # Build quality summary
-        quality_summary = f"Quality token (confidence: {confidence_score}/100)\n" + "\n".join(quality_signals[:5])
-        
-        return True, quality_summary
-        
-    except Exception as e:
-        logging.error(f"Quality check error: {e}")
-        # If error but good liquidity, allow with caution
-        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
-        if lp_amount >= min_liquidity:
-            return True, f"Quality check error but good LP: {lp_amount:.2f} SOL"
-        return False, "Quality check error"
-
-async def validate_before_buy(mint: str, lp_amount: float) -> bool:
-    """Final validation before executing buy"""
-    try:
-        # Check daily limit
-        if daily_stats["snipes_succeeded"] >= MAX_DAILY_BUYS:
-            logging.info(f"[VALIDATION] Daily buy limit reached ({MAX_DAILY_BUYS})")
-            return False
-        
-        # Check buy cooldown
-        global last_buy_time
-        if time.time() - last_buy_time < MIN_BUY_COOLDOWN:
-            cooldown_remaining = MIN_BUY_COOLDOWN - (time.time() - last_buy_time)
-            logging.info(f"[VALIDATION] Buy cooldown active ({cooldown_remaining:.0f}s remaining)")
-            return False
-        
-        # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
-        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
-        
-        # Extra validation for low liquidity
-        if lp_amount < min_liquidity:
-            # Only allow for PumpFun graduates or trending tokens
-            if mint not in pumpfun_tokens and mint not in trending_tokens:
-                logging.info(f"[VALIDATION] Rejecting low liquidity pool: {lp_amount:.2f} SOL")
-                return False
-        
-        # Check price impact
-        buy_amount = SAFE_BUY_AMOUNT if lp_amount >= 20 else RISKY_BUY_AMOUNT
-        impact = await raydium.estimate_price_impact(mint, buy_amount)
-        if impact > 10:  # More than 10% impact
-            logging.info(f"[VALIDATION] High price impact: {impact:.1f}%")
-            return False
-        
-        return True
-        
-    except Exception as e:
-        logging.error(f"[VALIDATION] Error: {e}")
-        return False
-
-def determine_position_size(lp_amount: float, confidence_score: int, is_pumpfun: bool = False) -> float:
-    """Determine optimal position size based on liquidity and confidence"""
-    
-    # Base amounts
-    if is_pumpfun:
-        # PumpFun graduates get special treatment
-        if lp_amount >= 20:
-            return 0.15  # Large position for good liquidity
-        elif lp_amount >= 10:
-            return 0.1
-        else:
-            return 0.08
-    
-    # Regular tokens - conservative approach
-    if lp_amount >= 50:
-        base = SAFE_BUY_AMOUNT * 2  # 0.1 SOL
-    elif lp_amount >= 20:
-        base = SAFE_BUY_AMOUNT  # 0.05 SOL
-    elif lp_amount >= (MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY):
-        base = RISKY_BUY_AMOUNT  # 0.03 SOL
-    else:
-        base = ULTRA_RISKY_BUY_AMOUNT  # 0.02 SOL
-    
-    # Adjust by confidence
-    if confidence_score >= 90:
-        multiplier = 1.5
-    elif confidence_score >= 80:
-        multiplier = 1.2
-    elif confidence_score >= 70:
-        multiplier = 1.0
-    else:
-        multiplier = 0.5
-    
-    final_amount = base * multiplier
-    
-    # Cap at maximum
-    max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", "0.2"))
-    return min(round(final_amount, 3), max_position)
-
-async def verify_pool_exists(mint: str) -> bool:
-    """
-    SIMPLIFIED: Just check if we can trade it, don't require pool verification
-    """
-    # If we have transaction liquidity, that's enough proof
-    return True  # SIMPLIFIED - trust the transaction data
-
-async def raydium_graduation_scanner():
-    """Check if PumpFun tokens graduated to Raydium"""
-    if not ENABLE_PUMPFUN_MIGRATION:
-        logging.info("[Graduation Scanner] Disabled via config")
-        return
-        
-    await send_telegram_alert("🎓 Graduation Scanner ACTIVE - Checking every 30 seconds")
-    
-    while True:
-        try:
-            if not is_bot_running():
-    
-async def pumpfun_migration_monitor():
-    """Monitor PumpFun tokens for migration to Raydium"""
-    if not ENABLE_PUMPFUN_MIGRATION:
-        logging.info("[Migration Monitor] Disabled via config")
-        return
-        
-    await send_telegram_alert("🎯 PumpFun Migration Monitor ACTIVE")
-    
-    while True:
-        try:
-            if not is_bot_running():
-                await asyncio.sleep(10)
-                continue
-            
-            for mint in list(migration_watch_list):
-                if mint in pumpfun_tokens and not pumpfun_tokens[mint].get("migrated", False):
-                    lp_data = await get_liquidity_and_ownership(mint)
-                    
-                    if lp_data and lp_data.get("liquidity", 0) > 0:
-                        pumpfun_tokens[mint]["migrated"] = True
-                        migration_watch_list.discard(mint)
-                        
-                        await send_telegram_alert(
-                            f"🚨 PUMPFUN MIGRATION DETECTED 🚨\n\n"
-                            f"Token: `{mint}`\n"
-                            f"Status: Graduated to Raydium!\n"
-                            f"Liquidity: {lp_data.get('liquidity', 0):.2f} SOL\n"
-                            f"Action: SNIPING NOW!"
-                        )
-                        
-                        original_amount = os.getenv("BUY_AMOUNT_SOL")
-                        os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                        
-                        try:
-                            success = await buy_token(mint)
-                            if success:
-                                await send_telegram_alert(
-                                    f"✅ MIGRATION SNIPE SUCCESS!\n"
-                                    f"Token: {mint[:16]}...\n"
-                                    f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
-                                    f"Type: PumpFun → Raydium Migration"
-                                )
-                                asyncio.create_task(wait_and_auto_sell(mint))
-                            else:
-                                await send_telegram_alert(f"❌ Migration snipe failed for {mint[:16]}...")
-                        finally:
-                            if original_amount:
-                                os.environ["BUY_AMOUNT_SOL"] = original_amount
-            
-            if int(time.time()) % 60 == 0:
-                await scan_pumpfun_graduations()
-            
-            await asyncio.sleep(5)
-            
-        except Exception as e:
-            logging.error(f"[Migration Monitor] Error: {e}")
-            await asyncio.sleep(10)
-
-async def scan_pumpfun_graduations():
-    """Scan PumpFun for tokens about to graduate"""
-    try:
-        url = "https://frontend-api.pump.fun/coins?offset=0&limit=50&sort=usd_market_cap&order=desc"
-        
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                coins = response.json()
-                
-                for coin in coins[:20]:
-                    mint = coin.get("mint")
-                    market_cap = coin.get("usd_market_cap", 0)
-                    
-                    if not mint:
-                        continue
-                    
-                    if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
-                        if mint not in pumpfun_tokens:
-                            pumpfun_tokens[mint] = {
-                                "discovered": time.time(),
-                                "migrated": False,
-                                "market_cap": market_cap
-                            }
-                        
-                        if mint not in migration_watch_list:
-                            migration_watch_list.add(mint)
-                            logging.info(f"[PumpFun] Added {mint[:8]}... to migration watch (MC: ${market_cap:.0f})")
-                            
-                            if market_cap > PUMPFUN_GRADUATION_MC * 0.95:
-                                await send_telegram_alert(
-                                    f"⚠️ GRADUATION IMMINENT\n\n"
-                                    f"Token: `{mint}`\n"
-                                    f"Market Cap: ${market_cap:,.0f}\n"
-                                    f"Graduation at: $69,420\n"
-                                    f"Status: {(market_cap/PUMPFUN_GRADUATION_MC)*100:.1f}% complete\n\n"
-                                    f"Monitoring for Raydium migration..."
-                                )
-    except Exception as e:
-        logging.error(f"[PumpFun Scan] Error: {e}")
-
-async def get_trending_pairs_dexscreener():
-    """Fetch trending pairs from DexScreener"""
-    url = "https://api.dexscreener.com/latest/dex/pairs/solana"
-    
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json",
-                    "Cache-Control": "no-cache"
-                }
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    pairs = data.get("pairs", [])
-                    if pairs:
-                        logging.info(f"[Trending] DexScreener returned {len(pairs)} pairs")
-                    return pairs
-                else:
-                    logging.debug(f"DexScreener returned status {resp.status_code}")
-        except Exception as e:
-            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(2)
-    
-
-async def get_trending_pairs_birdeye():
-    """Fetch trending pairs from Birdeye"""
-    if not BIRDEYE_API_KEY:
-        return None
-        
-    url = "https://public-api.birdeye.so/defi/tokenlist"
-    
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=30, verify=False) as client:
-                headers = {
-                    "X-API-KEY": BIRDEYE_API_KEY,
-                    "accept": "application/json"
-                }
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    pairs = []
-                    for tok in data.get("data", {}).get("tokens", [])[:20]:
-                        mint = tok.get("address")
-                        if not mint:
-                            continue
-                        lp_usd = float(tok.get("liquidity", 0))
-                        vol_usd = float(tok.get("v24hUSD", 0))
-                        pair = {
-                            "baseToken": {"address": mint},
-                            "liquidity": {"usd": lp_usd},
-                            "volume": {"h24": vol_usd},
-                        }
-                        pairs.append(pair)
-                    if pairs:
-                        logging.info(f"[Trending] Birdeye returned {len(pairs)} tokens")
-                    return pairs
-                else:
-                    logging.debug(f"Birdeye returned status {resp.status_code}")
-        except Exception as e:
-            logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(2)
-    
-    return None
-
-# Define trending_tokens globally
-trending_tokens = set()
-
-async def trending_scanner():
     """Scan for quality trending tokens"""
     global seen_trending, trending_tokens
     consecutive_failures = 0
@@ -2221,113 +2447,4 @@ async def trending_scanner():
                         f"Token: `{mint}`\n"
                         f"Liquidity: ${lp_usd:,.0f}\n"
                         f"Volume 24h: ${vol_usd:,.0f}\n"
-                        f"Price Change:\n"
-                        f"• 1h: {price_change_h1:+.1f}%\n"
-                        f"• 24h: {price_change_h24:+.1f}%\n"
-                        f"Source: {source}\n\n"
-                        f"Attempting to buy..."
-                    )
-                    
-                    try:
-                        original_amount = None
-                        if is_pumpfun_grad:
-                            original_amount = os.getenv("BUY_AMOUNT_SOL")
-                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                        
-                        success = await buy_token(mint)
-                        if success:
-                            already_bought.add(mint)
-                            if BLACKLIST_AFTER_BUY:
-                                BLACKLIST.add(mint)
-                            asyncio.create_task(wait_and_auto_sell(mint))
-                            
-                        if is_pumpfun_grad and original_amount:
-                            os.environ["BUY_AMOUNT_SOL"] = original_amount
-                    except Exception as e:
-                        logging.error(f"[Trending] Buy error: {e}")
-                else:
-                    logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-            
-            if processed > 0:
-                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
-            
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
-            
-        except Exception as e:
-            logging.error(f"[Trending Scanner ERROR] {e}")
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
-
-async def rug_filter_passes(mint: str) -> bool:
-    """Check if token passes basic rug filters"""
-    try:
-        data = await get_liquidity_and_ownership(mint)
-        min_lp = RUG_LP_THRESHOLD
-        
-        if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
-            min_lp = min_lp / 2
-        
-        if not data or data.get("liquidity", 0) < min_lp:
-            logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp})")
-            return False
-        return True
-    except Exception as e:
-        logging.error(f"Rug check error for {mint}: {e}")
-        return False
-                continue
-            
-            recent_tokens = list(pumpfun_tokens.keys())[-100:] if pumpfun_tokens else []
-            
-            for mint in recent_tokens:
-                if mint in already_bought:
-                    continue
-                    
-                try:
-                    pool = await raydium.find_pool_for_token(mint)
-                    if pool:
-                        logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has Raydium pool!")
-                        
-                        if mint in pumpfun_tokens:
-                            pumpfun_tokens[mint]["migrated"] = True
-                        
-                        lp_data = await get_liquidity_and_ownership(mint)
-                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
-                        
-                        if lp_amount >= RUG_LP_THRESHOLD:
-                            already_bought.add(mint)
-                            
-                            await send_telegram_alert(
-                                f"🎓 GRADUATION DETECTED!\n\n"
-                                f"Token: `{mint}`\n"
-                                f"Liquidity: {lp_amount:.2f} SOL\n"
-                                f"Action: BUYING NOW!"
-                            )
-                            
-                            original_amount = os.getenv("BUY_AMOUNT_SOL")
-                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                            
-                            try:
-                                success = await buy_token(mint)
-                                if success:
-                                    await send_telegram_alert(
-                                        f"✅ GRADUATION SNIPE SUCCESS!\n"
-                                        f"Token: {mint[:16]}...\n"
-                                        f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
-                                        f"Like JOYBAIT - potential 27x!"
-                                    )
-                                    asyncio.create_task(wait_and_auto_sell(mint))
-                                else:
-                                    await send_telegram_alert(f"❌ Graduation snipe failed for {mint[:16]}...")
-                            finally:
-                                if original_amount:
-                                    os.environ["BUY_AMOUNT_SOL"] = original_amount
-                        else:
-                            logging.info(f"[GRADUATION SCANNER] {mint[:8]}... has pool but low LP: {lp_amount:.2f} SOL")
-                            
-                except Exception as e:
-                    pass
-            
-            await asyncio.sleep(30)
-            
-        except Exception as e:
-            logging.error(f"[Graduation Scanner] Error: {e}")
-            await asyncio.sleep(30)
+                        f"Price Change
