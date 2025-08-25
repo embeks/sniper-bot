@@ -1252,10 +1252,6 @@ async def trending_scanner():
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
 
-# ============================================
-# MOMENTUM SCANNER - DISABLED BY DEFAULT
-# ============================================
-
 def detect_chart_pattern(price_data: list) -> str:
     """
     Detect if chart shows good or bad patterns
