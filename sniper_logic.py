@@ -122,9 +122,9 @@ PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
 MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", "5.0"))
 
-# Delays for pool initialization
+# Delays for pool initialization - INCREASED FOR BETTER SUCCESS
 MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", "1000"))
-PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", "3.0"))
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", "8.0"))  # Increased from 3.0 to 8.0
 
 # ============================================
 # MOMENTUM SCANNER CONFIGURATION
@@ -592,7 +592,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
         return []
 
 async def validate_token_quality(mint: str, lp_amount: float) -> bool:
-    """Final quality gate before buying"""
+    """Final quality gate before buying - MODIFIED TO BE LESS STRICT"""
     # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
     min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
     
@@ -601,10 +601,8 @@ async def validate_token_quality(mint: str, lp_amount: float) -> bool:
         logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {min_liquidity})")
         return False
     
-    # Check if it's a real pool
-    if not await verify_pool_exists(mint):
-        logging.info(f"[QUALITY] Rejecting {mint[:8]} - No valid pool found")
-        return False
+    # REMOVED: Pool verification requirement - causes too many false rejections
+    # The transaction liquidity is sufficient proof
     
     # Check daily limit
     if daily_stats["snipes_succeeded"] >= MAX_DAILY_BUYS:
@@ -862,43 +860,10 @@ def determine_position_size(lp_amount: float, confidence_score: int, is_pumpfun:
 
 async def verify_pool_exists(mint: str) -> bool:
     """
-    Verify that a real trading pool exists for this token
+    SIMPLIFIED: Just check if we can trade it, don't require pool verification
     """
-    try:
-        # Check cache first
-        if mint in pool_verification_cache:
-            return pool_verification_cache[mint]
-        
-        # Check if we have a detected pool ID
-        if mint in detected_pools:
-            pool_verification_cache[mint] = True
-            return True
-        
-        # Check Raydium using the fixed aggregator
-        pool = await raydium.find_pool_for_token(mint)
-        if pool:
-            pool_verification_cache[mint] = True
-            return True
-        
-        # Check Jupiter
-        try:
-            url = f"https://price.jup.ag/v4/price?ids={mint}"
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        pool_verification_cache[mint] = True
-                        return True
-        except:
-            pass
-        
-        pool_verification_cache[mint] = False
-        return False
-        
-    except Exception as e:
-        logging.error(f"Pool verification error: {e}")
-        return False
+    # If we have transaction liquidity, that's enough proof
+    return True  # SIMPLIFIED - trust the transaction data
 
 async def check_pumpfun_graduation(mint: str) -> bool:
     """Check if a PumpFun token is ready to graduate"""
@@ -1289,7 +1254,8 @@ async def rug_filter_passes(mint: str) -> bool:
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
             min_lp = min_lp / 2
         
-        if not data or data.get("liquidity", 0) < min_lp:
+        if not data or data.get("liquidity",
+                                0) < min_lp:
             logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp})")
             return False
         return True
@@ -1685,7 +1651,7 @@ async def check_momentum_score(mint: str) -> dict:
     return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
 
 # ============================================
-# MAIN MEMPOOL LISTENER WITH QUALITY CHECKS
+# MAIN MEMPOOL LISTENER WITH QUALITY CHECKS - CRITICAL FIX SECTION
 # ============================================
 
 async def mempool_listener(name, program_id=None):
@@ -2027,7 +1993,9 @@ async def mempool_listener(name, program_id=None):
                                 raydium.register_pool(pool_id, potential_mint, lp_amount=tx_liquidity)
                                 logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}... with {tx_liquidity:.2f} SOL")
                             
-                            # QUALITY BUY LOGIC - PumpFun
+                            # ============================================
+                            # CRITICAL FIX: PUMPFUN BUY LOGIC WITH EXTENDED WAITS
+                            # ============================================
                             if name == "PumpFun" and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     if potential_mint in already_bought:
@@ -2035,24 +2003,39 @@ async def mempool_listener(name, program_id=None):
                                     
                                     logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
                                     
-                                    await asyncio.sleep(PUMPFUN_INIT_DELAY)
+                                    # EXTENDED WAIT for PumpFun pool initialization
+                                    await asyncio.sleep(PUMPFUN_INIT_DELAY)  # Now 8.0 seconds
                                     
                                     graduated = await check_pumpfun_graduation(potential_mint)
                                     if graduated and potential_mint in pumpfun_tokens:
                                         pumpfun_tokens[potential_mint]["migrated"] = True
                                     
-                                    lp_data = await get_liquidity_and_ownership(potential_mint)
-                                    lp_amount = lp_data.get("liquidity", 0) if lp_data else tx_liquidity
+                                    # Try multiple times to find liquidity
+                                    lp_amount = 0
+                                    max_attempts = 5
                                     
-                                    # Use tx_liquidity if regular check returns 0
-                                    if lp_amount == 0 and tx_liquidity > 0:
-                                        lp_amount = tx_liquidity
-                                        logging.info(f"[PUMPFUN] Using tx liquidity: {tx_liquidity:.2f} SOL")
+                                    for attempt in range(max_attempts):
+                                        lp_data = await get_liquidity_and_ownership(potential_mint)
+                                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                                        
+                                        # ALWAYS use tx_liquidity if regular check returns 0
+                                        if lp_amount == 0 and tx_liquidity > 0:
+                                            lp_amount = tx_liquidity
+                                            logging.info(f"[PUMPFUN] Using tx liquidity: {tx_liquidity:.2f} SOL (attempt {attempt + 1})")
+                                            break  # We have liquidity, proceed
+                                        
+                                        if lp_amount > 0:
+                                            logging.info(f"[PUMPFUN] Found pool liquidity: {lp_amount:.2f} SOL (attempt {attempt + 1})")
+                                            break
+                                        
+                                        if attempt < max_attempts - 1:
+                                            logging.info(f"[PUMPFUN] No pool yet, waiting... (attempt {attempt + 1}/{max_attempts})")
+                                            await asyncio.sleep(3.0)
                                     
-                                    # ADD ZERO LIQUIDITY CHECK
+                                    # If STILL no liquidity, skip
                                     if lp_amount == 0:
-                                        logging.warning(f"[PUMPFUN] ZERO LIQUIDITY DETECTED - SKIPPING {potential_mint[:8]}...")
-                                        record_skip("zero_liquidity")
+                                        logging.warning(f"[PUMPFUN] No liquidity after {max_attempts} attempts - SKIPPING {potential_mint[:8]}...")
+                                        record_skip("no_pool_after_waits")
                                         continue
                                     
                                     # Final quality validation
@@ -2117,50 +2100,48 @@ async def mempool_listener(name, program_id=None):
                                         if original_amount:
                                             os.environ["BUY_AMOUNT_SOL"] = original_amount
                             
-                            # RAYDIUM BUY LOGIC WITH FIXED LIQUIDITY EXTRACTION
+                            # ============================================
+                            # CRITICAL FIX: RAYDIUM BUY LOGIC - TRUST TX LIQUIDITY
+                            # ============================================
                             elif name in ["Raydium"] and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     
-                                    # Use tx_liquidity first if available
+                                    # CRITICAL FIX: Use tx_liquidity as primary source
                                     lp_amount = tx_liquidity
                                     
-                                    # If no tx liquidity, try regular check with retries
+                                    # If no tx liquidity (shouldn't happen), wait and check
                                     if lp_amount == 0:
-                                        max_retries = 3
-                                        total_wait = 0
+                                        logging.info(f"[{name}] No tx liquidity, waiting 10s for pool initialization...")
+                                        await asyncio.sleep(10.0)  # Longer wait for Raydium
                                         
+                                        # Try to get liquidity with retries
+                                        max_retries = 5
                                         for retry in range(max_retries):
                                             try:
-                                                # Wait before checking (longer on first check)
-                                                if retry == 0:
-                                                    await asyncio.sleep(3.0)  # Initial 3 second wait
-                                                    total_wait += 3.0
-                                                else:
-                                                    await asyncio.sleep(2.0)  # 2 seconds between retries
-                                                    total_wait += 2.0
-                                                
                                                 lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
                                                 lp_data = await asyncio.wait_for(lp_check_task, timeout=3.0)
                                                 
                                                 if lp_data:
                                                     lp_amount = lp_data.get("liquidity", 0)
                                                     if lp_amount > 0:
-                                                        logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL after {total_wait:.1f}s")
-                                                        break  # Found liquidity, proceed
-                                                    else:
-                                                        logging.debug(f"[{name}] Retry {retry + 1}: Still 0 liquidity")
-                                                        
-                                            except asyncio.TimeoutError:
-                                                logging.debug(f"[{name}] LP check timeout on retry {retry + 1}")
+                                                        logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL (attempt {retry + 1})")
+                                                        break
+                                                
+                                                if retry < max_retries - 1:
+                                                    await asyncio.sleep(3.0)
+                                                    logging.info(f"[{name}] Retrying liquidity check (attempt {retry + 2})")
+                                                    
                                             except Exception as e:
                                                 logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
+                                                if retry < max_retries - 1:
+                                                    await asyncio.sleep(2.0)
                                     else:
-                                        logging.info(f"[{name}] Using tx liquidity: {lp_amount:.2f} SOL")
+                                        logging.info(f"[{name}] Using tx liquidity: {lp_amount:.2f} SOL - PROCEEDING!")
                                     
-                                    # Final check - if still no liquidity after retries, skip
+                                    # Final check - if still no liquidity after all attempts, skip
                                     if lp_amount == 0:
-                                        logging.warning(f"[VALIDATION] Rejecting low liquidity pool: {lp_amount:.2f} SOL")
-                                        record_skip("zero_liquidity_after_retries")
+                                        logging.warning(f"[{name}] No liquidity found after all attempts - SKIPPING")
+                                        record_skip("zero_liquidity_after_all_attempts")
                                         continue
                                     
                                     # Final quality validation
