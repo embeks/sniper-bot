@@ -1252,29 +1252,6 @@ async def trending_scanner():
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
 
-await asyncio.sleep(TREND_SCAN_INTERVAL)
-            
-        except Exception as e:
-            logging.error(f"[Trending Scanner ERROR] {e}")
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
-
-async def rug_filter_passes(mint: str) -> bool:
-    """Check if token passes basic rug filters"""
-    try:
-        data = await get_liquidity_and_ownership(mint)
-        min_lp = RUG_LP_THRESHOLD
-        
-        if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
-            min_lp = min_lp / 2
-        
-        if not data or data.get("liquidity", 0) < min_lp:
-            logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp})")
-            return False
-        return True
-    except Exception as e:
-        logging.error(f"Rug check error for {mint}: {e}")
-        return False
-
 # ============================================
 # MOMENTUM SCANNER - DISABLED BY DEFAULT
 # ============================================
