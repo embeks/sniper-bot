@@ -52,6 +52,25 @@ BOT_START_TIME = time.time()
 FALSE_POSITIVE_TOKENS = {}  # token -> last_attempt_time
 FALSE_POSITIVE_COOLDOWN = 60  # Don't retry false positives for 60 seconds
 
+def is_duplicate_detection(signature: str) -> bool:
+    """Check if we've seen this transaction recently"""
+    current_time = time.time()
+    if signature in RECENT_DETECTIONS:
+        if current_time - RECENT_DETECTIONS[signature] < DETECTION_COOLDOWN:
+            return True
+    # Clean old entries
+    RECENT_DETECTIONS[signature] = current_time
+    if len(RECENT_DETECTIONS) > 1000:
+        # Clear old entries
+        to_remove = []
+        cutoff = current_time - 60
+        for sig, ts in RECENT_DETECTIONS.items():
+            if ts < cutoff:
+                to_remove.append(sig)
+        for sig in to_remove:
+            del RECENT_DETECTIONS[sig]
+    return False
+
 # Environment variables - Now properly loaded before this point
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -191,9 +210,6 @@ RAYDIUM_POOL_CREATION_LOGS = [
     "init_coin_amount"
 ]
 
-# Define trending_tokens globally
-trending_tokens = set()
-
 # Log current configuration at startup
 logging.info("=" * 60)
 logging.info("SNIPER CONFIGURATION LOADED:")
@@ -207,33 +223,7 @@ logging.info(f"MIN_BUY_COOLDOWN: {MIN_BUY_COOLDOWN}s")
 logging.info(f"MOMENTUM_SCANNER: {MOMENTUM_SCANNER_ENABLED}")
 logging.info("=" * 60)
 
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
-
-def is_duplicate_detection(signature: str) -> bool:
-    """Check if we've seen this transaction recently"""
-    current_time = time.time()
-    if signature in RECENT_DETECTIONS:
-        if current_time - RECENT_DETECTIONS[signature] < DETECTION_COOLDOWN:
-            return True
-    # Clean old entries
-    RECENT_DETECTIONS[signature] = current_time
-    if len(RECENT_DETECTIONS) > 1000:
-        # Clear old entries
-        to_remove = []
-        cutoff = current_time - 60
-        for sig, ts in RECENT_DETECTIONS.items():
-            if ts < cutoff:
-                to_remove.append(sig)
-        for sig in to_remove:
-            del RECENT_DETECTIONS[sig]
-    return False
-
-# ============================================
-# LIQUIDITY AND TRANSACTION FUNCTIONS
-# ============================================
-
+# CRITICAL FIX: Extract liquidity from transaction data directly
 async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
     """Extract liquidity amount directly from transaction data"""
     try:
@@ -615,10 +605,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
         logging.debug(f"[FALLBACK] Error: {e}")
         return []
 
-# ============================================
-# QUALITY VALIDATION FUNCTIONS
-# ============================================
-
+# FIXED: Added proper indentation for the function body
 async def validate_token_quality(mint: str, lp_amount: float) -> bool:
     """Final quality gate before buying - MODIFIED TO BE LESS STRICT"""
     # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
@@ -645,7 +632,8 @@ async def validate_token_quality(mint: str, lp_amount: float) -> bool:
         return False
     
     return True
-  async def is_quality_token(mint: str, lp_amount: float) -> tuple:
+
+async def is_quality_token(mint: str, lp_amount: float) -> tuple:
     """
     Enhanced quality check with confidence scoring
     Returns (is_quality, reason)
@@ -910,10 +898,6 @@ async def check_pumpfun_graduation(mint: str) -> bool:
     
     return False
 
-# ============================================
-# SCANNER FUNCTIONS
-# ============================================
-
 async def raydium_graduation_scanner():
     """Check if PumpFun tokens graduated to Raydium"""
     if not ENABLE_PUMPFUN_MIGRATION:
@@ -1151,7 +1135,11 @@ async def get_trending_pairs_birdeye():
             await asyncio.sleep(2)
     
     return None
-  async def trending_scanner():
+
+# Define trending_tokens globally
+trending_tokens = set()
+
+async def trending_scanner():
     """Scan for quality trending tokens"""
     global seen_trending, trending_tokens
     consecutive_failures = 0
@@ -1234,391 +1222,7 @@ async def get_trending_pairs_birdeye():
                         f"Token: `{mint}`\n"
                         f"Liquidity: ${lp_usd:,.0f}\n"
                         f"Volume 24h: ${vol_usd:,.0f}\n"
-                        
-                        # Process potential mints with QUALITY CHECKS
-                        tokens_from_this_tx = []  # Track tokens from this transaction
-                        for key in account_keys:
-                            if isinstance(key, dict):
-                                key = key.get("pubkey", "") or key.get("address", "")
-                            
-                            if key in SYSTEM_PROGRAMS or len(key) != 44:
-                                continue
-                            
-                            if key == "So11111111111111111111111111111111111111112":
-                                continue
-                            
-                            # Check if already processed
-                            if key in seen_tokens or key in already_bought:
-                                continue
-                            
-                            # FIX: Check if this is a false positive token
-                            if key in FALSE_POSITIVE_TOKENS:
-                                time_since_false = time.time() - FALSE_POSITIVE_TOKENS[key]
-                                if time_since_false < FALSE_POSITIVE_COOLDOWN:
-                                    logging.info(f"[{name}] Skipping recent false positive {key[:8]}... (cooldown: {FALSE_POSITIVE_COOLDOWN - time_since_false:.0f}s)")
-                                    continue
-                            
-                            try:
-                                Pubkey.from_string(key)
-                                potential_mint = key
-                            except:
-                                continue
-                            
-                            # Mark as seen
-                            seen_tokens.add(potential_mint)
-                            tokens_from_this_tx.append(potential_mint)
-                        
-                        # Only process and alert ONCE per transaction, not per token
-                        if not tokens_from_this_tx:
-                            continue
-                            
-                        # Process only the first valid token to avoid spam
-                        for potential_mint in tokens_from_this_tx[:1]:  # Process only first token
-                            
-                            # Track if PumpFun
-                            if name == "PumpFun" and potential_mint not in pumpfun_tokens:
-                                pumpfun_tokens[potential_mint] = {
-                                    "discovered": time.time(),
-                                    "migrated": False
-                                }
-                                logging.info(f"[PumpFun] Tracking new token: {potential_mint[:8]}...")
-                            
-                            # Register Raydium pool if detected
-                            if name == "Raydium" and pool_id:
-                                detected_pools[potential_mint] = pool_id
-                                raydium.register_pool(pool_id, potential_mint, lp_amount=tx_liquidity)
-                                logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}... with {tx_liquidity:.2f} SOL")
-                            
-                            # ============================================
-                            # CRITICAL FIX: PUMPFUN BUY LOGIC WITH EXTENDED WAITS
-                            # ============================================
-                            if name == "PumpFun" and is_bot_running():
-                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
-                                    if potential_mint in already_bought:
-                                        continue
-                                    
-                                    logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
-                                    
-                                    # EXTENDED WAIT for PumpFun pool initialization
-                                    await asyncio.sleep(PUMPFUN_INIT_DELAY)  # Now 8.0 seconds
-                                    
-                                    graduated = await check_pumpfun_graduation(potential_mint)
-                                    if graduated and potential_mint in pumpfun_tokens:
-                                        pumpfun_tokens[potential_mint]["migrated"] = True
-                                    
-                                    # Try multiple times to find liquidity
-                                    lp_amount = 0
-                                    max_attempts = 5
-                                    
-                                    for attempt in range(max_attempts):
-                                        lp_data = await get_liquidity_and_ownership(potential_mint)
-                                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
-                                        
-                                        # ALWAYS use tx_liquidity if regular check returns 0
-                                        if lp_amount == 0 and tx_liquidity > 0:
-                                            lp_amount = tx_liquidity
-                                            logging.info(f"[PUMPFUN] Using tx liquidity: {tx_liquidity:.2f} SOL (attempt {attempt + 1})")
-                                            break  # We have liquidity, proceed
-                                        
-                                        if lp_amount > 0:
-                                            logging.info(f"[PUMPFUN] Found pool liquidity: {lp_amount:.2f} SOL (attempt {attempt + 1})")
-                                            break
-                                        
-                                        if attempt < max_attempts - 1:
-                                            logging.info(f"[PUMPFUN] No pool yet, waiting... (attempt {attempt + 1}/{max_attempts})")
-                                            await asyncio.sleep(3.0)
-                                    
-                                    # If STILL no liquidity, skip
-                                    if lp_amount == 0:
-                                        logging.warning(f"[PUMPFUN] No liquidity after {max_attempts} attempts - SKIPPING {potential_mint[:8]}...")
-                                        record_skip("no_pool_after_waits")
-                                        continue
-                                    
-                                    # Final quality validation
-                                    if not await validate_token_quality(potential_mint, lp_amount):
-                                        continue
-                                    
-                                    min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN if not graduated else RUG_LP_THRESHOLD
-                                    
-                                    if lp_amount < min_lp_for_pumpfun:
-                                        logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL (min: {min_lp_for_pumpfun})")
-                                        continue
-                                    
-                                    recent_buy_attempts[potential_mint] = time.time()
-                                    # FIX: Only set cooldown if it's a real pool
-                                    pool_verified = await verify_pool_exists(potential_mint)
-                                    if pool_verified:
-                                        last_buy_time = time.time()
-                                    
-                                    if graduated:
-                                        buy_amount = PUMPFUN_MIGRATION_BUY
-                                        buy_reason = "PumpFun Graduate"
-                                    else:
-                                        buy_amount = PUMPFUN_EARLY_BUY
-                                        buy_reason = "PumpFun Early Entry"
-                                    
-                                    await send_telegram_alert(
-                                        f"🎯 PUMPFUN TOKEN DETECTED\n\n"
-                                        f"Token: `{potential_mint}`\n"
-                                        f"Status: {buy_reason}\n"
-                                        f"Liquidity: {lp_amount:.2f} SOL\n"
-                                        f"Buy Amount: {buy_amount} SOL\n\n"
-                                        f"Attempting snipe..."
-                                    )
-                                    
-                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
-                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
-                                    
-                                    try:
-                                        success = await buy_token(potential_mint)
-                                        
-                                        if success:
-                                            already_bought.add(potential_mint)
-                                            if BLACKLIST_AFTER_BUY:
-                                                BLACKLIST.add(potential_mint)
-                                            
-                                            await send_telegram_alert(
-                                                f"✅ PUMPFUN SNIPE SUCCESS!\n"
-                                                f"Token: {potential_mint[:16]}...\n"
-                                                f"Amount: {buy_amount} SOL\n"
-                                                f"Type: {buy_reason}\n"
-                                                f"Monitoring for profits..."
-                                            )
-                                            asyncio.create_task(wait_and_auto_sell(potential_mint))
-                                            break
-                                        else:
-                                            # FIX: Track as false positive, don't apply cooldown
-                                            FALSE_POSITIVE_TOKENS[potential_mint] = time.time()
-                                            await send_telegram_alert(
-                                                f"❌ PumpFun snipe failed (false positive)\n"
-                                                f"Token: {potential_mint[:16]}..."
-                                            )
-                                            mark_broken_token(potential_mint, 0)
-                                    except Exception as e:
-                                        logging.error(f"[PUMPFUN] Buy error: {e}")
-                                        await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
-                                    finally:
-                                        if original_amount:
-                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
-                            
-                            # ============================================
-                            # CRITICAL FIX: RAYDIUM BUY LOGIC - TRUST TX LIQUIDITY
-                            # ============================================
-                            elif name in ["Raydium"] and is_bot_running():
-                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
-                                    
-                                    # FIX: Check false positive cooldown
-                                    if potential_mint in FALSE_POSITIVE_TOKENS:
-                                        time_since_false = time.time() - FALSE_POSITIVE_TOKENS[potential_mint]
-                                        if time_since_false < FALSE_POSITIVE_COOLDOWN:
-                                            logging.info(f"[{name}] Skipping recent false positive {potential_mint[:8]}... (cooldown: {FALSE_POSITIVE_COOLDOWN - time_since_false:.0f}s)")
-                                            continue
-                                    
-                                    # CRITICAL FIX: Use tx_liquidity as primary source
-                                    lp_amount = tx_liquidity
-                                    
-                                    # If no tx liquidity (shouldn't happen), wait and check
-                                    if lp_amount == 0:
-                                        logging.info(f"[{name}] No tx liquidity, waiting 10s for pool initialization...")
-                                        await asyncio.sleep(10.0)  # Longer wait for Raydium
-                                        
-                                        # Try to get liquidity with retries
-                                        max_retries = 5
-                                        for retry in range(max_retries):
-                                            try:
-                                                lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-                                                lp_data = await asyncio.wait_for(lp_check_task, timeout=3.0)
-                                                
-                                                if lp_data:
-                                                    lp_amount = lp_data.get("liquidity", 0)
-                                                    if lp_amount > 0:
-                                                        logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL (attempt {retry + 1})")
-                                                        break
-                                                
-                                                if retry < max_retries - 1:
-                                                    await asyncio.sleep(3.0)
-                                                    logging.info(f"[{name}] Retrying liquidity check (attempt {retry + 2})")
-                                                    
-                                            except Exception as e:
-                                                logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
-                                                if retry < max_retries - 1:
-                                                    await asyncio.sleep(2.0)
-                                    else:
-                                        logging.info(f"[{name}] Using tx liquidity: {lp_amount:.2f} SOL - PROCEEDING!")
-                                    
-                                    # Final check - if still no liquidity after all attempts, skip
-                                    if lp_amount == 0:
-                                        logging.warning(f"[{name}] No liquidity found after all attempts - SKIPPING")
-                                        record_skip("zero_liquidity_after_all_attempts")
-                                        continue
-                                    
-                                    # Final quality validation
-                                    if not await validate_token_quality(potential_mint, lp_amount):
-                                        continue
-                                    
-                                    # ENHANCED QUALITY CHECK
-                                    is_quality, reason = await is_quality_token(potential_mint, lp_amount)
-                                    
-                                    if not is_quality:
-                                        logging.info(f"[{name}] Skipping {potential_mint[:8]}... - {reason}")
-                                        record_skip("quality_check")
-                                        continue
-                                    
-                                    # Extract confidence score from reason
-                                    confidence_score = 70  # Default
-                                    if "confidence:" in reason:
-                                        try:
-                                            confidence_str = reason.split("confidence:")[1].split("/")[0].strip()
-                                            confidence_score = int(confidence_str)
-                                        except:
-                                            pass
-                                    
-                                    # Determine position size based on quality
-                                    is_pumpfun = potential_mint in pumpfun_tokens
-                                    buy_amount = determine_position_size(lp_amount, confidence_score, is_pumpfun)
-                                    
-                                    recent_buy_attempts[potential_mint] = time.time()
-                                    
-                                    # FIX: Only set cooldown if we're about to attempt a real buy
-                                    last_buy_time = time.time()
-                                    
-                                    await send_telegram_alert(
-                                        f"✅ QUALITY TOKEN DETECTED ✅\n\n"
-                                        f"Platform: {name}\n"
-                                        f"Token: `{potential_mint}`\n"
-                                        f"Liquidity: {lp_amount:.2f} SOL\n"
-                                        f"Confidence: {confidence_score}/100\n"
-                                        f"Buy Amount: {buy_amount} SOL\n\n"
-                                        f"Quality Signals:\n{reason}\n\n"
-                                        f"Attempting snipe..."
-                                    )
-                                    
-                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
-                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
-                                    
-                                    try:
-                                        success = await buy_token(potential_mint)
-                                        if success:
-                                            already_bought.add(potential_mint)
-                                            if BLACKLIST_AFTER_BUY:
-                                                BLACKLIST.add(potential_mint)
-                                            
-                                            await send_telegram_alert(
-                                                f"✅ SNIPED QUALITY TOKEN!\n"
-                                                f"Token: {potential_mint[:16]}...\n"
-                                                f"Amount: {buy_amount} SOL\n"
-                                                f"Confidence: {confidence_score}/100\n"
-                                                f"Monitoring for profits..."
-                                            )
-                                            asyncio.create_task(wait_and_auto_sell(potential_mint))
-                                            break
-                                        else:
-                                            # FIX: Track as false positive
-                                            FALSE_POSITIVE_TOKENS[potential_mint] = time.time()
-                                            await send_telegram_alert(
-                                                f"❌ Snipe failed (false positive)\n"
-                                                f"Token: {potential_mint[:16]}...\n"
-                                                f"Not applying cooldown"
-                                            )
-                                            mark_broken_token(potential_mint, 0)
-                                    except Exception as e:
-                                        logging.error(f"[{name}] Buy error: {e}")
-                                        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
-                                    finally:
-                                        if original_amount:
-                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
-                
-                except asyncio.TimeoutError:
-                    continue
-                except websockets.exceptions.ConnectionClosed as e:
-                    logging.warning(f"[{name}] WebSocket closed: {e}")
-                    break
-                    
-        except Exception as e:
-            logging.error(f"[{name} ERROR] {str(e)}")
-            listener_status[name] = f"RETRYING ({retry_attempts + 1})"
-            
-        finally:
-            if watchdog_task and not watchdog_task.done():
-                watchdog_task.cancel()
-                try:
-                    await watchdog_task
-                except asyncio.CancelledError:
-                    pass
-            
-            if ws:
-                await ws.close()
-            
-            retry_attempts += 1
-            
-            if retry_attempts >= max_retries:
-                msg = f"⚠️ {name} listener failed after {max_retries} attempts"
-                await send_telegram_alert(msg)
-                listener_status[name] = "FAILED"
-                break
-            
-            wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
-            logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
-            await asyncio.sleep(wait_time)
-
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
-
-async def start_sniper_with_forced_token(mint: str):
-    """Force buy a specific token"""
-    try:
-        logging.info(f"[FORCE BUY] Attempting to buy {mint}")
-        
-        # Check momentum score
-        momentum_data = await check_momentum_score(mint)
-        if momentum_data["score"] > 0:
-            await send_telegram_alert(
-                f"📊 Momentum Score: {momentum_data['score']}/5\n"
-                f"Signals:\n" + "\n".join(momentum_data["signals"][:3])
-            )
-        
-        success = await buy_token(mint)
-        if success:
-            already_bought.add(mint)
-            asyncio.create_task(wait_and_auto_sell(mint))
-            await send_telegram_alert(f"✅ Force buy successful for {mint[:16]}...")
-        else:
-            await send_telegram_alert(f"❌ Force buy failed for {mint[:16]}...")
-            
-    except Exception as e:
-        logging.error(f"Force buy error: {e}")
-        await send_telegram_alert(f"❌ Force buy error: {str(e)[:100]}")
-
-async def stop_all_tasks():
-    """Stop all running tasks"""
-    global TASKS
-    for task in TASKS:
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-    TASKS.clear()
-    logging.info("All tasks stopped")
-
-# Export functions for use in other modules
-__all__ = [
-    'mempool_listener',
-    'trending_scanner',
-    'momentum_scanner',
-    'pumpfun_migration_monitor',
-    'raydium_graduation_scanner',
-    'start_sniper_with_forced_token',
-    'stop_all_tasks',
-    'pumpfun_tokens',
-    'migration_watch_list',
-    'trending_tokens',
-    'MOMENTUM_SCANNER_ENABLED',
-    'momentum_analyzed',
-    'momentum_bought'
-]:\n"
+                        f"Price Change:\n"
                         f"• 1h: {price_change_h1:+.1f}%\n"
                         f"• 24h: {price_change_h24:+.1f}%\n"
                         f"Source: {source}\n\n"
@@ -1644,8 +1248,7 @@ __all__ = [
                         logging.error(f"[Trending] Buy error: {e}")
                 else:
                     logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-            
-            if processed > 0:
+                    if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
             
             await asyncio.sleep(TREND_SCAN_INTERVAL)
@@ -2365,86 +1968,388 @@ async def mempool_listener(name, program_id=None):
                                 if key and len(key) == 44 and key not in SYSTEM_PROGRAMS:
                                     pool_id = key
                                     break
-    """Scan for quality trending tokens"""
-    global seen_trending, trending_tokens
-    consecutive_failures = 0
-    max_consecutive_failures = 5
-    
-    while True:
-        try:
-            if not is_bot_running():
-                await asyncio.sleep(5)
-                continue
+                        
+                        # Process potential mints with QUALITY CHECKS
+                        tokens_from_this_tx = []  # Track tokens from this transaction
+                        for key in account_keys:
+                            if isinstance(key, dict):
+                                key = key.get("pubkey", "") or key.get("address", "")
+                            
+                            if key in SYSTEM_PROGRAMS or len(key) != 44:
+                                continue
+                            
+                            if key == "So11111111111111111111111111111111111111112":
+                                continue
+                            
+                            # Check if already processed
+                            if key in seen_tokens or key in already_bought:
+                                continue
+                            
+                            # FIX: Check if this is a false positive token
+                            if key in FALSE_POSITIVE_TOKENS:
+                                time_since_false = time.time() - FALSE_POSITIVE_TOKENS[key]
+                                if time_since_false < FALSE_POSITIVE_COOLDOWN:
+                                    logging.info(f"[{name}] Skipping recent false positive {key[:8]}... (cooldown: {FALSE_POSITIVE_COOLDOWN - time_since_false:.0f}s)")
+                                    continue
+                            
+                            try:
+                                Pubkey.from_string(key)
+                                potential_mint = key
+                            except:
+                                continue
+                            
+                            # Mark as seen
+                            seen_tokens.add(potential_mint)
+                            tokens_from_this_tx.append(potential_mint)
+                        
+                        # Only process and alert ONCE per transaction, not per token
+                        if not tokens_from_this_tx:
+                            continue
+                            
+                        # Process only the first valid token to avoid spam
+                        for potential_mint in tokens_from_this_tx[:1]:  # Process only first token
+                            
+                            # Track if PumpFun
+                            if name == "PumpFun" and potential_mint not in pumpfun_tokens:
+                                pumpfun_tokens[potential_mint] = {
+                                    "discovered": time.time(),
+                                    "migrated": False
+                                }
+                                logging.info(f"[PumpFun] Tracking new token: {potential_mint[:8]}...")
+                            
+                            # Register Raydium pool if detected
+                            if name == "Raydium" and pool_id:
+                                detected_pools[potential_mint] = pool_id
+                                raydium.register_pool(pool_id, potential_mint, lp_amount=tx_liquidity)
+                                logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}... with {tx_liquidity:.2f} SOL")
+                            
+                            # ============================================
+                            # CRITICAL FIX: PUMPFUN BUY LOGIC WITH EXTENDED WAITS
+                            # ============================================
+                            if name == "PumpFun" and is_bot_running():
+                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
+                                    if potential_mint in already_bought:
+                                        continue
+                                    
+                                    logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
+                                    
+                                    # EXTENDED WAIT for PumpFun pool initialization
+                                    await asyncio.sleep(PUMPFUN_INIT_DELAY)  # Now 8.0 seconds
+                                    
+                                    graduated = await check_pumpfun_graduation(potential_mint)
+                                    if graduated and potential_mint in pumpfun_tokens:
+                                        pumpfun_tokens[potential_mint]["migrated"] = True
+                                    
+                                    # Try multiple times to find liquidity
+                                    lp_amount = 0
+                                    max_attempts = 5
+                                    
+                                    for attempt in range(max_attempts):
+                                        lp_data = await get_liquidity_and_ownership(potential_mint)
+                                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                                        
+                                        # ALWAYS use tx_liquidity if regular check returns 0
+                                        if lp_amount == 0 and tx_liquidity > 0:
+                                            lp_amount = tx_liquidity
+                                            logging.info(f"[PUMPFUN] Using tx liquidity: {tx_liquidity:.2f} SOL (attempt {attempt + 1})")
+                                            break  # We have liquidity, proceed
+                                        
+                                        if lp_amount > 0:
+                                            logging.info(f"[PUMPFUN] Found pool liquidity: {lp_amount:.2f} SOL (attempt {attempt + 1})")
+                                            break
+                                        
+                                        if attempt < max_attempts - 1:
+                                            logging.info(f"[PUMPFUN] No pool yet, waiting... (attempt {attempt + 1}/{max_attempts})")
+                                            await asyncio.sleep(3.0)
+                                    
+                                    # If STILL no liquidity, skip
+                                    if lp_amount == 0:
+                                        logging.warning(f"[PUMPFUN] No liquidity after {max_attempts} attempts - SKIPPING {potential_mint[:8]}...")
+                                        record_skip("no_pool_after_waits")
+                                        continue
+                                    
+                                    # Final quality validation
+                                    if not await validate_token_quality(potential_mint, lp_amount):
+                                        continue
+                                    
+                                    min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN if not graduated else RUG_LP_THRESHOLD
+                                    
+                                    if lp_amount < min_lp_for_pumpfun:
+                                        logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL (min: {min_lp_for_pumpfun})")
+                                        continue
+                                    
+                                    recent_buy_attempts[potential_mint] = time.time()
+                                    # FIX: Only set cooldown if it's a real pool
+                                    pool_verified = await verify_pool_exists(potential_mint)
+                                    if pool_verified:
+                                        last_buy_time = time.time()
+                                    
+                                    if graduated:
+                                        buy_amount = PUMPFUN_MIGRATION_BUY
+                                        buy_reason = "PumpFun Graduate"
+                                    else:
+                                        buy_amount = PUMPFUN_EARLY_BUY
+                                        buy_reason = "PumpFun Early Entry"
+                                    
+                                    await send_telegram_alert(
+                                        f"🎯 PUMPFUN TOKEN DETECTED\n\n"
+                                        f"Token: `{potential_mint}`\n"
+                                        f"Status: {buy_reason}\n"
+                                        f"Liquidity: {lp_amount:.2f} SOL\n"
+                                        f"Buy Amount: {buy_amount} SOL\n\n"
+                                        f"Attempting snipe..."
+                                    )
+                                    
+                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+                                    
+                                    try:
+                                        success = await buy_token(potential_mint)
+                                        
+                                        if success:
+                                            already_bought.add(potential_mint)
+                                            if BLACKLIST_AFTER_BUY:
+                                                BLACKLIST.add(potential_mint)
+                                            
+                                            await send_telegram_alert(
+                                                f"✅ PUMPFUN SNIPE SUCCESS!\n"
+                                                f"Token: {potential_mint[:16]}...\n"
+                                                f"Amount: {buy_amount} SOL\n"
+                                                f"Type: {buy_reason}\n"
+                                                f"Monitoring for profits..."
+                                            )
+                                            asyncio.create_task(wait_and_auto_sell(potential_mint))
+                                            break
+                                        else:
+                                            # FIX: Track as false positive, don't apply cooldown
+                                            FALSE_POSITIVE_TOKENS[potential_mint] = time.time()
+                                            await send_telegram_alert(
+                                                f"❌ PumpFun snipe failed (false positive)\n"
+                                                f"Token: {potential_mint[:16]}..."
+                                            )
+                                            mark_broken_token(potential_mint, 0)
+                                    except Exception as e:
+                                        logging.error(f"[PUMPFUN] Buy error: {e}")
+                                        await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
+                                    finally:
+                                        if original_amount:
+                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
+                            
+                            # ============================================
+                            # CRITICAL FIX: RAYDIUM BUY LOGIC - TRUST TX LIQUIDITY
+                            # ============================================
+                            elif name in ["Raydium"] and is_bot_running():
+                                if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
+                                    
+                                    # FIX: Check false positive cooldown
+                                    if potential_mint in FALSE_POSITIVE_TOKENS:
+                                        time_since_false = time.time() - FALSE_POSITIVE_TOKENS[potential_mint]
+                                        if time_since_false < FALSE_POSITIVE_COOLDOWN:
+                                            logging.info(f"[{name}] Skipping recent false positive {potential_mint[:8]}... (cooldown: {FALSE_POSITIVE_COOLDOWN - time_since_false:.0f}s)")
+                                            continue
+                                    
+                                    # CRITICAL FIX: Use tx_liquidity as primary source
+                                    lp_amount = tx_liquidity
+                                    
+                                    # If no tx liquidity (shouldn't happen), wait and check
+                                    if lp_amount == 0:
+                                        logging.info(f"[{name}] No tx liquidity, waiting 10s for pool initialization...")
+                                        await asyncio.sleep(10.0)  # Longer wait for Raydium
+                                        
+                                        # Try to get liquidity with retries
+                                        max_retries = 5
+                                        for retry in range(max_retries):
+                                            try:
+                                                lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
+                                                lp_data = await asyncio.wait_for(lp_check_task, timeout=3.0)
+                                                
+                                                if lp_data:
+                                                    lp_amount = lp_data.get("liquidity", 0)
+                                                    if lp_amount > 0:
+                                                        logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL (attempt {retry + 1})")
+                                                        break
+                                                
+                                                if retry < max_retries - 1:
+                                                    await asyncio.sleep(3.0)
+                                                    logging.info(f"[{name}] Retrying liquidity check (attempt {retry + 2})")
+                                                    
+                                            except Exception as e:
+                                                logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
+                                                if retry < max_retries - 1:
+                                                    await asyncio.sleep(2.0)
+                                    else:
+                                        logging.info(f"[{name}] Using tx liquidity: {lp_amount:.2f} SOL - PROCEEDING!")
+                                    
+                                    # Final check - if still no liquidity after all attempts, skip
+                                    if lp_amount == 0:
+                                        logging.warning(f"[{name}] No liquidity found after all attempts - SKIPPING")
+                                        record_skip("zero_liquidity_after_all_attempts")
+                                        continue
+                                    
+                                    # Final quality validation
+                                    if not await validate_token_quality(potential_mint, lp_amount):
+                                        continue
+                                    
+                                    # ENHANCED QUALITY CHECK
+                                    is_quality, reason = await is_quality_token(potential_mint, lp_amount)
+                                    
+                                    if not is_quality:
+                                        logging.info(f"[{name}] Skipping {potential_mint[:8]}... - {reason}")
+                                        record_skip("quality_check")
+                                        continue
+                                    
+                                    # Extract confidence score from reason
+                                    confidence_score = 70  # Default
+                                    if "confidence:" in reason:
+                                        try:
+                                            confidence_str = reason.split("confidence:")[1].split("/")[0].strip()
+                                            confidence_score = int(confidence_str)
+                                        except:
+                                            pass
+                                    
+                                    # Determine position size based on quality
+                                    is_pumpfun = potential_mint in pumpfun_tokens
+                                    buy_amount = determine_position_size(lp_amount, confidence_score, is_pumpfun)
+                                    
+                                    recent_buy_attempts[potential_mint] = time.time()
+                                    
+                                    # FIX: Only set cooldown if we're about to attempt a real buy
+                                    last_buy_time = time.time()
+                                    
+                                    await send_telegram_alert(
+                                        f"✅ QUALITY TOKEN DETECTED ✅\n\n"
+                                        f"Platform: {name}\n"
+                                        f"Token: `{potential_mint}`\n"
+                                        f"Liquidity: {lp_amount:.2f} SOL\n"
+                                        f"Confidence: {confidence_score}/100\n"
+                                        f"Buy Amount: {buy_amount} SOL\n\n"
+                                        f"Quality Signals:\n{reason}\n\n"
+                                        f"Attempting snipe..."
+                                    )
+                                    
+                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+                                    
+                                    try:
+                                        success = await buy_token(potential_mint)
+                                        if success:
+                                            already_bought.add(potential_mint)
+                                            if BLACKLIST_AFTER_BUY:
+                                                BLACKLIST.add(potential_mint)
+                                            
+                                            await send_telegram_alert(
+                                                f"✅ SNIPED QUALITY TOKEN!\n"
+                                                f"Token: {potential_mint[:16]}...\n"
+                                                f"Amount: {buy_amount} SOL\n"
+                                                f"Confidence: {confidence_score}/100\n"
+                                                f"Monitoring for profits..."
+                                            )
+                                            asyncio.create_task(wait_and_auto_sell(potential_mint))
+                                            break
+                                        else:
+                                            # FIX: Track as false positive
+                                            FALSE_POSITIVE_TOKENS[potential_mint] = time.time()
+                                            await send_telegram_alert(
+                                                f"❌ Snipe failed (false positive)\n"
+                                                f"Token: {potential_mint[:16]}...\n"
+                                                f"Not applying cooldown"
+                                            )
+                                            mark_broken_token(potential_mint, 0)
+                                    except Exception as e:
+                                        logging.error(f"[{name}] Buy error: {e}")
+                                        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
+                                    finally:
+                                        if original_amount:
+                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
+                
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed as e:
+                    logging.warning(f"[{name}] WebSocket closed: {e}")
+                    break
+                    
+        except Exception as e:
+            logging.error(f"[{name} ERROR] {str(e)}")
+            listener_status[name] = f"RETRYING ({retry_attempts + 1})"
+            
+        finally:
+            if watchdog_task and not watchdog_task.done():
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if ws:
+                await ws.close()
+            
+            retry_attempts += 1
+            
+            if retry_attempts >= max_retries:
+                msg = f"⚠️ {name} listener failed after {max_retries} attempts"
+                await send_telegram_alert(msg)
+                listener_status[name] = "FAILED"
+                break
+            
+            wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
+            logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
+            await asyncio.sleep(wait_time)
 
-            pairs = await get_trending_pairs_dexscreener()
-            source = "DEXScreener"
+# ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+async def start_sniper_with_forced_token(mint: str):
+    """Force buy a specific token"""
+    try:
+        logging.info(f"[FORCE BUY] Attempting to buy {mint}")
+        
+        # Check momentum score
+        momentum_data = await check_momentum_score(mint)
+        if momentum_data["score"] > 0:
+            await send_telegram_alert(
+                f"📊 Momentum Score: {momentum_data['score']}/5\n"
+                f"Signals:\n" + "\n".join(momentum_data["signals"][:3])
+            )
+        
+        success = await buy_token(mint)
+        if success:
+            already_bought.add(mint)
+            asyncio.create_task(wait_and_auto_sell(mint))
+            await send_telegram_alert(f"✅ Force buy successful for {mint[:16]}...")
+        else:
+            await send_telegram_alert(f"❌ Force buy failed for {mint[:16]}...")
             
-            if not pairs:
-                pairs = await get_trending_pairs_birdeye()
-                source = "Birdeye"
-            
-            if not pairs:
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    logging.warning(f"[Trending Scanner] Both APIs unavailable")
-                    consecutive_failures = 0
-                    await asyncio.sleep(TREND_SCAN_INTERVAL * 2)
-                    continue
-                
-                await asyncio.sleep(TREND_SCAN_INTERVAL)
-                continue
-            
-            consecutive_failures = 0
-            processed = 0
-            quality_finds = 0
-            
-            for pair in pairs[:10]:
-                mint = pair.get("baseToken", {}).get("address")
-                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
-                
-                price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-                price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-                
-                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
-                    continue
-                
-                is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
-                
-                min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
-                min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
-                
-                if lp_usd < min_lp:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
-                    continue
-                    
-                if vol_usd < min_vol:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
-                    continue
-                
-                if price_change_h1 < -30 and not is_pumpfun_grad:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
-                    continue
-                    
-                seen_trending.add(mint)
-                trending_tokens.add(mint)  # Track trending tokens
-                processed += 1
-                increment_stat("tokens_scanned", 1)
-                update_last_activity()
-                
-                is_mooning = price_change_h1 > 50 or price_change_h24 > 100
-                has_momentum = price_change_h1 > 20 and vol_usd > 50000
-                
-                if is_mooning or has_momentum or is_pumpfun_grad:
-                    quality_finds += 1
-                    
-                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
-                    if is_pumpfun_grad:
-                        alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
-                    
-                    await send_telegram_alert(
-                        alert_msg +
-                        f"Token: `{mint}`\n"
-                        f"Liquidity: ${lp_usd:,.0f}\n"
-                        f"Volume 24h: ${vol_usd:,.0f}\n"
-                        f"Price Change
+    except Exception as e:
+        logging.error(f"Force buy error: {e}")
+        await send_telegram_alert(f"❌ Force buy error: {str(e)[:100]}")
+
+async def stop_all_tasks():
+    """Stop all running tasks"""
+    global TASKS
+    for task in TASKS:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    TASKS.clear()
+    logging.info("All tasks stopped")
+
+# Export functions for use in other modules
+__all__ = [
+    'mempool_listener',
+    'trending_scanner',
+    'momentum_scanner',
+    'pumpfun_migration_monitor',
+    'raydium_graduation_scanner',
+    'start_sniper_with_forced_token',
+    'stop_all_tasks',
+    'pumpfun_tokens',
+    'migration_watch_list',
+    'trending_tokens',
+    'MOMENTUM_SCANNER_ENABLED',
+    'momentum_analyzed',
+    'momentum_bought'
+]
