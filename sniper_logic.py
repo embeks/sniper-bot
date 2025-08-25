@@ -1248,10 +1248,11 @@ async def trending_scanner():
                         logging.error(f"[Trending] Buy error: {e}")
                 else:
                     logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-                    if processed > 0:
-                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
             
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
+            if processed > 0:
+                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
+
+await asyncio.sleep(TREND_SCAN_INTERVAL)
             
         except Exception as e:
             logging.error(f"[Trending Scanner ERROR] {e}")
