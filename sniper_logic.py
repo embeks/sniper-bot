@@ -607,12 +607,11 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
 
 # FIXED: Added proper indentation for the function body
 async def validate_token_quality(mint: str, lp_amount: float) -> bool:
-    """Final quality gate before buying - MODIFIED TO BE LESS STRICT"""
-    # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
+    
     min_liquidity = float(os.getenv("MIN_LP", "3.0"))
     
     # Minimum absolute requirements
-    if lp_amount < min_liquidity * 0.9:  # Less than minimum liquidity
+    if lp_amount < min_liquidity:
         logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {min_liquidity})")
         return False
     
