@@ -1336,3 +1336,161 @@ async def wait_and_auto_sell(mint: str):
         await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
+
+async def wait_and_auto_sell_timer_based(mint: str):
+    """Fallback timer-based selling if price feed fails"""
+    try:
+        if mint not in OPEN_POSITIONS:
+            return
+            
+        position = OPEN_POSITIONS[mint]
+        
+        start_time = time.time()
+        max_duration = 600
+        max_sell_attempts = 3
+        sell_attempts = {"2x": 0, "5x": 0, "10x": 0}
+        
+        while time.time() - start_time < max_duration:
+            try:
+                elapsed = time.time() - start_time
+                
+                if elapsed > 30 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
+                    sell_attempts["2x"] += 1
+                    if await sell_token(mint, AUTO_SELL_PERCENT_2X):
+                        position["sold_stages"].add("2x")
+                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
+                    elif sell_attempts["2x"] >= max_sell_attempts:
+                        position["sold_stages"].add("2x")
+                
+                if elapsed > 120 and "5x" not in position["sold_stages"] and sell_attempts["5x"] < max_sell_attempts:
+                    sell_attempts["5x"] += 1
+                    if await sell_token(mint, AUTO_SELL_PERCENT_5X):
+                        position["sold_stages"].add("5x")
+                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
+                    elif sell_attempts["5x"] >= max_sell_attempts:
+                        position["sold_stages"].add("5x")
+                
+                if elapsed > 300 and "10x" not in position["sold_stages"] and sell_attempts["10x"] < max_sell_attempts:
+                    sell_attempts["10x"] += 1
+                    if await sell_token(mint, AUTO_SELL_PERCENT_10X):
+                        position["sold_stages"].add("10x")
+                        await send_telegram_alert(f"🌙 Sold final {AUTO_SELL_PERCENT_10X}% at 5min timer for {mint[:8]}...")
+                        break
+                    elif sell_attempts["10x"] >= max_sell_attempts:
+                        position["sold_stages"].add("10x")
+                        break
+                
+                if len(position["sold_stages"]) >= 3:
+                    break
+                    
+                await asyncio.sleep(10)
+                
+            except Exception as e:
+                logging.error(f"Timer-based monitoring error for {mint}: {e}")
+                await asyncio.sleep(10)
+        
+        if mint in OPEN_POSITIONS:
+            del OPEN_POSITIONS[mint]
+            
+    except Exception as e:
+        logging.error(f"Timer-based auto-sell error for {mint}: {e}")
+        if mint in OPEN_POSITIONS:
+            del OPEN_POSITIONS[mint]
+
+async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
+    """Check PumpFun token status and market cap"""
+    try:
+        url = f"https://frontend-api.pump.fun/coins/{mint}"
+        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                market_cap = data.get("usd_market_cap", 0)
+                graduated = market_cap >= 69420
+                pool_address = data.get("raydium_pool")
+                
+                return {
+                    "market_cap": market_cap,
+                    "graduated": graduated,
+                    "pool_address": pool_address,
+                    "progress": (market_cap / 69420) * 100 if market_cap < 69420 else 100
+                }
+    except Exception as e:
+        logging.debug(f"PumpFun status check error: {e}")
+    
+    return None
+
+async def detect_pumpfun_migration(mint: str) -> bool:
+    """Detect if a PumpFun token has migrated to Raydium/Jupiter"""
+    try:
+        pf_status = await check_pumpfun_token_status(mint)
+        if not pf_status or not pf_status.get("graduated"):
+            return False
+        
+        pool = raydium.find_pool_realtime(mint)
+        
+        if pool:
+            logging.info(f"[Migration] PumpFun token {mint[:8]}... has migrated to Raydium!")
+            return True
+            
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
+                        return True
+        except:
+            pass
+            
+    except Exception as e:
+        logging.error(f"Migration detection error: {e}")
+    
+    return False
+
+# Export for use in sniper_logic
+__all__ = [
+    'is_valid_mint',
+    'buy_token',
+    'sell_token',
+    'log_skipped_token',
+    'send_telegram_alert',
+    'send_telegram_batch',
+    'get_trending_mints',
+    'wait_and_auto_sell',
+    'get_liquidity_and_ownership',
+    'is_bot_running',
+    'start_bot',
+    'stop_bot',
+    'keypair',
+    'BUY_AMOUNT_SOL',
+    'BROKEN_TOKENS',
+    'mark_broken_token',
+    'daily_stats_reset_loop',
+    'update_last_activity',
+    'increment_stat',
+    'record_skip',
+    'listener_status',
+    'last_seen_token',
+    'get_wallet_summary',
+    'get_bot_status_message',
+    'check_pumpfun_token_status',
+    'detect_pumpfun_migration',
+    'pumpfun_tokens',
+    'trending_tokens',
+    'get_token_price_usd',
+    'get_token_decimals',
+    'cleanup_wsol_on_failure',
+    'OPEN_POSITIONS',
+    'daily_stats',
+    'BLACKLIST',
+    'raydium',
+    'rpc',
+    'wait_and_auto_sell_timer_based',
+    'get_dynamic_position_size',
+    'get_minimum_liquidity_required',
+    'USE_DYNAMIC_SIZING',
+    'SCALE_WITH_BALANCE'
+]
