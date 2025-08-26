@@ -1865,9 +1865,9 @@ async def mempool_listener(name, program_id=None):
                             # CRITICAL FIX: REQUIRE ACTUAL POOL CREATION EVIDENCE
                             if (raydium_indicators >= RAYDIUM_MIN_INDICATORS and 
                                 len(logs) >= RAYDIUM_MIN_LOGS and 
-                                log_quality_score >= 5 and
-                                (has_create_pool or has_liquidity) and  # FIX: Require pool creation evidence
-                                has_pool_creation_log):  # FIX: Require specific pool creation log pattern
+                                (has_init_pool or has_liquidity or log_quality_score >= 3)):
+                                
+                                
                                 is_pool_creation = True
                                 logging.info(f"[RAYDIUM] HIGH QUALITY POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}, Quality: {log_quality_score}")
                             else:
