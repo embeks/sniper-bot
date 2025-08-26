@@ -1261,7 +1261,7 @@ async def trending_scanner():
 # ============================================
 # MOMENTUM SCANNER - DISABLED BY DEFAULT
 # ============================================
-def detect_chart_pattern(def detect_chart_pattern(price_data: list) -> str:
+def detect_chart_pattern(price_data: list) -> str:
     """
     Detect if chart shows good or bad patterns
     Returns: 'steady_climb', 'pump_dump', 'vertical', 'consolidating', 'unknown'
