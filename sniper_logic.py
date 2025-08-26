@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import os
@@ -23,7 +22,7 @@ from utils import (
     listener_status, last_seen_token
 )
 from solders.pubkey import Pubkey
-from raydium_aggregator import RaydiumAggregatorClient
+from raydium_aggregator import RaydiumAggregator
 
 load_dotenv()
 
@@ -132,7 +131,7 @@ recent_buy_attempts = {}  # token -> timestamp
 pool_verification_cache = {}  # token -> is_verified
 detected_pools = {}  # Store pool IDs for tokens
 
-raydium = RaydiumAggregatorClient(RPC_URL)
+raydium = RaydiumAggregator(RPC_URL)
 
 last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
 alert_cooldown_sec = 1800
