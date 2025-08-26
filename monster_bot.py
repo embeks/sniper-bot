@@ -1,3 +1,4 @@
+
 """
 MONSTER BOT - The Complete Beast (FIXED VERSION)
 All features integrated: MEV, Copy Trading, AI Scoring, Multi-Strategy
