@@ -2142,29 +2142,13 @@ async def mempool_listener(name, program_id=None):
                                         logging.info(f"[{name}] No tx liquidity, waiting 10s for pool initialization...")
                                         await asyncio.sleep(10.0)  # Longer wait for Raydium
                                         
-                                        # Try to get liquidity with retries
-                                        max_retries = 5
-                                        for retry in range(max_retries):
-                                            try:
-                                                lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-                                                lp_data = await asyncio.wait_for(lp_check_task, timeout=3.0)
-                                                
-                                                if lp_data:
-                                                    lp_amount = lp_data.get("liquidity", 0)
-                                                    if lp_amount > 0:
-                                                        logging.info(f"[{name}] Found liquidity: {lp_amount:.2f} SOL (attempt {retry + 1})")
-                                                        break
-                                                
-                                                if retry < max_retries - 1:
-                                                    await asyncio.sleep(3.0)
-                                                    logging.info(f"[{name}] Retrying liquidity check (attempt {retry + 2})")
-                                                    
-                                            except Exception as e:
-                                                logging.debug(f"[{name}] LP check error on retry {retry + 1}: {e}")
-                                                if retry < max_retries - 1:
-                                                    await asyncio.sleep(2.0)
-                                    else:
-                                        logging.info(f"[{name}] Using tx liquidity: {lp_amount:.2f} SOL - PROCEEDING!")
+                                        # Just use transaction liquidity directly - no verification needed
+                                        lp_amount = tx_liquidity
+                                        if lp_amount > 0:
+                                            logging.info(f"[{name}] Detected {lp_amount:.2f} SOL liquidity - proceeding to buy")
+                                        else:
+                                            logging.info(f"[{name}] No liquidity found - skipping")
+                                        continue
                                     
                                     # Final check - if still no liquidity after all attempts, skip
                                     if lp_amount == 0:
