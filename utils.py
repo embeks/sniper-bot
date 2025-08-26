@@ -1,4 +1,4 @@
-# utils.py - COMPLETE PRODUCTION READY VERSION
+# utils.py - COMPLETE PRODUCTION READY VERSION WITH SCALING
 import os
 import json
 import logging
@@ -82,6 +82,12 @@ OVERRIDE_DECIMALS_TO_9 = os.getenv("OVERRIDE_DECIMALS_TO_9", "false").lower() ==
 IGNORE_JUPITER_PRICE_FIELD = os.getenv("IGNORE_JUPITER_PRICE_FIELD", "false").lower() == "true"
 LP_CHECK_TIMEOUT = int(os.getenv("LP_CHECK_TIMEOUT", 3))
 
+# Scaling configuration
+USE_DYNAMIC_SIZING = os.getenv("USE_DYNAMIC_SIZING", "true").lower() == "true"
+SCALE_WITH_BALANCE = os.getenv("SCALE_WITH_BALANCE", "true").lower() == "true"
+MIGRATION_BOOST_MULTIPLIER = float(os.getenv("MIGRATION_BOOST_MULTIPLIER", 2.0))
+TRENDING_BOOST_MULTIPLIER = float(os.getenv("TRENDING_BOOST_MULTIPLIER", 1.5))
+
 # Initialize clients
 rpc = Client(RPC_URL, commitment=Confirmed)
 raydium = RaydiumAggregatorClient(RPC_URL)
@@ -153,6 +159,78 @@ KNOWN_TOKEN_DECIMALS = {
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
     "So11111111111111111111111111111111111111112": 9,   # WSOL
 }
+
+# ============================================
+# SCALING FUNCTIONS
+# ============================================
+
+async def get_dynamic_position_size(mint: str, pool_liquidity_sol: float, is_migration: bool = False) -> float:
+    """Calculate position size based on current balance and token type"""
+    try:
+        # Get current balance
+        balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+        balance_usd = balance * 150  # Assume SOL = $150
+        
+        # Base position sizing by bankroll
+        if balance_usd < 500:
+            base_percent = 0.01  # 1% when small ($300 starting)
+        elif balance_usd < 1500:
+            base_percent = 0.015  # 1.5% when growing
+        elif balance_usd < 5000:
+            base_percent = 0.02  # 2% when established
+        elif balance_usd < 10000:
+            base_percent = 0.025  # 2.5% when large
+        else:
+            base_percent = 0.03  # 3% when massive (10k+ target)
+        
+        position = balance * base_percent
+        
+        # Boost for special situations
+        if is_migration:
+            position *= MIGRATION_BOOST_MULTIPLIER  # Double for PumpFun migrations
+            logging.info(f"[Position] Migration detected, boosting {MIGRATION_BOOST_MULTIPLIER}x to {position:.3f} SOL")
+        
+        if mint in trending_tokens:
+            position *= TRENDING_BOOST_MULTIPLIER  # 50% boost for trending
+            logging.info(f"[Position] Trending token, boosting {TRENDING_BOOST_MULTIPLIER}x to {position:.3f} SOL")
+        
+        # Apply limits
+        position = max(0.01, position)  # Minimum 0.01 SOL
+        position = min(position, pool_liquidity_sol * 0.01)  # Max 1% of pool
+        position = min(position, balance * 0.05)  # Max 5% of total balance
+        position = min(position, 1.0)  # Hard cap at 1 SOL per trade
+        
+        logging.info(f"[Position] Balance: {balance:.2f} SOL (${balance_usd:.0f}) -> Size: {position:.3f} SOL")
+        return position
+        
+    except Exception as e:
+        logging.error(f"Dynamic sizing error: {e}")
+        return float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+
+def get_minimum_liquidity_required(balance_sol: float = None) -> float:
+    """Scale liquidity requirements with balance"""
+    try:
+        if balance_sol is None:
+            balance_sol = rpc.get_balance(keypair.pubkey()).value / 1e9
+        
+        balance_usd = balance_sol * 150
+        
+        if balance_usd < 500:
+            return 3.0  # 3 SOL minimum when starting
+        elif balance_usd < 1500:
+            return 5.0  # 5 SOL when growing
+        elif balance_usd < 5000:
+            return 10.0  # 10 SOL when established
+        elif balance_usd < 10000:
+            return 20.0  # 20 SOL when large
+        else:
+            return 30.0  # 30 SOL when targeting 10k+
+    except:
+        return float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+
+# ============================================
+# CORE FUNCTIONS
+# ============================================
 
 def update_last_activity():
     global last_activity
@@ -281,7 +359,18 @@ def get_wallet_summary() -> str:
     """Get wallet balance summary"""
     try:
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
-        return f"Balance: {balance:.4f} SOL\nAddress: {wallet_pubkey}"
+        balance_usd = balance * 150
+        
+        # Get position sizing info
+        if USE_DYNAMIC_SIZING:
+            test_position = balance * 0.015 if balance_usd < 1500 else balance * 0.02
+            sizing_info = f"\n📏 Position Size: ~{test_position:.3f} SOL"
+        else:
+            sizing_info = f"\n📏 Fixed Size: {BUY_AMOUNT_SOL} SOL"
+        
+        return f"""Balance: {balance:.4f} SOL (${balance_usd:.0f})
+Address: {wallet_pubkey}{sizing_info}
+Min LP: {get_minimum_liquidity_required(balance)} SOL"""
     except:
         return "Failed to fetch wallet info"
 
@@ -311,7 +400,8 @@ def get_bot_status_message() -> str:
   
 📈 Open Positions: {len(OPEN_POSITIONS)}
 🚫 Broken Tokens: {len(BROKEN_TOKENS)}
-💰 Min LP Filter: {RUG_LP_THRESHOLD} SOL
+💰 Min LP Filter: {get_minimum_liquidity_required()} SOL
+🎯 Scaling: {'ON' if USE_DYNAMIC_SIZING else 'OFF'}
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
@@ -658,10 +748,8 @@ async def cleanup_wsol_on_failure():
     except Exception as e:
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
-async def buy_token(mint: str):
-    """Execute buy with proper LP validation"""
-    amount = int(BUY_AMOUNT_SOL * 1e9)
-
+async def buy_token(mint: str, force_amount: Optional[float] = None, is_migration: bool = False):
+    """Execute buy with dynamic sizing and enhanced validation"""
     try:
         if mint in BROKEN_TOKENS:
             await send_telegram_alert(f"❌ Skipped {mint[:8]}... — broken token")
@@ -680,40 +768,63 @@ async def buy_token(mint: str):
             logging.warning(f"[Buy] LP check timed out for {mint[:8]}..., requeuing")
             return False
         
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+        pool_liquidity = lp_data.get("liquidity", 0)
         
-        if lp_data.get("liquidity", 0) < min_lp:
+        # Get minimum LP requirement based on current balance
+        min_lp = get_minimum_liquidity_required() if SCALE_WITH_BALANCE else RUG_LP_THRESHOLD
+        
+        if pool_liquidity < min_lp:
             await send_telegram_alert(
                 f"⚠️ Skipping low LP token\n"
                 f"Token: {mint[:8]}...\n"
-                f"LP: {lp_data.get('liquidity', 0):.2f} SOL\n"
+                f"LP: {pool_liquidity:.2f} SOL\n"
                 f"Min required: {min_lp} SOL"
             )
-            log_skipped_token(mint, f"Low liquidity: {lp_data.get('liquidity', 0):.2f} SOL")
+            log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
             record_skip("low_lp")
             return False
 
+        # Determine position size
+        if force_amount:
+            amount_sol = force_amount
+            logging.info(f"[Buy] Using forced amount: {amount_sol} SOL")
+        elif USE_DYNAMIC_SIZING:
+            amount_sol = await get_dynamic_position_size(mint, pool_liquidity, is_migration)
+            logging.info(f"[Buy] Dynamic position: {amount_sol:.3f} SOL")
+        else:
+            amount_sol = BUY_AMOUNT_SOL
+            logging.info(f"[Buy] Fixed position: {amount_sol} SOL")
+        
+        amount_lamports = int(amount_sol * 1e9)
+
         # Try Jupiter first
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
-        jupiter_sig = await execute_jupiter_swap(mint, amount)
+        jupiter_sig = await execute_jupiter_swap(mint, amount_lamports)
         
         if jupiter_sig:
+            # Get current balance for status
+            balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+            balance_usd = balance * 150
+            
             await send_telegram_alert(
                 f"✅ Sniped {mint[:8]}... via Jupiter\n"
-                f"Amount: {BUY_AMOUNT_SOL} SOL\n"
-                f"LP: {lp_data.get('liquidity', 0):.2f} SOL\n"
+                f"Amount: {amount_sol:.3f} SOL\n"
+                f"LP: {pool_liquidity:.2f} SOL\n"
+                f"{'🚀 MIGRATION!' if is_migration else ''}\n"
+                f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
             
             OPEN_POSITIONS[mint] = {
                 "expected_token_amount": 0,
-                "buy_amount_sol": BUY_AMOUNT_SOL,
+                "buy_amount_sol": amount_sol,
                 "sold_stages": set(),
-                "buy_sig": jupiter_sig
+                "buy_sig": jupiter_sig,
+                "is_migration": is_migration
             }
             
             increment_stat("snipes_succeeded", 1)
-            log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
+            log_trade(mint, "BUY", amount_sol, 0)
             return True
         
         # Fallback to Raydium
@@ -731,7 +842,7 @@ async def buy_token(mint: str):
                 record_skip("malformed")
                 return False
 
-        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount_lamports)
         if not tx:
             await send_telegram_alert(f"❌ Failed to build Raydium swap for {mint[:8]}...")
             mark_broken_token(mint, 0)
@@ -743,22 +854,29 @@ async def buy_token(mint: str):
             mark_broken_token(mint, 0)
             return False
 
+        # Get current balance for status
+        balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+        balance_usd = balance * 150
+        
         await send_telegram_alert(
             f"✅ Sniped {mint[:8]}... via Raydium\n"
-            f"Amount: {BUY_AMOUNT_SOL} SOL\n"
-            f"LP: {lp_data.get('liquidity', 0):.2f} SOL\n"
+            f"Amount: {amount_sol:.3f} SOL\n"
+            f"LP: {pool_liquidity:.2f} SOL\n"
+            f"{'🚀 MIGRATION!' if is_migration else ''}\n"
+            f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
             f"TX: https://solscan.io/tx/{sig}"
         )
         
         OPEN_POSITIONS[mint] = {
             "expected_token_amount": 0,
-            "buy_amount_sol": BUY_AMOUNT_SOL,
+            "buy_amount_sol": amount_sol,
             "sold_stages": set(),
-            "buy_sig": sig
+            "buy_sig": sig,
+            "is_migration": is_migration
         }
         
         increment_stat("snipes_succeeded", 1)
-        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
+        log_trade(mint, "BUY", amount_sol, 0)
         return True
 
     except Exception as e:
@@ -997,9 +1115,16 @@ async def wait_and_auto_sell(mint: str):
         # Determine token type and strategy
         is_pumpfun = mint in pumpfun_tokens
         is_trending = mint in trending_tokens
+        is_migration = position.get("is_migration", False)
         
         # Select appropriate targets
-        if is_pumpfun and PUMPFUN_USE_MOON_STRATEGY:
+        if is_migration:
+            # Aggressive targets for migrations
+            targets = [5.0, 15.0, 30.0]
+            sell_percents = [30, 30, 40]
+            strategy_name = "MIGRATION"
+            min_hold_time = 60
+        elif is_pumpfun and PUMPFUN_USE_MOON_STRATEGY:
             targets = [PUMPFUN_TAKE_PROFIT_1, PUMPFUN_TAKE_PROFIT_2, PUMPFUN_TAKE_PROFIT_3]
             sell_percents = [PUMPFUN_SELL_PERCENT_1, PUMPFUN_SELL_PERCENT_2, PUMPFUN_MOON_BAG]
             strategy_name = "MOON SHOT"
@@ -1323,5 +1448,9 @@ __all__ = [
     'BLACKLIST',
     'raydium',
     'rpc',
-    'wait_and_auto_sell_timer_based'
+    'wait_and_auto_sell_timer_based',
+    'get_dynamic_position_size',
+    'get_minimum_liquidity_required',
+    'USE_DYNAMIC_SIZING',
+    'SCALE_WITH_BALANCE'
 ]
