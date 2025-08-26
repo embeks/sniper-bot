@@ -1,4 +1,4 @@
-# utils.py - PRODUCTION READY VERSION
+# utils.py - COMPLETE PRODUCTION READY VERSION
 import os
 import json
 import logging
@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 import base64
 from solders.transaction import VersionedTransaction
-import certifi  # NEW: For TLS verification
+import certifi  # For TLS verification
 
 # Solana imports
 from solders.keypair import Keypair
@@ -37,13 +37,50 @@ TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
 BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
+SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
+SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 HELIUS_API = os.getenv("HELIUS_API")
 
-# NEW: Configuration flags for debugging
+# Parse sell percentages
+AUTO_SELL_PERCENT_2X = 50
+AUTO_SELL_PERCENT_5X = 25
+AUTO_SELL_PERCENT_10X = 25
+
+# Profit-based trading configuration
+TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))
+TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 5.0))
+TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 10.0))
+SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 50))
+SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 25))
+SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 25))
+STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 50))
+TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))
+MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))
+PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))
+
+# PumpFun configuration
+PUMPFUN_USE_MOON_STRATEGY = os.getenv("PUMPFUN_USE_MOON_STRATEGY", "true").lower() == "true"
+PUMPFUN_TAKE_PROFIT_1 = float(os.getenv("PUMPFUN_TAKE_PROFIT_1", 10.0))
+PUMPFUN_TAKE_PROFIT_2 = float(os.getenv("PUMPFUN_TAKE_PROFIT_2", 25.0))
+PUMPFUN_TAKE_PROFIT_3 = float(os.getenv("PUMPFUN_TAKE_PROFIT_3", 50.0))
+PUMPFUN_SELL_PERCENT_1 = float(os.getenv("PUMPFUN_SELL_PERCENT_1", 20))
+PUMPFUN_SELL_PERCENT_2 = float(os.getenv("PUMPFUN_SELL_PERCENT_2", 30))
+PUMPFUN_MOON_BAG = float(os.getenv("PUMPFUN_MOON_BAG", 50))
+NO_SELL_FIRST_MINUTES = int(os.getenv("NO_SELL_FIRST_MINUTES", 30))
+TRAILING_STOP_ACTIVATION = float(os.getenv("TRAILING_STOP_ACTIVATION", 5.0))
+
+# Trending tokens configuration
+TRENDING_USE_CUSTOM = os.getenv("TRENDING_USE_CUSTOM", "false").lower() == "true"
+TRENDING_TAKE_PROFIT_1 = float(os.getenv("TRENDING_TAKE_PROFIT_1", 3.0))
+TRENDING_TAKE_PROFIT_2 = float(os.getenv("TRENDING_TAKE_PROFIT_2", 8.0))
+TRENDING_TAKE_PROFIT_3 = float(os.getenv("TRENDING_TAKE_PROFIT_3", 15.0))
+
+# Configuration flags
 OVERRIDE_DECIMALS_TO_9 = os.getenv("OVERRIDE_DECIMALS_TO_9", "false").lower() == "true"
 IGNORE_JUPITER_PRICE_FIELD = os.getenv("IGNORE_JUPITER_PRICE_FIELD", "false").lower() == "true"
-LP_CHECK_TIMEOUT = int(os.getenv("LP_CHECK_TIMEOUT", 3))  # 3 seconds timeout for LP checks
+LP_CHECK_TIMEOUT = int(os.getenv("LP_CHECK_TIMEOUT", 3))
 
 # Initialize clients
 rpc = Client(RPC_URL, commitment=Confirmed)
@@ -73,7 +110,9 @@ if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
 OPEN_POSITIONS = {}
 BROKEN_TOKENS = set()
 BOT_RUNNING = True
-BLACKLIST = set()
+BLACKLIST_FILE = "blacklist.json"
+TRADES_CSV_FILE = "trades.csv"
+BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
 
 # Stats tracking
 daily_stats = {
@@ -87,8 +126,8 @@ daily_stats = {
         "blacklist": 0,
         "malformed": 0,
         "buy_failed": 0,
-        "no_route": 0,  # NEW
-        "lp_timeout": 0  # NEW
+        "no_route": 0,
+        "lp_timeout": 0
     }
 }
 
@@ -97,14 +136,23 @@ listener_status = {"Raydium": "OFFLINE", "Jupiter": "OFFLINE", "PumpFun": "OFFLI
 last_activity = time.time()
 last_seen_token = {"Raydium": time.time(), "Jupiter": time.time(), "PumpFun": time.time(), "Moonshot": time.time()}
 
-# NEW: Telegram message batching
+# Telegram batching
 telegram_batch = []
 telegram_batch_time = 0
-telegram_batch_interval = 1.0  # Batch messages within 1 second
+telegram_batch_interval = 1.0
+telegram_last_sent = 0
+telegram_min_interval = 0.5
 
-# Track PumpFun tokens globally
+# Track PumpFun and trending tokens
 pumpfun_tokens = {}
 trending_tokens = set()
+
+# Known token decimals
+KNOWN_TOKEN_DECIMALS = {
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
+    "So11111111111111111111111111111111111111112": 9,   # WSOL
+}
 
 def update_last_activity():
     global last_activity
@@ -141,8 +189,16 @@ def is_valid_mint(mint: str) -> bool:
         return False
 
 async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
-    """Send alert to Telegram with proper verification"""
+    """Send alert to Telegram with rate limiting and proper TLS"""
+    global telegram_last_sent
+    
     try:
+        # Rate limiting
+        now = time.time()
+        time_since_last = now - telegram_last_sent
+        if time_since_last < telegram_min_interval:
+            await asyncio.sleep(telegram_min_interval - time_since_last)
+        
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -153,13 +209,13 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
         
         for attempt in range(retry_count):
             try:
-                # FIXED: Use proper TLS verification
                 async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
                     response = await client.post(url, json=payload)
                     
                     if response.status_code == 200:
+                        telegram_last_sent = time.time()
                         return True
-                    elif response.status_code == 429:  # Rate limited
+                    elif response.status_code == 429:
                         try:
                             data = response.json()
                             retry_after = data.get("parameters", {}).get("retry_after", 5)
@@ -183,24 +239,21 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
         return False
 
 async def send_telegram_batch(lines: List[str]):
-    """NEW: Batch multiple messages together"""
+    """Batch multiple messages together"""
     global telegram_batch, telegram_batch_time
     
     current_time = time.time()
     
-    # Add to batch
     telegram_batch.extend(lines)
     
-    # If first message in batch, set timer
     if telegram_batch_time == 0:
         telegram_batch_time = current_time
     
-    # If batch interval passed or batch is large, send it
     if (current_time - telegram_batch_time > telegram_batch_interval or 
         len(telegram_batch) > 10):
         
         if telegram_batch:
-            message = "\n".join(telegram_batch[:20])  # Limit to 20 lines
+            message = "\n".join(telegram_batch[:20])
             await send_telegram_alert(message)
             telegram_batch = []
             telegram_batch_time = 0
@@ -208,7 +261,7 @@ async def send_telegram_batch(lines: List[str]):
 def log_trade(mint: str, action: str, sol_amount: float, token_amount: float):
     """Log trade to CSV file"""
     try:
-        with open("trades.csv", 'a', newline='') as f:
+        with open(TRADES_CSV_FILE, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
                 datetime.now().isoformat(),
@@ -235,6 +288,10 @@ def get_wallet_summary() -> str:
 def get_bot_status_message() -> str:
     """Get detailed bot status"""
     elapsed = int(time.time() - last_activity)
+    raydium_elapsed = int(time.time() - last_seen_token["Raydium"])
+    jupiter_elapsed = int(time.time() - last_seen_token["Jupiter"])
+    pumpfun_elapsed = int(time.time() - last_seen_token["PumpFun"])
+    moonshot_elapsed = int(time.time() - last_seen_token["Moonshot"])
     
     return f"""
 🤖 Bot: {'RUNNING' if BOT_RUNNING else 'PAUSED'}
@@ -246,23 +303,27 @@ def get_bot_status_message() -> str:
   • P&L: {daily_stats['profit_sol']:.4f} SOL
   
 ⏱ Last Activity: {elapsed}s ago
+🔌 Listeners:
+  • Raydium: {listener_status['Raydium']} ({raydium_elapsed}s)
+  • Jupiter: {listener_status['Jupiter']} ({jupiter_elapsed}s)
+  • PumpFun: {listener_status['PumpFun']} ({pumpfun_elapsed}s)
+  • Moonshot: {listener_status['Moonshot']} ({moonshot_elapsed}s)
+  
 📈 Open Positions: {len(OPEN_POSITIONS)}
 🚫 Broken Tokens: {len(BROKEN_TOKENS)}
 💰 Min LP Filter: {RUG_LP_THRESHOLD} SOL
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """FIXED: Get accurate liquidity with timeout and proper validation"""
+    """Get accurate liquidity with timeout and proper validation"""
     try:
-        # Use asyncio timeout to prevent hanging
         async def _check_liquidity():
             sol_mint = "So11111111111111111111111111111111111111112"
             
-            # First try Raydium
+            # Try Raydium first
             pool = raydium.find_pool_realtime(mint)
             
             if pool:
-                # Determine which vault has SOL
                 if pool["baseMint"] == sol_mint:
                     sol_vault_key = pool["baseVault"]
                 elif pool["quoteMint"] == sol_mint:
@@ -271,7 +332,6 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
                     logging.warning(f"[LP Check] Pool found but no SOL pair for {mint[:8]}...")
                     return {"liquidity": 0}
                 
-                # Get SOL balance in the pool vault
                 sol_vault = Pubkey.from_string(sol_vault_key)
                 response = rpc.get_balance(sol_vault)
                 
@@ -285,14 +345,14 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
                         logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in Raydium pool")
                         return {"liquidity": 0}
             
-            # Try Jupiter quote as fallback
+            # Try Jupiter as fallback
             logging.info(f"[LP Check] No Raydium pool, checking Jupiter...")
             try:
                 url = f"{JUPITER_BASE_URL}/v6/quote"
                 params = {
                     "inputMint": sol_mint,
                     "outputMint": mint,
-                    "amount": str(int(0.001 * 1e9)),  # Test with 0.001 SOL
+                    "amount": str(int(0.001 * 1e9)),
                     "slippageBps": "100",
                     "onlyDirectRoutes": "false"
                 }
@@ -302,9 +362,7 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
                     if response.status_code == 200:
                         quote = response.json()
                         
-                        # FIXED: Check if route exists and has liquidity
                         if quote.get("outAmount") and int(quote.get("outAmount", 0)) > 0:
-                            # Estimate liquidity from price impact
                             price_impact = float(quote.get("priceImpactPct", 100))
                             
                             if price_impact < 1:
@@ -324,7 +382,6 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
             except Exception as e:
                 logging.debug(f"[LP Check] Jupiter check failed: {e}")
             
-            # No liquidity found
             logging.info(f"[LP Check] No liquidity found for {mint[:8]}... on any DEX")
             return {"liquidity": 0}
         
@@ -335,7 +392,7 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
         except asyncio.TimeoutError:
             logging.warning(f"[LP Check] Timeout after {LP_CHECK_TIMEOUT}s for {mint[:8]}...")
             record_skip("lp_timeout")
-            return None  # Return None to indicate timeout, not 0 liquidity
+            return None
             
     except Exception as e:
         logging.error(f"[LP Check] Error for {mint}: {e}")
@@ -355,13 +412,14 @@ async def daily_stats_reset_loop():
             await asyncio.sleep(seconds_until_midnight)
             
             # Reset stats
-            for key in daily_stats:
-                if isinstance(daily_stats[key], dict):
-                    for subkey in daily_stats[key]:
-                        daily_stats[key][subkey] = 0
-                else:
-                    daily_stats[key] = 0
-                    
+            daily_stats["tokens_scanned"] = 0
+            daily_stats["snipes_attempted"] = 0
+            daily_stats["snipes_succeeded"] = 0
+            daily_stats["sells_executed"] = 0
+            daily_stats["profit_sol"] = 0.0
+            for key in daily_stats["skip_reasons"]:
+                daily_stats["skip_reasons"][key] = 0
+                
             await send_telegram_alert("📊 Daily stats reset")
         except Exception as e:
             logging.error(f"Stats reset error: {e}")
@@ -385,7 +443,6 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
             if response.status_code == 200:
                 quote = response.json()
                 
-                # FIXED: Honor Jupiter's provided amounts
                 in_amount = int(quote.get("inAmount", 0))
                 out_amount = int(quote.get("outAmount", 0))
                 other_amount_threshold = int(quote.get("otherAmountThreshold", 0))
@@ -429,17 +486,15 @@ async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str):
 async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]:
     """Execute a swap using Jupiter"""
     try:
-        input_mint = "So11111111111111111111111111111111111111112"  # SOL
+        input_mint = "So11111111111111111111111111111111111111112"
         output_mint = mint
         
-        # Get quote
         logging.info(f"[Jupiter] Getting quote for {amount_lamports/1e9:.4f} SOL -> {mint[:8]}...")
         quote = await get_jupiter_quote(input_mint, output_mint, amount_lamports)
         if not quote:
             logging.warning("[Jupiter] Failed to get quote")
             return None
         
-        # FIXED: Validate quote has viable route
         out_amount = int(quote.get("outAmount", 0))
         other_amount_threshold = int(quote.get("otherAmountThreshold", 0))
         
@@ -448,19 +503,16 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
             record_skip("no_route")
             return None
         
-        # Get swap transaction
         logging.info("[Jupiter] Building swap transaction...")
         swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
         if not swap_data:
             logging.warning("[Jupiter] Failed to get swap transaction")
             return None
         
-        # Deserialize and sign transaction
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
         signed_tx = VersionedTransaction(tx.message, [keypair])
         
-        # Send transaction
         logging.info("[Jupiter] Sending transaction...")
         
         try:
@@ -477,7 +529,6 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
                 sig = str(result.value)
                 logging.info(f"[Jupiter] Transaction sent: {sig}")
                 
-                # Quick confirmation check
                 await asyncio.sleep(2)
                 
                 try:
@@ -490,8 +541,6 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
                             return sig
                         elif status.value[0].err:
                             logging.error(f"[Jupiter] Transaction failed: {status.value[0].err}")
-                            
-                            # NEW: WSOL cleanup on failure
                             await cleanup_wsol_on_failure()
                             return None
                 except Exception as e:
@@ -512,16 +561,77 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         logging.error(f"[Jupiter] Swap execution error: {e}")
         return None
 
-async def cleanup_wsol_on_failure():
-    """NEW: Clean up stranded WSOL on swap failure"""
+async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
+    """Execute a sell using Jupiter"""
     try:
-        from spl.token.constants import WRAPPED_SOL_MINT
+        input_mint = mint
+        output_mint = "So11111111111111111111111111111111111111112"
+        
+        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}...")
+        quote = await get_jupiter_quote(input_mint, output_mint, amount)
+        if not quote:
+            return None
+        
+        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
+        if not swap_data:
+            return None
+        
+        tx_bytes = base64.b64decode(swap_data["swapTransaction"])
+        tx = VersionedTransaction.from_bytes(tx_bytes)
+        signed_tx = VersionedTransaction(tx.message, [keypair])
+        
+        logging.info("[Jupiter] Sending sell transaction...")
+        
+        try:
+            result = rpc.send_transaction(
+                signed_tx,
+                opts=TxOpts(
+                    skip_preflight=True,
+                    preflight_commitment=Confirmed,
+                    max_retries=3
+                )
+            )
+            
+            if result.value:
+                sig = str(result.value)
+                logging.info(f"[Jupiter] Sell transaction sent: {sig}")
+                
+                await asyncio.sleep(2)
+                
+                try:
+                    from solders.signature import Signature
+                    sig_obj = Signature.from_string(sig)
+                    status = rpc.get_signature_statuses([sig_obj])
+                    if status.value[0] is not None:
+                        if status.value[0].confirmation_status:
+                            logging.info(f"[Jupiter] Sell confirmed: {status.value[0].confirmation_status}")
+                        elif status.value[0].err:
+                            logging.error(f"[Jupiter] Sell failed: {status.value[0].err}")
+                            return None
+                except Exception as e:
+                    logging.debug(f"[Jupiter] Status check: {e}")
+                
+                return sig
+            else:
+                logging.error(f"[Jupiter] Failed to send sell transaction")
+                return None
+                
+        except Exception as e:
+            logging.error(f"[Jupiter] Sell send error: {e}")
+            return None
+            
+    except Exception as e:
+        logging.error(f"[Jupiter] Sell execution error: {e}")
+        return None
+
+async def cleanup_wsol_on_failure():
+    """Clean up stranded WSOL on swap failure"""
+    try:
+        from spl.token.constants import WRAPPED_SOL_MINT, TOKEN_PROGRAM_ID
         wsol_account = get_associated_token_address(keypair.pubkey(), WRAPPED_SOL_MINT)
         
-        # Check if WSOL account has balance
         response = rpc.get_token_account_balance(wsol_account)
         if response and response.value and int(response.value.amount) > 0:
-            # Close WSOL account to recover SOL
             close_ix = close_account(
                 CloseAccountParams(
                     account=wsol_account,
@@ -531,7 +641,6 @@ async def cleanup_wsol_on_failure():
                 )
             )
             
-            # Build and send cleanup transaction
             from solders.message import MessageV0
             recent_blockhash = rpc.get_latest_blockhash().value.blockhash
             msg = MessageV0.try_compile(
@@ -550,7 +659,7 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str):
-    """FIXED: Execute buy with proper LP validation"""
+    """Execute buy with proper LP validation"""
     amount = int(BUY_AMOUNT_SOL * 1e9)
 
     try:
@@ -563,14 +672,12 @@ async def buy_token(mint: str):
         increment_stat("snipes_attempted", 1)
         update_last_activity()
         
-        # FIXED: Check liquidity with timeout
+        # Check liquidity with timeout
         logging.info(f"[Buy] Checking liquidity for {mint[:8]}...")
         lp_data = await get_liquidity_and_ownership(mint)
         
-        # Handle timeout case
         if lp_data is None:
             logging.warning(f"[Buy] LP check timed out for {mint[:8]}..., requeuing")
-            # Don't blacklist on timeout, just skip for now
             return False
         
         min_lp = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
@@ -615,14 +722,21 @@ async def buy_token(mint: str):
         input_mint = "So11111111111111111111111111111111111111112"
         output_mint = mint
         
-        # Build swap transaction
+        pool = raydium.find_pool(input_mint, output_mint)
+        if not pool:
+            pool = raydium.find_pool(output_mint, input_mint)
+            if not pool:
+                await send_telegram_alert(f"⚠️ No pool found for {mint[:8]}...")
+                log_skipped_token(mint, "No pool on Jupiter or Raydium")
+                record_skip("malformed")
+                return False
+
         tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
         if not tx:
             await send_telegram_alert(f"❌ Failed to build Raydium swap for {mint[:8]}...")
             mark_broken_token(mint, 0)
             return False
 
-        # Send transaction
         sig = raydium.send_transaction(tx, keypair)
         if not sig:
             await send_telegram_alert(f"📉 Raydium swap failed for {mint[:8]}...")
@@ -653,11 +767,10 @@ async def buy_token(mint: str):
         return False
 
 async def sell_token(mint: str, percent: float = 100.0):
-    """Execute sell transaction"""
+    """Execute sell transaction for a token"""
     try:
         from spl.token.constants import TOKEN_PROGRAM_ID
         
-        # Get token balance
         owner = keypair.pubkey()
         token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
         
@@ -680,95 +793,61 @@ async def sell_token(mint: str, percent: float = 100.0):
             await send_telegram_alert(f"⚠️ Zero balance to sell for {mint[:8]}...")
             return False
 
-        # Execute sell (similar structure to buy)
-        # Implementation continues...
+        # Try Jupiter first
+        logging.info(f"[Sell] Attempting Jupiter sell for {mint[:8]}...")
+        jupiter_sig = await execute_jupiter_sell(mint, amount)
+        
+        if jupiter_sig:
+            await send_telegram_alert(
+                f"✅ Sold {percent}% of {mint[:8]}... via Jupiter\n"
+                f"TX: https://solscan.io/tx/{jupiter_sig}"
+            )
+            log_trade(mint, f"SELL {percent}%", 0, amount)
+            increment_stat("sells_executed", 1)
+            return True
+        
+        # Fallback to Raydium
+        logging.info(f"[Sell] Jupiter failed, trying Raydium for {mint[:8]}...")
+        
+        input_mint = mint
+        output_mint = "So11111111111111111111111111111111111111112"
+        
+        pool = raydium.find_pool(input_mint, output_mint)
+        if not pool:
+            pool = raydium.find_pool(output_mint, input_mint)
+            if not pool:
+                await send_telegram_alert(f"⚠️ No pool for {mint[:8]}...")
+                log_skipped_token(mint, "No pool for sell")
+                return False
+
+        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        if not tx:
+            await send_telegram_alert(f"❌ Failed to build sell TX for {mint[:8]}...")
+            return False
+
+        sig = raydium.send_transaction(tx, keypair)
+        if not sig:
+            await send_telegram_alert(f"❌ Failed to send sell tx for {mint[:8]}...")
+            return False
+
+        await send_telegram_alert(
+            f"✅ Sold {percent}% of {mint[:8]}... via Raydium\n"
+            f"TX: https://solscan.io/tx/{sig}"
+        )
+        log_trade(mint, f"SELL {percent}%", 0, amount)
+        increment_stat("sells_executed", 1)
         return True
         
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint[:8]}...: {str(e)[:100]}")
+        log_skipped_token(mint, f"Sell failed: {e}")
         return False
-
-async def get_token_price_usd(mint: str) -> Optional[float]:
-    """FIXED: Get current token price using Jupiter's correct values"""
-    try:
-        # Try Jupiter quote for most accurate price
-        sol_mint = "So11111111111111111111111111111111111111112"
-        
-        # Get quote for 1 SOL worth to get price
-        quote_url = f"{JUPITER_BASE_URL}/v6/quote"
-        params = {
-            "inputMint": sol_mint,
-            "outputMint": mint,
-            "amount": str(int(1 * 1e9)),  # 1 SOL
-            "slippageBps": "100"
-        }
-        
-        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-            response = await client.get(quote_url, params=params)
-            if response.status_code == 200:
-                quote = response.json()
-                
-                # FIXED: Honor Jupiter's provided values
-                in_amount = int(quote.get("inAmount", 0))
-                out_amount = int(quote.get("outAmount", 0))
-                
-                if not IGNORE_JUPITER_PRICE_FIELD and "price" in quote:
-                    # Use Jupiter's calculated price if available
-                    price = float(quote["price"])
-                    logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter price field)")
-                    return price
-                
-                if out_amount > 0:
-                    # Calculate price from amounts
-                    # Jupiter handles decimals correctly internally
-                    sol_price = 150.0  # Current SOL price
-                    
-                    # Price = (SOL spent * SOL price) / tokens received
-                    # Jupiter's outAmount already accounts for decimals
-                    tokens_received = out_amount
-                    
-                    # If override is set (for debugging only), use 9 decimals
-                    if OVERRIDE_DECIMALS_TO_9:
-                        tokens_received = out_amount / 1e9
-                    else:
-                        # Trust Jupiter's amount which includes decimal handling
-                        # We need to get the actual decimal count from token
-                        decimals = await get_token_decimals(mint)
-                        tokens_received = out_amount / (10 ** decimals)
-                    
-                    price = sol_price / tokens_received  # Price per token
-                    
-                    logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated from Jupiter quote)")
-                    return price
-        
-        # Fallback to DexScreener
-        try:
-            dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-            
-            async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
-                response = await client.get(dex_url)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "pairs" in data and len(data["pairs"]) > 0:
-                        pairs = sorted(data["pairs"], 
-                                     key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), 
-                                     reverse=True)
-                        if pairs[0].get("priceUsd"):
-                            price = float(pairs[0]["priceUsd"])
-                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (DexScreener)")
-                            return price
-        except Exception as e:
-            logging.debug(f"[Price] DexScreener error: {e}")
-        
-        logging.warning(f"[Price] Could not get price for {mint[:8]}...")
-        return None
-        
-    except Exception as e:
-        logging.error(f"[Price] Error for {mint}: {e}")
-        return None
 
 async def get_token_decimals(mint: str) -> int:
     """Get token decimals from blockchain"""
+    if mint in KNOWN_TOKEN_DECIMALS:
+        return KNOWN_TOKEN_DECIMALS[mint]
+    
     try:
         mint_pubkey = Pubkey.from_string(mint)
         mint_info = rpc.get_account_info(mint_pubkey)
@@ -782,25 +861,306 @@ async def get_token_decimals(mint: str) -> int:
                     decoded = bytes(data[0])
                 if len(decoded) > 44:
                     decimals = decoded[44]
+                    KNOWN_TOKEN_DECIMALS[mint] = decimals
                     logging.debug(f"[Decimals] Token {mint[:8]}... has {decimals} decimals")
                     return decimals
     except Exception as e:
         logging.debug(f"[Decimals] Could not get decimals for {mint[:8]}...: {e}")
     
-    # Default to 9 (most common for SPL tokens)
-    return 9
+    return 9  # Default
+
+async def get_token_price_usd(mint: str) -> Optional[float]:
+    """Get current token price using Jupiter's correct values"""
+    try:
+        STABLECOIN_MINTS = {
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
+            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
+        }
+        
+        if mint in STABLECOIN_MINTS:
+            logging.info(f"[Price] {STABLECOIN_MINTS[mint]} stablecoin, returning $1.00")
+            return 1.0
+        
+        # Try DexScreener first for new tokens
+        try:
+            dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            
+            async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
+                response = await client.get(dex_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "pairs" in data and len(data["pairs"]) > 0:
+                        pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
+                        if pairs[0].get("priceUsd"):
+                            price = float(pairs[0]["priceUsd"])
+                            if price > 0:
+                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (DexScreener)")
+                                return price
+        except Exception as e:
+            logging.debug(f"[Price] DexScreener error: {e}")
+        
+        # Try Birdeye if configured
+        if BIRDEYE_API_KEY:
+            try:
+                url = f"https://public-api.birdeye.so/defi/price?address={mint}"
+                
+                async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
+                    headers = {"X-API-KEY": BIRDEYE_API_KEY}
+                    response = await client.get(url, headers=headers)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if "data" in data and "value" in data["data"]:
+                            price = float(data["data"]["value"])
+                            if price > 0:
+                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye)")
+                                return price
+            except Exception as e:
+                logging.debug(f"[Price] Birdeye error: {e}")
+        
+        # Try Jupiter Price API
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        price_data = data["data"][mint]
+                        price = float(price_data.get("price", 0))
+                        if price > 0:
+                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter Price API)")
+                            return price
+        except Exception as e:
+            logging.debug(f"[Price] Jupiter Price API error: {e}")
+        
+        # Last resort: Calculate from Jupiter quote
+        try:
+            quote_url = f"{JUPITER_BASE_URL}/v6/quote"
+            params = {
+                "inputMint": "So11111111111111111111111111111111111111112",
+                "outputMint": mint,
+                "amount": str(int(1 * 1e9)),
+                "slippageBps": "100"
+            }
+            
+            async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
+                response = await client.get(quote_url, params=params)
+                if response.status_code == 200:
+                    quote = response.json()
+                    
+                    # Honor Jupiter's provided values
+                    if not IGNORE_JUPITER_PRICE_FIELD and "price" in quote:
+                        price = float(quote["price"])
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter price field)")
+                        return price
+                    
+                    if "outAmount" in quote and float(quote["outAmount"]) > 0:
+                        sol_price = 150.0
+                        
+                        # Trust Jupiter's decimal handling unless override is set
+                        if OVERRIDE_DECIMALS_TO_9:
+                            tokens_received = float(quote["outAmount"]) / 1e9
+                        else:
+                            decimals = await get_token_decimals(mint)
+                            tokens_received = float(quote["outAmount"]) / (10 ** decimals)
+                        
+                        sol_spent = 1.0
+                        price = (sol_spent * sol_price) / tokens_received
+                        
+                        if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
+                            logging.warning(f"[Price] Calculated ${price:.4f} for {STABLECOIN_MINTS[mint]}, forcing to $1.00")
+                            return 1.0
+                        
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated from Jupiter)")
+                        return price
+        except Exception as e:
+            logging.debug(f"[Price] Jupiter quote error: {e}")
+        
+        logging.warning(f"[Price] Could not get price for {mint[:8]}...")
+        return None
+        
+    except Exception as e:
+        logging.error(f"[Price] Unexpected error for {mint}: {e}")
+        return None
 
 async def wait_and_auto_sell(mint: str):
-    """Monitor position and auto-sell at profit targets"""
+    """Monitor position and auto-sell with different strategies based on token type"""
     try:
         if mint not in OPEN_POSITIONS:
             logging.warning(f"No position found for {mint}")
             return
             
         position = OPEN_POSITIONS[mint]
+        buy_amount_sol = position["buy_amount_sol"]
         
-        # Implementation continues with profit monitoring...
-        # This is a placeholder for the full auto-sell logic
+        # Determine token type and strategy
+        is_pumpfun = mint in pumpfun_tokens
+        is_trending = mint in trending_tokens
+        
+        # Select appropriate targets
+        if is_pumpfun and PUMPFUN_USE_MOON_STRATEGY:
+            targets = [PUMPFUN_TAKE_PROFIT_1, PUMPFUN_TAKE_PROFIT_2, PUMPFUN_TAKE_PROFIT_3]
+            sell_percents = [PUMPFUN_SELL_PERCENT_1, PUMPFUN_SELL_PERCENT_2, PUMPFUN_MOON_BAG]
+            strategy_name = "MOON SHOT"
+            min_hold_time = NO_SELL_FIRST_MINUTES * 60
+        elif is_trending and TRENDING_USE_CUSTOM:
+            targets = [TRENDING_TAKE_PROFIT_1, TRENDING_TAKE_PROFIT_2, TRENDING_TAKE_PROFIT_3]
+            sell_percents = [30, 35, 35]
+            strategy_name = "TRENDING"
+            min_hold_time = 60
+        else:
+            targets = [TAKE_PROFIT_1, TAKE_PROFIT_2, TAKE_PROFIT_3]
+            sell_percents = [SELL_PERCENT_1, SELL_PERCENT_2, SELL_PERCENT_3]
+            strategy_name = "STANDARD"
+            min_hold_time = 0
+        
+        await asyncio.sleep(10)
+        
+        # Get entry price
+        entry_price = await get_token_price_usd(mint)
+        if not entry_price:
+            logging.warning(f"Could not get entry price for {mint}, using timer-based fallback")
+            await wait_and_auto_sell_timer_based(mint)
+            return
+            
+        position["entry_price"] = entry_price
+        position["highest_price"] = entry_price
+        position["token_amount"] = position.get("expected_token_amount", 0)
+        
+        await send_telegram_alert(
+            f"📊 Monitoring {mint[:8]}... [{strategy_name}]\n"
+            f"Entry: ${entry_price:.6f}\n"
+            f"Targets: {targets[0]}x/${entry_price*targets[0]:.6f}, "
+            f"{targets[1]}x/${entry_price*targets[1]:.6f}, "
+            f"{targets[2]}x/${entry_price*targets[2]:.6f}\n"
+            f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}"
+        )
+        
+        # Monitor loop
+        start_time = time.time()
+        last_price_check = 0
+        max_sell_attempts = 3
+        sell_attempts = {"profit1": 0, "profit2": 0, "profit3": 0, "stop_loss": 0}
+        
+        while time.time() - start_time < MAX_HOLD_TIME_SEC:
+            try:
+                if time.time() - last_price_check < PRICE_CHECK_INTERVAL_SEC:
+                    await asyncio.sleep(1)
+                    continue
+                    
+                last_price_check = time.time()
+                current_price = await get_token_price_usd(mint)
+                
+                if not current_price:
+                    logging.debug(f"Could not get price for {mint}, skipping this check")
+                    await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
+                    continue
+                
+                profit_multiplier = current_price / entry_price
+                profit_percent = (profit_multiplier - 1) * 100
+                time_held = time.time() - start_time
+                
+                # Update highest price
+                if current_price > position["highest_price"]:
+                    position["highest_price"] = current_price
+                    logging.info(f"[{mint[:8]}] New high: ${current_price:.6f} ({profit_multiplier:.2f}x)")
+                
+                # Check minimum hold time
+                if is_pumpfun and time_held < min_hold_time:
+                    logging.debug(f"[{mint[:8]}] Holding for {min_hold_time/60:.0f} mins minimum (PumpFun)")
+                    await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
+                    continue
+                
+                # Check trailing stop
+                if profit_multiplier >= TRAILING_STOP_ACTIVATION:
+                    drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
+                    if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
+                        logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
+                        if await sell_token(mint, 100):
+                            await send_telegram_alert(
+                                f"⛔ Trailing stop triggered for {mint[:8]}!\n"
+                                f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
+                                f"Sold remaining position at ${current_price:.6f} ({profit_multiplier:.1f}x)"
+                            )
+                            break
+                
+                # Check stop loss
+                if profit_percent <= -STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
+                    sell_attempts["stop_loss"] += 1
+                    logging.info(f"[{mint[:8]}] Stop loss triggered at {profit_percent:.1f}%")
+                    if await sell_token(mint, 100):
+                        await send_telegram_alert(
+                            f"🛑 Stop loss triggered for {mint[:8]}!\n"
+                            f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
+                            f"Sold all to minimize losses"
+                        )
+                        break
+                
+                # Check profit targets
+                if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
+                    sell_attempts["profit1"] += 1
+                    if await sell_token(mint, sell_percents[0]):
+                        position["sold_stages"].add("profit1")
+                        await send_telegram_alert(
+                            f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
+                            f"Sold {sell_percents[0]}% of position\n"
+                            f"Strategy: {strategy_name}"
+                        )
+                
+                if profit_multiplier >= targets[1] and "profit2" not in position["sold_stages"] and sell_attempts["profit2"] < max_sell_attempts:
+                    sell_attempts["profit2"] += 1
+                    if await sell_token(mint, sell_percents[1]):
+                        position["sold_stages"].add("profit2")
+                        await send_telegram_alert(
+                            f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
+                            f"Sold {sell_percents[1]}% of position\n"
+                            f"Strategy: {strategy_name}"
+                        )
+                
+                if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
+                    sell_attempts["profit3"] += 1
+                    if await sell_token(mint, sell_percents[2]):
+                        position["sold_stages"].add("profit3")
+                        await send_telegram_alert(
+                            f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
+                            f"Sold final {sell_percents[2]}% of position\n"
+                            f"Total profit: {(profit_multiplier-1)*100:.1f}%!\n"
+                            f"Strategy: {strategy_name} SUCCESS! 🎯"
+                        )
+                        break
+                
+                # Log status every minute
+                if int((time.time() - start_time) % 60) == 0:
+                    logging.info(
+                        f"[{mint[:8]}] [{strategy_name}] Price: ${current_price:.6f} ({profit_multiplier:.2f}x) | "
+                        f"High: ${position['highest_price']:.6f} | "
+                        f"Sold stages: {position['sold_stages']}"
+                    )
+                
+                if len(position["sold_stages"]) >= 3:
+                    logging.info(f"[{mint[:8]}] All profit targets hit, position closed")
+                    break
+                    
+            except Exception as e:
+                logging.error(f"Error monitoring {mint}: {e}")
+                await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
+        
+        # Time limit reached
+        if time.time() - start_time >= MAX_HOLD_TIME_SEC:
+            logging.info(f"[{mint[:8]}] Max hold time reached, force selling")
+            if await sell_token(mint, 100):
+                current_price = await get_token_price_usd(mint) or entry_price
+                profit_percent = ((current_price / entry_price) - 1) * 100
+                await send_telegram_alert(
+                    f"⏰ Max hold time reached for {mint[:8]}\n"
+                    f"Force sold after {MAX_HOLD_TIME_SEC/60:.0f} minutes\n"
+                    f"Final P&L: {profit_percent:+.1f}%\n"
+                    f"Strategy used: {strategy_name}"
+                )
         
         # Clean up position
         if mint in OPEN_POSITIONS:
@@ -808,11 +1168,72 @@ async def wait_and_auto_sell(mint: str):
             
     except Exception as e:
         logging.error(f"Auto-sell error for {mint}: {e}")
+        await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
+        if mint in OPEN_POSITIONS:
+            del OPEN_POSITIONS[mint]
+
+async def wait_and_auto_sell_timer_based(mint: str):
+    """Fallback timer-based selling if price feed fails"""
+    try:
+        if mint not in OPEN_POSITIONS:
+            return
+            
+        position = OPEN_POSITIONS[mint]
+        
+        start_time = time.time()
+        max_duration = 600
+        max_sell_attempts = 3
+        sell_attempts = {"2x": 0, "5x": 0, "10x": 0}
+        
+        while time.time() - start_time < max_duration:
+            try:
+                elapsed = time.time() - start_time
+                
+                if elapsed > 30 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
+                    sell_attempts["2x"] += 1
+                    if await sell_token(mint, AUTO_SELL_PERCENT_2X):
+                        position["sold_stages"].add("2x")
+                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
+                    elif sell_attempts["2x"] >= max_sell_attempts:
+                        position["sold_stages"].add("2x")
+                
+                if elapsed > 120 and "5x" not in position["sold_stages"] and sell_attempts["5x"] < max_sell_attempts:
+                    sell_attempts["5x"] += 1
+                    if await sell_token(mint, AUTO_SELL_PERCENT_5X):
+                        position["sold_stages"].add("5x")
+                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
+                    elif sell_attempts["5x"] >= max_sell_attempts:
+                        position["sold_stages"].add("5x")
+                
+                if elapsed > 300 and "10x" not in position["sold_stages"] and sell_attempts["10x"] < max_sell_attempts:
+                    sell_attempts["10x"] += 1
+                    if await sell_token(mint, AUTO_SELL_PERCENT_10X):
+                        position["sold_stages"].add("10x")
+                        await send_telegram_alert(f"🌙 Sold final {AUTO_SELL_PERCENT_10X}% at 5min timer for {mint[:8]}...")
+                        break
+                    elif sell_attempts["10x"] >= max_sell_attempts:
+                        position["sold_stages"].add("10x")
+                        break
+                
+                if len(position["sold_stages"]) >= 3:
+                    break
+                    
+                await asyncio.sleep(10)
+                
+            except Exception as e:
+                logging.error(f"Timer-based monitoring error for {mint}: {e}")
+                await asyncio.sleep(10)
+        
+        if mint in OPEN_POSITIONS:
+            del OPEN_POSITIONS[mint]
+            
+    except Exception as e:
+        logging.error(f"Timer-based auto-sell error for {mint}: {e}")
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
 
 async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
-    """Check PumpFun token status"""
+    """Check PumpFun token status and market cap"""
     try:
         url = f"https://frontend-api.pump.fun/coins/{mint}"
         async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
@@ -821,10 +1242,12 @@ async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
                 data = response.json()
                 market_cap = data.get("usd_market_cap", 0)
                 graduated = market_cap >= 69420
+                pool_address = data.get("raydium_pool")
                 
                 return {
                     "market_cap": market_cap,
                     "graduated": graduated,
+                    "pool_address": pool_address,
                     "progress": (market_cap / 69420) * 100 if market_cap < 69420 else 100
                 }
     except Exception as e:
@@ -833,18 +1256,29 @@ async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
     return None
 
 async def detect_pumpfun_migration(mint: str) -> bool:
-    """Detect if a PumpFun token has migrated to Raydium"""
+    """Detect if a PumpFun token has migrated to Raydium/Jupiter"""
     try:
         pf_status = await check_pumpfun_token_status(mint)
         if not pf_status or not pf_status.get("graduated"):
             return False
         
-        # Check if pool exists on Raydium
         pool = raydium.find_pool_realtime(mint)
         
         if pool:
             logging.info(f"[Migration] PumpFun token {mint[:8]}... has migrated to Raydium!")
             return True
+            
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
+                        return True
+        except:
+            pass
             
     except Exception as e:
         logging.error(f"Migration detection error: {e}")
@@ -883,5 +1317,11 @@ __all__ = [
     'trending_tokens',
     'get_token_price_usd',
     'get_token_decimals',
-    'cleanup_wsol_on_failure'
+    'cleanup_wsol_on_failure',
+    'OPEN_POSITIONS',
+    'daily_stats',
+    'BLACKLIST',
+    'raydium',
+    'rpc',
+    'wait_and_auto_sell_timer_based'
 ]
