@@ -1,7 +1,7 @@
-# integrate_monster.py - COMPLETE PRODUCTION READY ELITE MONEY PRINTER
+# integrate_monster.py - COMPLETE PRODUCTION READY ELITE MONEY PRINTER WITH SCALING
 """
-Elite Money Printer Integration - ALL FEATURES PRESERVED
-Ready for 24/7 profitable operation on Render with all original functionality
+Elite Money Printer Integration - ALL FEATURES PRESERVED + RISK MANAGEMENT
+Ready for 24/7 profitable operation on Render with scaling capabilities
 """
 
 import asyncio
@@ -17,6 +17,7 @@ import uvicorn
 import certifi
 from dataclasses import dataclass
 from collections import deque
+from datetime import datetime, timedelta
 
 # Import your existing modules
 from sniper_logic import (
@@ -33,7 +34,8 @@ from utils import (
     is_bot_running, start_bot, stop_bot, 
     get_wallet_summary, get_bot_status_message,
     check_pumpfun_token_status, detect_pumpfun_migration,
-    get_liquidity_and_ownership
+    get_liquidity_and_ownership, get_dynamic_position_size,
+    get_minimum_liquidity_required, USE_DYNAMIC_SIZING, SCALE_WITH_BALANCE
 )
 
 load_dotenv()
@@ -54,6 +56,8 @@ def log_configuration():
         ("RUG_LP_THRESHOLD", os.getenv("RUG_LP_THRESHOLD", "3.0")),
         ("LP_CHECK_TIMEOUT", os.getenv("LP_CHECK_TIMEOUT", "3")),
         ("BUY_AMOUNT_SOL", os.getenv("BUY_AMOUNT_SOL", "0.03")),
+        ("USE_DYNAMIC_SIZING", os.getenv("USE_DYNAMIC_SIZING", "true")),
+        ("SCALE_WITH_BALANCE", os.getenv("SCALE_WITH_BALANCE", "true")),
         ("HELIUS_API", "SET" if os.getenv("HELIUS_API") else "NOT SET"),
         ("JUPITER_BASE_URL", os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")),
     ]
@@ -419,6 +423,145 @@ class ArbitrageBot:
         return []
 
 # ============================================
+# PORTFOLIO RISK MANAGER
+# ============================================
+
+class PortfolioRiskManager:
+    """Advanced risk management to protect capital during scaling"""
+    
+    def __init__(self):
+        self.session_start_balance = None
+        self.peak_balance = None
+        self.trades_today = 0
+        self.losses_today = 0
+        self.consecutive_losses = 0
+        self.last_reset = datetime.now()
+        self.max_drawdown = float(os.getenv("MAX_DRAWDOWN", "0.25"))  # 25%
+        self.max_daily_loss = float(os.getenv("MAX_DAILY_LOSS", "0.15"))  # 15%
+        self.max_trades_per_day = int(os.getenv("MAX_TRADES_PER_DAY", "50"))
+        self.max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
+        self.position_scaling_enabled = True
+        
+    async def check_risk_limits(self) -> bool:
+        """Return True if safe to trade, False if limits hit"""
+        try:
+            from utils import rpc, keypair
+            balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+            
+            # Initialize if first run
+            if self.session_start_balance is None:
+                self.session_start_balance = balance
+                self.peak_balance = balance
+                logging.info(f"[RISK] Session started with {balance:.2f} SOL")
+            
+            # Reset daily counters if new day
+            if datetime.now().date() > self.last_reset.date():
+                self.trades_today = 0
+                self.losses_today = 0
+                self.consecutive_losses = 0
+                self.last_reset = datetime.now()
+                self.session_start_balance = balance
+                logging.info("[RISK] Daily counters reset")
+            
+            # Update peak balance
+            if balance > self.peak_balance:
+                self.peak_balance = balance
+                logging.info(f"[RISK] New peak balance: {balance:.2f} SOL")
+            
+            # Check drawdown from peak
+            if self.peak_balance > 0:
+                drawdown = (self.peak_balance - balance) / self.peak_balance
+                if drawdown > self.max_drawdown:
+                    await send_telegram_alert(
+                        f"⛔ RISK LIMIT: {drawdown*100:.1f}% drawdown from peak\n"
+                        f"Peak: {self.peak_balance:.2f} SOL\n"
+                        f"Current: {balance:.2f} SOL\n"
+                        f"Pausing trading to protect capital"
+                    )
+                    self.position_scaling_enabled = False
+                    return False
+            
+            # Check daily loss
+            if self.session_start_balance > 0:
+                daily_loss = (self.session_start_balance - balance) / self.session_start_balance
+                if daily_loss > self.max_daily_loss:
+                    await send_telegram_alert(
+                        f"⛔ DAILY LOSS LIMIT: {daily_loss*100:.1f}% loss today\n"
+                        f"Started: {self.session_start_balance:.2f} SOL\n"
+                        f"Current: {balance:.2f} SOL\n"
+                        f"Pausing until tomorrow"
+                    )
+                    return False
+            
+            # Check consecutive losses
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                await send_telegram_alert(
+                    f"⚠️ {self.consecutive_losses} consecutive losses\n"
+                    f"Taking a break to reassess strategy"
+                )
+                await asyncio.sleep(300)  # 5 minute cooldown
+                self.consecutive_losses = 0
+            
+            # Check trade frequency
+            if self.trades_today >= self.max_trades_per_day:
+                await send_telegram_alert(
+                    f"⚠️ Daily trade limit reached ({self.max_trades_per_day})\n"
+                    f"Pausing to avoid overtrading"
+                )
+                return False
+            
+            # Re-enable scaling if recovered
+            if not self.position_scaling_enabled and drawdown < 0.1:
+                self.position_scaling_enabled = True
+                await send_telegram_alert("✅ Risk levels normalized, scaling re-enabled")
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"[RISK] Error checking limits: {e}")
+            return True  # Allow trading if risk check fails
+    
+    def record_trade(self, profit: float):
+        """Record trade result for risk tracking"""
+        self.trades_today += 1
+        
+        if profit < 0:
+            self.losses_today += 1
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0
+            
+        # Update revenue optimizer if available
+        if profit > 0:
+            revenue_optimizer.winning_trades += 1
+            revenue_optimizer.total_profit += profit
+        
+        revenue_optimizer.total_trades += 1
+    
+    async def get_position_size_with_risk(self, mint: str, pool_liquidity: float) -> float:
+        """Get position size considering risk parameters"""
+        if not self.position_scaling_enabled:
+            # Use minimum size when risk is high
+            return float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.01"))
+        
+        # Use dynamic sizing from utils
+        if USE_DYNAMIC_SIZING:
+            from utils import get_dynamic_position_size
+            base_size = await get_dynamic_position_size(mint, pool_liquidity)
+        else:
+            base_size = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+        
+        # Reduce size if we've had recent losses
+        if self.losses_today > 3:
+            base_size *= 0.5
+            logging.info(f"[RISK] Reducing position to {base_size:.3f} SOL due to {self.losses_today} losses today")
+        
+        return max(0.01, base_size)
+
+# Initialize risk manager globally
+risk_manager = PortfolioRiskManager()
+
+# ============================================
 # MONSTER BOT ORCHESTRATOR
 # ============================================
 
@@ -461,7 +604,8 @@ class MonsterBot:
             "✅ Copy Trading\n"
             "✅ Social Scanner\n"
             "✅ DEX Arbitrage\n"
-            "✅ Dynamic Position Sizing\n\n"
+            "✅ Dynamic Position Sizing\n"
+            "✅ Portfolio Risk Management\n\n"
             "Target: $10k-100k daily\n"
             "LET'S FUCKING GO! 💰"
         )
@@ -499,6 +643,15 @@ class MonsterBot:
             else:
                 win_rate = 0
             
+            # Get balance info
+            try:
+                from utils import rpc, keypair
+                balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+                balance_usd = balance * 150
+            except:
+                balance = 0
+                balance_usd = 0
+            
             report = f"""
 📊 MONSTER BOT PERFORMANCE REPORT 📊
 
@@ -508,6 +661,9 @@ Win Rate: {win_rate:.1f}%
 Total Profit: {self.stats['total_profit_sol']:.2f} SOL
 Hourly Rate: {hourly_profit:.2f} SOL/hour
 Daily Projection: ${hourly_profit * 24 * 150:.0f}
+
+Current Balance: {balance:.2f} SOL (${balance_usd:.0f})
+Risk Status: {"🟢 SAFE" if risk_manager.position_scaling_enabled else "🟡 CAUTIOUS"}
 
 Strategy Breakdown:
 • Sniper: {self.stats['strategies']['sniper']['profit']:.2f} SOL
@@ -524,7 +680,7 @@ Status: {"🟢 PROFITABLE" if hourly_profit > 0 else "🔴 WARMING UP"}
         while True:
             await asyncio.sleep(3600 * 6)
             
-            if self.stats["total_profit_sol"] > 10:
+            if self.stats["total_profit_sol"] > 10 and risk_manager.position_scaling_enabled:
                 current_size = float(os.getenv("BUY_AMOUNT_SOL", "1.0"))
                 new_size = current_size * 1.2
                 os.environ["BUY_AMOUNT_SOL"] = str(new_size)
@@ -737,7 +893,7 @@ async def health_check():
     return {
         "status": "🚀 ELITE Money Printer Active",
         "mode": "PRODUCTION",
-        "features": "Elite MEV + PumpFun Migration + Momentum Scanner"
+        "features": "Elite MEV + PumpFun Migration + Momentum Scanner + Risk Management"
     }
 
 @app.get("/status")
@@ -754,11 +910,14 @@ async def status():
         "bot": "running" if is_bot_running() else "paused",
         "mode": "elite" if ENABLE_ELITE_FEATURES else "standard",
         "mev_protection": "active" if USE_JITO_BUNDLES else "disabled",
+        "risk_management": "active" if risk_manager.position_scaling_enabled else "cautious",
         "cached_pools": len(speed_optimizer.cached_pools),
         "pumpfun_tracking": len(pumpfun_tokens),
         "migration_watch": len(migration_watch_list),
         "total_profit": f"{revenue_optimizer.total_profit:.2f} SOL",
-        "win_rate": f"{win_rate:.1f}%"
+        "win_rate": f"{win_rate:.1f}%",
+        "trades_today": risk_manager.trades_today,
+        "dynamic_sizing": "active" if USE_DYNAMIC_SIZING else "disabled"
     }
 
 @app.post("/webhook")
@@ -808,9 +967,22 @@ async def telegram_webhook(request: Request):
                 if revenue_optimizer.total_trades > 0:
                     win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
                     elite_stats += f"• Win Rate: {win_rate:.1f}%\n"
-                    elite_stats += f"• Total Trades: {revenue_optimizer.total_trades}"
+                    elite_stats += f"• Total Trades: {revenue_optimizer.total_trades}\n"
                 
-                await send_telegram_alert(f"{status_msg}{elite_stats}")
+                # Add risk status
+                risk_status = f"\n⚡ RISK STATUS:\n"
+                risk_status += f"• Trades Today: {risk_manager.trades_today}/{risk_manager.max_trades_per_day}\n"
+                risk_status += f"• Losses Today: {risk_manager.losses_today}\n"
+                risk_status += f"• Consecutive Losses: {risk_manager.consecutive_losses}\n"
+                risk_status += f"• Scaling: {'ON' if risk_manager.position_scaling_enabled else 'OFF'}\n"
+                
+                if risk_manager.peak_balance:
+                    from utils import rpc, keypair
+                    current = rpc.get_balance(keypair.pubkey()).value / 1e9
+                    drawdown = (risk_manager.peak_balance - current) / risk_manager.peak_balance * 100
+                    risk_status += f"• Drawdown: {drawdown:.1f}%"
+                
+                await send_telegram_alert(f"{status_msg}{elite_stats}{risk_status}")
                 
             except Exception as e:
                 logging.error(f"Status error: {e}")
@@ -840,6 +1012,28 @@ async def telegram_webhook(request: Request):
             else:
                 await send_telegram_alert("⛔ Bot is paused. Use /start first")
             
+        elif text == "/risk":
+            risk_msg = f"""
+⚡ Risk Management Settings:
+• Max Drawdown: {risk_manager.max_drawdown*100:.0f}%
+• Max Daily Loss: {risk_manager.max_daily_loss*100:.0f}%
+• Max Trades/Day: {risk_manager.max_trades_per_day}
+• Max Consecutive Losses: {risk_manager.max_consecutive_losses}
+• Position Scaling: {'ENABLED' if risk_manager.position_scaling_enabled else 'DISABLED'}
+
+Current Session:
+• Trades Today: {risk_manager.trades_today}
+• Losses Today: {risk_manager.losses_today}
+• Consecutive Losses: {risk_manager.consecutive_losses}
+"""
+            if risk_manager.peak_balance and risk_manager.session_start_balance:
+                risk_msg += f"""
+Performance:
+• Session Start: {risk_manager.session_start_balance:.2f} SOL
+• Peak Balance: {risk_manager.peak_balance:.2f} SOL
+"""
+            await send_telegram_alert(risk_msg)
+            
         elif text == "/pumpfun":
             tracking_info = f"📈 PumpFun Tracking:\n\n"
             tracking_info += f"Total Tracked: {len(pumpfun_tokens)}\n"
@@ -868,6 +1062,8 @@ LP_CHECK_TIMEOUT: {os.getenv('LP_CHECK_TIMEOUT', '3')}s
 PUMPFUN_MIGRATION_BUY: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL
 Elite Features: {'ON' if ENABLE_ELITE_FEATURES else 'OFF'}
 MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
+Dynamic Sizing: {'ON' if USE_DYNAMIC_SIZING else 'OFF'}
+Risk Management: {'ACTIVE' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}
 """
             await send_telegram_alert(config_msg)
             
@@ -881,6 +1077,7 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 /forcebuy <MINT> - Force buy a token
 /elite - Toggle elite features
 /launch - Launch sniper systems
+/risk - View risk management status
 /pumpfun - PumpFun tracking status
 /config - Show configuration
 /help - Show this message
@@ -891,6 +1088,8 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 - Dynamic Exit Strategies
 - Speed Optimizations
 - Momentum Scanner
+- Portfolio Risk Management
+- Dynamic Position Sizing
 """
             await send_telegram_alert(help_text)
             
@@ -905,8 +1104,13 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 # ============================================
 
 async def elite_buy_token(mint: str, force_amount: float = None):
-    """Elite buy with all optimizations"""
+    """Elite buy with all optimizations and risk management"""
     try:
+        # Check risk limits first
+        if not await risk_manager.check_risk_limits():
+            logging.warning(f"[ELITE] Risk limits exceeded, skipping {mint[:8]}...")
+            return False
+        
         if not ENABLE_ELITE_FEATURES:
             return await monster_buy_token(mint, force_amount)
         
@@ -972,29 +1176,24 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
-            base_amount = calculate_position_size_fixed(pool_liquidity, ai_score, is_force_buy)
-            
-            if base_amount < 0.01:
-                base_amount = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
-                logging.warning(f"[ELITE] Base amount too low, using default: {base_amount}")
+            # Get risk-adjusted position size
+            amount_sol = await risk_manager.get_position_size_with_risk(mint, pool_liquidity)
             
             # Adjust for competition
             if competition_level == "ultra":
-                amount_sol = base_amount * 1.5
+                amount_sol *= 1.5
             elif competition_level == "high":
-                amount_sol = base_amount * 1.2
-            else:
-                amount_sol = base_amount
+                amount_sol *= 1.2
             
             if amount_sol < 0.01:
-                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
                 logging.warning(f"[ELITE] Final amount too low, using fallback: {amount_sol}")
             
             max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0))
             amount_sol = min(amount_sol, max_position)
         
         if amount_sol == 0 or amount_sol < 0.01:
-            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
             logging.error(f"[ELITE] CRITICAL: Amount was {amount_sol}, forced to {amount_sol}")
         
         # Simulate transaction
@@ -1022,6 +1221,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             f"AI Score: {ai_score:.2f}\n"
             f"Competition: {competition_level} ({competitor_count} bots)\n"
             f"Jito Tip: {jito_tip:.5f} SOL\n"
+            f"Risk Status: {'🟢 SAFE' if risk_manager.position_scaling_enabled else '🟡 CAUTIOUS'}\n"
             f"Executing NOW..."
         )
         
@@ -1037,8 +1237,8 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            if hasattr(revenue_optimizer, 'total_trades'):
-                revenue_optimizer.total_trades += 1
+            # Record successful trade
+            risk_manager.record_trade(0)  # Will update with actual profit later
             
             if DYNAMIC_EXIT_STRATEGY:
                 try:
@@ -1067,6 +1267,8 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             
             logging.info(f"[ELITE] SUCCESS! Bought {mint[:8]}...")
         else:
+            # Record failed trade
+            risk_manager.record_trade(-amount_sol * 0.01)  # Assume 1% loss on failed trades
             logging.error(f"[ELITE] FAILED for {mint[:8]}...")
         
         return result
@@ -1077,8 +1279,13 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         return await monster_buy_token(mint, force_amount)
 
 async def monster_buy_token(mint: str, force_amount: float = None):
-    """Original monster buy function as fallback"""
+    """Original monster buy function with risk checks"""
     try:
+        # Check risk limits
+        if not await risk_manager.check_risk_limits():
+            logging.warning(f"[MONSTER] Risk limits exceeded, skipping {mint[:8]}...")
+            return False
+        
         if force_amount:
             logging.info(f"[MONSTER BUY] Force buying {mint[:8]}... with {force_amount} SOL")
             amount_sol = force_amount
@@ -1090,28 +1297,17 @@ async def monster_buy_token(mint: str, force_amount: float = None):
                 pool_liquidity = 0
                 lp_data = {}
             
-            try:
-                ai_scorer = monster_bot.ai_scorer
-                ai_score = await ai_scorer.score_token(mint, lp_data)
-            except:
-                ai_score = 0.5
-            
-            min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
-            if ai_score < min_score:
-                logging.info(f"[SKIP] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
-                return False
-            
-            amount_sol = calculate_position_size_fixed(pool_liquidity, ai_score, force_amount is not None)
-            if amount_sol == 0:
-                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+            # Get risk-adjusted position size
+            amount_sol = await risk_manager.get_position_size_with_risk(mint, pool_liquidity)
         
         if amount_sol < 0.01:
-            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
         
         await send_telegram_alert(
             f"🎯 EXECUTING BUY\n\n"
             f"Token: {mint[:8]}...\n"
             f"Amount: {amount_sol} SOL\n"
+            f"Risk Status: {'🟢 SAFE' if risk_manager.position_scaling_enabled else '🟡 CAUTIOUS'}\n"
             f"Executing NOW..."
         )
         
@@ -1126,8 +1322,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
         if result:
-            if hasattr(revenue_optimizer, 'total_trades'):
-                revenue_optimizer.total_trades += 1
+            risk_manager.record_trade(0)  # Will update with actual profit later
             
             await send_telegram_alert(
                 f"✅ BUY SUCCESS\n"
@@ -1137,6 +1332,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             )
             logging.info(f"[MONSTER BUY] SUCCESS! Bought {mint[:8]}...")
         else:
+            risk_manager.record_trade(-amount_sol * 0.01)  # Assume 1% loss on failed trades
             logging.error(f"[MONSTER BUY] FAILED for {mint[:8]}...")
         
         return result
@@ -1151,7 +1347,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
 # ============================================
 
 async def start_elite_sniper():
-    """Start the elite money printer"""
+    """Start the elite money printer with risk management"""
     
     log_configuration()
     
@@ -1168,7 +1364,8 @@ async def start_elite_sniper():
         "✅ Dynamic Position Sizing",
         "✅ Multi-DEX Support",
         "✅ Auto Profit Taking",
-        "✅ Momentum Scanner"
+        "✅ Momentum Scanner",
+        "✅ Portfolio Risk Management"
     ]
     
     if ENABLE_ELITE_FEATURES:
@@ -1182,6 +1379,9 @@ async def start_elite_sniper():
     await send_telegram_alert(
         "💰 ELITE MONEY PRINTER STARTING 💰\n\n"
         "Features Active:\n" + "\n".join(features_list) + "\n\n"
+        f"Risk Management: ACTIVE\n"
+        f"Max Drawdown: {risk_manager.max_drawdown*100:.0f}%\n"
+        f"Max Daily Loss: {risk_manager.max_daily_loss*100:.0f}%\n\n"
         "Initializing all systems..."
     )
     
@@ -1260,20 +1460,64 @@ async def start_elite_sniper():
     if ENABLE_ELITE_FEATURES:
         tasks.append(asyncio.create_task(elite_performance_monitor()))
     
+    # Risk monitoring task
+    tasks.append(asyncio.create_task(risk_performance_monitor()))
+    
     mode = "ELITE MONEY PRINTER" if ENABLE_ELITE_FEATURES else "MONSTER BOT"
     
     await send_telegram_alert(
         f"🚀 {mode} READY 🚀\n\n"
         f"Active Strategies: {len(tasks)}\n"
-        f"Min LP: {os.getenv('RUG_LP_THRESHOLD', '3.0')} SOL\n"
-        f"Buy Amount: {os.getenv('BUY_AMOUNT_SOL', '0.03')} SOL\n"
+        f"Min LP: {get_minimum_liquidity_required()} SOL\n"
+        f"Buy Amount: Dynamic (${150*float(os.getenv('BUY_AMOUNT_SOL', '0.03')):.0f})\n"
         f"PumpFun Migration: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL\n\n"
         f"{'Elite Features: ACTIVE ⚡' if ENABLE_ELITE_FEATURES else ''}\n"
+        f"Risk Management: {'🟢 SAFE' if risk_manager.position_scaling_enabled else '🟡 CAUTIOUS'}\n"
         f"Hunting for profits... 💰"
     )
     
     # Run all tasks
     await asyncio.gather(*tasks)
+
+# ============================================
+# RISK PERFORMANCE MONITOR
+# ============================================
+
+async def risk_performance_monitor():
+    """Monitor risk metrics and adjust strategy"""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+            
+            from utils import rpc, keypair
+            balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+            
+            # Check if we're in profit and should scale up
+            if risk_manager.session_start_balance:
+                session_profit = balance - risk_manager.session_start_balance
+                
+                # Alert on significant profit milestones
+                if session_profit > 5 and risk_manager.trades_today == 5:
+                    await send_telegram_alert(
+                        f"🎯 Early session profit!\n"
+                        f"Profit: +{session_profit:.2f} SOL\n"
+                        f"Only 5 trades executed\n"
+                        f"Strategy working perfectly!"
+                    )
+                elif session_profit > 10 and risk_manager.trades_today < 20:
+                    await send_telegram_alert(
+                        f"🚀 EXCELLENT PERFORMANCE!\n"
+                        f"Profit: +{session_profit:.2f} SOL\n"
+                        f"Win rate is high, consider scaling"
+                    )
+            
+            # Check if we need to be more cautious
+            if risk_manager.consecutive_losses >= 3:
+                logging.warning(f"[RISK] {risk_manager.consecutive_losses} losses in a row, being cautious")
+            
+        except Exception as e:
+            logging.error(f"[Risk Monitor] Error: {e}")
+            await asyncio.sleep(60)
 
 # ============================================
 # ELITE PERFORMANCE MONITOR
@@ -1290,13 +1534,16 @@ async def elite_performance_monitor():
                 if await revenue_optimizer.should_increase_position():
                     current_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
                     new_size = min(current_size * 1.5, 5.0)
-                    os.environ["BUY_AMOUNT_SOL"] = str(new_size)
                     
-                    await send_telegram_alert(
-                        f"📈 PERFORMANCE BOOST\n"
-                        f"Win rate > 60% detected!\n"
-                        f"Increasing position size: {current_size:.2f} → {new_size:.2f} SOL"
-                    )
+                    # Only increase if risk manager approves
+                    if risk_manager.position_scaling_enabled:
+                        os.environ["BUY_AMOUNT_SOL"] = str(new_size)
+                        
+                        await send_telegram_alert(
+                            f"📈 PERFORMANCE BOOST\n"
+                            f"Win rate > 60% detected!\n"
+                            f"Increasing position size: {current_size:.2f} → {new_size:.2f} SOL"
+                        )
             
             # Check for trend predictions
             if os.getenv("TREND_PREDICTION", "true").lower() == "true":
@@ -1379,27 +1626,27 @@ async def main():
     if ENABLE_ELITE_FEATURES:
         print("""
 ╔══════════════════════════════════════════╗
-║       ELITE MONEY PRINTER v3.0           ║
+║       ELITE MONEY PRINTER v4.0           ║
 ║         💰 MAXIMUM PROFITS 💰             ║
 ║                                          ║
 ║  Features:                               ║
-║  • Fixed Raydium Pool Detection         ║
-║  • Accurate LP Validation               ║
-║  • Correct Price Calculations           ║
-║  • WSOL Cleanup on Failure             ║
-║  • Telegram Batching                    ║
+║  • Dynamic Position Sizing              ║
+║  • Portfolio Risk Management            ║
+║  • Auto-scaling with Balance            ║
+║  • 25% Max Drawdown Protection          ║
+║  • Daily Loss Limits                    ║
 ║  • MEV Protection (Jito)                ║
 ║  • PumpFun Migration Sniper             ║
 ║  • Momentum Scanner                     ║
 ║  • Copy Trading & Arbitrage             ║
 ║  • AI-Powered Scoring                   ║
 ║                                          ║
-║       LET'S PRINT MONEY! 🚀              ║
+║   TARGET: $300 → $10,000+ 🚀            ║
 ╚══════════════════════════════════════════╝
         """)
     
     logging.info("=" * 50)
-    logging.info("ELITE MONEY PRINTER STARTING!")
+    logging.info("ELITE MONEY PRINTER WITH SCALING STARTING!")
     logging.info("=" * 50)
     
     await run_bot_with_web_server()
@@ -1426,14 +1673,27 @@ async def cleanup():
         
         await stop_all_tasks()
         
-        if hasattr(revenue_optimizer, 'total_trades') and revenue_optimizer.total_trades > 0:
-            final_stats = (
-                f"📊 FINAL SESSION STATS\n"
-                f"Total Trades: {revenue_optimizer.total_trades}\n"
-                f"Win Rate: {(revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100):.1f}%\n"
-                f"Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
-            )
-            await send_telegram_alert(final_stats)
+        # Final risk report
+        if risk_manager.session_start_balance:
+            from utils import rpc, keypair
+            try:
+                final_balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+                session_profit = final_balance - risk_manager.session_start_balance
+                
+                final_stats = (
+                    f"📊 FINAL SESSION STATS\n"
+                    f"Total Trades: {risk_manager.trades_today}\n"
+                    f"Session P&L: {session_profit:+.2f} SOL\n"
+                    f"Final Balance: {final_balance:.2f} SOL\n"
+                )
+                
+                if revenue_optimizer.total_trades > 0:
+                    win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
+                    final_stats += f"Win Rate: {win_rate:.1f}%\n"
+                
+                await send_telegram_alert(final_stats)
+            except:
+                pass
     except:
         pass
 
