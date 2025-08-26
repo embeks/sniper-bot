@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 import os
@@ -22,7 +23,7 @@ from utils import (
     listener_status, last_seen_token
 )
 from solders.pubkey import Pubkey
-from raydium_aggregator import RaydiumAggregator
+from raydium_aggregator import RaydiumAggregatorClient
 
 load_dotenv()
 
@@ -131,7 +132,7 @@ recent_buy_attempts = {}  # token -> timestamp
 pool_verification_cache = {}  # token -> is_verified
 detected_pools = {}  # Store pool IDs for tokens
 
-raydium = RaydiumAggregator(RPC_URL)
+raydium = RaydiumAggregatorClient(RPC_URL)
 
 last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
 alert_cooldown_sec = 1800
@@ -1983,3 +1984,4 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
+
