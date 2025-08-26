@@ -1,9 +1,3 @@
-"""
-utils.py - COMPLETE FIXED VERSION
-Simplified liquidity checks, removed redundant validations
-Direct buy execution without unnecessary RPC calls
-"""
-
 import os
 import json
 import logging
@@ -25,12 +19,8 @@ from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
 from spl.token.instructions import get_associated_token_address
 
-# Import Raydium client - FIXED IMPORT
-try:
-    from raydium_aggregator import RaydiumAggregator
-except ImportError:
-    # Fallback if using different class name
-    from raydium_aggregator import RaydiumAggregatorClient as RaydiumAggregator
+# Import Raydium client
+from raydium_aggregator import RaydiumAggregatorClient
 
 # Setup
 load_dotenv()
@@ -42,12 +32,12 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Changed from WALLET_PK
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Changed from TELEGRAM_USER_ID
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")  # Keep both for compatibility
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.05))  # FIXED: Match your actual value
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.03))  # Changed default to 0.03
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 5.0))  # Lowered to realistic value
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 5.0))  # RAISED TO 5 SOL MINIMUM
 BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 
 # Parse sell percentages from multipliers (using defaults)
@@ -86,7 +76,7 @@ TRENDING_TAKE_PROFIT_3 = float(os.getenv("TRENDING_TAKE_PROFIT_3", 15.0))
 
 # Initialize clients
 rpc = Client(RPC_URL, commitment=Confirmed)
-raydium = RaydiumAggregator(RPC_URL)
+raydium = RaydiumAggregatorClient(RPC_URL)
 
 # Load wallet - Handle array format [1,2,3,...] from your .env
 import ast
@@ -122,9 +112,6 @@ TRADES_CSV_FILE = "trades.csv"
 # Add blacklisted tokens from env
 BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
 
-# FIX: Track tokens being processed to prevent duplicate buys - SIMPLIFIED
-RECENTLY_ATTEMPTED = {}  # token -> timestamp of last attempt
-
 # Stats tracking
 daily_stats = {
     "tokens_scanned": 0,
@@ -153,185 +140,6 @@ telegram_min_interval = 0.5  # Minimum 0.5 seconds between messages
 pumpfun_tokens = {}
 trending_tokens = set()
 
-# KNOWN TOKEN DECIMALS - Critical for correct price calculation
-KNOWN_TOKEN_DECIMALS = {
-    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
-    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
-    "So11111111111111111111111111111111111111112": 9,   # WSOL
-    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": 5,  # BONK
-    "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr": 9,  # POPCAT
-    "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": 6,   # JUP
-    "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # ETH (Wormhole)
-    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": 9,   # mSOL
-    "DUSTawucrTsGU8hcqRdHDCbuYhCPADMLM2VcCb8VnFnQ": 9, # DUST
-}
-
-# ==========================
-# PRICE MANAGER CLASS - FIXES PRICE ISSUES
-# ==========================
-class PriceManager:
-    """Manage price data with validation and caching"""
-    
-    def __init__(self):
-        self.price_cache = {}  # token -> {'price': float, 'timestamp': float, 'source': str}
-        self.price_history = {}  # token -> list of (timestamp, price)
-        self.cache_duration = 5  # seconds
-        
-    async def get_token_price(self, token_address: str, force_refresh: bool = False) -> float:
-        """Get token price with caching and validation"""
-        try:
-            # Check cache first
-            if not force_refresh and token_address in self.price_cache:
-                cached = self.price_cache[token_address]
-                if time.time() - cached['timestamp'] < self.cache_duration:
-                    return cached['price']
-            
-            # Try multiple sources
-            price = None
-            source = None
-            
-            # Try DexScreener first
-            dex_price = await self._get_dexscreener_price(token_address)
-            if dex_price and dex_price > 0:
-                price = dex_price
-                source = "DexScreener"
-            
-            # Fallback to Birdeye
-            if not price and BIRDEYE_API_KEY:
-                bird_price = await self._get_birdeye_price(token_address)
-                if bird_price and bird_price > 0:
-                    price = bird_price
-                    source = "Birdeye"
-            
-            # Fallback to Jupiter price API
-            if not price:
-                jup_price = await self._get_jupiter_price(token_address)
-                if jup_price and jup_price > 0:
-                    price = jup_price
-                    source = "Jupiter"
-            
-            # Validate price against history
-            if price and token_address in self.price_history:
-                history = self.price_history[token_address]
-                if len(history) > 0:
-                    last_price = history[-1][1]
-                    # Check for suspicious price movements (>99% drop or >10x pump in 5 seconds)
-                    if price < last_price * 0.01:
-                        logging.warning(f"[Price] Suspicious drop detected for {token_address[:8]}: ${last_price:.6f} -> ${price:.6f}")
-                        # Use last known good price
-                        price = last_price
-                    elif price > last_price * 10:
-                        logging.warning(f"[Price] Suspicious pump detected for {token_address[:8]}: ${last_price:.6f} -> ${price:.6f}")
-                        # Use more conservative estimate
-                        price = last_price * 2
-            
-            # Cache the price
-            if price:
-                self.price_cache[token_address] = {
-                    'price': price,
-                    'timestamp': time.time(),
-                    'source': source
-                }
-                
-                # Add to history
-                if token_address not in self.price_history:
-                    self.price_history[token_address] = []
-                self.price_history[token_address].append((time.time(), price))
-                
-                # Keep only last 100 price points
-                if len(self.price_history[token_address]) > 100:
-                    self.price_history[token_address] = self.price_history[token_address][-100:]
-                
-                # Get decimals for logging
-                decimals = await get_token_decimals(token_address)
-                logging.info(f"[Price] {token_address[:8]}... = ${price:.8f} ({source}, {decimals} decimals)")
-                return price
-            
-            return 0.0
-            
-        except Exception as e:
-            logging.error(f"[Price] Error getting price for {token_address[:8]}: {e}")
-            # Return last known price if available
-            if token_address in self.price_cache:
-                return self.price_cache[token_address]['price']
-            return 0.0
-    
-    async def _get_dexscreener_price(self, token_address: str) -> Optional[float]:
-        """Get price from DexScreener"""
-        try:
-            async with httpx.AsyncClient(timeout=3) as session:
-                url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-                response = await session.get(url)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data and 'pairs' in data and len(data['pairs']) > 0:
-                        # Get the pair with highest liquidity
-                        pairs = sorted(data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)
-                        return float(pairs[0].get('priceUsd', 0))
-        except Exception as e:
-            logging.debug(f"DexScreener price fetch failed: {e}")
-        return None
-    
-    async def _get_birdeye_price(self, token_address: str) -> Optional[float]:
-        """Get price from Birdeye"""
-        if not BIRDEYE_API_KEY:
-            return None
-            
-        try:
-            async with httpx.AsyncClient(timeout=3) as session:
-                url = f"https://public-api.birdeye.so/defi/price"
-                headers = {"X-API-KEY": BIRDEYE_API_KEY}
-                params = {"address": token_address}
-                
-                response = await session.get(url, headers=headers, params=params)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data and 'data' in data:
-                        return float(data['data'].get('value', 0))
-        except Exception as e:
-            logging.debug(f"Birdeye price fetch failed: {e}")
-        return None
-    
-    async def _get_jupiter_price(self, token_address: str) -> Optional[float]:
-        """Get price from Jupiter Price API"""
-        try:
-            async with httpx.AsyncClient(timeout=3) as session:
-                url = f"https://price.jup.ag/v4/price"
-                params = {"ids": token_address}
-                
-                response = await session.get(url, params=params)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data and 'data' in data and token_address in data['data']:
-                        return float(data['data'][token_address].get('price', 0))
-        except Exception as e:
-            logging.debug(f"Jupiter price fetch failed: {e}")
-        return None
-    
-    def clear_old_cache(self):
-        """Clear old price cache entries"""
-        current_time = time.time()
-        tokens_to_remove = []
-        
-        for token, data in self.price_cache.items():
-            if current_time - data['timestamp'] > 60:  # Remove entries older than 1 minute
-                tokens_to_remove.append(token)
-        
-        for token in tokens_to_remove:
-            del self.price_cache[token]
-        
-        # Clear old history
-        for token in list(self.price_history.keys()):
-            self.price_history[token] = [
-                (ts, price) for ts, price in self.price_history[token]
-                if current_time - ts < 300  # Keep last 5 minutes
-            ]
-            if not self.price_history[token]:
-                del self.price_history[token]
-
-# Initialize global price manager
-price_manager = PriceManager()
-
 def update_last_activity():
     global last_activity
     last_activity = time.time()
@@ -356,10 +164,7 @@ def stop_bot():
     BOT_RUNNING = False
 
 def mark_broken_token(mint: str, error_code: int):
-    """Mark token as broken and track it"""
     BROKEN_TOKENS.add(mint)
-    # Also add to recently attempted to prevent retries
-    RECENTLY_ATTEMPTED[mint] = time.time()
     log_skipped_token(mint, f"Marked as broken (error {error_code})")
 
 def is_valid_mint(mint: str) -> bool:
@@ -368,27 +173,6 @@ def is_valid_mint(mint: str) -> bool:
         return True
     except:
         return False
-
-# FIX: SIMPLIFIED - Check if token should be skipped
-def should_skip_token(mint: str) -> bool:
-    """SIMPLIFIED: Check if we should skip this token"""
-    # Skip if marked as broken
-    if mint in BROKEN_TOKENS:
-        return True
-    
-    # Skip if recently attempted (within last 30 seconds) - REDUCED FROM 60
-    if mint in RECENTLY_ATTEMPTED:
-        if time.time() - RECENTLY_ATTEMPTED[mint] < 30:
-            return True
-        else:
-            # Clean up old entry
-            del RECENTLY_ATTEMPTED[mint]
-    
-    # Special case: Skip USDC force buy tests
-    if mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
-        return True
-    
-    return False
 
 async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
     """FIXED: Send alert to Telegram with rate limiting and retry logic"""
@@ -504,19 +288,82 @@ def get_bot_status_message() -> str:
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """FIXED: Return simple liquidity dict to prevent loops"""
+    """Get ACCURATE liquidity info for a token - FIXED VERSION"""
     try:
-        # FIX: Just return a default value - the actual liquidity is already 
-        # being tracked from the transaction in sniper_logic
-        # This function is only called by elite_buy_token for retries
-        # We should NOT make it do complex lookups that fail
+        # First, try to find the pool using the fixed Raydium client
+        sol_mint = "So11111111111111111111111111111111111111112"
         
-        # Return a safe default that won't cause retries
-        return {"liquidity": 10, "ownership": {"renounced": True}}
+        # Try both directions (token-SOL and SOL-token)
+        pool = raydium.find_pool_realtime(mint)
+        
+        if pool:
+            # Determine which vault has SOL
+            if pool["baseMint"] == sol_mint:
+                sol_vault_key = pool["baseVault"]
+            elif pool["quoteMint"] == sol_mint:
+                sol_vault_key = pool["quoteVault"]
+            else:
+                # This pool doesn't have SOL, check the reverse
+                logging.warning(f"[LP Check] Pool found but no SOL pair for {mint[:8]}...")
+                return {"liquidity": 0}
+            
+            # Get SOL balance in the pool vault
+            sol_vault = Pubkey.from_string(sol_vault_key)
+            response = rpc.get_balance(sol_vault)
+            
+            if response and hasattr(response, 'value'):
+                sol_balance = response.value / 1e9
+                
+                # Only return if there's actual liquidity
+                if sol_balance > 0:
+                    logging.info(f"[LP Check] {mint[:8]}... has {sol_balance:.2f} SOL liquidity")
+                    return {"liquidity": sol_balance}
+                else:
+                    logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in pool")
+                    return {"liquidity": 0}
+        else:
+            # No Raydium pool found, check Jupiter for liquidity
+            logging.info(f"[LP Check] No Raydium pool found for {mint[:8]}..., checking Jupiter")
+            
+            # Try to get a quote from Jupiter to determine if it's tradeable
+            try:
+                url = f"{JUPITER_BASE_URL}/v6/quote"
+                params = {
+                    "inputMint": sol_mint,
+                    "outputMint": mint,
+                    "amount": str(int(0.001 * 1e9)),  # Test with 0.001 SOL
+                    "slippageBps": "100",
+                    "onlyDirectRoutes": "false"
+                }
+                
+                async with httpx.AsyncClient(timeout=5) as client:
+                    response = await client.get(url, params=params)
+                    if response.status_code == 200:
+                        quote = response.json()
+                        # If we can get a quote, there's some liquidity
+                        if quote.get("outAmount"):
+                            # Estimate liquidity from price impact
+                            # This is a rough estimate
+                            price_impact = float(quote.get("priceImpactPct", 0))
+                            if price_impact < 1:  # Less than 1% impact
+                                estimated_lp = 10.0  # Decent liquidity
+                            elif price_impact < 5:
+                                estimated_lp = 2.0   # Low liquidity
+                            else:
+                                estimated_lp = 0.5   # Very low liquidity
+                            
+                            logging.info(f"[LP Check] {mint[:8]}... on Jupiter with estimated {estimated_lp:.2f} SOL liquidity")
+                            return {"liquidity": estimated_lp}
+            except Exception as e:
+                logging.debug(f"[LP Check] Jupiter check failed: {e}")
+        
+        # If we get here, no liquidity found anywhere
+        logging.info(f"[LP Check] No liquidity found for {mint[:8]}... on any DEX")
+        return {"liquidity": 0}
         
     except Exception as e:
-        logging.debug(f"Liquidity check for {mint}: {e}")
-        return {"liquidity": 10, "ownership": {"renounced": True}}
+        logging.error(f"Failed to get liquidity for {mint}: {e}")
+        return {"liquidity": 0}
 
 async def get_trending_mints():
     """Placeholder for trending mints"""
@@ -651,7 +498,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
                 logging.info(f"[Jupiter] Transaction sent: {sig}")
                 
                 # Quick confirmation check
-                await asyncio.sleep(2)  # Wait 2 seconds
+                time.sleep(2)  # Wait 2 seconds
                 
                 try:
                     from solders.signature import Signature
@@ -727,7 +574,7 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
                 logging.info(f"[Jupiter] Sell transaction sent: {sig}")
                 
                 # Quick confirmation check
-                await asyncio.sleep(2)
+                time.sleep(2)
                 
                 try:
                     from solders.signature import Signature
@@ -757,58 +604,106 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         logging.error(f"[Jupiter] Sell execution error: {e}")
         return None
 
-# CRITICAL FIX: SIMPLIFIED BUY FUNCTION
 async def buy_token(mint: str):
-    """FIXED: Execute buy without redundant checks"""
-    amount = int(BUY_AMOUNT_SOL * 1e9)
-    
-    # Simplified skip check
-    if mint in BROKEN_TOKENS:
-        logging.info(f"[SKIP] {mint[:8]}...: Marked as broken")
-        return False
-    
-    # Remove from recently attempted after 30 seconds (was 60)
-    if mint in RECENTLY_ATTEMPTED:
-        if time.time() - RECENTLY_ATTEMPTED[mint] < 30:
-            logging.info(f"[SKIP] {mint[:8]}...: Recently attempted")
+    """Execute buy transaction for a token - NOW WITH JUPITER!"""
+    amount = int(BUY_AMOUNT_SOL * 1e9)  # Convert SOL to lamports
+
+    try:
+        if mint in BROKEN_TOKENS:
+            await send_telegram_alert(f"❌ Skipped {mint} — broken token")
+            log_skipped_token(mint, "Broken token")
+            record_skip("malformed")
             return False
-        else:
-            del RECENTLY_ATTEMPTED[mint]
-    
-    increment_stat("snipes_attempted", 1)
-    update_last_activity()
-    
-    logging.info(f"[Buy] Executing purchase of {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
-    
-    # Direct Jupiter execution
-    logging.info(f"[Buy] Attempting Jupiter swap...")
-    jupiter_sig = await execute_jupiter_swap(mint, amount)
-    
-    if jupiter_sig:
-        logging.info(f"[ELITE] SUCCESS! Bought {mint[:8]}...")
+
+        increment_stat("snipes_attempted", 1)
+        update_last_activity()
+        
+        # ELITE: Quick liquidity check before buying
+        lp_data = await get_liquidity_and_ownership(mint)
+        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 5.0))
+        
+        if lp_data and lp_data.get("liquidity", 0) < min_lp:
+            await send_telegram_alert(
+                f"⚠️ Skipping low LP token\n"
+                f"Token: {mint[:8]}...\n"
+                f"LP: {lp_data.get('liquidity', 0):.2f} SOL\n"
+                f"Min required: {min_lp} SOL"
+            )
+            log_skipped_token(mint, f"Low liquidity: {lp_data.get('liquidity', 0):.2f} SOL")
+            record_skip("low_lp")
+            return False
+
+        # ========== TRY JUPITER FIRST (works for 95% of tokens) ==========
+        logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
+        jupiter_sig = await execute_jupiter_swap(mint, amount)
+        
+        if jupiter_sig:
+            await send_telegram_alert(
+                f"✅ Sniped {mint} via Jupiter — bought with {BUY_AMOUNT_SOL} SOL\n"
+                f"TX: https://solscan.io/tx/{jupiter_sig}"
+            )
+            
+            OPEN_POSITIONS[mint] = {
+                "expected_token_amount": 0,
+                "buy_amount_sol": BUY_AMOUNT_SOL,
+                "sold_stages": set(),
+                "buy_sig": jupiter_sig
+            }
+            
+            increment_stat("snipes_succeeded", 1)
+            log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
+            return True
+        
+        # ========== FALLBACK TO RAYDIUM (for new tokens not on Jupiter yet) ==========
+        logging.info(f"[Buy] Jupiter failed, trying Raydium for {mint[:8]}...")
+        
+        input_mint = "So11111111111111111111111111111111111111112"  # SOL
+        output_mint = mint
+        
+        # Check if pool exists
+        pool = raydium.find_pool(input_mint, output_mint)
+        if not pool:
+            # Try reverse direction
+            pool = raydium.find_pool(output_mint, input_mint)
+            if not pool:
+                await send_telegram_alert(f"⚠️ No pool found on Jupiter or Raydium for {mint}. Skipping.")
+                log_skipped_token(mint, "No pool on Jupiter or Raydium")
+                record_skip("malformed")
+                return False
+
+        # Build swap transaction
+        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        if not tx:
+            await send_telegram_alert(f"❌ Failed to build Raydium swap TX for {mint}")
+            mark_broken_token(mint, 0)
+            return False
+
+        # Send transaction
+        sig = raydium.send_transaction(tx, keypair)
+        if not sig:
+            await send_telegram_alert(f"📉 Trade failed — TX send error for {mint}")
+            mark_broken_token(mint, 0)
+            return False
+
         await send_telegram_alert(
-            f"✅ Sniped {mint}\n"
-            f"Amount: {BUY_AMOUNT_SOL} SOL\n"
-            f"TX: https://solscan.io/tx/{jupiter_sig}"
+            f"✅ Sniped {mint} via Raydium — bought with {BUY_AMOUNT_SOL} SOL\n"
+            f"TX: https://solscan.io/tx/{sig}"
         )
         
         OPEN_POSITIONS[mint] = {
             "expected_token_amount": 0,
             "buy_amount_sol": BUY_AMOUNT_SOL,
             "sold_stages": set(),
-            "buy_sig": jupiter_sig,
-            "buy_time": time.time()
+            "buy_sig": sig
         }
         
         increment_stat("snipes_succeeded", 1)
         log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
-        
-        # Mark as recently attempted to prevent duplicate buys
-        RECENTLY_ATTEMPTED[mint] = time.time()
         return True
-    else:
-        logging.error(f"[Buy] Failed for {mint[:8]}...")
-        RECENTLY_ATTEMPTED[mint] = time.time()
+
+    except Exception as e:
+        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
+        log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
 async def sell_token(mint: str, percent: float = 100.0):
@@ -838,7 +733,7 @@ async def sell_token(mint: str, percent: float = 100.0):
             await send_telegram_alert(f"⚠️ Zero balance to sell for {mint}")
             return False
 
-        # ========== TRY JUPITER ==========
+        # ========== TRY JUPITER FIRST ==========
         logging.info(f"[Sell] Attempting Jupiter sell for {mint[:8]}...")
         jupiter_sig = await execute_jupiter_sell(mint, amount)
         
@@ -850,49 +745,122 @@ async def sell_token(mint: str, percent: float = 100.0):
             log_trade(mint, f"SELL {percent}%", 0, amount)
             increment_stat("sells_executed", 1)
             return True
-        else:
-            await send_telegram_alert(f"❌ Failed to sell {mint}")
+        
+        # ========== FALLBACK TO RAYDIUM ==========
+        logging.info(f"[Sell] Jupiter failed, trying Raydium for {mint[:8]}...")
+        
+        input_mint = mint
+        output_mint = "So11111111111111111111111111111111111111112"  # SOL
+        
+        # Find pool
+        pool = raydium.find_pool(input_mint, output_mint)
+        if not pool:
+            pool = raydium.find_pool(output_mint, input_mint)
+            if not pool:
+                await send_telegram_alert(f"⚠️ No pool for {mint}. Cannot sell.")
+                log_skipped_token(mint, "No pool for sell")
+                return False
+
+        # Build and send transaction
+        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        if not tx:
+            await send_telegram_alert(f"❌ Failed to build sell TX for {mint}")
             return False
+
+        sig = raydium.send_transaction(tx, keypair)
+        if not sig:
+            await send_telegram_alert(f"❌ Failed to send sell tx for {mint}")
+            return False
+
+        await send_telegram_alert(
+            f"✅ Sold {percent}% of {mint} via Raydium\n"
+            f"TX: https://solscan.io/tx/{sig}"
+        )
+        log_trade(mint, f"SELL {percent}%", 0, amount)
+        increment_stat("sells_executed", 1)
+        return True
         
     except Exception as e:
         await send_telegram_alert(f"❌ Sell failed for {mint}: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
 
-async def get_token_decimals(mint: str) -> int:
-    """Get token decimals from blockchain or use known values"""
-    # Check if we know this token's decimals
-    if mint in KNOWN_TOKEN_DECIMALS:
-        return KNOWN_TOKEN_DECIMALS[mint]
-    
-    # Try to get from blockchain
-    try:
-        mint_pubkey = Pubkey.from_string(mint)
-        mint_info = rpc.get_account_info(mint_pubkey)
-        if mint_info and mint_info.value:
-            # SPL Token mint accounts have decimals at offset 44
-            data = mint_info.value.data
-            if isinstance(data, list) and len(data) > 0:
-                import base64
-                if isinstance(data[0], str):
-                    decoded = base64.b64decode(data[0])
-                else:
-                    decoded = bytes(data[0])
-                if len(decoded) > 44:
-                    decimals = decoded[44]
-                    # Cache it for future use
-                    KNOWN_TOKEN_DECIMALS[mint] = decimals
-                    logging.debug(f"[Decimals] Token {mint[:8]}... has {decimals} decimals")
-                    return decimals
-    except Exception as e:
-        logging.debug(f"[Decimals] Could not get decimals for {mint[:8]}...: {e}")
-    
-    # Default to 9 (most common for SPL tokens)
-    return 9
-
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price in USD using the price manager"""
-    return await price_manager.get_token_price(mint)
+    """Get current token price in USD - ELITE VERSION optimized for what actually works"""
+    try:
+        # Try DexScreener FIRST (most reliable for new tokens and no DNS issues)
+        try:
+            dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            
+            async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                response = await client.get(dex_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "pairs" in data and len(data["pairs"]) > 0:
+                        # Get the pair with highest liquidity
+                        pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
+                        if pairs[0].get("priceUsd"):
+                            price = float(pairs[0]["priceUsd"])
+                            if price > 0:
+                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f}")
+                                return price
+        except Exception as e:
+            logging.debug(f"[Price] DexScreener error: {e}")
+        
+        # Try Birdeye if configured (great for established tokens)
+        if BIRDEYE_API_KEY:
+            try:
+                url = f"https://public-api.birdeye.so/defi/price?address={mint}"
+                
+                async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                    headers = {"X-API-KEY": BIRDEYE_API_KEY}
+                    response = await client.get(url, headers=headers)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if "data" in data and "value" in data["data"]:
+                            price = float(data["data"]["value"])
+                            if price > 0:
+                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye)")
+                                return price
+            except Exception as e:
+                logging.debug(f"[Price] Birdeye error: {e}")
+        
+        # Only try Jupiter as LAST resort (since it has DNS issues on Render)
+        # But use the quote API which might work better than price API
+        try:
+            # Get a quote for 0.001 SOL to derive price
+            quote_url = f"{JUPITER_BASE_URL}/v6/quote"
+            params = {
+                "inputMint": "So11111111111111111111111111111111111111112",
+                "outputMint": mint,
+                "amount": str(int(0.001 * 1e9)),
+                "slippageBps": "100"
+            }
+            
+            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+                response = await client.get(quote_url, params=params)
+                if response.status_code == 200:
+                    quote = response.json()
+                    if "outAmount" in quote and float(quote["outAmount"]) > 0:
+                        # Calculate price assuming SOL = $150
+                        sol_price = 150.0
+                        tokens_received = float(quote["outAmount"]) / 1e9
+                        sol_spent = 0.001
+                        price = (sol_spent * sol_price) / tokens_received
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated)")
+                        return price
+        except Exception as e:
+            # Don't log Jupiter errors since we know DNS is broken
+            pass
+        
+        # If we get here, all price sources failed
+        logging.warning(f"[Price] Could not get price for {mint[:8]} from any source")
+        return None
+        
+    except Exception as e:
+        logging.error(f"[Price] Unexpected error for {mint}: {e}")
+        return None
 
 async def wait_and_auto_sell(mint: str):
     """MOON SHOT VERSION - Monitor position and auto-sell with different strategies based on token type"""
@@ -944,7 +912,14 @@ async def wait_and_auto_sell(mint: str):
         position["highest_price"] = entry_price
         position["token_amount"] = position.get("expected_token_amount", 0)
         
-        logging.info(f"[{mint[:8]}] [{strategy_name}] Price: ${entry_price:.8f} (1.00x) | High: ${entry_price:.8f} | Sold stages: set()")
+        await send_telegram_alert(
+            f"📊 Monitoring {mint[:8]}... [{strategy_name}]\n"
+            f"Entry: ${entry_price:.6f}\n"
+            f"Targets: {targets[0]}x/${entry_price*targets[0]:.6f}, "
+            f"{targets[1]}x/${entry_price*targets[1]:.6f}, "
+            f"{targets[2]}x/${entry_price*targets[2]:.6f}\n"
+            f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}"
+        )
         
         # Monitor loop
         start_time = time.time()
@@ -975,16 +950,26 @@ async def wait_and_auto_sell(mint: str):
                 # Update highest price for trailing stop
                 if current_price > position["highest_price"]:
                     position["highest_price"] = current_price
-                    logging.info(f"[{mint[:8]}] New high: ${current_price:.8f} ({profit_multiplier:.2f}x)")
-                
-                # Log current status
-                logging.info(f"[{mint[:8]}] [{strategy_name}] Price: ${current_price:.8f} ({profit_multiplier:.2f}x) | High: ${position['highest_price']:.8f} | Sold stages: {position['sold_stages']}")
+                    logging.info(f"[{mint[:8]}] New high: ${current_price:.6f} ({profit_multiplier:.2f}x)")
                 
                 # Check minimum hold time for PumpFun tokens
                 if is_pumpfun and time_held < min_hold_time:
                     logging.debug(f"[{mint[:8]}] Holding for {min_hold_time/60:.0f} mins minimum (PumpFun)")
                     await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
                     continue
+                
+                # Check for trailing stop (only activate after certain gain)
+                if profit_multiplier >= TRAILING_STOP_ACTIVATION:
+                    drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
+                    if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
+                        logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
+                        if await sell_token(mint, 100):  # Sell all remaining
+                            await send_telegram_alert(
+                                f"⛔ Trailing stop triggered for {mint[:8]}!\n"
+                                f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
+                                f"Sold remaining position at ${current_price:.6f} ({profit_multiplier:.1f}x)"
+                            )
+                            break
                 
                 # Check stop loss
                 if profit_percent <= -STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
@@ -993,7 +978,7 @@ async def wait_and_auto_sell(mint: str):
                     if await sell_token(mint, 100):  # Sell everything
                         await send_telegram_alert(
                             f"🛑 Stop loss triggered for {mint[:8]}!\n"
-                            f"Loss: {profit_percent:.1f}% (${current_price:.8f})\n"
+                            f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
                             f"Sold all to minimize losses"
                         )
                         break
@@ -1006,7 +991,7 @@ async def wait_and_auto_sell(mint: str):
                         position["sold_stages"].add("profit1")
                         await send_telegram_alert(
                             f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.8f} ({profit_multiplier:.2f}x)\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold {sell_percents[0]}% of position\n"
                             f"Strategy: {strategy_name}"
                         )
@@ -1018,7 +1003,7 @@ async def wait_and_auto_sell(mint: str):
                         position["sold_stages"].add("profit2")
                         await send_telegram_alert(
                             f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.8f} ({profit_multiplier:.2f}x)\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold {sell_percents[1]}% of position\n"
                             f"Strategy: {strategy_name}"
                         )
@@ -1030,12 +1015,20 @@ async def wait_and_auto_sell(mint: str):
                         position["sold_stages"].add("profit3")
                         await send_telegram_alert(
                             f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.8f} ({profit_multiplier:.2f}x)\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold final {sell_percents[2]}% of position\n"
                             f"Total profit: {(profit_multiplier-1)*100:.1f}%!\n"
                             f"Strategy: {strategy_name} SUCCESS! 🎯"
                         )
                         break  # All sold
+                
+                # Log current status every minute
+                if int((time.time() - start_time) % 60) == 0:
+                    logging.info(
+                        f"[{mint[:8]}] [{strategy_name}] Price: ${current_price:.6f} ({profit_multiplier:.2f}x) | "
+                        f"High: ${position['highest_price']:.6f} | "
+                        f"Sold stages: {position['sold_stages']}"
+                    )
                 
                 # Check if all targets hit
                 if len(position["sold_stages"]) >= 3:
@@ -1178,7 +1171,9 @@ async def detect_pumpfun_migration(mint: str) -> bool:
             return False
         
         # Check if pool exists on Raydium
-        pool = await raydium.find_pool_for_token(mint)
+        from raydium_aggregator import RaydiumAggregatorClient
+        raydium_client = RaydiumAggregatorClient(RPC_URL)
+        pool = raydium_client.find_pool_realtime(mint)
         
         if pool:
             logging.info(f"[Migration] PumpFun token {mint[:8]}... has migrated to Raydium!")
@@ -1190,7 +1185,7 @@ async def detect_pumpfun_migration(mint: str) -> bool:
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
-                    data = resp.json()  # FIXED: Added parentheses
+                    data = resp.json()
                     if mint in data.get("data", {}):
                         logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
                         return True
@@ -1230,10 +1225,5 @@ __all__ = [
     'check_pumpfun_token_status',
     'detect_pumpfun_migration',
     'pumpfun_tokens',  # Export this so sniper_logic can track PumpFun tokens
-    'trending_tokens',  # Export this so sniper_logic can track trending tokens
-    'get_token_price_usd',  # Export the fixed price function
-    'get_token_decimals',  # Export decimals function
-    'price_manager',  # Export price manager for cache management
-    'should_skip_token',  # Export the skip check function
-    'RECENTLY_ATTEMPTED'  # Export recently attempted dict
+    'trending_tokens'  # Export this so sniper_logic can track trending tokens
 ]
