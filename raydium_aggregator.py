@@ -206,27 +206,23 @@ class RaydiumAggregator:
     async def _scan_recent_pools(self, token_mint: str, max_pools: int = 50) -> Optional[RaydiumPool]:
         """Scan recent pools - FULLY FIXED VERSION without offset attribute access"""
         try:
-            # FIXED: Use proper dict for data_slice, not accessing .offset attribute
-        from solders.rpc.config import RpcAccountInfoConfig
-        from solders.rpc.filter import Memcmp
+            # FIXED: Simple approach without problematic imports
             response = await self.client.get_program_accounts(
                 RAYDIUM_AMM_PROGRAM,
                 commitment=Processed,
-                encoding="base64",
-                config=RpcAccountInfoConfig(
-                    encoding="base64",
-                    data_slice={"offset": 0, "length": 752}  # Pass as dict directly
+                encoding="base64"
             )
-        )
-            if not response or not response.value:
+            
+            # Handle both response types
+            if not response:
                 return None
-                # Handle both response types
+                
             accounts = response.value if hasattr(response, 'value') else response
             if not accounts:
                 return None
             
             # Process only recent pools (limit for performance)
-            accounts_to_check = response.value[:max_pools] if len(response.value) > max_pools else response.value
+            accounts_to_check = accounts[:max_pools] if len(accounts) > max_pools else accounts
             
             for account_info in accounts_to_check:
                 try:
@@ -268,11 +264,16 @@ class RaydiumAggregator:
                 encoding="base64"
             )
             
-            if not response or not response.value:
+            # Handle both response types
+            if not response:
+                return None
+                
+            accounts = response.value if hasattr(response, 'value') else response
+            if not accounts:
                 return None
             
             # FIX: Process only a limited number of accounts to prevent timeout
-            accounts_to_process = response.value[:max_accounts_to_scan] if len(response.value) > max_accounts_to_scan else response.value
+            accounts_to_process = accounts[:max_accounts_to_scan] if len(accounts) > max_accounts_to_scan else accounts
             
             for account_info in accounts_to_process:
                 try:
