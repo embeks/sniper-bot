@@ -1,4 +1,4 @@
-# raydium_aggregator.py - PRODUCTION READY VERSION
+# raydium_aggregator.py - PRODUCTION READY VERSION WITH FIXES
 import os
 import json
 import logging
@@ -36,7 +36,7 @@ class RaydiumAggregatorClient:
         self.known_pools = {}  # token_mint -> pool_data
         
     def _read_b64_account(self, acc: Any) -> Optional[bytes]:
-        """Centralized base64 extraction that handles both dict and object shapes"""
+        """Centralized base64 extraction that handles both dict and object shapes - FIXED"""
         try:
             # Handle dict format (solana-py 0.32.0)
             if isinstance(acc, dict):
@@ -46,13 +46,32 @@ class RaydiumAggregatorClient:
                         return base64.b64decode(data[0])
                     elif isinstance(data, str):
                         return base64.b64decode(data)
+                # Also check if data is directly in the dict
+                elif "data" in acc:
+                    data = acc["data"]
+                    if isinstance(data, list) and len(data) >= 1:
+                        return base64.b64decode(data[0])
+                    elif isinstance(data, str):
+                        return base64.b64decode(data)
             # Handle object format (older versions)
             elif hasattr(acc, 'account'):
-                data = acc.account.data
+                if hasattr(acc.account, 'data'):
+                    data = acc.account.data
+                    if isinstance(data, list) and len(data) >= 1:
+                        return base64.b64decode(data[0])
+                    elif isinstance(data, str):
+                        return base64.b64decode(data)
+                    elif isinstance(data, bytes):
+                        return data
+            # Direct data attribute
+            elif hasattr(acc, 'data'):
+                data = acc.data
                 if isinstance(data, list) and len(data) >= 1:
                     return base64.b64decode(data[0])
                 elif isinstance(data, str):
                     return base64.b64decode(data)
+                elif isinstance(data, bytes):
+                    return data
             return None
         except Exception as e:
             logging.debug(f"[Raydium] Failed to read account data: {e}")
@@ -108,7 +127,7 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """FIXED pool finding - handles dict return type"""
+        """FIXED pool finding - handles dict return type properly"""
         try:
             limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))
             logging.info(f"[Raydium] Doing limited scan (max {limit} pools)...")
@@ -129,42 +148,77 @@ class RaydiumAggregatorClient:
                 finally:
                     socket.setdefaulttimeout(original_timeout)
                 
-                # FIXED: Handle dict return type from solana-py 0.32.0
+                # CRITICAL FIX: Handle multiple response formats
                 accounts = []
-                if hasattr(response, 'value'):
-                    accounts = response.value
-                elif isinstance(response, dict) and 'result' in response:
-                    accounts = response['result']
+                if response is None:
+                    logging.warning("[Raydium] No response from get_program_accounts")
+                    return None
+                elif hasattr(response, 'value'):
+                    accounts = response.value if response.value else []
+                elif hasattr(response, 'result'):
+                    accounts = response.result if response.result else []
+                elif isinstance(response, dict):
+                    if 'result' in response:
+                        accounts = response['result'] if response['result'] else []
+                    elif 'value' in response:
+                        accounts = response['value'] if response['value'] else []
+                    else:
+                        accounts = response
                 elif isinstance(response, list):
                     accounts = response
+                else:
+                    logging.warning(f"[Raydium] Unknown response type: {type(response)}")
+                    return None
                 
-                if accounts:
-                    pools_to_check = accounts[-limit:] if len(accounts) > limit else accounts
-                    logging.info(f"[Raydium] Checking {len(pools_to_check)} recent pools...")
-                    
-                    for account_info in pools_to_check:
-                        try:
-                            # FIXED: Get pool ID from dict format
-                            pool_id = None
-                            if isinstance(account_info, dict):
-                                pool_id = str(account_info.get("pubkey", ""))
-                            elif hasattr(account_info, 'pubkey'):
-                                pool_id = str(account_info.pubkey)
-                            
-                            if not pool_id:
-                                continue
-                            
-                            # FIXED: Use centralized data extraction
-                            data = self._read_b64_account(account_info)
-                            if data and self._pool_bytes_contain_mints(data, token_mint, sol_mint):
-                                logging.info(f"[Raydium] Found pool {pool_id[:8]}... for {token_mint[:8]}!")
-                                return self.fetch_pool_data_from_chain(pool_id)
-                                
-                        except Exception as e:
+                if not accounts:
+                    logging.warning("[Raydium] No accounts returned from RPC")
+                    return None
+                
+                # Take last N pools (most recent)
+                pools_to_check = accounts[-limit:] if len(accounts) > limit else accounts
+                logging.info(f"[Raydium] Checking {len(pools_to_check)} recent pools...")
+                
+                for account_info in pools_to_check:
+                    try:
+                        # CRITICAL FIX: Extract pool ID properly from different formats
+                        pool_id = None
+                        
+                        # Try dict format first
+                        if isinstance(account_info, dict):
+                            if "pubkey" in account_info:
+                                pool_id = str(account_info["pubkey"])
+                            elif "address" in account_info:
+                                pool_id = str(account_info["address"])
+                        # Try object format
+                        elif hasattr(account_info, 'pubkey'):
+                            pool_id = str(account_info.pubkey)
+                        elif hasattr(account_info, 'address'):
+                            pool_id = str(account_info.address)
+                        
+                        if not pool_id:
+                            logging.debug(f"[Raydium] Could not extract pool ID from account")
                             continue
-                    
-                    logging.info(f"[Raydium] Token not found in recent {len(pools_to_check)} pools")
-                    
+                        
+                        # Use the fixed _read_b64_account method
+                        data = self._read_b64_account(account_info)
+                        if not data:
+                            continue
+                            
+                        if len(data) != 752:
+                            logging.debug(f"[Raydium] Skipping pool with size {len(data)}")
+                            continue
+                        
+                        # Check if this pool contains our token pair
+                        if self._pool_bytes_contain_mints(data, token_mint, sol_mint):
+                            logging.info(f"[Raydium] Found pool {pool_id[:8]}... for {token_mint[:8]}!")
+                            return self.fetch_pool_data_from_chain(pool_id)
+                            
+                    except Exception as e:
+                        logging.debug(f"[Raydium] Error checking pool: {e}")
+                        continue
+                
+                logging.info(f"[Raydium] Token not found in recent {len(pools_to_check)} pools")
+                
             except socket.timeout:
                 logging.warning(f"[Raydium] Scan timed out after 5 seconds")
                 return None
@@ -186,33 +240,43 @@ class RaydiumAggregatorClient:
             logging.info(f"[Raydium] Fetching account data for pool {pool_id[:8]}...")
             response = self.client.get_account_info(pool_pubkey)
             
-            # FIXED: Handle both dict and object response formats
+            # FIXED: Handle multiple response formats
             account_value = None
-            if hasattr(response, 'value'):
+            if response is None:
+                logging.error(f"[Raydium] No response for pool {pool_id[:8]}...")
+                return None
+            elif hasattr(response, 'value'):
                 account_value = response.value
-            elif isinstance(response, dict) and 'result' in response:
-                account_value = response['result']['value']
+            elif hasattr(response, 'result'): 
+                account_value = response.result
+            elif isinstance(response, dict):
+                if 'result' in response:
+                    if isinstance(response['result'], dict) and 'value' in response['result']:
+                        account_value = response['result']['value']
+                    else:
+                        account_value = response['result']
+                elif 'value' in response:
+                    account_value = response['value']
+                else:
+                    account_value = response
             
             if not account_value:
                 logging.error(f"[Raydium] No account data returned for pool {pool_id[:8]}...")
                 return None
             
-            # Extract data with flexible handling
+            # Extract data using our fixed method
             data = None
+            
+            # Create a wrapper dict to use our _read_b64_account method
             if hasattr(account_value, 'data'):
-                account_data = account_value.data
-                if isinstance(account_data, list) and len(account_data) >= 1:
-                    data = base64.b64decode(account_data[0])
-                elif isinstance(account_data, str):
-                    data = base64.b64decode(account_data)
-                else:
-                    data = bytes(account_data)
+                wrapper = {"account": {"data": account_value.data}}
+                data = self._read_b64_account(wrapper)
             elif isinstance(account_value, dict) and 'data' in account_value:
-                account_data = account_value['data']
-                if isinstance(account_data, list) and len(account_data) >= 1:
-                    data = base64.b64decode(account_data[0])
-                elif isinstance(account_data, str):
-                    data = base64.b64decode(account_data)
+                wrapper = {"account": account_value}
+                data = self._read_b64_account(wrapper)
+            else:
+                # Try directly
+                data = self._read_b64_account(account_value)
             
             if not data:
                 logging.error(f"[Raydium] Could not extract data for pool {pool_id[:8]}...")
