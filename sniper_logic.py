@@ -22,7 +22,7 @@ from utils import (
     listener_status, last_seen_token
 )
 from solders.pubkey import Pubkey
-from raydium_aggregator import RaydiumAggregatorClient
+from raydium_aggregator import RaydiumAggregator
 
 load_dotenv()
 
