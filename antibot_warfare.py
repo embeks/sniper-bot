@@ -1,3 +1,4 @@
+
 """
 ELITE ANTI-BOT WARFARE MODULE
 Compete with other bots and win
@@ -189,3 +190,4 @@ class CompetitorAnalysis:
                 "use_multiple_rpcs": False,
                 "aggressive_mode": False
             }
+
