@@ -609,7 +609,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
 async def validate_token_quality(mint: str, lp_amount: float) -> bool:
     """Final quality gate before buying - MODIFIED TO BE LESS STRICT"""
     # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
-    min_liquidity = float(os.getenv("MIN_LP", "5.0"))
+    min_liquidity = float(os.getenv("MIN_LP", "3.0"))
     
     # Minimum absolute requirements
     if lp_amount < min_liquidity * 0.9:  # Less than minimum liquidity
@@ -653,9 +653,9 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         quality_signals = []
         
         # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
-        min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+        min_liquidity = float(os.getenv("MIN_LP", "3.0"))
         
-        # CRITICAL: Minimum liquidity check (most important filter)
+        # Use MIN_LP from env, default to 3.0
         if lp_amount < min_liquidity:
             # Exception for PumpFun graduates
             if mint not in pumpfun_tokens or not pumpfun_tokens[mint].get("migrated", False):
