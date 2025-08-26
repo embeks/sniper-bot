@@ -1251,11 +1251,17 @@ async def trending_scanner():
             
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
+            
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
+            
+        except Exception as e:
+            logging.error(f"[Trending Scanner] Error: {e}")
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 # ============================================
 # MOMENTUM SCANNER - DISABLED BY DEFAULT
 # ============================================
-def detect_chart_pattern(price_data: list) -> str:
+def detect_chart_pattern(def detect_chart_pattern(price_data: list) -> str:
     """
     Detect if chart shows good or bad patterns
     Returns: 'steady_climb', 'pump_dump', 'vertical', 'consolidating', 'unknown'
@@ -1637,8 +1643,7 @@ async def check_momentum_score(mint: str) -> dict:
         logging.error(f"Error checking momentum score: {e}")
     
     return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
-
-# ============================================
+    # ============================================
 # MAIN MEMPOOL LISTENER WITH QUALITY CHECKS - CRITICAL FIX SECTION
 # ============================================
 
