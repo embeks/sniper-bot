@@ -784,18 +784,29 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
             record_skip("low_lp")
             return False
 
-        # Determine position size
+        # Get dynamic position size
         if force_amount:
             amount_sol = force_amount
             logging.info(f"[Buy] Using forced amount: {amount_sol} SOL")
         elif USE_DYNAMIC_SIZING:
             amount_sol = await get_dynamic_position_size(mint, pool_liquidity, is_migration)
-            logging.info(f"[Buy] Dynamic position: {amount_sol:.3f} SOL")
         else:
             amount_sol = BUY_AMOUNT_SOL
-            logging.info(f"[Buy] Fixed position: {amount_sol} SOL")
+        
+        # Final safety check with risk manager
+        try:
+            from integrate_monster import risk_manager
+            if risk_manager and not await risk_manager.check_risk_limits():
+                logging.warning(f"[Buy] Risk limits hit, skipping buy for {mint[:8]}...")
+                await send_telegram_alert(f"⚠️ Risk limits hit, skipping {mint[:8]}...")
+                return False
+        except ImportError:
+            logging.debug("[Buy] Risk manager not available, continuing without check")
+        except Exception as e:
+            logging.debug(f"[Buy] Risk check error: {e}, continuing")
         
         amount_lamports = int(amount_sol * 1e9)
+        logging.info(f"[Buy] Using dynamic position: {amount_sol:.3f} SOL for {mint[:8]}...")
 
         # Try Jupiter first
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
