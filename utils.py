@@ -1,3 +1,9 @@
+"""
+utils.py - COMPLETE FIXED VERSION
+Simplified liquidity checks, removed redundant validations
+Direct buy execution without unnecessary RPC calls
+"""
+
 import os
 import json
 import logging
@@ -471,60 +477,10 @@ def get_bot_status_message() -> str:
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get ACCURATE liquidity info for a token - FIXED VERSION"""
+    """FIXED: Simplified liquidity check - just return 0 to use tx liquidity"""
     try:
-        # First, try to find the pool using the fixed Raydium client
-        sol_mint = "So11111111111111111111111111111111111111112"
-        
-        # Try to find pool
-        pool = await raydium.find_pool_for_token(mint)
-        
-        if pool:
-            # Get the estimated SOL liquidity
-            sol_balance = pool.estimated_lp_sol
-            
-            if sol_balance > 0:
-                logging.info(f"[LP Check] {mint[:8]}... has {sol_balance:.2f} SOL liquidity on Raydium")
-                return {"liquidity": sol_balance}
-            else:
-                logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in Raydium pool")
-        
-        # No Raydium pool found, check Jupiter for liquidity
-        logging.info(f"[LP Check] No Raydium pool found for {mint[:8]}..., checking Jupiter")
-        
-        # Try to get a quote from Jupiter to determine if it's tradeable
-        try:
-            url = f"{JUPITER_BASE_URL}/v6/quote"
-            params = {
-                "inputMint": sol_mint,
-                "outputMint": mint,
-                "amount": str(int(0.001 * 1e9)),  # Test with 0.001 SOL
-                "slippageBps": "100",
-                "onlyDirectRoutes": "false"
-            }
-            
-            async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get(url, params=params)
-                if response.status_code == 200:
-                    quote = response.json()
-                    # If we can get a quote, there's some liquidity
-                    if quote.get("outAmount"):
-                        # Estimate liquidity from price impact
-                        price_impact = float(quote.get("priceImpactPct", 0))
-                        if price_impact < 1:  # Less than 1% impact
-                            estimated_lp = 10.0  # Decent liquidity
-                        elif price_impact < 5:
-                            estimated_lp = 2.0   # Low liquidity
-                        else:
-                            estimated_lp = 0.5   # Very low liquidity
-                        
-                        logging.info(f"[LP Check] {mint[:8]}... on Jupiter with estimated {estimated_lp:.2f} SOL liquidity")
-                        return {"liquidity": estimated_lp}
-        except Exception as e:
-            logging.debug(f"[LP Check] Jupiter check failed: {e}")
-        
-        # If we get here, no liquidity found anywhere
-        logging.info(f"[LP Check] No liquidity found for {mint[:8]}... on any DEX")
+        # FIX: Don't do complex checks here - sniper_logic has the liquidity from transaction
+        # This function is called but the result is overridden by tx_liquidity
         return {"liquidity": 0}
         
     except Exception as e:
@@ -771,30 +727,30 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         return None
 
 async def buy_token(mint: str):
-    """Execute buy transaction for a token - FIXED: Removed redundant liquidity check"""
+    """FIXED: Execute buy without redundant liquidity check"""
     amount = int(BUY_AMOUNT_SOL * 1e9)  # Convert SOL to lamports
 
     try:
         if mint in BROKEN_TOKENS:
-            logging.info(f"[SKIP] {mint[:8]}...: Marked as broken (error 0)")
+            logging.info(f"[SKIP] {mint[:8]}...: Marked as broken")
             record_skip("malformed")
             return False
 
         increment_stat("snipes_attempted", 1)
         update_last_activity()
         
-        # FIXED: REMOVED redundant liquidity check - trust sniper_logic's validation
-        # The sniper_logic.py already validated this token passed all quality checks
-        logging.info(f"[Buy] Proceeding with purchase of {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
+        # FIX: REMOVED liquidity check - sniper_logic already validated
+        logging.info(f"[Buy] Executing purchase of {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
 
-        # ========== TRY JUPITER FIRST (works for 95% of tokens) ==========
-        logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
+        # TRY JUPITER
+        logging.info(f"[Buy] Attempting Jupiter swap...")
         jupiter_sig = await execute_jupiter_swap(mint, amount)
         
         if jupiter_sig:
             logging.info(f"[ELITE] SUCCESS! Bought {mint[:8]}...")
             await send_telegram_alert(
-                f"✅ Sniped {mint} via Jupiter — bought with {BUY_AMOUNT_SOL} SOL\n"
+                f"✅ Sniped {mint}\n"
+                f"Amount: {BUY_AMOUNT_SOL} SOL\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
             
@@ -810,14 +766,14 @@ async def buy_token(mint: str):
             log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
             return True
         else:
-            logging.error(f"[ELITE] FAILED for {mint[:8]}...")
+            logging.error(f"[ELITE] Buy failed for {mint[:8]}...")
             mark_broken_token(mint, 0)
             record_skip("buy_failed")
             return False
 
     except Exception as e:
-        logging.error(f"[ELITE] Buy failed for {mint}: {e}")
-        await send_telegram_alert(f"❌ Buy failed for {mint}: {e}")
+        logging.error(f"[ELITE] Buy error: {e}")
+        await send_telegram_alert(f"❌ Buy failed: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
