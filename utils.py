@@ -477,10 +477,33 @@ def get_bot_status_message() -> str:
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """FIXED: Simplified liquidity check - just return 0 to use tx liquidity"""
+    """FIXED: Actually fetch liquidity data instead of returning 0"""
     try:
-        # FIX: Don't do complex checks here - sniper_logic has the liquidity from transaction
-        # This function is called but the result is overridden by tx_liquidity
+        # Check Raydium aggregator first
+        pool = await raydium.find_pool_for_token(mint)
+        if pool:
+            return {
+                "liquidity": pool.estimated_lp_sol,
+                "ownership": {"renounced": True}  # Default assumption
+            }
+        
+        # Try to get from DexScreener as backup
+        async with httpx.AsyncClient(timeout=5) as client:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if data and 'pairs' in data and len(data['pairs']) > 0:
+                    # Get the pair with highest liquidity
+                    pairs = sorted(data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)
+                    pair = pairs[0]
+                    liquidity = pair.get('liquidity', {})
+                    if liquidity and 'usd' in liquidity:
+                        sol_price = 150  # Approximate SOL price - you might want to fetch this dynamically
+                        lp_sol = float(liquidity['usd']) / sol_price
+                        return {"liquidity": lp_sol, "ownership": {"renounced": True}}
+        
+        # Return 0 if nothing found
         return {"liquidity": 0}
         
     except Exception as e:
