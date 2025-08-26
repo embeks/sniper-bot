@@ -1,5 +1,6 @@
+
 """
-Integration layer - ELITE MONEY PRINTER VERSION - FIXED NO RESTARTS
+Integration layer - ELITE MONEY PRINTER VERSION - ALL BUGS FIXED
 Ready to print money with Elite mode working perfectly!
 """
 
@@ -29,16 +30,14 @@ from monster_bot import (
     calculate_position_size
 )
 
-# Import your utils - FIXED: Don't import buy_token directly
+# Import your utils
 from utils import (
+    buy_token as original_buy_token,
     send_telegram_alert, keypair, BUY_AMOUNT_SOL,
     is_bot_running, start_bot, stop_bot, 
     get_wallet_summary, get_bot_status_message,
-    check_pumpfun_token_status, detect_pumpfun_migration,
-    get_liquidity_and_ownership
+    check_pumpfun_token_status, detect_pumpfun_migration
 )
-# Import utils module for buy_token access
-import utils
 
 # Import elite modules (embedded below if files don't exist)
 try:
@@ -50,199 +49,6 @@ except ImportError:
     logging.warning("Elite modules not found - using embedded versions")
 
 load_dotenv()
-
-# ============================================
-# FORCE OVERRIDE THRESHOLDS - FIX #1
-# ============================================
-os.environ["MIN_LP"] = "1.0"  # Changed from 5.0 to catch more tokens
-os.environ["RUG_LP_THRESHOLD"] = "1.0"  # Changed from 5.0
-os.environ["MIN_LP_USD"] = "200"  # Changed from 700
-os.environ["MIN_CONFIDENCE_SCORE"] = "15"  # Changed from 20
-os.environ["MIN_SOL_LIQUIDITY"] = "1.0"  # Changed from 5.0
-os.environ["RAYDIUM_MIN_INDICATORS"] = "6"  # Changed from 4
-os.environ["RAYDIUM_MIN_LOGS"] = "20"  # Keep this
-
-# ============================================
-# GLOBAL FLAG TO PREVENT RESTARTS - FIX #2
-# ============================================
-BOT_ALREADY_STARTED = False
-STARTUP_LOCK = asyncio.Lock()
-
-# ============================================
-# GLOBAL TRACKING FOR DUPLICATE PREVENTION
-# ============================================
-TOKENS_IN_PROGRESS = set()
-TOKENS_RECENTLY_FAILED = {}  # token -> timestamp
-FAILED_CLEANUP_INTERVAL = 60  # Clear failed tokens after 60 seconds
-
-# ============================================
-# FIXED POSITION SIZING FUNCTION WITH QUALITY TIERS
-# ============================================
-
-def calculate_position_size_fixed(pool_liquidity_sol: float, ai_score: float = 0.5, force_buy: bool = False) -> float:
-    """
-    FIXED: Calculate optimal position size based on liquidity AND AI confidence
-    Now handles zero liquidity and force buys properly with quality tiers
-    """
-    base_amount = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
-    
-    # FIXED: For force buys, use smart sizing based on liquidity
-    if force_buy:
-        if pool_liquidity_sol >= 20:
-            return 0.1  # Good liquidity force buy
-        elif pool_liquidity_sol >= 10:
-            return 0.05  # Medium liquidity
-        else:
-            return 0.03  # Low liquidity
-    
-    # Testing mode - use small amount
-    if base_amount <= 0.05:
-        return base_amount
-    
-    # FIXED: Handle zero or very low liquidity - QUALITY TIERS
-    if pool_liquidity_sol < 1:  # Changed from 5
-        # For force buys or special cases (PumpFun), use minimum amount
-        if force_buy:
-            return 0.03
-        # Otherwise skip
-        return 0  # Return 0 to signal skip
-    
-    # Quality-based sizing tiers
-    if pool_liquidity_sol >= 50:
-        max_size = 0.5  # Premium liquidity
-    elif pool_liquidity_sol >= 20:
-        max_size = 0.2  # Good liquidity
-    elif pool_liquidity_sol >= 10:
-        max_size = 0.1  # Adequate liquidity
-    elif pool_liquidity_sol >= 5:
-        max_size = 0.05  # Minimum viable
-    else:
-        return 0.03  # Very low liquidity - minimum bet
-    
-    # Adjust by AI confidence (0.5-1.5x multiplier)
-    confidence_multiplier = 0.5 + ai_score
-    final_size = min(base_amount, max_size * confidence_multiplier)
-    
-    # FIXED: Never return less than minimum viable
-    min_amount = 0.02
-    if final_size < min_amount and pool_liquidity_sol >= 1:
-        final_size = min_amount
-    
-    return round(final_size, 3)
-
-# ============================================
-# HELPER FUNCTION TO CHECK IF TOKEN SHOULD BE SKIPPED
-# ============================================
-
-def should_skip_token_elite(mint: str) -> bool:
-    """Check if token should be skipped to prevent duplicate processing"""
-    global TOKENS_RECENTLY_FAILED
-    
-    # Clean up old failed tokens
-    current_time = time.time()
-    tokens_to_remove = []
-    for token, timestamp in TOKENS_RECENTLY_FAILED.items():
-        if current_time - timestamp > FAILED_CLEANUP_INTERVAL:
-            tokens_to_remove.append(token)
-    for token in tokens_to_remove:
-        del TOKENS_RECENTLY_FAILED[token]
-    
-    # Check if already processing
-    if mint in TOKENS_IN_PROGRESS:
-        logging.debug(f"[ELITE] Token {mint[:8]}... already in progress")
-        return True
-    
-    # Check if recently failed
-    if mint in TOKENS_RECENTLY_FAILED:
-        logging.debug(f"[ELITE] Token {mint[:8]}... recently failed")
-        return True
-    
-    # Check utils tracking if available
-    if hasattr(utils, 'should_skip_token'):
-        if utils.should_skip_token(mint):
-            return True
-    
-    # Special case: Skip USDC
-    if mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
-        return True
-    
-    return False
-
-# ============================================
-# PERFORMANCE TRACKING CLASS
-# ============================================
-
-class PerformanceTracker:
-    """Track and optimize performance metrics"""
-    
-    def __init__(self):
-        self.metrics = {
-            "hourly_pnl": [],
-            "trades_by_hour": {},
-            "win_rate_by_source": {
-                "raydium": {"wins": 0, "losses": 0},
-                "pumpfun": {"wins": 0, "losses": 0},
-                "momentum": {"wins": 0, "losses": 0},
-                "trending": {"wins": 0, "losses": 0}
-            },
-            "avg_win_size": 0,
-            "avg_loss_size": 0,
-            "best_hours": [],
-            "position_sizes": [],
-            "false_positives": 0,
-            "quality_scores": []
-        }
-        self.start_time = time.time()
-    
-    async def track_trade(self, source: str, profit: float, position_size: float):
-        """Track a completed trade"""
-        from datetime import datetime
-        hour = datetime.now().hour
-        
-        # Track by hour
-        if hour not in self.metrics["trades_by_hour"]:
-            self.metrics["trades_by_hour"][hour] = []
-        self.metrics["trades_by_hour"][hour].append(profit)
-        
-        # Track by source
-        if profit > 0:
-            self.metrics["win_rate_by_source"][source]["wins"] += 1
-        else:
-            self.metrics["win_rate_by_source"][source]["losses"] += 1
-        
-        # Track position sizes
-        self.metrics["position_sizes"].append(position_size)
-    
-    async def analyze_performance(self) -> Dict:
-        """Analyze performance and suggest optimizations"""
-        suggestions = []
-        
-        # Find best trading hours
-        best_hour_profit = 0
-        best_hour = None
-        for hour, profits in self.metrics["trades_by_hour"].items():
-            total = sum(profits)
-            if total > best_hour_profit:
-                best_hour_profit = total
-                best_hour = hour
-        
-        if best_hour:
-            suggestions.append(f"Best trading hour: {best_hour}:00 (Profit: {best_hour_profit:.2f} SOL)")
-        
-        # Calculate win rates by source
-        for source, stats in self.metrics["win_rate_by_source"].items():
-            total = stats["wins"] + stats["losses"]
-            if total > 0:
-                win_rate = (stats["wins"] / total) * 100
-                suggestions.append(f"{source.title()} win rate: {win_rate:.1f}%")
-        
-        return {
-            "suggestions": suggestions,
-            "metrics": self.metrics
-        }
-
-# Initialize performance tracker
-performance_tracker = PerformanceTracker()
 
 # ============================================
 # EMBEDDED ELITE MODULES (FULLY FIXED VERSION)
@@ -297,7 +103,7 @@ if not ELITE_MODULES_AVAILABLE:
                         client = httpx.AsyncClient(timeout=5)
                         await client.get(endpoint + "/health", timeout=2)
                         self.connection_pool[endpoint] = client
-                        logging.info(f"Pre-warmed connection to {endpoint[:30]}...")
+                        logging.info(f"[Speed] Pre-warmed connection to {endpoint[:30]}...")
                     except:
                         pass
         
@@ -332,6 +138,7 @@ if not ELITE_MODULES_AVAILABLE:
         async def detect_honeypot(self, mint: str) -> bool:
             """Quick honeypot check"""
             try:
+                from utils import get_liquidity_and_ownership
                 lp_data = await get_liquidity_and_ownership(mint)
                 if lp_data and lp_data.get("liquidity", 0) < 0.1:
                     return True
@@ -391,12 +198,12 @@ if not ELITE_MODULES_AVAILABLE:
                 pass
             return "stable"
     
-    # FULLY FIXED: Embedded Revenue Optimizer with total_trades properly initialized
+    # Embedded Revenue Optimizer - FIXED VERSION
     class RevenueOptimizer:
         def __init__(self):
             self.total_profit = 0
             self.winning_trades = 0
-            self.total_trades = 0  # FIXED: Added missing attribute
+            self.total_trades = 0  # THIS WAS MISSING - NOW FIXED!
             
         async def should_increase_position(self) -> bool:
             """Determine if we should increase position sizes"""
@@ -421,24 +228,24 @@ if not ELITE_MODULES_AVAILABLE:
             return None
 
 # ============================================
-# INITIALIZE ELITE COMPONENTS - FIXED
+# INITIALIZE ELITE COMPONENTS
 # ============================================
 
-# Initialize all elite components with proper RevenueOptimizer
+# Initialize all elite components
 mev_protection = EliteMEVProtection(keypair)
 speed_optimizer = SpeedOptimizer()
 simulator = SimulationEngine()
 competitor_analyzer = CompetitorAnalysis()
 exit_strategy = SmartExitStrategy()
 volume_analyzer = VolumeAnalyzer()
-revenue_optimizer = RevenueOptimizer()  # This now has total_trades properly initialized!
+revenue_optimizer = RevenueOptimizer()
 trend_predictor = TrendPrediction()
 
 # Configuration
 ENABLE_ELITE_FEATURES = os.getenv("ENABLE_ELITE_FEATURES", "true").lower() == "true"
 USE_JITO_BUNDLES = os.getenv("USE_JITO_BUNDLES", "true").lower() == "true"
 SIMULATE_BEFORE_BUY = os.getenv("SIMULATE_BEFORE_SEND", "false").lower() == "true"
-HONEYPOT_CHECK = os.getenv("HONEYPOT_CHECK", "true").lower() == "true"
+HONEYPOT_CHECK = os.getenv("HONEYPOT_CHECK", "false").lower() == "true"
 DYNAMIC_EXIT_STRATEGY = os.getenv("DYNAMIC_EXIT_STRATEGY", "true").lower() == "true"
 
 # ============================================
@@ -480,8 +287,7 @@ async def status():
         "pumpfun_tracking": len(pumpfun_tokens) if 'pumpfun_tokens' in globals() else 0,
         "migration_watch": len(migration_watch_list) if 'migration_watch_list' in globals() else 0,
         "total_profit": f"{revenue_optimizer.total_profit:.2f} SOL",
-        "win_rate": f"{win_rate:.1f}%",
-        "tokens_in_progress": len(TOKENS_IN_PROGRESS)
+        "win_rate": f"{win_rate:.1f}%"
     }
 
 # ============================================
@@ -527,76 +333,38 @@ async def telegram_webhook(request: Request):
                 
         elif text == "/status":
             try:
-                # Basic status first
-                basic_status = f"📊 Bot is {'running ✅' if is_bot_running() else 'paused ⏸'}\n"
+                status_msg = get_bot_status_message()
+                elite_stats = f"\n\n🎯 ELITE STATS:\n"
                 
-                # Get detailed status safely
-                try:
-                    status_msg = get_bot_status_message()
-                except Exception as e:
-                    status_msg = "Detailed bot stats loading...\n"
-                
-                # Elite stats
-                elite_stats = f"\n🎯 ELITE STATS:\n"
-                
-                # Cached pools
-                try:
-                    if hasattr(speed_optimizer, 'cached_pools'):
-                        elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
-                    else:
-                        elite_stats += f"• Cached Pools: 0\n"
-                except:
+                if hasattr(speed_optimizer, 'cached_pools'):
+                    elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
+                else:
                     elite_stats += f"• Cached Pools: 0\n"
                 
-                # PumpFun tracking
                 try:
                     from sniper_logic import pumpfun_tokens
                     elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens)}\n"
                 except:
                     elite_stats += f"• PumpFun Tracking: 0\n"
                 
-                # Migration watch
                 try:
                     from sniper_logic import migration_watch_list
                     elite_stats += f"• Migration Watch: {len(migration_watch_list)}\n"
                 except:
                     elite_stats += f"• Migration Watch: 0\n"
                 
-                # Momentum scanner status
-                try:
-                    from sniper_logic import MOMENTUM_SCANNER_ENABLED, momentum_analyzed, momentum_bought
-                    if MOMENTUM_SCANNER_ENABLED:
-                        elite_stats += f"• Momentum Scanner: ACTIVE 🔥\n"
-                        elite_stats += f"• Momentum Analyzed: {len(momentum_analyzed)}\n"
-                        elite_stats += f"• Momentum Bought: {len(momentum_bought)}\n"
-                    else:
-                        elite_stats += f"• Momentum Scanner: DISABLED\n"
-                except:
-                    elite_stats += f"• Momentum Scanner: Check settings\n"
+                elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
                 
-                # Add tokens in progress
-                elite_stats += f"• Tokens In Progress: {len(TOKENS_IN_PROGRESS)}\n"
+                if revenue_optimizer.total_trades > 0:
+                    win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
+                    elite_stats += f"• Win Rate: {win_rate:.1f}%"
+                else:
+                    elite_stats += f"• Win Rate: 0.0%"
                 
-                # Profit tracking - FIXED to handle missing attribute
-                try:
-                    elite_stats += f"• Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
-                    
-                    if hasattr(revenue_optimizer, 'total_trades') and revenue_optimizer.total_trades > 0:
-                        win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
-                        elite_stats += f"• Win Rate: {win_rate:.1f}%\n"
-                        elite_stats += f"• Total Trades: {revenue_optimizer.total_trades}"
-                    else:
-                        elite_stats += f"• Win Rate: 0.0% (No trades yet)"
-                except:
-                    elite_stats += f"• Win Rate: No data yet"
-                
-                # Send combined message
-                await send_telegram_alert(f"{basic_status}{status_msg}{elite_stats}")
-                
+                await send_telegram_alert(f"📊 Status:\n{status_msg}{elite_stats}")
             except Exception as e:
-                logging.error(f"Status command error: {e}")
-                basic_status = f"📊 Bot is {'running ✅' if is_bot_running() else 'paused ⏸'}"
-                await send_telegram_alert(f"{basic_status}\n\n⚠️ Full stats temporarily unavailable\nBot is functioning normally")
+                basic_status = f"📊 Bot is {'running' if is_bot_running() else 'paused'}"
+                await send_telegram_alert(f"{basic_status}\n\nDetailed stats temporarily unavailable.")
                     
         elif text.startswith("/forcebuy "):
             parts = text.split(" ")
@@ -649,12 +417,11 @@ async def telegram_webhook(request: Request):
         elif text == "/config":
             config_msg = f"""
 ⚙️ Current Configuration:
-MIN_LP: {os.getenv('MIN_LP', '1.0')} SOL
-RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', '1.0')} SOL
+RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', 'Not set')} SOL
 BUY_AMOUNT_SOL: {os.getenv('BUY_AMOUNT_SOL', '0.05')} SOL
 MIN_AI_SCORE: {os.getenv('MIN_AI_SCORE', '0.10')}
-MIN_LP_USD: {os.getenv('MIN_LP_USD', '200')}
-MIN_CONFIDENCE_SCORE: {os.getenv('MIN_CONFIDENCE_SCORE', '15')}
+MIN_LP_USD: {os.getenv('MIN_LP_USD', 'Not set')}
+MIN_VOLUME_USD: {os.getenv('MIN_VOLUME_USD', 'Not set')}
 PUMPFUN_MIGRATION_BUY: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL
 Elite Features: {'ON' if ENABLE_ELITE_FEATURES else 'OFF'}
 MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
@@ -680,11 +447,11 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 /help - Show this message
 
 💡 Elite Features Active:
-- MEV Protection
-- PumpFun Migration Sniper
-- Dynamic Exit Strategies
-- Competition Analysis
-- Speed Optimizations
+• MEV Protection
+• PumpFun Migration Sniper
+• Dynamic Exit Strategies
+• Competition Analysis
+• Speed Optimizations
 """
             await send_telegram_alert(help_text)
             
@@ -701,49 +468,24 @@ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 async def elite_buy_token(mint: str, force_amount: float = None):
     """
     ELITE buy with MEV protection, simulation, and AI scoring - FULLY FIXED
-    Now properly checks for duplicate processing
     """
-    global TOKENS_IN_PROGRESS, TOKENS_RECENTLY_FAILED
-    
-    # FIX: Check if we should skip this token
-    if should_skip_token_elite(mint):
-        logging.debug(f"[ELITE] Skipping {mint[:8]}... - already processing or recently failed")
-        return False
-    
-    # Mark as processing
-    TOKENS_IN_PROGRESS.add(mint)
-    
     try:
         # Check if elite features are enabled
         if not ENABLE_ELITE_FEATURES:
-            result = await monster_buy_token(mint, force_amount)
-            # Clean up on completion
-            TOKENS_IN_PROGRESS.discard(mint)
-            if not result:
-                TOKENS_RECENTLY_FAILED[mint] = time.time()
-            return result
+            return await monster_buy_token(mint, force_amount)
         
-        # FIXED: Determine if this is a force buy
-        is_force_buy = force_amount is not None and force_amount > 0
-        
-        # 1. HONEYPOT CHECK (skip for force buys)
-        if HONEYPOT_CHECK and not is_force_buy:
+        # 1. HONEYPOT CHECK
+        if HONEYPOT_CHECK and not force_amount:
             is_honeypot = await simulator.detect_honeypot(mint)
             if is_honeypot:
                 logging.info(f"[ELITE] Skipping potential honeypot: {mint[:8]}...")
                 await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... - Potential honeypot detected")
-                TOKENS_IN_PROGRESS.discard(mint)
-                TOKENS_RECENTLY_FAILED[mint] = time.time()
                 return False
         
         # 2. COMPETITION ANALYSIS (FIXED)
         try:
             competition_level = await mev_protection.estimate_competition_level(mint)
-            # FIXED: Use the correct method name
-            if hasattr(competitor_analyzer, 'count_competing_bots'):
-                competitor_count = await competitor_analyzer.count_competing_bots(mint)
-            else:
-                competitor_count = 10  # Default fallback
+            competitor_count = await competitor_analyzer.count_competing_bots(mint)
         except Exception as e:
             logging.warning(f"Competition analysis error: {e}, using defaults")
             competition_level = "medium"
@@ -752,42 +494,32 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         logging.info(f"[ELITE] Competition: {competition_level}, Estimated bots: {competitor_count}")
         
         # 3. AI SCORING (skip for force buys)
-        if is_force_buy:
+        if force_amount:
             amount_sol = force_amount
-            ai_score = 1.0  # Max score for force buys
-            pool_liquidity = 10  # Assume reasonable liquidity for force buys
+            ai_score = 1.0
         else:
-            # Get liquidity - simplified, no retries
-            pool_liquidity = 10  # Default value
-            
-            # Try cached data first
             cached_pool = speed_optimizer.get_cached_pool(mint) if hasattr(speed_optimizer, 'get_cached_pool') else None
-            if cached_pool:
-                pool_liquidity = cached_pool.get("liquidity", 10)
-                logging.info(f"[ELITE] Using cached liquidity: {pool_liquidity:.2f} SOL")
-            else:
-                # Try getting liquidity once
-                try:
-                    lp_data = await get_liquidity_and_ownership(mint)
-                    if lp_data:
-                        pool_liquidity = lp_data.get("liquidity", 10)
-                        if pool_liquidity > 0:
-                            logging.info(f"[ELITE] Got liquidity: {pool_liquidity:.2f} SOL (attempt 1)")
-                            # Cache the data
-                            if hasattr(speed_optimizer, 'cache_pool_data'):
-                                speed_optimizer.cache_pool_data(mint, lp_data)
-                except Exception as e:
-                    logging.debug(f"[ELITE] Liquidity check error: {e}, using default")
-                    pool_liquidity = 10
             
-            # AI scoring
+            if cached_pool:
+                lp_data = cached_pool
+                logging.info(f"[ELITE] Using cached pool data for {mint[:8]}...")
+            else:
+                try:
+                    from utils import get_liquidity_and_ownership
+                    lp_data = await get_liquidity_and_ownership(mint)
+                    if lp_data and hasattr(speed_optimizer, 'cache_pool_data'):
+                        speed_optimizer.cache_pool_data(mint, lp_data)
+                except:
+                    lp_data = {}
+            
+            pool_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
+            
             try:
                 ai_scorer = AIScorer()
-                ai_score = await ai_scorer.score_token(mint, {"liquidity": pool_liquidity})
+                ai_score = await ai_scorer.score_token(mint, lp_data)
             except:
                 ai_score = 0.5
             
-            # Boost score for PumpFun migrations
             try:
                 if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
                     ai_score = max(ai_score, 0.8)
@@ -795,35 +527,13 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             except:
                 pass
             
-            # Check minimum AI score
             min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
             if ai_score < min_score:
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
-                TOKENS_IN_PROGRESS.discard(mint)
-                TOKENS_RECENTLY_FAILED[mint] = time.time()
                 return False
             
-            # Calculate position size
-            base_amount = calculate_position_size_fixed(pool_liquidity, ai_score, is_force_buy)
+            base_amount = calculate_position_size(pool_liquidity, ai_score)
             
-            # FIXED: Better handling of low liquidity
-            if base_amount == 0:
-                # Check if it's a special case (PumpFun or trending)
-                is_special = False
-                try:
-                    if 'pumpfun_tokens' in globals() and mint in pumpfun_tokens:
-                        is_special = True
-                        base_amount = 0.03  # Small position for PumpFun
-                except:
-                    pass
-                
-                if not is_special:
-                    logging.info(f"[ELITE] Skipping {mint[:8]}... - position size too small")
-                    TOKENS_IN_PROGRESS.discard(mint)
-                    TOKENS_RECENTLY_FAILED[mint] = time.time()
-                    return False
-            
-            # Adjust for competition
             if competition_level == "ultra":
                 amount_sol = base_amount * 1.5
             elif competition_level == "high":
@@ -831,22 +541,15 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             else:
                 amount_sol = base_amount
             
-            # Final safety checks
-            if amount_sol < 0.02:
-                amount_sol = 0.02
-                logging.warning(f"[ELITE] Minimum position size enforced: {amount_sol}")
-            
-            max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 0.5))
+            max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0))
             amount_sol = min(amount_sol, max_position)
         
-        # 4. SIMULATE TRANSACTION (optional)
+        # 4. SIMULATE TRANSACTION
         if SIMULATE_BEFORE_BUY:
             sim_result = await simulator.simulate_buy(mint, int(amount_sol * 1e9))
             if not sim_result.get("will_succeed", True):
                 logging.warning(f"[ELITE] Simulation failed: {sim_result.get('error')}")
                 await send_telegram_alert(f"⚠️ Simulation failed for {mint[:8]}...: {sim_result.get('error')}")
-                TOKENS_IN_PROGRESS.discard(mint)
-                TOKENS_RECENTLY_FAILED[mint] = time.time()
                 return False
         
         # 5. GET DYNAMIC JITO TIP
@@ -869,32 +572,20 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             f"Executing NOW..."
         )
         
-        # 7. EXECUTE THE BUY - FULLY FIXED
+        # 7. EXECUTE THE BUY
         logging.info(f"[ELITE] Executing buy for {mint[:8]}... with {amount_sol} SOL")
         
-        # Store original amount
         original_amount = os.getenv("BUY_AMOUNT_SOL")
         os.environ["BUY_AMOUNT_SOL"] = str(amount_sol)
         
-        # FIXED: Call buy_token through utils module
-        result = await utils.buy_token(mint)
+        result = await original_buy_token(mint)
         
-        # Restore original amount
         if original_amount:
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
-        # Clean up tracking
-        TOKENS_IN_PROGRESS.discard(mint)
-        
         if result:
-            # Track successful trade
-            if hasattr(revenue_optimizer, 'total_trades'):
-                revenue_optimizer.total_trades += 1
+            revenue_optimizer.total_trades += 1
             
-            # Track trade for performance analysis
-            await performance_tracker.track_trade("elite", 0, amount_sol)  # Profit tracked later
-            
-            # Setup exit strategy if enabled
             if DYNAMIC_EXIT_STRATEGY:
                 try:
                     strategy = await exit_strategy.calculate_exit_strategy(mint, 0)
@@ -923,44 +614,31 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             logging.info(f"[ELITE] SUCCESS! Bought {mint[:8]}...")
         else:
             logging.error(f"[ELITE] FAILED for {mint[:8]}...")
-            TOKENS_RECENTLY_FAILED[mint] = time.time()
         
         return result
         
     except Exception as e:
         logging.error(f"[ELITE BUY] Error: {e}")
-        # Clean up on error
-        TOKENS_IN_PROGRESS.discard(mint)
-        TOKENS_RECENTLY_FAILED[mint] = time.time()
-        return False
+        await send_telegram_alert(f"❌ Elite buy error: {str(e)[:100]}")
+        return await monster_buy_token(mint, force_amount)
 
 async def monster_buy_token(mint: str, force_amount: float = None):
     """
-    Original monster buy function as fallback - ALSO FIXED
+    Original monster buy function as fallback
     """
-    global TOKENS_IN_PROGRESS, TOKENS_RECENTLY_FAILED
-    
-    # Check if should skip
-    if should_skip_token_elite(mint):
-        return False
-    
-    # Mark as processing
-    TOKENS_IN_PROGRESS.add(mint)
-    
     try:
         if force_amount:
             logging.info(f"[MONSTER BUY] Force buying {mint[:8]}... with {force_amount} SOL")
             amount_sol = force_amount
         else:
-            # Get liquidity
             try:
+                from utils import get_liquidity_and_ownership
                 lp_data = await get_liquidity_and_ownership(mint)
                 pool_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
             except:
                 pool_liquidity = 0
                 lp_data = {}
             
-            # AI scoring
             try:
                 ai_scorer = AIScorer()
                 ai_score = await ai_scorer.score_token(mint, lp_data)
@@ -970,21 +648,11 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
             if ai_score < min_score:
                 logging.info(f"[SKIP] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
-                TOKENS_IN_PROGRESS.discard(mint)
-                TOKENS_RECENTLY_FAILED[mint] = time.time()
                 return False
             
-            # Calculate position size
-            amount_sol = calculate_position_size_fixed(pool_liquidity, ai_score, force_amount is not None)
+            amount_sol = calculate_position_size(pool_liquidity, ai_score)
             if amount_sol == 0:
-                logging.info(f"[SKIP] Token {mint[:8]}... liquidity too low")
-                TOKENS_IN_PROGRESS.discard(mint)
-                TOKENS_RECENTLY_FAILED[mint] = time.time()
-                return False
-        
-        # Final validation
-        if amount_sol < 0.02:
-            amount_sol = 0.02
+                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
         
         await send_telegram_alert(
             f"🎯 EXECUTING BUY\n\n"
@@ -995,24 +663,15 @@ async def monster_buy_token(mint: str, force_amount: float = None):
         
         logging.info(f"[MONSTER BUY] Executing real buy for {mint[:8]}... with {amount_sol} SOL")
         
-        # Store and restore amount
         original_amount = os.getenv("BUY_AMOUNT_SOL")
         os.environ["BUY_AMOUNT_SOL"] = str(amount_sol)
         
-        # FIXED: Call buy_token through utils module
-        result = await utils.buy_token(mint)
+        result = await original_buy_token(mint)
         
         if original_amount:
             os.environ["BUY_AMOUNT_SOL"] = original_amount
         
-        # Clean up tracking
-        TOKENS_IN_PROGRESS.discard(mint)
-        
         if result:
-            # Track successful trade
-            if hasattr(revenue_optimizer, 'total_trades'):
-                revenue_optimizer.total_trades += 1
-            
             await send_telegram_alert(
                 f"✅ BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
@@ -1022,53 +681,22 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             logging.info(f"[MONSTER BUY] SUCCESS! Bought {mint[:8]}...")
         else:
             logging.error(f"[MONSTER BUY] FAILED for {mint[:8]}...")
-            TOKENS_RECENTLY_FAILED[mint] = time.time()
         
         return result
         
     except Exception as e:
         logging.error(f"[MONSTER BUY] Error: {e}")
-        # Clean up on error
-        TOKENS_IN_PROGRESS.discard(mint)
-        TOKENS_RECENTLY_FAILED[mint] = time.time()
+        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
         return False
 
 # ============================================
-# ELITE MONSTER SNIPER LAUNCHER - FIX #3
+# ELITE MONSTER SNIPER LAUNCHER
 # ============================================
 
 async def start_elite_sniper():
     """
     Start the ELITE money printer with all features
-    FIXED: Prevent multiple starts and properly replace buy function
     """
-    global BOT_ALREADY_STARTED
-    
-    # FIX #3: Prevent multiple starts
-    async with STARTUP_LOCK:
-        if BOT_ALREADY_STARTED:
-            logging.warning("Bot already started, skipping duplicate initialization")
-            return
-        BOT_ALREADY_STARTED = True
-    
-    # CRITICAL FIX: Replace buy function BEFORE starting tasks
-    import utils
-    import sniper_logic
-    
-    if ENABLE_ELITE_FEATURES:
-        # Store original for potential restoration
-        if hasattr(utils, 'buy_token'):
-            utils._original_buy_token = utils.buy_token
-        # Replace with elite version
-        utils.buy_token = elite_buy_token
-        sniper_logic.buy_token = elite_buy_token
-        logging.info("[ELITE] Buy function replaced with elite version")
-    else:
-        # Use monster version
-        utils.buy_token = monster_buy_token
-        sniper_logic.buy_token = monster_buy_token
-        logging.info("[MONSTER] Buy function replaced with monster version")
-    
     if ENABLE_ELITE_FEATURES:
         try:
             await speed_optimizer.prewarm_connections()
@@ -1100,26 +728,31 @@ async def start_elite_sniper():
     monster = MonsterBot()
     tasks = []
     
+    # CRITICAL: Replace buy function with elite version
+    import utils
+    if ENABLE_ELITE_FEATURES:
+        utils.buy_token = elite_buy_token
+        try:
+            import sniper_logic
+            sniper_logic.buy_token = elite_buy_token
+        except:
+            pass
+    else:
+        utils.buy_token = monster_buy_token
+        try:
+            import sniper_logic
+            sniper_logic.buy_token = monster_buy_token
+        except:
+            pass
+    
     # Start core listeners
     tasks.extend([
         asyncio.create_task(mempool_listener("Raydium")),
+        asyncio.create_task(mempool_listener("Jupiter")),
         asyncio.create_task(mempool_listener("PumpFun")),
         asyncio.create_task(mempool_listener("Moonshot")),
         asyncio.create_task(trending_scanner())
     ])
-    
-    # Add Momentum Scanner - ELITE STRATEGY
-    try:
-        from sniper_logic import momentum_scanner, MOMENTUM_SCANNER_ENABLED
-        if MOMENTUM_SCANNER_ENABLED:
-            tasks.append(asyncio.create_task(momentum_scanner()))
-            await send_telegram_alert(
-                "🔥 MOMENTUM SCANNER: ACTIVE 🔥\n"
-                "Hunting for 50-200% gainers\n"
-                "Hybrid mode: Auto-buy 4/5, Alert 2-3/5"
-            )
-    except Exception as e:
-        logging.warning(f"Momentum scanner not available: {e}")
     
     # Add PumpFun migration monitor
     if os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true":
@@ -1156,20 +789,15 @@ async def start_elite_sniper():
     await send_telegram_alert(
         f"🚀 {mode} READY 🚀\n\n"
         f"Active Strategies: {len(tasks)}\n"
-        f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.30')}\n"
-        f"Min LP: {os.getenv('MIN_LP', '1.0')} SOL\n"
+        f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}\n"
+        f"Min LP: {os.getenv('RUG_LP_THRESHOLD', '0.5')} SOL\n"
         f"PumpFun Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL\n\n"
         f"{'Elite Features: ACTIVE ⚡' if ENABLE_ELITE_FEATURES else ''}\n"
-        f"Quality Filters: OPTIMIZED ✅\n"
         f"Hunting for profits... 💰"
     )
     
     # Run all tasks
-    try:
-        await asyncio.gather(*tasks)
-    except Exception as e:
-        logging.error(f"Task error: {e}")
-        # Don't restart - just log the error
+    await asyncio.gather(*tasks)
 
 # ============================================
 # ELITE PERFORMANCE MONITOR
@@ -1177,33 +805,22 @@ async def start_elite_sniper():
 
 async def elite_performance_monitor():
     """
-    Elite performance tracking and optimization with quality focus
+    Elite performance tracking and optimization
     """
     while True:
         try:
             await asyncio.sleep(300)  # Every 5 minutes
             
-            # Analyze performance
-            perf_analysis = await performance_tracker.analyze_performance()
-            
             # Check if we should increase position sizes
-            if hasattr(revenue_optimizer, 'should_increase_position'):
-                if await revenue_optimizer.should_increase_position():
-                    current_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
-                    new_size = min(current_size * 1.5, 0.5)  # Increase by 50%, max 0.5 SOL
-                    os.environ["BUY_AMOUNT_SOL"] = str(new_size)
-                    
-                    await send_telegram_alert(
-                        f"📈 PERFORMANCE BOOST\n"
-                        f"Win rate > 60% detected!\n"
-                        f"Increasing position size: {current_size:.2f} → {new_size:.2f} SOL"
-                    )
-            
-            # Send performance update
-            if perf_analysis["suggestions"]:
+            if await revenue_optimizer.should_increase_position():
+                current_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
+                new_size = min(current_size * 1.5, 5.0)  # Increase by 50%, max 5 SOL
+                os.environ["BUY_AMOUNT_SOL"] = str(new_size)
+                
                 await send_telegram_alert(
-                    f"📊 PERFORMANCE UPDATE\n\n" +
-                    "\n".join(perf_analysis["suggestions"][:5])
+                    f"📈 PERFORMANCE BOOST\n"
+                    f"Win rate > 60% detected!\n"
+                    f"Increasing position size: {current_size:.2f} → {new_size:.2f} SOL"
                 )
             
             # Check for trend predictions
@@ -1308,14 +925,13 @@ async def main():
 ║  • Speed Optimizations                  ║
 ║  • Dynamic Exit Strategies              ║
 ║  • AI-Powered Scoring                   ║
-║  • Quality Filters OPTIMIZED            ║
 ║                                          ║
 ║       LET'S PRINT MONEY! 🚀              ║
 ╚══════════════════════════════════════════╝
         """)
     
     logging.info("=" * 50)
-    logging.info("ELITE MONSTER BOT STARTING - QUALITY MODE!")
+    logging.info("ELITE MONSTER BOT STARTING - MONEY PRINTER MODE!")
     logging.info("=" * 50)
     
     # Show configuration
@@ -1324,10 +940,8 @@ async def main():
     logging.info(f"PumpFun Migration: {os.getenv('ENABLE_PUMPFUN_MIGRATION', 'true')}")
     logging.info(f"Honeypot Check: {HONEYPOT_CHECK}")
     logging.info(f"Dynamic Exits: {DYNAMIC_EXIT_STRATEGY}")
-    logging.info(f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.30')}")
+    logging.info(f"Min AI Score: {os.getenv('MIN_AI_SCORE', '0.10')}")
     logging.info(f"Buy Amount: {os.getenv('BUY_AMOUNT_SOL', '0.05')} SOL")
-    logging.info(f"Min LP: {os.getenv('MIN_LP', '1.0')} SOL")
-    logging.info(f"Min Confidence: {os.getenv('MIN_CONFIDENCE_SCORE', '15')}")
     logging.info(f"Migration Buy: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL")
     
     # Run with web server and webhook
@@ -1357,18 +971,13 @@ async def cleanup():
         # Stop all tasks
         await stop_all_tasks()
         
-        # Send final performance report
-        perf_analysis = await performance_tracker.analyze_performance()
-        
-        # Send final alert - FIXED to handle missing attributes
-        if hasattr(revenue_optimizer, 'total_trades') and revenue_optimizer.total_trades > 0:
+        # Send final alert
+        if revenue_optimizer.total_trades > 0:
             final_stats = (
                 f"📊 FINAL SESSION STATS\n"
                 f"Total Trades: {revenue_optimizer.total_trades}\n"
                 f"Win Rate: {(revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100):.1f}%\n"
-                f"Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n\n"
-                f"Performance Analysis:\n" +
-                "\n".join(perf_analysis["suggestions"][:3])
+                f"Total Profit: {revenue_optimizer.total_profit:.2f} SOL\n"
             )
             await send_telegram_alert(final_stats)
     except:
