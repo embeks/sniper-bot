@@ -122,8 +122,7 @@ TRADES_CSV_FILE = "trades.csv"
 # Add blacklisted tokens from env
 BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
 
-# FIX: Track tokens being processed to prevent duplicate buys
-PROCESSING_TOKENS = set()
+# FIX: Track tokens being processed to prevent duplicate buys - SIMPLIFIED
 RECENTLY_ATTEMPTED = {}  # token -> timestamp of last attempt
 
 # Stats tracking
@@ -370,20 +369,16 @@ def is_valid_mint(mint: str) -> bool:
     except:
         return False
 
-# FIX: Add function to check if token should be skipped
+# FIX: SIMPLIFIED - Check if token should be skipped
 def should_skip_token(mint: str) -> bool:
-    """Check if we should skip this token to prevent loops"""
-    # Skip if already processing
-    if mint in PROCESSING_TOKENS:
-        return True
-    
+    """SIMPLIFIED: Check if we should skip this token"""
     # Skip if marked as broken
     if mint in BROKEN_TOKENS:
         return True
     
-    # Skip if recently attempted (within last 60 seconds)
+    # Skip if recently attempted (within last 30 seconds) - REDUCED FROM 60
     if mint in RECENTLY_ATTEMPTED:
-        if time.time() - RECENTLY_ATTEMPTED[mint] < 60:
+        if time.time() - RECENTLY_ATTEMPTED[mint] < 30:
             return True
         else:
             # Clean up old entry
@@ -762,73 +757,57 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         logging.error(f"[Jupiter] Sell execution error: {e}")
         return None
 
+# CRITICAL FIX: SIMPLIFIED BUY FUNCTION
 async def buy_token(mint: str):
-    """FIXED: Execute buy without redundant liquidity check"""
-    amount = int(BUY_AMOUNT_SOL * 1e9)  # Convert SOL to lamports
+    """FIXED: Execute buy without redundant checks"""
+    amount = int(BUY_AMOUNT_SOL * 1e9)
     
-    # FIX: Check if we should skip this token
-    if should_skip_token(mint):
-        logging.info(f"[SKIP] {mint[:8]}...: Already processing or recently failed")
+    # Simplified skip check
+    if mint in BROKEN_TOKENS:
+        logging.info(f"[SKIP] {mint[:8]}...: Marked as broken")
         return False
     
-    # Mark as processing
-    PROCESSING_TOKENS.add(mint)
-
-    try:
-        if mint in BROKEN_TOKENS:
-            logging.info(f"[SKIP] {mint[:8]}...: Marked as broken")
-            record_skip("malformed")
+    # Remove from recently attempted after 30 seconds (was 60)
+    if mint in RECENTLY_ATTEMPTED:
+        if time.time() - RECENTLY_ATTEMPTED[mint] < 30:
+            logging.info(f"[SKIP] {mint[:8]}...: Recently attempted")
             return False
-
-        increment_stat("snipes_attempted", 1)
-        update_last_activity()
-        
-        # FIX: REMOVED liquidity check - sniper_logic already validated
-        logging.info(f"[Buy] Executing purchase of {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
-
-        # TRY JUPITER
-        logging.info(f"[Buy] Attempting Jupiter swap...")
-        jupiter_sig = await execute_jupiter_swap(mint, amount)
-        
-        if jupiter_sig:
-            logging.info(f"[ELITE] SUCCESS! Bought {mint[:8]}...")
-            await send_telegram_alert(
-                f"✅ Sniped {mint}\n"
-                f"Amount: {BUY_AMOUNT_SOL} SOL\n"
-                f"TX: https://solscan.io/tx/{jupiter_sig}"
-            )
-            
-            OPEN_POSITIONS[mint] = {
-                "expected_token_amount": 0,
-                "buy_amount_sol": BUY_AMOUNT_SOL,
-                "sold_stages": set(),
-                "buy_sig": jupiter_sig,
-                "buy_time": time.time()
-            }
-            
-            increment_stat("snipes_succeeded", 1)
-            log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
-            
-            # Remove from processing
-            PROCESSING_TOKENS.discard(mint)
-            return True
         else:
-            logging.error(f"[ELITE] Buy failed for {mint[:8]}...")
-            mark_broken_token(mint, 0)
-            record_skip("buy_failed")
-            
-            # Remove from processing
-            PROCESSING_TOKENS.discard(mint)
-            return False
-
-    except Exception as e:
-        logging.error(f"[ELITE] Buy error: {e}")
-        await send_telegram_alert(f"❌ Buy failed: {e}")
-        log_skipped_token(mint, f"Buy failed: {e}")
+            del RECENTLY_ATTEMPTED[mint]
+    
+    increment_stat("snipes_attempted", 1)
+    update_last_activity()
+    
+    logging.info(f"[Buy] Executing purchase of {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
+    
+    # Direct Jupiter execution
+    logging.info(f"[Buy] Attempting Jupiter swap...")
+    jupiter_sig = await execute_jupiter_swap(mint, amount)
+    
+    if jupiter_sig:
+        logging.info(f"[ELITE] SUCCESS! Bought {mint[:8]}...")
+        await send_telegram_alert(
+            f"✅ Sniped {mint}\n"
+            f"Amount: {BUY_AMOUNT_SOL} SOL\n"
+            f"TX: https://solscan.io/tx/{jupiter_sig}"
+        )
         
-        # Remove from processing
-        PROCESSING_TOKENS.discard(mint)
-        # Mark as recently attempted
+        OPEN_POSITIONS[mint] = {
+            "expected_token_amount": 0,
+            "buy_amount_sol": BUY_AMOUNT_SOL,
+            "sold_stages": set(),
+            "buy_sig": jupiter_sig,
+            "buy_time": time.time()
+        }
+        
+        increment_stat("snipes_succeeded", 1)
+        log_trade(mint, "BUY", BUY_AMOUNT_SOL, 0)
+        
+        # Mark as recently attempted to prevent duplicate buys
+        RECENTLY_ATTEMPTED[mint] = time.time()
+        return True
+    else:
+        logging.error(f"[Buy] Failed for {mint[:8]}...")
         RECENTLY_ATTEMPTED[mint] = time.time()
         return False
 
@@ -1256,6 +1235,5 @@ __all__ = [
     'get_token_decimals',  # Export decimals function
     'price_manager',  # Export price manager for cache management
     'should_skip_token',  # Export the skip check function
-    'PROCESSING_TOKENS',  # Export processing tokens set
     'RECENTLY_ATTEMPTED'  # Export recently attempted dict
 ]
