@@ -282,7 +282,7 @@ async def extract_liquidity_from_tx(signature: str, accounts: list) -> float:
                             # Sanity check - cap at 10000 SOL for new pools
                             if liquidity > 10000:
                                 logging.warning(f"[LIQUIDITY] Capping suspicious liquidity: {liquidity:.2f} SOL -> 0 SOL")
-                                return 0
+                                return 100
                             
                             logging.info(f"[LIQUIDITY] Extracted {liquidity:.2f} SOL from transaction")
                             return liquidity
@@ -327,7 +327,7 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
     current_time = time.time()
     if current_time - last_cache_cleanup > CACHE_CLEANUP_INTERVAL:
         old_sigs = [sig for sig, ts in processed_signatures_cache.items() 
-                   if current_time - ts > CACHE_CLEANUP_INTERVAL]
+                   if current_time - ts > 60]
         for sig in old_sigs:
             del processed_signatures_cache[sig]
         last_cache_cleanup = current_time
@@ -609,10 +609,10 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
 async def validate_token_quality(mint: str, lp_amount: float) -> bool:
     """Final quality gate before buying - MODIFIED TO BE LESS STRICT"""
     # Use MIN_LP if it's set, otherwise fall back to MIN_SOL_LIQUIDITY
-    min_liquidity = MIN_LP if MIN_LP else MIN_SOL_LIQUIDITY
+    min_liquidity = float(os.getenv("MIN_LP", "5.0"))
     
     # Minimum absolute requirements
-    if lp_amount < min_liquidity:  # Less than minimum liquidity
+    if lp_amount < min_liquidity * 0.9:  # Less than minimum liquidity
         logging.info(f"[QUALITY] Rejecting {mint[:8]} - LP too low: {lp_amount:.2f} SOL (min: {min_liquidity})")
         return False
     
@@ -2106,10 +2106,10 @@ async def mempool_listener(name, program_id=None):
                                             # FIX: Track as false positive, don't apply cooldown
                                             FALSE_POSITIVE_TOKENS[potential_mint] = time.time()
                                             await send_telegram_alert(
-                                                f"❌ PumpFun snipe failed (false positive)\n"
+                                                f"❌ PumpFun snipe failed\n"
                                                 f"Token: {potential_mint[:16]}..."
                                             )
-                                            mark_broken_token(potential_mint, 0)
+                                            # Don't mark as broken - might be temporary issue
                                     except Exception as e:
                                         logging.error(f"[PUMPFUN] Buy error: {e}")
                                         await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
