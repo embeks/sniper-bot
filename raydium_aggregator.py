@@ -207,14 +207,22 @@ class RaydiumAggregator:
         """Scan recent pools - FULLY FIXED VERSION without offset attribute access"""
         try:
             # FIXED: Use proper dict for data_slice, not accessing .offset attribute
+        from solders.rpc.config import RpcAccountInfoConfig
+        from solders.rpc.filter import Memcmp
             response = await self.client.get_program_accounts(
                 RAYDIUM_AMM_PROGRAM,
                 commitment=Processed,
                 encoding="base64",
-                data_slice={"offset": 0, "length": 752}  # Pass as dict directly
+                config=RpcAccountInfoConfig(
+                    encoding="base64",
+                    data_slice={"offset": 0, "length": 752}  # Pass as dict directly
             )
-            
+        )
             if not response or not response.value:
+                return None
+                # Handle both response types
+            accounts = response.value if hasattr(response, 'value') else response
+            if not accounts:
                 return None
             
             # Process only recent pools (limit for performance)
