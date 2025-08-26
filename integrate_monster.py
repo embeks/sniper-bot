@@ -29,15 +29,16 @@ from monster_bot import (
     calculate_position_size
 )
 
-# Import your utils - FIXED IMPORT
+# Import your utils - FIXED: Don't import buy_token directly
 from utils import (
-    buy_token as utils_buy_token,  # FIXED: Proper import
     send_telegram_alert, keypair, BUY_AMOUNT_SOL,
     is_bot_running, start_bot, stop_bot, 
     get_wallet_summary, get_bot_status_message,
     check_pumpfun_token_status, detect_pumpfun_migration,
-    get_liquidity_and_ownership  # FIXED: Import this
+    get_liquidity_and_ownership
 )
+# Import utils module for buy_token access
+import utils
 
 # Import elite modules (embedded below if files don't exist)
 try:
@@ -93,7 +94,10 @@ def calculate_position_size_fixed(pool_liquidity_sol: float, ai_score: float = 0
     
     # FIXED: Handle zero or very low liquidity - QUALITY TIERS
     if pool_liquidity_sol < 5:
-        # Skip unless it's a special case (PumpFun graduate)
+        # For force buys or special cases (PumpFun), use minimum amount
+        if force_buy:
+            return 0.03
+        # Otherwise skip
         return 0  # Return 0 to signal skip
     
     # Quality-based sizing tiers
@@ -810,8 +814,8 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         original_amount = os.getenv("BUY_AMOUNT_SOL")
         os.environ["BUY_AMOUNT_SOL"] = str(amount_sol)
         
-        # FIXED: Use the properly imported buy function
-        result = await utils_buy_token(mint)
+        # FIXED: Call buy_token through utils module
+        result = await utils.buy_token(mint)
         
         # Restore original amount
         if original_amount:
@@ -913,8 +917,8 @@ async def monster_buy_token(mint: str, force_amount: float = None):
         original_amount = os.getenv("BUY_AMOUNT_SOL")
         os.environ["BUY_AMOUNT_SOL"] = str(amount_sol)
         
-        # FIXED: Use the properly imported buy function
-        result = await utils_buy_token(mint)
+        # FIXED: Call buy_token through utils module
+        result = await utils.buy_token(mint)
         
         if original_amount:
             os.environ["BUY_AMOUNT_SOL"] = original_amount
@@ -947,7 +951,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
 async def start_elite_sniper():
     """
     Start the ELITE money printer with all features
-    FIXED: Prevent multiple starts
+    FIXED: Prevent multiple starts and properly replace buy function
     """
     global BOT_ALREADY_STARTED
     
@@ -957,6 +961,24 @@ async def start_elite_sniper():
             logging.warning("Bot already started, skipping duplicate initialization")
             return
         BOT_ALREADY_STARTED = True
+    
+    # CRITICAL FIX: Replace buy function BEFORE starting tasks
+    import utils
+    import sniper_logic
+    
+    if ENABLE_ELITE_FEATURES:
+        # Store original for potential restoration
+        if hasattr(utils, 'buy_token'):
+            utils._original_buy_token = utils.buy_token
+        # Replace with elite version
+        utils.buy_token = elite_buy_token
+        sniper_logic.buy_token = elite_buy_token
+        logging.info("[ELITE] Buy function replaced with elite version")
+    else:
+        # Use monster version
+        utils.buy_token = monster_buy_token
+        sniper_logic.buy_token = monster_buy_token
+        logging.info("[MONSTER] Buy function replaced with monster version")
     
     if ENABLE_ELITE_FEATURES:
         try:
@@ -988,23 +1010,6 @@ async def start_elite_sniper():
     # Initialize components
     monster = MonsterBot()
     tasks = []
-    
-    # CRITICAL: Replace buy function with elite version
-    import utils
-    if ENABLE_ELITE_FEATURES:
-        utils.buy_token = elite_buy_token
-        try:
-            import sniper_logic
-            sniper_logic.buy_token = elite_buy_token
-        except:
-            pass
-    else:
-        utils.buy_token = monster_buy_token
-        try:
-            import sniper_logic
-            sniper_logic.buy_token = monster_buy_token
-        except:
-            pass
     
     # Start core listeners
     tasks.extend([
