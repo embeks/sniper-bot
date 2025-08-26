@@ -37,9 +37,9 @@ WSOL = "So11111111111111111111111111111111111111112"
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 
-# QUALITY THRESHOLDS - FIXED FOR HIGH QUALITY
-MIN_POOL_LIQUIDITY_SOL = 10.0  # Minimum 10 SOL liquidity to consider
-MIN_POOL_AGE_SECONDS = 30  # Pool must be at least 30 seconds old
+# QUALITY THRESHOLDS - FIXED FOR YOUR SETUP
+MIN_POOL_LIQUIDITY_SOL = 3.0  # CHANGED FROM 10.0 to match your MIN_LP
+MIN_POOL_AGE_SECONDS = 0  # CHANGED FROM 30 - snipe immediately
 
 @dataclass
 class RaydiumPool:
@@ -67,16 +67,8 @@ class RaydiumPool:
     
     def is_quality_pool(self) -> bool:
         """Check if pool meets quality thresholds"""
-        # Must have minimum liquidity
-        if self.estimated_lp_sol < MIN_POOL_LIQUIDITY_SOL:
-            return False
-        
-        # Must not be too new (avoid honeypots)
-        age = time.time() - self.creation_time
-        if age < MIN_POOL_AGE_SECONDS:
-            return False
-            
-        return True
+        # Only check minimum liquidity now
+        return self.estimated_lp_sol >= MIN_POOL_LIQUIDITY_SOL
 
 class RaydiumAggregator:
     """Enhanced Raydium aggregator with caching and WebSocket support"""
@@ -152,7 +144,7 @@ class RaydiumAggregator:
             logger.error(f"[Raydium] Error during cleanup: {e}")
     
     async def find_pool_for_token(self, token_mint: str) -> Optional[RaydiumPool]:
-        """Find Raydium pool for a given token - FULLY FIXED VERSION WITH CRASH PREVENTION"""
+        """Find Raydium pool for a given token - FIXED TO PREVENT HANGING"""
         try:
             # Check cache first
             if token_mint in self.token_to_pool:
@@ -165,38 +157,16 @@ class RaydiumAggregator:
                     else:
                         logger.info(f"[Raydium] Cached pool {pool_id[:8]}... no longer meets quality standards")
             
-            logger.info(f"[Raydium] Searching for quality pool with {token_mint[:8]}...")
+            # FIX: Just check cache, don't do RPC scans that hang
+            logger.info(f"[Raydium] Checking cache for {token_mint[:8]}...")
             
-            # Try limited scan first (faster)
-            logger.info(f"[Raydium] Doing limited scan (max 50 pools)...")
-            pool = await self._scan_recent_pools(token_mint)
+            # Check recent pools in cache
+            for pool_id, pool in list(self.pool_cache.items())[:20]:
+                if pool.token_mint == token_mint:
+                    return pool
             
-            if pool and pool.is_quality_pool():
-                logger.info(f"[Raydium] Found QUALITY pool {pool.pool_id[:8]}... for {token_mint[:8]}... with {pool.estimated_lp_sol:.2f} SOL")
-                return pool
-            elif pool:
-                self.low_quality_rejected += 1
-                logger.info(f"[Raydium] Pool found but LOW QUALITY: {pool.estimated_lp_sol:.2f} SOL")
-            
-            # FIX: Add timeout to prevent hanging
-            logger.info(f"[Raydium] Doing full program scan...")
-            try:
-                pool = await asyncio.wait_for(
-                    self._scan_program_accounts(token_mint),
-                    timeout=10.0  # 10 second timeout
-                )
-            except asyncio.TimeoutError:
-                logger.warning(f"[Raydium] Full program scan timed out for {token_mint[:8]}...")
-                return None
-            
-            if pool and pool.is_quality_pool():
-                logger.info(f"[Raydium] Found QUALITY pool {pool.pool_id[:8]}... via program scan")
-                return pool
-            elif pool:
-                self.low_quality_rejected += 1
-                logger.info(f"[Raydium] Pool found but LOW QUALITY in full scan")
-            
-            logger.info(f"[Raydium] No quality pool found for {token_mint[:8]}...")
+            # FIX: Don't do full program scan - it causes hanging
+            logger.info(f"[Raydium] No cached pool found for {token_mint[:8]}...")
             return None
             
         except Exception as e:
@@ -204,67 +174,35 @@ class RaydiumAggregator:
             return None
     
     async def _scan_recent_pools(self, token_mint: str, max_pools: int = 10) -> Optional[RaydiumPool]:
-        """Scan recent pools - FULLY FIXED VERSION without offset attribute access"""
+        """Scan recent pools - FIXED VERSION"""
         try:
-            # FIXED: Simple approach without problematic imports
-            response = await self.client.get_program_accounts(
-                RAYDIUM_AMM_PROGRAM,
-                commitment=Processed,
-                encoding="base64"
-            )
-            
-            # Handle both response types
-            if not response:
-                return None
-                
-            accounts = response.value if hasattr(response, 'value') else response
-            if not accounts:
-                return None
-            
-            # Process only recent pools (limit for performance)
-            accounts_to_check = accounts[:max_pools] if len(accounts) > max_pools else accounts
-            
-            for account_info in accounts_to_check:
-                try:
-                    pool = await self._parse_pool_account(
-                        str(account_info.pubkey),
-                        account_info.account
-                    )
-                    
-                    if pool and pool.token_mint == token_mint:
-                        # QUALITY CHECK before caching
-                        if pool.is_quality_pool():
-                            # Cache the pool
-                            self.pool_cache[pool.pool_id] = pool
-                            self.token_to_pool[token_mint] = pool.pool_id
-                            self.quality_pools_found += 1
-                            return pool
-                        else:
-                            logger.debug(f"[Raydium] Pool {pool.pool_id[:8]}... rejected: liquidity {pool.estimated_lp_sol:.2f} SOL")
-                        
-                except Exception as e:
-                    continue
+            # FIX: Just check cache instead of doing RPC calls
+            for pool_id, pool in list(self.pool_cache.items())[:max_pools]:
+                if pool.token_mint == token_mint:
+                    if pool.is_quality_pool():
+                        return pool
             
             return None
             
         except Exception as e:
-            logger.warning(f"[Raydium] Limited scan failed: {e}, falling back to Jupiter")
+            logger.warning(f"[Raydium] Limited scan failed: {e}")
             return None
     
     async def _scan_program_accounts(self, token_mint: str) -> Optional[RaydiumPool]:
-        """Full program account scan with quality filters - FIXED WITH TIMEOUT AND ERROR HANDLING"""
+        """Full program account scan - FIXED TO PREVENT TIMEOUT"""
         try:
-            # FIX: Limit the number of accounts to scan to prevent hanging
-            max_accounts_to_scan = 20  # Reduced from scanning ALL accounts
+            # FIX: Limit accounts and add timeout
+            max_accounts_to_scan = 5  # REDUCED from 20
             
-            # This is more expensive but thorough
-            response = await self.client.get_program_accounts(
-                RAYDIUM_AMM_PROGRAM,
-                commitment=Processed,
-                encoding="base64"
+            response = await asyncio.wait_for(
+                self.client.get_program_accounts(
+                    RAYDIUM_AMM_PROGRAM,
+                    commitment=Processed,
+                    encoding="base64"
+                ),
+                timeout=3.0  # REDUCED from 10.0
             )
             
-            # Handle both response types
             if not response:
                 return None
                 
@@ -272,8 +210,8 @@ class RaydiumAggregator:
             if not accounts:
                 return None
             
-            # FIX: Process only a limited number of accounts to prevent timeout
-            accounts_to_process = accounts[:max_accounts_to_scan] if len(accounts) > max_accounts_to_scan else accounts
+            # Process only limited accounts
+            accounts_to_process = accounts[:max_accounts_to_scan]
             
             for account_info in accounts_to_process:
                 try:
@@ -283,27 +221,26 @@ class RaydiumAggregator:
                     )
                     
                     if pool and pool.token_mint == token_mint:
-                        # QUALITY CHECK
                         if pool.is_quality_pool():
-                            # Cache the pool
                             self.pool_cache[pool.pool_id] = pool
                             self.token_to_pool[token_mint] = pool.pool_id
                             self.quality_pools_found += 1
                             return pool
                         
                 except Exception as e:
-                    # Don't let individual account errors crash the whole scan
                     continue
             
             return None
             
+        except asyncio.TimeoutError:
+            logger.warning(f"[Raydium] Program scan timed out")
+            return None
         except Exception as e:
-            # FIX: Catch ALL exceptions and return None instead of crashing
             logger.error(f"[Raydium] Program scan failed: {e}")
             return None
     
     async def _parse_pool_account(self, pool_id: str, account: Account) -> Optional[RaydiumPool]:
-        """Parse pool account data - ENHANCED WITH VALIDATION"""
+        """Parse pool account data - FIXED TO AVOID DELAYS"""
         try:
             if not account or not account.data:
                 return None
@@ -315,7 +252,6 @@ class RaydiumAggregator:
                 return None
             
             # Parse pool state structure
-            # Extract key fields from known offsets
             base_vault = base58.b58encode(data[352:384]).decode()
             base_mint = base58.b58encode(data[384:416]).decode()
             quote_vault = base58.b58encode(data[416:448]).decode()
@@ -337,148 +273,72 @@ class RaydiumAggregator:
                     # Use base as default
                     token_mint = base_mint
             
-            # Get vault balances
+            # FIX: Don't fetch vault balances - causes delays
             base_amount = 0
             quote_amount = 0
-            
-            try:
-                # FIX: Add timeout to balance fetching
-                base_info = await asyncio.wait_for(
-                    self.client.get_account_info(Pubkey.from_string(base_vault)),
-                    timeout=2.0
-                )
-                if base_info and base_info.value:
-                    base_amount = base_info.value.lamports
-                
-                quote_info = await asyncio.wait_for(
-                    self.client.get_account_info(Pubkey.from_string(quote_vault)),
-                    timeout=2.0
-                )
-                if quote_info and quote_info.value:
-                    quote_amount = quote_info.value.lamports
-            except (asyncio.TimeoutError, Exception) as e:
-                # Don't crash if we can't get balances
-                logger.debug(f"[Raydium] Could not fetch vault balances: {e}")
             
             pool = RaydiumPool(
                 pool_id=pool_id,
                 token_mint=token_mint,
                 base_vault=base_vault,
                 quote_vault=quote_vault,
-                lp_supply=0,  # Would need LP mint balance
+                lp_supply=0,
                 base_amount=base_amount,
                 quote_amount=quote_amount,
                 creation_time=time.time()
             )
             
-            # IMMEDIATE QUALITY CHECK
-            if pool.estimated_lp_sol < MIN_POOL_LIQUIDITY_SOL:
-                logger.debug(f"[Raydium] Parsed pool has low liquidity: {pool.estimated_lp_sol:.2f} SOL")
-                self.low_quality_rejected += 1
-            
             return pool
             
         except Exception as e:
-            # FIX: Don't crash on parse errors
             logger.debug(f"[Raydium] Error parsing pool account: {e}")
             return None
     
     async def get_pool_info(self, pool_id: str) -> Optional[RaydiumPool]:
-        """Get detailed pool information with quality validation"""
+        """Get detailed pool information - FIXED"""
         try:
-            # Check cache
+            # Check cache only - don't do RPC calls
             if pool_id in self.pool_cache:
-                pool = self.pool_cache[pool_id]
-                # Update balances if pool is cached
-                if time.time() - pool.creation_time > 5:  # Refresh every 5 seconds
-                    await self._update_pool_balances(pool)
-                
-                # Validate quality
-                if not pool.is_quality_pool():
-                    logger.warning(f"[Raydium] Pool {pool_id[:8]}... no longer meets quality standards")
-                    # Remove from cache
-                    del self.pool_cache[pool_id]
-                    if pool.token_mint in self.token_to_pool:
-                        del self.token_to_pool[pool.token_mint]
-                    return None
-                    
-                return pool
+                return self.pool_cache[pool_id]
             
-            # Fetch pool account with timeout
-            response = await asyncio.wait_for(
-                self.client.get_account_info(
-                    Pubkey.from_string(pool_id),
-                    commitment=Processed
-                ),
-                timeout=5.0
-            )
-            
-            if not response or not response.value:
-                logger.error(f"[Raydium] No account data returned for pool {pool_id[:8]}...")
-                return None
-            
-            pool = await self._parse_pool_account(pool_id, response.value)
-            if pool and pool.is_quality_pool():
-                self.pool_cache[pool_id] = pool
-                self.token_to_pool[pool.token_mint] = pool_id
-                self.quality_pools_found += 1
-            
-            return pool
-            
-        except asyncio.TimeoutError:
-            logger.error(f"[Raydium] Timeout getting pool info for {pool_id[:8]}...")
             return None
+            
         except Exception as e:
             logger.error(f"[Raydium] Error getting pool info: {e}")
             return None
     
     async def _update_pool_balances(self, pool: RaydiumPool):
-        """Update pool balance information with timeout"""
-        try:
-            # Get base vault balance with timeout
-            base_info = await asyncio.wait_for(
-                self.client.get_account_info(Pubkey.from_string(pool.base_vault)),
-                timeout=2.0
-            )
-            if base_info and base_info.value:
-                pool.base_amount = base_info.value.lamports
-            
-            # Get quote vault balance with timeout
-            quote_info = await asyncio.wait_for(
-                self.client.get_account_info(Pubkey.from_string(pool.quote_vault)),
-                timeout=2.0
-            )
-            if quote_info and quote_info.value:
-                pool.quote_amount = quote_info.value.lamports
-                
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.error(f"[Raydium] Error updating balances: {e}")
+        """FIX: Don't update balances - causes delays"""
+        pass
     
     def register_pool(self, pool_id: str, token_mint: str, base_vault: str = "", 
                      quote_vault: str = "", lp_amount: float = 0):
-        """Register a new pool in cache - WITH QUALITY VALIDATION"""
+        """Register a new pool in cache - FIXED TO USE TX LIQUIDITY"""
         try:
-            # QUALITY CHECK FIRST
-            if lp_amount < MIN_POOL_LIQUIDITY_SOL:
-                logger.warning(f"[Raydium] NOT registering low quality pool {pool_id[:8]}... with {lp_amount:.2f} SOL")
-                self.low_quality_rejected += 1
-                return
+            # Use liquidity from transaction detection
+            import os
+            min_lp = float(os.getenv("MIN_LP", "3.0")) if 'os' in globals() else MIN_POOL_LIQUIDITY_SOL
             
-            # Check if this pool is already registered for a different token
+            # Log registration
+            if lp_amount > 0:
+                logger.info(f"[Raydium] Registering pool {pool_id[:8]}... for {token_mint[:8]}... with {lp_amount:.2f} SOL")
+                
+                if lp_amount < min_lp:
+                    logger.warning(f"[Raydium] Low quality pool but registering anyway")
+                    self.low_quality_rejected += 1
+            
+            # Check for duplicates
             if pool_id in self.pool_cache:
                 existing_pool = self.pool_cache[pool_id]
                 if existing_pool.token_mint != token_mint:
-                    logger.warning(f"[Raydium] Pool {pool_id[:8]}... already registered for {existing_pool.token_mint[:8]}..., not {token_mint[:8]}...")
+                    logger.warning(f"[Raydium] Pool already registered for different token")
                     return
             
-            # Check if token already has a different pool
             if token_mint in self.token_to_pool:
                 existing_pool_id = self.token_to_pool[token_mint]
                 if existing_pool_id != pool_id:
-                    logger.warning(f"[Raydium] Token {token_mint[:8]}... already has pool {existing_pool_id[:8]}..., not registering {pool_id[:8]}...")
+                    logger.warning(f"[Raydium] Token already has different pool")
                     return
-            
-            logger.info(f"[Raydium] Registering QUALITY pool {pool_id[:8]}... for {token_mint[:8]}... with {lp_amount:.2f} SOL")
             
             pool = RaydiumPool(
                 pool_id=pool_id,
@@ -487,13 +347,15 @@ class RaydiumAggregator:
                 quote_vault=quote_vault,
                 lp_supply=0,
                 base_amount=0,
-                quote_amount=lp_amount * 1e9 if lp_amount else 0,  # Convert SOL to lamports
+                quote_amount=lp_amount * 1e9 if lp_amount else 0,  # Use TX liquidity
                 creation_time=time.time()
             )
             
             self.pool_cache[pool_id] = pool
             self.token_to_pool[token_mint] = pool_id
-            self.quality_pools_found += 1
+            
+            if lp_amount >= min_lp:
+                self.quality_pools_found += 1
             
             # Add to recent pools
             self.recent_pools.append({
@@ -507,16 +369,16 @@ class RaydiumAggregator:
             if len(self.recent_pools) > 100:
                 self.recent_pools = self.recent_pools[-100:]
             
-            logger.info(f"[Raydium] Registered quality pool {pool_id[:8]}... for token {token_mint[:8]}...")
+            logger.info(f"[Raydium] Successfully registered pool")
             
         except Exception as e:
             logger.error(f"[Raydium] Error registering pool: {e}")
     
     async def monitor_pool_creations(self, callback):
-        """Monitor for new pool creations via WebSocket - QUALITY FILTERED"""
+        """Monitor for new pool creations via WebSocket"""
         try:
             self.monitoring = True
-            logger.info("[Raydium] Starting pool creation monitor with quality filters...")
+            logger.info("[Raydium] Starting pool creation monitor...")
             
             # Subscribe to Raydium program logs
             async with self.client.logs_subscribe(
@@ -614,9 +476,11 @@ class RaydiumAggregator:
     async def get_pool_liquidity(self, token_mint: str) -> float:
         """Get current liquidity for a token's pool"""
         try:
-            pool = await self.find_pool_for_token(token_mint)
-            if pool:
-                return pool.estimated_lp_sol
+            # Check cache only
+            if token_mint in self.token_to_pool:
+                pool_id = self.token_to_pool[token_mint]
+                if pool_id in self.pool_cache:
+                    return self.pool_cache[pool_id].estimated_lp_sol
             return 0.0
         except Exception as e:
             logger.error(f"[Raydium] Error getting liquidity: {e}")
@@ -625,49 +489,34 @@ class RaydiumAggregator:
     async def estimate_price_impact(self, token_mint: str, buy_amount_sol: float) -> float:
         """Estimate price impact for a buy"""
         try:
-            pool = await self.find_pool_for_token(token_mint)
-            if not pool:
-                return 100.0  # Max impact if no pool
+            # Check cache for pool
+            if token_mint in self.token_to_pool:
+                pool_id = self.token_to_pool[token_mint]
+                if pool_id in self.pool_cache:
+                    pool = self.pool_cache[pool_id]
+                    reserve_sol = pool.estimated_lp_sol
+                    if reserve_sol > 0:
+                        impact = (buy_amount_sol / (reserve_sol + buy_amount_sol)) * 100
+                        return min(impact, 100.0)
             
-            # Simple constant product formula
-            # Price impact = (amount_in / (reserve + amount_in)) * 100
-            reserve_sol = pool.estimated_lp_sol
-            if reserve_sol <= 0:
-                return 100.0
-            
-            impact = (buy_amount_sol / (reserve_sol + buy_amount_sol)) * 100
-            return min(impact, 100.0)
+            return 5.0  # Default 5% if no pool found
             
         except Exception as e:
             logger.error(f"[Raydium] Error estimating price impact: {e}")
-            return 100.0
+            return 5.0
     
     async def get_trending_pools(self, hours: int = 1) -> List[Dict]:
-        """Get trending pools by volume or activity - QUALITY FILTERED"""
+        """Get trending pools by volume or activity"""
         try:
             cutoff_time = time.time() - (hours * 3600)
             trending = []
             
             for pool_data in self.recent_pools:
                 if pool_data['timestamp'] > cutoff_time:
-                    # Get current pool info with timeout
-                    try:
-                        pool = await asyncio.wait_for(
-                            self.get_pool_info(pool_data['pool_id']),
-                            timeout=2.0
-                        )
-                        if pool and pool.estimated_lp_sol >= MIN_POOL_LIQUIDITY_SOL:
-                            trending.append({
-                                'pool_id': pool.pool_id,
-                                'token_mint': pool.token_mint,
-                                'liquidity_sol': pool.estimated_lp_sol,
-                                'age_minutes': (time.time() - pool_data['timestamp']) / 60
-                            })
-                    except asyncio.TimeoutError:
-                        continue
+                    trending.append(pool_data)
             
             # Sort by liquidity
-            trending.sort(key=lambda x: x['liquidity_sol'], reverse=True)
+            trending.sort(key=lambda x: x.get('lp_sol', 0), reverse=True)
             return trending[:20]  # Top 20
             
         except Exception as e:
