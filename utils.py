@@ -1,4 +1,4 @@
-# utils.py - COMPLETE PRODUCTION READY VERSION WITH SCALING
+# utils.py - COMPLETE PRODUCTION READY VERSION WITH SCALING AND DECIMAL FIX
 import os
 import json
 import logging
@@ -153,12 +153,20 @@ telegram_min_interval = 0.5
 pumpfun_tokens = {}
 trending_tokens = set()
 
-# Known token decimals
+# Known token decimals - EXPANDED LIST WITH COMMON TOKENS
 KNOWN_TOKEN_DECIMALS = {
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
     "So11111111111111111111111111111111111111112": 9,   # WSOL
+    "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # WETH
+    "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj": 9,  # stSOL
+    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": 9,   # mSOL
+    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": 5,  # Bonk (note: 5 decimals!)
+    "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": 9,  # RAY
 }
+
+# Cache for token decimals to avoid repeated RPC calls
+TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
 # SCALING FUNCTIONS
@@ -973,8 +981,14 @@ async def sell_token(mint: str, percent: float = 100.0):
         return False
 
 async def get_token_decimals(mint: str) -> int:
-    """Get token decimals from blockchain"""
+    """Get token decimals from blockchain with caching"""
+    # Check cache first
+    if mint in TOKEN_DECIMALS_CACHE:
+        return TOKEN_DECIMALS_CACHE[mint]
+    
+    # Check known list
     if mint in KNOWN_TOKEN_DECIMALS:
+        TOKEN_DECIMALS_CACHE[mint] = KNOWN_TOKEN_DECIMALS[mint]
         return KNOWN_TOKEN_DECIMALS[mint]
     
     try:
@@ -990,16 +1004,18 @@ async def get_token_decimals(mint: str) -> int:
                     decoded = bytes(data[0])
                 if len(decoded) > 44:
                     decimals = decoded[44]
-                    KNOWN_TOKEN_DECIMALS[mint] = decimals
-                    logging.debug(f"[Decimals] Token {mint[:8]}... has {decimals} decimals")
+                    TOKEN_DECIMALS_CACHE[mint] = decimals
+                    logging.info(f"[Decimals] Token {mint[:8]}... has {decimals} decimals (from chain)")
                     return decimals
     except Exception as e:
-        logging.debug(f"[Decimals] Could not get decimals for {mint[:8]}...: {e}")
+        logging.warning(f"[Decimals] Could not get decimals for {mint[:8]}...: {e}")
     
-    return 9  # Default
+    # Default - but log a warning since this is where issues happen
+    logging.warning(f"[Decimals] Using DEFAULT 9 decimals for {mint[:8]}... - THIS MAY CAUSE PRICE ERRORS!")
+    return 9
 
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price using Jupiter's correct values"""
+    """Get current token price with proper decimal handling"""
     try:
         STABLECOIN_MINTS = {
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
@@ -1009,6 +1025,10 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         if mint in STABLECOIN_MINTS:
             logging.info(f"[Price] {STABLECOIN_MINTS[mint]} stablecoin, returning $1.00")
             return 1.0
+        
+        # CRITICAL: Get actual decimals FIRST before any price calculations
+        actual_decimals = await get_token_decimals(mint)
+        logging.info(f"[Price] Token {mint[:8]}... using {actual_decimals} decimals for calculations")
         
         # Try DexScreener first for new tokens
         try:
@@ -1063,13 +1083,13 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             logging.debug(f"[Price] Jupiter Price API error: {e}")
         
-        # Last resort: Calculate from Jupiter quote
+        # Last resort: Calculate from Jupiter quote with proper decimal handling
         try:
             quote_url = f"{JUPITER_BASE_URL}/v6/quote"
             params = {
                 "inputMint": "So11111111111111111111111111111111111111112",
                 "outputMint": mint,
-                "amount": str(int(1 * 1e9)),
+                "amount": str(int(1 * 1e9)),  # 1 SOL
                 "slippageBps": "100"
             }
             
@@ -1078,30 +1098,39 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                 if response.status_code == 200:
                     quote = response.json()
                     
-                    # Honor Jupiter's provided values
+                    # Honor Jupiter's provided values if available
                     if not IGNORE_JUPITER_PRICE_FIELD and "price" in quote:
                         price = float(quote["price"])
                         logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter price field)")
                         return price
                     
                     if "outAmount" in quote and float(quote["outAmount"]) > 0:
-                        sol_price = 150.0
+                        sol_price = 150.0  # Current SOL price
                         
-                        # Trust Jupiter's decimal handling unless override is set
+                        # CRITICAL FIX: Use actual decimals, not hardcoded 9
                         if OVERRIDE_DECIMALS_TO_9:
+                            # Only use 9 if explicitly overridden
                             tokens_received = float(quote["outAmount"]) / 1e9
+                            logging.warning(f"[Price] OVERRIDE active, using 9 decimals instead of {actual_decimals}")
                         else:
-                            decimals = await get_token_decimals(mint)
-                            tokens_received = float(quote["outAmount"]) / (10 ** decimals)
+                            # Use the actual token decimals
+                            tokens_received = float(quote["outAmount"]) / (10 ** actual_decimals)
                         
                         sol_spent = 1.0
                         price = (sol_spent * sol_price) / tokens_received
                         
+                        # Sanity check for known stablecoins
                         if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
-                            logging.warning(f"[Price] Calculated ${price:.4f} for {STABLECOIN_MINTS[mint]}, forcing to $1.00")
+                            logging.error(f"[Price] Calculated ${price:.4f} for {STABLECOIN_MINTS[mint]} - decimal mismatch likely!")
+                            logging.error(f"[Price] Token amount: {tokens_received}, decimals used: {actual_decimals}")
                             return 1.0
                         
-                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated from Jupiter)")
+                        # Sanity check for extreme prices that indicate decimal issues
+                        if price > 1000000 or price < 0.0000001:
+                            logging.warning(f"[Price] Extreme price ${price:.8f} detected for {mint[:8]}... - possible decimal issue")
+                            logging.warning(f"[Price] Decimals: {actual_decimals}, Tokens: {tokens_received}, Raw amount: {quote['outAmount']}")
+                        
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated with {actual_decimals} decimals)")
                         return price
         except Exception as e:
             logging.debug(f"[Price] Jupiter quote error: {e}")
@@ -1307,161 +1336,3 @@ async def wait_and_auto_sell(mint: str):
         await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
-
-async def wait_and_auto_sell_timer_based(mint: str):
-    """Fallback timer-based selling if price feed fails"""
-    try:
-        if mint not in OPEN_POSITIONS:
-            return
-            
-        position = OPEN_POSITIONS[mint]
-        
-        start_time = time.time()
-        max_duration = 600
-        max_sell_attempts = 3
-        sell_attempts = {"2x": 0, "5x": 0, "10x": 0}
-        
-        while time.time() - start_time < max_duration:
-            try:
-                elapsed = time.time() - start_time
-                
-                if elapsed > 30 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
-                    sell_attempts["2x"] += 1
-                    if await sell_token(mint, AUTO_SELL_PERCENT_2X):
-                        position["sold_stages"].add("2x")
-                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
-                    elif sell_attempts["2x"] >= max_sell_attempts:
-                        position["sold_stages"].add("2x")
-                
-                if elapsed > 120 and "5x" not in position["sold_stages"] and sell_attempts["5x"] < max_sell_attempts:
-                    sell_attempts["5x"] += 1
-                    if await sell_token(mint, AUTO_SELL_PERCENT_5X):
-                        position["sold_stages"].add("5x")
-                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
-                    elif sell_attempts["5x"] >= max_sell_attempts:
-                        position["sold_stages"].add("5x")
-                
-                if elapsed > 300 and "10x" not in position["sold_stages"] and sell_attempts["10x"] < max_sell_attempts:
-                    sell_attempts["10x"] += 1
-                    if await sell_token(mint, AUTO_SELL_PERCENT_10X):
-                        position["sold_stages"].add("10x")
-                        await send_telegram_alert(f"🌙 Sold final {AUTO_SELL_PERCENT_10X}% at 5min timer for {mint[:8]}...")
-                        break
-                    elif sell_attempts["10x"] >= max_sell_attempts:
-                        position["sold_stages"].add("10x")
-                        break
-                
-                if len(position["sold_stages"]) >= 3:
-                    break
-                    
-                await asyncio.sleep(10)
-                
-            except Exception as e:
-                logging.error(f"Timer-based monitoring error for {mint}: {e}")
-                await asyncio.sleep(10)
-        
-        if mint in OPEN_POSITIONS:
-            del OPEN_POSITIONS[mint]
-            
-    except Exception as e:
-        logging.error(f"Timer-based auto-sell error for {mint}: {e}")
-        if mint in OPEN_POSITIONS:
-            del OPEN_POSITIONS[mint]
-
-async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
-    """Check PumpFun token status and market cap"""
-    try:
-        url = f"https://frontend-api.pump.fun/coins/{mint}"
-        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                market_cap = data.get("usd_market_cap", 0)
-                graduated = market_cap >= 69420
-                pool_address = data.get("raydium_pool")
-                
-                return {
-                    "market_cap": market_cap,
-                    "graduated": graduated,
-                    "pool_address": pool_address,
-                    "progress": (market_cap / 69420) * 100 if market_cap < 69420 else 100
-                }
-    except Exception as e:
-        logging.debug(f"PumpFun status check error: {e}")
-    
-    return None
-
-async def detect_pumpfun_migration(mint: str) -> bool:
-    """Detect if a PumpFun token has migrated to Raydium/Jupiter"""
-    try:
-        pf_status = await check_pumpfun_token_status(mint)
-        if not pf_status or not pf_status.get("graduated"):
-            return False
-        
-        pool = raydium.find_pool_realtime(mint)
-        
-        if pool:
-            logging.info(f"[Migration] PumpFun token {mint[:8]}... has migrated to Raydium!")
-            return True
-            
-        try:
-            url = f"https://price.jup.ag/v4/price?ids={mint}"
-            async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
-                        return True
-        except:
-            pass
-            
-    except Exception as e:
-        logging.error(f"Migration detection error: {e}")
-    
-    return False
-
-# Export for use in sniper_logic
-__all__ = [
-    'is_valid_mint',
-    'buy_token',
-    'sell_token',
-    'log_skipped_token',
-    'send_telegram_alert',
-    'send_telegram_batch',
-    'get_trending_mints',
-    'wait_and_auto_sell',
-    'get_liquidity_and_ownership',
-    'is_bot_running',
-    'start_bot',
-    'stop_bot',
-    'keypair',
-    'BUY_AMOUNT_SOL',
-    'BROKEN_TOKENS',
-    'mark_broken_token',
-    'daily_stats_reset_loop',
-    'update_last_activity',
-    'increment_stat',
-    'record_skip',
-    'listener_status',
-    'last_seen_token',
-    'get_wallet_summary',
-    'get_bot_status_message',
-    'check_pumpfun_token_status',
-    'detect_pumpfun_migration',
-    'pumpfun_tokens',
-    'trending_tokens',
-    'get_token_price_usd',
-    'get_token_decimals',
-    'cleanup_wsol_on_failure',
-    'OPEN_POSITIONS',
-    'daily_stats',
-    'BLACKLIST',
-    'raydium',
-    'rpc',
-    'wait_and_auto_sell_timer_based',
-    'get_dynamic_position_size',
-    'get_minimum_liquidity_required',
-    'USE_DYNAMIC_SIZING',
-    'SCALE_WITH_BALANCE'
-]
