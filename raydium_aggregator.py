@@ -203,7 +203,7 @@ class RaydiumAggregator:
             logger.error(f"[Raydium] Error finding pool: {e}")
             return None
     
-    async def _scan_recent_pools(self, token_mint: str, max_pools: int = 50) -> Optional[RaydiumPool]:
+    async def _scan_recent_pools(self, token_mint: str, max_pools: int = 10) -> Optional[RaydiumPool]:
         """Scan recent pools - FULLY FIXED VERSION without offset attribute access"""
         try:
             # FIXED: Simple approach without problematic imports
@@ -255,7 +255,7 @@ class RaydiumAggregator:
         """Full program account scan with quality filters - FIXED WITH TIMEOUT AND ERROR HANDLING"""
         try:
             # FIX: Limit the number of accounts to scan to prevent hanging
-            max_accounts_to_scan = 100  # Reduced from scanning ALL accounts
+            max_accounts_to_scan = 20  # Reduced from scanning ALL accounts
             
             # This is more expensive but thorough
             response = await self.client.get_program_accounts(
