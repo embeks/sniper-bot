@@ -2134,7 +2134,11 @@ async def mempool_listener(name, program_id=None):
                                     lp_amount = tx_liquidity
                                     
                                     # If no tx liquidity (shouldn't happen), wait and check
-                                    if lp_amount == 0:
+                                    if lp_amount == 0 and tx_liquidity > 0:
+                                         # USE TX LIQUIDITY IF WE HAVE IT!
+                                        lp_amount = tx_liquidity
+                                        logging.info(f"[{name}] Using transaction liquidity directly: {lp_amount:.2f} SOL")
+                                    elif lp_amount == 0:
                                         logging.info(f"[{name}] No tx liquidity, waiting 10s for pool initialization...")
                                         await asyncio.sleep(10.0)  # Longer wait for Raydium
                                         
