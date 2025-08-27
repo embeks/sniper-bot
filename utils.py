@@ -50,12 +50,12 @@ AUTO_SELL_PERCENT_10X = 25
 
 # Profit-based trading configuration
 TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))
-TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 5.0))
-TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 10.0))
-SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 50))
-SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 25))
-SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 25))
-STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 50))
+TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 3.0))
+TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 5.0))
+SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 30))
+SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 30))
+SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 30))
+STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 20))
 TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))
 MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))
 PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))
