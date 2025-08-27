@@ -1245,12 +1245,12 @@ async def telegram_webhook(request: Request):
             
         elif text == "/aggressive":
             # Toggle aggressive mode
+            global AGGRESSIVE_START_TIME
             current = is_aggressive_mode_active()
             os.environ["AGGRESSIVE_MODE"] = "false" if current else "true"
             
             if not current:
                 # Starting aggressive mode
-                global AGGRESSIVE_START_TIME
                 AGGRESSIVE_START_TIME = time.time()
                 aggressive_metrics["start_balance"] = None
                 aggressive_metrics["trades_executed"] = 0
