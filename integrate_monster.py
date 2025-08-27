@@ -440,6 +440,7 @@ class PortfolioRiskManager:
         self.losses_today = 0
         self.consecutive_losses = 0
         self.last_reset = datetime.now()
+        self.last_drawdown_alert = 0  # Add this line
         # Use environment variables with proper defaults
         self.max_drawdown = float(os.getenv("MAX_DRAWDOWN", "0.50"))  # 50% drawdown allowed
         self.max_daily_loss = float(os.getenv("MAX_DAILY_LOSS", "0.40"))  # 40% daily loss allowed
@@ -475,17 +476,20 @@ class PortfolioRiskManager:
                 self.peak_balance = balance
                 logging.info(f"[RISK] New peak balance: {balance:.2f} SOL")
             
-            # Check drawdown from peak - FIXED: More lenient
+            # Check drawdown from peak - FIXED: More lenient with rate limiting
             if self.peak_balance > 0:
                 drawdown = (self.peak_balance - balance) / self.peak_balance
                 if drawdown > self.max_drawdown:
-                    # Only alert once per hour
-                    await send_telegram_alert(
-                        f"⛔ High drawdown: {drawdown*100:.1f}%\n"
-                        f"Peak: {self.peak_balance:.2f} SOL\n"
-                        f"Current: {balance:.2f} SOL\n"
-                        f"Still trading cautiously..."
-                    )
+                    current_time = time.time()
+                    # Only send alert if it's been more than 1 hour since last alert
+                    if current_time - self.last_drawdown_alert > 3600:
+                        await send_telegram_alert(
+                            f"⚠️ Drawdown: {drawdown*100:.1f}%\n"
+                            f"Peak: {self.peak_balance:.2f} SOL\n"
+                            f"Current: {balance:.2f} SOL\n"
+                            f"Continuing with caution..."
+                        )
+                        self.last_drawdown_alert = current_time
                     # Don't stop trading, just be cautious
                     self.position_scaling_enabled = False
                     # Still allow trading with reduced size
@@ -1125,6 +1129,7 @@ Risk Management: {'ACTIVE' if risk_manager.position_scaling_enabled else 'CAUTIO
 - 40% daily loss allowed
 - 50% drawdown allowed
 - 10 consecutive losses allowed
+- Drawdown alerts rate limited to 1/hour
 """
             await send_telegram_alert(help_text)
             
@@ -1362,7 +1367,8 @@ async def start_elite_sniper():
         "✅ Multi-DEX Support",
         "✅ Auto Profit Taking",
         "✅ Momentum Scanner",
-        "✅ FIXED Risk Management"
+        "✅ FIXED Risk Management",
+        "✅ Rate Limited Alerts"
     ]
     
     if ENABLE_ELITE_FEATURES:
@@ -1379,8 +1385,9 @@ async def start_elite_sniper():
         f"Risk Management: FIXED & ACTIVE\n"
         f"Max Drawdown: {risk_manager.max_drawdown*100:.0f}%\n"
         f"Max Daily Loss: {risk_manager.max_daily_loss*100:.0f}%\n"
-        f"Max Consecutive: {risk_manager.max_consecutive_losses}\n\n"
-        "No more false triggers!\n"
+        f"Max Consecutive: {risk_manager.max_consecutive_losses}\n"
+        f"Alert Rate Limiting: 1 per hour\n\n"
+        "No more spam alerts!\n"
         "Initializing all systems..."
     )
     
@@ -1473,6 +1480,7 @@ async def start_elite_sniper():
         f"{'Elite Features: ACTIVE ⚡' if ENABLE_ELITE_FEATURES else ''}\n"
         f"Risk Management: {'🟢 SAFE' if risk_manager.position_scaling_enabled else '🟡 CAUTIOUS'}\n"
         f"Risk Counters FIXED - No false triggers!\n"
+        f"Drawdown alerts limited to 1/hour\n"
         f"Hunting for profits... 💰"
     )
     
@@ -1626,12 +1634,13 @@ async def main():
     if ENABLE_ELITE_FEATURES:
         print("""
 ╔══════════════════════════════════════════╗
-║    ELITE MONEY PRINTER v4.0 FIXED       ║
+║    ELITE MONEY PRINTER v4.1 FIXED       ║
 ║         💰 MAXIMUM PROFITS 💰            ║
 ║                                          ║
 ║  Features:                               ║
 ║  • FIXED Risk Management                ║
 ║  • No False Triggers                    ║
+║  • Rate Limited Drawdown Alerts         ║
 ║  • Dynamic Position Sizing              ║
 ║  • 50% Max Drawdown Protection          ║
 ║  • 40% Daily Loss Allowed               ║
