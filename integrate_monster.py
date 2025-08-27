@@ -1155,7 +1155,8 @@ async def status():
 async def telegram_webhook(request: Request):
     """Handle Telegram commands"""
     try:
-        global AGGRESSIVE_START_TIME
+        global AGGRESSIVE_START_TIME, risk_manager, ENABLE_ELITE_FEATURES
+        
         data = await request.json()
         message = data.get("message") or data.get("edited_message")
         if not message:
