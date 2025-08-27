@@ -1431,8 +1431,6 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             else:
                 competitor_count = 10
         except Exception as e:
-            logging.
-        except Exception as e:
             logging.warning(f"Competition analysis error: {e}, using defaults")
             competition_level = "medium"
             competitor_count = 10
