@@ -1154,9 +1154,9 @@ async def status():
 @app.post("/")
 async def telegram_webhook(request: Request):
     """Handle Telegram commands"""
+    global AGGRESSIVE_START_TIME, risk_manager, ENABLE_ELITE_FEATURES
+    
     try:
-        global AGGRESSIVE_START_TIME, risk_manager, ENABLE_ELITE_FEATURES
-        
         data = await request.json()
         message = data.get("message") or data.get("edited_message")
         if not message:
@@ -1259,9 +1259,7 @@ async def telegram_webhook(request: Request):
                 aggressive_metrics["wins"] = 0
                 aggressive_metrics["losses"] = 0
                 
-                # Reinitialize risk manager with aggressive settings
-                global risk_manager
-                risk_manager = PortfolioRiskManager()
+               
                 
                 await send_telegram_alert(
                     f"⚡ AGGRESSIVE MODE ACTIVATED ⚡\n\n"
@@ -1285,7 +1283,7 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert("Aggressive mode not active. Use /aggressive to enable.")
             
         elif text == "/elite":
-            global ENABLE_ELITE_FEATURES
+            
             ENABLE_ELITE_FEATURES = not ENABLE_ELITE_FEATURES
             status = "ON 🚀" if ENABLE_ELITE_FEATURES else "OFF"
             await send_telegram_alert(f"🎯 Elite Features: {status}")
