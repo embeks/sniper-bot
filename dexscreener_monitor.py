@@ -1,7 +1,6 @@
-
+# Fixed dexscreener_monitor.py
 """
-ELITE DEXSCREENER MONITOR - Catches ALL new pools in real-time
-No WebSocket needed - More reliable than mempool monitoring!
+ELITE DEXSCREENER MONITOR - Fixed API and improved detection
 """
 
 import asyncio
@@ -23,12 +22,12 @@ from utils import (
 load_dotenv()
 
 # Configuration
-CHECK_INTERVAL = int(os.getenv("DEXSCREENER_CHECK_INTERVAL", 5))  # Check every 5 seconds
-MAX_AGE_MINUTES = int(os.getenv("MAX_POOL_AGE_MINUTES", 5))  # Only pools <5 mins old
-MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", 5000))  # $5k minimum
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 1000))  # $1k minimum volume
-MIN_BUYS = int(os.getenv("MIN_BUYS", 10))  # At least 10 buy transactions
-MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", 10))  # Max 10% price impact
+CHECK_INTERVAL = int(os.getenv("DEXSCREENER_CHECK_INTERVAL", 15))  # Check every 15 seconds
+MAX_AGE_MINUTES = int(os.getenv("MAX_POOL_AGE_MINUTES", 5))  
+MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", 1500))  # Lower threshold
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 500))  # Lower threshold
+MIN_BUYS = int(os.getenv("MIN_BUYS", 5))  # Less strict
+MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", 15))  # Allow more impact
 
 # Elite settings
 ELITE_MODE = os.getenv("ELITE_MODE", "true").lower() == "true"
@@ -40,10 +39,7 @@ seen_pools: Set[str] = set()
 pool_creation_times: Dict[str, datetime] = {}
 
 class DexScreenerMonitor:
-    """
-    Elite DexScreener monitor - better than WebSocket monitoring
-    Catches ALL new pools regardless of program ID
-    """
+    """Fixed DexScreener monitor with proper API handling"""
     
     def __init__(self):
         self.session = None
@@ -52,19 +48,20 @@ class DexScreenerMonitor:
             "pools_found": 0,
             "pools_bought": 0,
             "pools_skipped": 0,
-            "last_check": None
+            "last_check": None,
+            "api_failures": 0
         }
         
     async def start(self):
         """Start the monitor"""
         self.running = True
         await send_telegram_alert(
-            "🎯 ELITE DexScreener Monitor ACTIVE\n\n"
-            f"Checking every: {CHECK_INTERVAL}s\n"
-            f"Max age: {MAX_AGE_MINUTES} mins\n"
+            "🎯 DexScreener Monitor ACTIVE\n\n"
+            f"Check interval: {CHECK_INTERVAL}s\n"
             f"Min liquidity: ${MIN_LIQUIDITY_USD:,.0f}\n"
-            f"Min volume: ${MIN_VOLUME_USD:,.0f}\n\n"
-            "This will catch ALL new pools!"
+            f"Min volume: ${MIN_VOLUME_USD:,.0f}\n"
+            f"Auto-buy: {'ON' if AUTO_BUY else 'OFF'}\n\n"
+            "Hunting for opportunities..."
         )
         
         await self.monitor_loop()
@@ -83,7 +80,7 @@ class DexScreenerMonitor:
                 new_pools = await self.fetch_new_pools()
                 
                 if new_pools:
-                    logging.info(f"[DexScreener] Found {len(new_pools)} new pools")
+                    logging.info(f"[DexScreener] Found {len(new_pools)} pools to analyze")
                     
                     for pool in new_pools:
                         await self.process_pool(pool)
@@ -94,77 +91,112 @@ class DexScreenerMonitor:
                 
             except Exception as e:
                 consecutive_errors += 1
+                self.stats["api_failures"] += 1
                 logging.error(f"[DexScreener] Monitor error: {e}")
                 
                 if consecutive_errors > 5:
                     await send_telegram_alert(
-                        f"⚠️ DexScreener Monitor Error\n"
+                        f"⚠️ DexScreener having issues\n"
                         f"Errors: {consecutive_errors}\n"
-                        f"Restarting in 30s..."
+                        f"Waiting 60s..."
                     )
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(60)
                     consecutive_errors = 0
+                else:
+                    await asyncio.sleep(CHECK_INTERVAL * 2)
             
             await asyncio.sleep(CHECK_INTERVAL)
     
     async def fetch_new_pools(self) -> List[Dict]:
-        """Fetch new pools from DexScreener"""
+        """Fetch pools from DexScreener with fixed API call"""
         try:
-            url = "https://api.dexscreener.com/latest/dex/pairs/solana"
+            # Use the tokens endpoint instead of pairs
+            base_url = "https://api.dexscreener.com/latest/dex/tokens/solana"
             
-            async with httpx.AsyncClient(timeout=10, verify=False) as client:
-                response = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json"
-                })
-                
-                if response.status_code != 200:
-                    logging.warning(f"[DexScreener] API returned {response.status_code}")
-                    return []
-                
-                data = response.json()
-                pairs = data.get("pairs", [])
-                
-                # Filter for new pools
-                new_pools = []
-                current_time = datetime.now()
-                
-                for pair in pairs[:100]:  # Check top 100 pairs
-                    try:
-                        # Skip if we've seen this pool
-                        pool_address = pair.get("pairAddress")
-                        if not pool_address or pool_address in seen_pools:
+            # Try multiple approaches
+            urls_to_try = [
+                "https://api.dexscreener.com/latest/dex/search?q=SOL",  # Search for SOL pairs
+                "https://api.dexscreener.com/latest/dex/pairs/solana",  # Original endpoint
+                base_url  # Token endpoint
+            ]
+            
+            for url in urls_to_try:
+                try:
+                    async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                            "Accept": "application/json",
+                            "Accept-Language": "en-US,en;q=0.9",
+                            "Cache-Control": "no-cache",
+                            "Pragma": "no-cache",
+                            "Referer": "https://dexscreener.com/"
+                        }
+                        
+                        response = await client.get(url, headers=headers)
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            pairs = data.get("pairs", [])
+                            
+                            if not pairs and "results" in data:
+                                # Handle search results format
+                                results = data.get("results", [])
+                                if results and isinstance(results, list) and len(results) > 0:
+                                    pairs = results[0].get("pairs", []) if "pairs" in results[0] else []
+                            
+                            if pairs:
+                                logging.info(f"[DexScreener] Got {len(pairs)} pairs from {url}")
+                                return self.filter_new_pools(pairs)
+                            
+                        elif response.status_code == 404:
+                            logging.debug(f"[DexScreener] 404 from {url}, trying next...")
                             continue
-                        
-                        # Parse pool age
-                        created_at = pair.get("pairCreatedAt")
-                        if not created_at:
-                            continue
-                        
-                        # Check if pool is new enough
-                        pool_age_ms = current_time.timestamp() * 1000 - created_at
-                        pool_age_minutes = pool_age_ms / (1000 * 60)
-                        
-                        if pool_age_minutes > MAX_AGE_MINUTES:
-                            continue
-                        
-                        # Add to new pools
-                        pair["age_minutes"] = pool_age_minutes
-                        new_pools.append(pair)
-                        seen_pools.add(pool_address)
-                        
-                    except Exception as e:
-                        logging.debug(f"[DexScreener] Error parsing pair: {e}")
-                        continue
-                
-                return new_pools
+                        else:
+                            logging.warning(f"[DexScreener] Status {response.status_code} from {url}")
+                            
+                except Exception as e:
+                    logging.debug(f"[DexScreener] Error with {url}: {e}")
+                    continue
+            
+            # If all fail, return empty
+            logging.warning("[DexScreener] All API endpoints failed")
+            return []
                 
         except Exception as e:
             logging.error(f"[DexScreener] Fetch error: {e}")
             return []
     
+    def filter_new_pools(self, pairs: List[Dict]) -> List[Dict]:
+        """Filter for genuinely new pools"""
+        new_pools = []
+        current_time = datetime.now()
+        
+        for pair in pairs[:50]:  # Check top 50
+            try:
+                pool_address = pair.get("pairAddress")
+                if not pool_address or pool_address in seen_pools:
+                    continue
+                
+                # Parse pool age
+                created_at = pair.get("pairCreatedAt")
+                if created_at:
+                    # Check if pool is new enough
+                    pool_age_ms = current_time.timestamp() * 1000 - created_at
+                    pool_age_minutes = pool_age_ms / (1000 * 60)
+                    
+                    if pool_age_minutes <= MAX_AGE_MINUTES:
+                        pair["age_minutes"] = pool_age_minutes
+                        new_pools.append(pair)
+                        seen_pools.add(pool_address)
+                        
+            except Exception as e:
+                logging.debug(f"[DexScreener] Error parsing pair: {e}")
+                continue
+        
+        return new_pools
+    
     async def process_pool(self, pool: Dict) -> bool:
-        """Process a new pool and decide whether to buy"""
+        """Process a pool and decide whether to buy"""
         try:
             self.stats["pools_found"] += 1
             
@@ -173,8 +205,16 @@ class DexScreenerMonitor:
             token_symbol = pool.get("baseToken", {}).get("symbol", "UNKNOWN")
             token_name = pool.get("baseToken", {}).get("name", "Unknown")
             
+            if not token_address:
+                return False
+            
+            # Skip if it's WSOL or a stablecoin
+            if token_address in ["So11111111111111111111111111111111111111112", 
+                                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]:
+                return False
+            
             liquidity_usd = float(pool.get("liquidity", {}).get("usd", 0))
-            volume_h24 = float(pool.get("volume", {}).get("h24", 0))
             volume_h1 = float(pool.get("volume", {}).get("h1", 0))
             price_usd = float(pool.get("priceUsd", 0))
             market_cap = float(pool.get("marketCap", 0))
@@ -185,10 +225,10 @@ class DexScreenerMonitor:
             sells_h1 = txns.get("h1", {}).get("sells", 0)
             
             # Check if PumpFun graduate
-            is_pumpfun = "pump" in token_name.lower() or "pump.fun" in pool.get("info", {}).get("text", "").lower()
+            is_pumpfun = "pump" in token_name.lower() or market_cap == 69420
             
             logging.info(
-                f"[DexScreener] New Pool: {token_symbol}\n"
+                f"[DexScreener] Analyzing: {token_symbol}\n"
                 f"  Age: {age_minutes:.1f} mins\n"
                 f"  Liquidity: ${liquidity_usd:,.0f}\n"
                 f"  Volume: ${volume_h1:,.0f}\n"
@@ -201,20 +241,19 @@ class DexScreenerMonitor:
                 return False
             
             # Send alert
-            alert_emoji = "🎓" if is_pumpfun else "🆕"
-            priority = "PUMPFUN GRADUATE" if is_pumpfun else "NEW POOL"
+            alert_emoji = "🎓" if is_pumpfun else "💎"
+            priority = "PUMPFUN GRADUATE" if is_pumpfun else "QUALITY TOKEN"
             
             await send_telegram_alert(
-                f"{alert_emoji} {priority} DETECTED!\n\n"
-                f"Token: {token_symbol} ({token_name})\n"
+                f"{alert_emoji} {priority} FOUND!\n\n"
+                f"Token: {token_symbol}\n"
                 f"Address: `{token_address}`\n"
                 f"Age: {age_minutes:.1f} minutes\n"
                 f"Liquidity: ${liquidity_usd:,.0f}\n"
                 f"Volume (1h): ${volume_h1:,.0f}\n"
                 f"Market Cap: ${market_cap:,.0f}\n"
-                f"Buys/Sells: {buys_h1}/{sells_h1}\n"
-                f"Price: ${price_usd:.8f}\n\n"
-                f"{'🚀 AUTO-BUYING...' if AUTO_BUY else '⏸ Manual mode - use /forcebuy'}"
+                f"Buys/Sells: {buys_h1}/{sells_h1}\n\n"
+                f"{'🚀 Attempting buy...' if AUTO_BUY else '⏸ Manual mode'}"
             )
             
             # Auto-buy if enabled
@@ -233,20 +272,13 @@ class DexScreenerMonitor:
                     
                     if success:
                         self.stats["pools_bought"] += 1
-                        await send_telegram_alert(
-                            f"✅ BOUGHT {token_symbol}!\n"
-                            f"Amount: {buy_amount} SOL\n"
-                            f"Monitoring for profits..."
-                        )
                         asyncio.create_task(wait_and_auto_sell(token_address))
                         return True
                     else:
-                        await send_telegram_alert(f"❌ Failed to buy {token_symbol}")
                         mark_broken_token(token_address, 0)
                         
                 except Exception as e:
                     logging.error(f"[DexScreener] Buy error: {e}")
-                    await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
             
             return False
             
@@ -255,7 +287,7 @@ class DexScreenerMonitor:
             return False
     
     async def should_buy_pool(self, pool: Dict) -> bool:
-        """Determine if pool meets buying criteria"""
+        """Determine if pool meets buying criteria - LESS STRICT"""
         try:
             # Extract metrics
             liquidity_usd = float(pool.get("liquidity", {}).get("usd", 0))
@@ -266,37 +298,34 @@ class DexScreenerMonitor:
             buys_h1 = txns.get("h1", {}).get("buys", 0)
             sells_h1 = txns.get("h1", {}).get("sells", 0)
             
-            # Basic filters
+            # Basic filters - LESS STRICT
             if liquidity_usd < MIN_LIQUIDITY_USD:
                 logging.info(f"[DexScreener] Skip - Low liquidity: ${liquidity_usd:.0f}")
                 return False
             
-            if volume_h1 < MIN_VOLUME_USD and age_minutes > 2:  # Give 2 mins for volume to build
+            # Only check volume for older pools
+            if volume_h1 < MIN_VOLUME_USD and age_minutes > 3:
                 logging.info(f"[DexScreener] Skip - Low volume: ${volume_h1:.0f}")
                 return False
             
-            if buys_h1 < MIN_BUYS and age_minutes > 1:  # Need some buy activity
+            # Only check buys for older pools
+            if buys_h1 < MIN_BUYS and age_minutes > 2:
                 logging.info(f"[DexScreener] Skip - Low buys: {buys_h1}")
                 return False
             
-            # Check buy/sell ratio (avoid dumps)
+            # Check buy/sell ratio (avoid dumps) - LESS STRICT
             if sells_h1 > 0 and buys_h1 > 0:
                 buy_sell_ratio = buys_h1 / sells_h1
-                if buy_sell_ratio < 0.5:  # More sells than buys
+                if buy_sell_ratio < 0.3:  # Very lenient
                     logging.info(f"[DexScreener] Skip - Bad ratio: {buy_sell_ratio:.2f}")
                     return False
             
             # Elite mode checks
             if ELITE_MODE:
-                # Check price impact
-                price_impact = pool.get("priceChange", {}).get("h1", 0)
-                if price_impact < -20:  # Dumping
-                    logging.info(f"[DexScreener] Skip - Dumping: {price_impact:.1f}%")
-                    return False
-                
-                # Check for honeypot indicators
-                if "honeypot" in str(pool).lower():
-                    logging.info(f"[DexScreener] Skip - Honeypot detected")
+                # Check price change
+                price_change = pool.get("priceChange", {}).get("h1", 0)
+                if price_change < -30:  # Only skip major dumps
+                    logging.info(f"[DexScreener] Skip - Dumping: {price_change:.1f}%")
                     return False
             
             # Special case: Always buy PumpFun graduates
@@ -318,6 +347,7 @@ class DexScreenerMonitor:
             "pools_bought": self.stats["pools_bought"],
             "pools_skipped": self.stats["pools_skipped"],
             "success_rate": (self.stats["pools_bought"] / max(1, self.stats["pools_found"])) * 100,
+            "api_failures": self.stats["api_failures"],
             "last_check": self.stats["last_check"]
         }
     
