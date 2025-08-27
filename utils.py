@@ -1016,7 +1016,7 @@ async def sell_token(mint: str, percent: float = 100.0):
         return False
 
 async def get_token_decimals(mint: str) -> int:
-    """Get token decimals from blockchain with caching"""
+    """Get token decimals from blockchain with caching and validation"""
     # Check cache first
     if mint in TOKEN_DECIMALS_CACHE:
         return TOKEN_DECIMALS_CACHE[mint]
@@ -1037,11 +1037,19 @@ async def get_token_decimals(mint: str) -> int:
                     decoded = base64.b64decode(data[0])
                 else:
                     decoded = bytes(data[0])
+                
+                # SPL Token structure: decimals at byte 44
                 if len(decoded) > 44:
                     decimals = decoded[44]
-                    TOKEN_DECIMALS_CACHE[mint] = decimals
-                    logging.info(f"[Decimals] Token {mint[:8]}... has {decimals} decimals (from chain)")
-                    return decimals
+                    
+                    # Validate decimals are reasonable (0-18)
+                    if 0 <= decimals <= 18:
+                        TOKEN_DECIMALS_CACHE[mint] = decimals
+                        logging.info(f"[Decimals] Token {mint[:8]}... has {decimals} decimals (from chain)")
+                        return decimals
+                    else:
+                        logging.warning(f"[Decimals] Invalid decimals {decimals} for {mint[:8]}... - using default 9")
+                        return 9
     except Exception as e:
         logging.warning(f"[Decimals] Could not get decimals for {mint[:8]}...: {e}")
     
@@ -1050,7 +1058,7 @@ async def get_token_decimals(mint: str) -> int:
     return 9
 
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price with proper decimal handling"""
+    """Get current token price with FIXED decimal handling"""
     try:
         STABLECOIN_MINTS = {
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
@@ -1061,7 +1069,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             logging.info(f"[Price] {STABLECOIN_MINTS[mint]} stablecoin, returning $1.00")
             return 1.0
         
-        # CRITICAL: Get actual decimals FIRST before any price calculations
+        # CRITICAL FIX: Get actual decimals FIRST before any price calculations
         actual_decimals = await get_token_decimals(mint)
         logging.info(f"[Price] Token {mint[:8]}... using {actual_decimals} decimals for calculations")
         
@@ -1118,7 +1126,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             logging.debug(f"[Price] Jupiter Price API error: {e}")
         
-        # Last resort: Calculate from Jupiter quote with proper decimal handling
+        # Last resort: Calculate from Jupiter quote with PROPER decimal handling
         try:
             quote_url = f"{JUPITER_BASE_URL}/v6/quote"
             params = {
@@ -1148,22 +1156,39 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                             tokens_received = float(quote["outAmount"]) / 1e9
                             logging.warning(f"[Price] OVERRIDE active, using 9 decimals instead of {actual_decimals}")
                         else:
-                            # Use the actual token decimals
+                            # Use the actual token decimals - THIS IS THE FIX
                             tokens_received = float(quote["outAmount"]) / (10 ** actual_decimals)
                         
                         sol_spent = 1.0
                         price = (sol_spent * sol_price) / tokens_received
                         
-                        # Sanity check for known stablecoins
+                        # Sanity checks to catch decimal issues
                         if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
-                            logging.error(f"[Price] Calculated ${price:.4f} for {STABLECOIN_MINTS[mint]} - decimal mismatch likely!")
-                            logging.error(f"[Price] Token amount: {tokens_received}, decimals used: {actual_decimals}")
-                            return 1.0
+                            logging.error(f"[Price] Calculated ${price:.4f} for {STABLECOIN_MINTS[mint]} - decimal mismatch!")
+                            # Try common decimal values
+                            for test_decimals in [6, 8, 9]:
+                                test_tokens = float(quote["outAmount"]) / (10 ** test_decimals)
+                                test_price = (sol_spent * sol_price) / test_tokens
+                                if 0.5 < test_price < 2.0:
+                                    logging.info(f"[Price] Corrected to {test_decimals} decimals: ${test_price:.4f}")
+                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals  # Cache the correct decimals
+                                    return test_price
+                            return 1.0  # Default for stablecoins
                         
-                        # Sanity check for extreme prices that indicate decimal issues
-                        if price > 1000000 or price < 0.0000001:
-                            logging.warning(f"[Price] Extreme price ${price:.8f} detected for {mint[:8]}... - possible decimal issue")
-                            logging.warning(f"[Price] Decimals: {actual_decimals}, Tokens: {tokens_received}, Raw amount: {quote['outAmount']}")
+                        # Check for extreme prices that indicate decimal issues
+                        if price > 1000000:
+                            logging.warning(f"[Price] Extreme price ${price:.2f} for {mint[:8]}... - trying different decimals")
+                            # Try common decimal values
+                            for test_decimals in [6, 8, 9]:
+                                test_tokens = float(quote["outAmount"]) / (10 ** test_decimals)
+                                test_price = (sol_spent * sol_price) / test_tokens
+                                if 0.0000001 < test_price < 10000:
+                                    logging.info(f"[Price] Using {test_decimals} decimals: ${test_price:.8f}")
+                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals  # Cache the correct decimals
+                                    return test_price
+                        
+                        if price < 0.0000001:
+                            logging.warning(f"[Price] Extremely low price ${price:.10f} for {mint[:8]}... - possible decimal issue")
                         
                         logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated with {actual_decimals} decimals)")
                         return price
@@ -1176,6 +1201,9 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
     except Exception as e:
         logging.error(f"[Price] Unexpected error for {mint}: {e}")
         return None
+
+# Continue with wait_and_auto_sell and other functions...
+# [Rest of the file continues unchanged from line 1200 onwards]
 
 async def wait_and_auto_sell(mint: str):
     """Monitor position and auto-sell with different strategies based on token type"""
