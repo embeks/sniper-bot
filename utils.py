@@ -39,7 +39,7 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 10.0))  # INCREASED FROM 3.0
 BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 HELIUS_API = os.getenv("HELIUS_API")
 
@@ -87,6 +87,14 @@ USE_DYNAMIC_SIZING = os.getenv("USE_DYNAMIC_SIZING", "true").lower() == "true"
 SCALE_WITH_BALANCE = os.getenv("SCALE_WITH_BALANCE", "true").lower() == "true"
 MIGRATION_BOOST_MULTIPLIER = float(os.getenv("MIGRATION_BOOST_MULTIPLIER", 2.0))
 TRENDING_BOOST_MULTIPLIER = float(os.getenv("TRENDING_BOOST_MULTIPLIER", 1.5))
+
+# PumpFun minimum liquidity requirements - ADD THIS
+PUMPFUN_MIN_LIQUIDITY = {
+    "graduated": 10.0,     # Graduated tokens need 10+ SOL
+    "near_graduation": 5.0, # 80%+ to graduation need 5+ SOL  
+    "early": 2.0,          # Early stage needs 2+ SOL minimum
+    "ignore": 1.0          # Anything under 1 SOL ignore completely
+}
 
 # Initialize clients
 rpc = Client(RPC_URL, commitment=Confirmed)
@@ -149,6 +157,11 @@ telegram_batch_interval = 1.0
 telegram_last_sent = 0
 telegram_min_interval = 0.5
 
+# Smart alert system - ADD THESE
+ALERT_COOLDOWNS = {}
+ALERT_SUMMARY = {"detected": 0, "skipped": 0, "failed": 0, "succeeded": 0}
+LAST_SUMMARY_TIME = time.time()
+
 # Track PumpFun and trending tokens
 pumpfun_tokens = {}
 trending_tokens = set()
@@ -169,72 +182,152 @@ KNOWN_TOKEN_DECIMALS = {
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
-# SCALING FUNCTIONS
+# SMART ALERT SYSTEM - ADD THIS NEW FUNCTION
+# ============================================
+
+async def send_smart_alert(message: str, alert_type: str = "info"):
+    """Smart alert system that reduces spam"""
+    global ALERT_COOLDOWNS, ALERT_SUMMARY, LAST_SUMMARY_TIME
+    
+    # High priority - always send immediately
+    HIGH_PRIORITY = ["buy_success", "sell_success", "migration", "graduated_pumpfun"]
+    
+    # Medium priority - rate limit
+    MEDIUM_PRIORITY = {"risk_warning": 300, "daily_summary": 3600}
+    
+    # Low priority - batch into summaries
+    LOW_PRIORITY = ["detected", "skipped", "failed", "low_lp"]
+    
+    # Track stats for summary
+    if alert_type in ["detected", "skipped", "failed"]:
+        ALERT_SUMMARY[alert_type] = ALERT_SUMMARY.get(alert_type, 0) + 1
+    
+    # Send hourly summary instead of individual alerts
+    if time.time() - LAST_SUMMARY_TIME > 3600:  # 1 hour
+        if any(ALERT_SUMMARY.values()):
+            summary = f"📊 Hourly Summary:\n"
+            summary += f"Detected: {ALERT_SUMMARY.get('detected', 0)}\n"
+            summary += f"Skipped: {ALERT_SUMMARY.get('skipped', 0)}\n"
+            summary += f"Failed: {ALERT_SUMMARY.get('failed', 0)}\n"
+            summary += f"Succeeded: {ALERT_SUMMARY.get('succeeded', 0)}"
+            await send_telegram_alert(summary)
+            ALERT_SUMMARY = {"detected": 0, "skipped": 0, "failed": 0, "succeeded": 0}
+            LAST_SUMMARY_TIME = time.time()
+    
+    # Handle based on priority
+    if alert_type in HIGH_PRIORITY:
+        await send_telegram_alert(message)
+    elif alert_type in MEDIUM_PRIORITY:
+        cooldown = MEDIUM_PRIORITY[alert_type]
+        last_sent = ALERT_COOLDOWNS.get(alert_type, 0)
+        if time.time() - last_sent > cooldown:
+            ALERT_COOLDOWNS[alert_type] = time.time()
+            await send_telegram_alert(message)
+    elif alert_type in LOW_PRIORITY:
+        # Just log it, don't send
+        logging.info(f"[Batched Alert] {message[:100]}")
+    else:
+        # Default: log only
+        logging.debug(f"[Suppressed] {alert_type}: {message[:100]}")
+
+# ============================================
+# SCALING FUNCTIONS - UPDATED WITH FIXES
 # ============================================
 
 async def get_dynamic_position_size(mint: str, pool_liquidity_sol: float, is_migration: bool = False) -> float:
-    """Calculate position size based on current balance and token type"""
+    """Calculate position size with 0.03 SOL minimum"""
     try:
         # Get current balance
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         balance_usd = balance * 150  # Assume SOL = $150
+        recent_profit = daily_stats.get("profit_sol", 0)
         
-        # Base position sizing by bankroll
-        if balance_usd < 500:
-            base_percent = 0.01  # 1% when small ($300 starting)
-        elif balance_usd < 1500:
-            base_percent = 0.015  # 1.5% when growing
-        elif balance_usd < 5000:
-            base_percent = 0.02  # 2% when established
-        elif balance_usd < 10000:
-            base_percent = 0.025  # 2.5% when large
-        else:
-            base_percent = 0.03  # 3% when massive (10k+ target)
+        # Base sizing - NEVER go below 0.03 SOL
+        if recent_profit < -0.1:  # Down significantly
+            base_size = 0.03  # Minimum viable position
+        elif recent_profit < 0:  # Slightly down
+            base_size = 0.04
+        elif recent_profit > 0.2:  # Up significantly  
+            base_size = 0.08  # Increase when winning big
+        else:  # Normal
+            base_size = 0.05
         
-        position = balance * base_percent
-        
-        # Boost for special situations
+        # Opportunity multipliers
         if is_migration:
-            position *= MIGRATION_BOOST_MULTIPLIER  # Double for PumpFun migrations
-            logging.info(f"[Position] Migration detected, boosting {MIGRATION_BOOST_MULTIPLIER}x to {position:.3f} SOL")
+            base_size = min(base_size * 2, 0.15)  # Double for migrations, cap at 0.15
+            logging.info(f"[Position] Migration detected, boosting 2x to {base_size:.3f} SOL")
         
         if mint in trending_tokens:
-            position *= TRENDING_BOOST_MULTIPLIER  # 50% boost for trending
-            logging.info(f"[Position] Trending token, boosting {TRENDING_BOOST_MULTIPLIER}x to {position:.3f} SOL")
+            base_size = min(base_size * 1.5, 0.10)  # 1.5x for trending
+            logging.info(f"[Position] Trending token, boosting 1.5x to {base_size:.3f} SOL")
         
-        # Apply limits
-        position = max(0.01, position)  # Minimum 0.01 SOL
-        position = min(position, pool_liquidity_sol * 0.01)  # Max 1% of pool
-        position = min(position, balance * 0.05)  # Max 5% of total balance
-        position = min(position, 1.0)  # Hard cap at 1 SOL per trade
+        # ENSURE MINIMUM 0.03 SOL
+        base_size = max(base_size, 0.03)
         
-        logging.info(f"[Position] Balance: {balance:.2f} SOL (${balance_usd:.0f}) -> Size: {position:.3f} SOL")
-        return position
+        # Never exceed 10% of balance or 0.2 SOL
+        return min(base_size, balance * 0.10, 0.2)
         
     except Exception as e:
         logging.error(f"Dynamic sizing error: {e}")
-        return float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+        return max(float(os.getenv("BUY_AMOUNT_SOL", 0.03)), 0.03)
 
 def get_minimum_liquidity_required(balance_sol: float = None) -> float:
-    """Scale liquidity requirements with balance"""
+    """Scale liquidity requirements - MUCH HIGHER MINIMUMS"""
     try:
         if balance_sol is None:
             balance_sol = rpc.get_balance(keypair.pubkey()).value / 1e9
         
         balance_usd = balance_sol * 150
         
+        # INCREASED MINIMUMS TO AVOID SCAMS
         if balance_usd < 500:
-            return 3.0  # 3 SOL minimum when starting
+            return 10.0  # Was 3.0
         elif balance_usd < 1500:
-            return 5.0  # 5 SOL when growing
+            return 20.0  # Was 5.0
         elif balance_usd < 5000:
-            return 10.0  # 10 SOL when established
+            return 50.0  # Was 10.0
         elif balance_usd < 10000:
-            return 20.0  # 20 SOL when large
+            return 75.0  # Was 20.0
         else:
-            return 30.0  # 30 SOL when targeting 10k+
+            return 100.0  # Was 30.0
     except:
-        return float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+        return 10.0  # Was 3.0
+
+# ADD THIS NEW FUNCTION FOR PUMPFUN EVALUATION
+async def evaluate_pumpfun_opportunity(mint: str, lp_sol: float) -> tuple[bool, float]:
+    """Decide if PumpFun token is worth buying and at what size"""
+    try:
+        pf_status = await check_pumpfun_token_status(mint)
+        if not pf_status:
+            return False, 0
+        
+        progress = pf_status.get("progress", 0)
+        market_cap = pf_status.get("market_cap", 0)
+        
+        # Skip anything with less than 1 SOL liquidity
+        if lp_sol < PUMPFUN_MIN_LIQUIDITY["ignore"]:
+            return False, 0
+        
+        # Graduated - these can moon
+        if pf_status.get("graduated"):
+            if lp_sol >= PUMPFUN_MIN_LIQUIDITY["graduated"]:
+                return True, 0.08  # Bigger position for graduated
+                
+        # Near graduation (80%+) - high potential
+        elif progress >= 80:
+            if lp_sol >= PUMPFUN_MIN_LIQUIDITY["near_graduation"]:
+                return True, 0.05
+                
+        # Mid-stage (40-80%) - selective
+        elif progress >= 40:
+            if lp_sol >= PUMPFUN_MIN_LIQUIDITY["early"]:
+                return True, 0.03
+        
+        # Skip everything else
+        return False, 0
+        
+    except:
+        return False, 0
 
 # ============================================
 # CORE FUNCTIONS
@@ -371,7 +464,7 @@ def get_wallet_summary() -> str:
         
         # Get position sizing info
         if USE_DYNAMIC_SIZING:
-            test_position = balance * 0.015 if balance_usd < 1500 else balance * 0.02
+            test_position = 0.03 if daily_stats.get("profit_sol", 0) < 0 else 0.05
             sizing_info = f"\n📏 Position Size: ~{test_position:.3f} SOL"
         else:
             sizing_info = f"\n📏 Fixed Size: {BUY_AMOUNT_SOL} SOL"
@@ -518,7 +611,7 @@ async def daily_stats_reset_loop():
             for key in daily_stats["skip_reasons"]:
                 daily_stats["skip_reasons"][key] = 0
                 
-            await send_telegram_alert("📊 Daily stats reset")
+            await send_smart_alert("📊 Daily stats reset", alert_type="daily_summary")
         except Exception as e:
             logging.error(f"Stats reset error: {e}")
             await asyncio.sleep(3600)
@@ -757,12 +850,11 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, force_amount: Optional[float] = None, is_migration: bool = False):
-    """Execute buy with dynamic sizing and enhanced validation"""
+    """Execute buy with proper liquidity checks and smart alerts"""
     try:
         if mint in BROKEN_TOKENS:
-            await send_telegram_alert(f"❌ Skipped {mint[:8]}... — broken token")
-            log_skipped_token(mint, "Broken token")
-            record_skip("malformed")
+            logging.info(f"[Buy] Skipping broken token {mint[:8]}...")
+            ALERT_SUMMARY["skipped"] += 1
             return False
 
         increment_stat("snipes_attempted", 1)
@@ -778,35 +870,59 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         
         pool_liquidity = lp_data.get("liquidity", 0)
         
-        # Get minimum LP requirement based on current balance
-        min_lp = get_minimum_liquidity_required() if SCALE_WITH_BALANCE else RUG_LP_THRESHOLD
+        # CRITICAL: Check if PumpFun and apply special rules
+        is_pumpfun = False
+        pumpfun_position = 0
+        
+        if "pump" in str(mint).lower() or mint in pumpfun_tokens:
+            is_pumpfun = True
+            can_buy, pumpfun_position = await evaluate_pumpfun_opportunity(mint, pool_liquidity)
+            
+            if not can_buy:
+                logging.info(f"[Buy] PumpFun token {mint[:8]}... with {pool_liquidity:.2f} SOL LP - TOO LOW")
+                ALERT_SUMMARY["skipped"] += 1
+                record_skip("low_lp")
+                return False
+            
+            # Alert for good PumpFun opportunities
+            pf_status = await check_pumpfun_token_status(mint)
+            if pf_status and pf_status.get("graduated"):
+                await send_smart_alert(
+                    f"🎯 Graduated PumpFun Detected!\n"
+                    f"Token: {mint[:8]}...\n"
+                    f"LP: {pool_liquidity:.2f} SOL\n"
+                    f"Market Cap: ${pf_status.get('market_cap', 0):,.0f}",
+                    alert_type="graduated_pumpfun"
+                )
+        
+        # Regular token minimum liquidity check
+        min_lp = get_minimum_liquidity_required() if not is_pumpfun else 2.0
         
         if pool_liquidity < min_lp:
-            await send_telegram_alert(
-                f"⚠️ Skipping low LP token\n"
-                f"Token: {mint[:8]}...\n"
-                f"LP: {pool_liquidity:.2f} SOL\n"
-                f"Min required: {min_lp} SOL"
-            )
-            log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
+            logging.info(f"[Buy] Token {mint[:8]}... has {pool_liquidity:.2f} SOL - below {min_lp} SOL minimum")
+            ALERT_SUMMARY["skipped"] += 1
             record_skip("low_lp")
             return False
 
-        # Get dynamic position size
+        # Determine position size
         if force_amount:
-            amount_sol = force_amount
-            logging.info(f"[Buy] Using forced amount: {amount_sol} SOL")
+            amount_sol = max(force_amount, 0.03)  # Ensure minimum 0.03
+        elif is_pumpfun and pumpfun_position > 0:
+            amount_sol = pumpfun_position
         elif USE_DYNAMIC_SIZING:
             amount_sol = await get_dynamic_position_size(mint, pool_liquidity, is_migration)
         else:
-            amount_sol = BUY_AMOUNT_SOL
+            amount_sol = max(BUY_AMOUNT_SOL, 0.03)
+        
+        # ENSURE MINIMUM 0.03 SOL
+        amount_sol = max(amount_sol, 0.03)
         
         # Final safety check with risk manager
         try:
             from integrate_monster import risk_manager
             if risk_manager and not await risk_manager.check_risk_limits():
                 logging.warning(f"[Buy] Risk limits hit, skipping buy for {mint[:8]}...")
-                await send_telegram_alert(f"⚠️ Risk limits hit, skipping {mint[:8]}...")
+                await send_smart_alert(f"⚠️ Risk limits hit, skipping {mint[:8]}...", alert_type="risk_warning")
                 return False
         except ImportError:
             logging.debug("[Buy] Risk manager not available, continuing without check")
@@ -814,7 +930,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
             logging.debug(f"[Buy] Risk check error: {e}, continuing")
         
         amount_lamports = int(amount_sol * 1e9)
-        logging.info(f"[Buy] Using dynamic position: {amount_sol:.3f} SOL for {mint[:8]}...")
+        logging.info(f"[Buy] Attempting buy: {amount_sol:.3f} SOL for {mint[:8]}...")
 
         # Try Jupiter first
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
@@ -825,13 +941,15 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
             balance = rpc.get_balance(keypair.pubkey()).value / 1e9
             balance_usd = balance * 150
             
-            await send_telegram_alert(
+            await send_smart_alert(
                 f"✅ Sniped {mint[:8]}... via Jupiter\n"
                 f"Amount: {amount_sol:.3f} SOL\n"
                 f"LP: {pool_liquidity:.2f} SOL\n"
                 f"{'🚀 MIGRATION!' if is_migration else ''}\n"
+                f"{'🎯 GRADUATED PUMPFUN!' if is_pumpfun else ''}\n"
                 f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
-                f"TX: https://solscan.io/tx/{jupiter_sig}"
+                f"TX: https://solscan.io/tx/{jupiter_sig}",
+                alert_type="buy_success"
             )
             
             OPEN_POSITIONS[mint] = {
@@ -843,6 +961,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
             }
             
             increment_stat("snipes_succeeded", 1)
+            ALERT_SUMMARY["succeeded"] += 1
             log_trade(mint, "BUY", amount_sol, 0)
             return True
         
@@ -856,20 +975,22 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         if not pool:
             pool = raydium.find_pool(output_mint, input_mint)
             if not pool:
-                await send_telegram_alert(f"⚠️ No pool found for {mint[:8]}...")
-                log_skipped_token(mint, "No pool on Jupiter or Raydium")
+                logging.info(f"[Buy] No pool found for {mint[:8]}...")
+                ALERT_SUMMARY["failed"] += 1
                 record_skip("malformed")
                 return False
 
         tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount_lamports)
         if not tx:
-            await send_telegram_alert(f"❌ Failed to build Raydium swap for {mint[:8]}...")
+            logging.error(f"[Buy] Failed to build Raydium tx for {mint[:8]}...")
+            ALERT_SUMMARY["failed"] += 1
             mark_broken_token(mint, 0)
             return False
 
         sig = raydium.send_transaction(tx, keypair)
         if not sig:
-            await send_telegram_alert(f"📉 Raydium swap failed for {mint[:8]}...")
+            logging.error(f"[Buy] Raydium swap failed for {mint[:8]}...")
+            ALERT_SUMMARY["failed"] += 1
             mark_broken_token(mint, 0)
             return False
 
@@ -877,13 +998,14 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         balance_usd = balance * 150
         
-        await send_telegram_alert(
+        await send_smart_alert(
             f"✅ Sniped {mint[:8]}... via Raydium\n"
             f"Amount: {amount_sol:.3f} SOL\n"
             f"LP: {pool_liquidity:.2f} SOL\n"
             f"{'🚀 MIGRATION!' if is_migration else ''}\n"
             f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
-            f"TX: https://solscan.io/tx/{sig}"
+            f"TX: https://solscan.io/tx/{sig}",
+            alert_type="buy_success"
         )
         
         OPEN_POSITIONS[mint] = {
@@ -895,12 +1017,13 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         }
         
         increment_stat("snipes_succeeded", 1)
+        ALERT_SUMMARY["succeeded"] += 1
         log_trade(mint, "BUY", amount_sol, 0)
         return True
 
     except Exception as e:
-        await send_telegram_alert(f"❌ Buy failed for {mint[:8]}...: {str(e)[:100]}")
-        log_skipped_token(mint, f"Buy failed: {e}")
+        logging.error(f"[Buy] Error for {mint[:8]}...: {e}")
+        ALERT_SUMMARY["failed"] += 1
         return False
 
 async def sell_token(mint: str, percent: float = 100.0):
@@ -915,19 +1038,17 @@ async def sell_token(mint: str, percent: float = 100.0):
             response = rpc.get_token_account_balance(token_account)
             if not response or not hasattr(response, 'value') or not response.value:
                 logging.warning(f"No token balance found for {mint}")
-                await send_telegram_alert(f"⚠️ No token balance found for {mint[:8]}...")
                 return False
             
             balance = int(response.value.amount)
         except Exception as e:
             logging.error(f"Failed to get token balance for {mint}: {e}")
-            await send_telegram_alert(f"⚠️ Failed to get balance for {mint[:8]}...")
             return False
         
         amount = int(balance * percent / 100)
         
         if amount == 0:
-            await send_telegram_alert(f"⚠️ Zero balance to sell for {mint[:8]}...")
+            logging.warning(f"Zero balance to sell for {mint[:8]}...")
             return False
 
         # Try Jupiter first
@@ -935,9 +1056,10 @@ async def sell_token(mint: str, percent: float = 100.0):
         jupiter_sig = await execute_jupiter_sell(mint, amount)
         
         if jupiter_sig:
-            await send_telegram_alert(
+            await send_smart_alert(
                 f"✅ Sold {percent}% of {mint[:8]}... via Jupiter\n"
-                f"TX: https://solscan.io/tx/{jupiter_sig}"
+                f"TX: https://solscan.io/tx/{jupiter_sig}",
+                alert_type="sell_success"
             )
             log_trade(mint, f"SELL {percent}%", 0, amount)
             increment_stat("sells_executed", 1)
@@ -953,31 +1075,30 @@ async def sell_token(mint: str, percent: float = 100.0):
         if not pool:
             pool = raydium.find_pool(output_mint, input_mint)
             if not pool:
-                await send_telegram_alert(f"⚠️ No pool for {mint[:8]}...")
-                log_skipped_token(mint, "No pool for sell")
+                logging.error(f"No pool for sell {mint[:8]}...")
                 return False
 
         tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
         if not tx:
-            await send_telegram_alert(f"❌ Failed to build sell TX for {mint[:8]}...")
+            logging.error(f"Failed to build sell TX for {mint[:8]}...")
             return False
 
         sig = raydium.send_transaction(tx, keypair)
         if not sig:
-            await send_telegram_alert(f"❌ Failed to send sell tx for {mint[:8]}...")
+            logging.error(f"Failed to send sell tx for {mint[:8]}...")
             return False
 
-        await send_telegram_alert(
+        await send_smart_alert(
             f"✅ Sold {percent}% of {mint[:8]}... via Raydium\n"
-            f"TX: https://solscan.io/tx/{sig}"
+            f"TX: https://solscan.io/tx/{sig}",
+            alert_type="sell_success"
         )
         log_trade(mint, f"SELL {percent}%", 0, amount)
         increment_stat("sells_executed", 1)
         return True
         
     except Exception as e:
-        await send_telegram_alert(f"❌ Sell failed for {mint[:8]}...: {str(e)[:100]}")
-        log_skipped_token(mint, f"Sell failed: {e}")
+        logging.error(f"Sell failed for {mint[:8]}...: {e}")
         return False
 
 async def get_token_decimals(mint: str) -> int:
@@ -1193,13 +1314,15 @@ async def wait_and_auto_sell(mint: str):
         position["highest_price"] = entry_price
         position["token_amount"] = position.get("expected_token_amount", 0)
         
-        await send_telegram_alert(
+        # Use smart alerts instead of regular alerts
+        await send_smart_alert(
             f"📊 Monitoring {mint[:8]}... [{strategy_name}]\n"
             f"Entry: ${entry_price:.6f}\n"
             f"Targets: {targets[0]}x/${entry_price*targets[0]:.6f}, "
             f"{targets[1]}x/${entry_price*targets[1]:.6f}, "
             f"{targets[2]}x/${entry_price*targets[2]:.6f}\n"
-            f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}"
+            f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}",
+            alert_type="info"
         )
         
         # Monitor loop
@@ -1243,10 +1366,11 @@ async def wait_and_auto_sell(mint: str):
                     if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
                         logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
                         if await sell_token(mint, 100):
-                            await send_telegram_alert(
+                            await send_smart_alert(
                                 f"⛔ Trailing stop triggered for {mint[:8]}!\n"
                                 f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
-                                f"Sold remaining position at ${current_price:.6f} ({profit_multiplier:.1f}x)"
+                                f"Sold remaining position at ${current_price:.6f} ({profit_multiplier:.1f}x)",
+                                alert_type="sell_success"
                             )
                             break
                 
@@ -1255,10 +1379,11 @@ async def wait_and_auto_sell(mint: str):
                     sell_attempts["stop_loss"] += 1
                     logging.info(f"[{mint[:8]}] Stop loss triggered at {profit_percent:.1f}%")
                     if await sell_token(mint, 100):
-                        await send_telegram_alert(
+                        await send_smart_alert(
                             f"🛑 Stop loss triggered for {mint[:8]}!\n"
                             f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
-                            f"Sold all to minimize losses"
+                            f"Sold all to minimize losses",
+                            alert_type="sell_success"
                         )
                         break
                 
@@ -1267,34 +1392,37 @@ async def wait_and_auto_sell(mint: str):
                     sell_attempts["profit1"] += 1
                     if await sell_token(mint, sell_percents[0]):
                         position["sold_stages"].add("profit1")
-                        await send_telegram_alert(
+                        await send_smart_alert(
                             f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
                             f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold {sell_percents[0]}% of position\n"
-                            f"Strategy: {strategy_name}"
+                            f"Strategy: {strategy_name}",
+                            alert_type="sell_success"
                         )
                 
                 if profit_multiplier >= targets[1] and "profit2" not in position["sold_stages"] and sell_attempts["profit2"] < max_sell_attempts:
                     sell_attempts["profit2"] += 1
                     if await sell_token(mint, sell_percents[1]):
                         position["sold_stages"].add("profit2")
-                        await send_telegram_alert(
+                        await send_smart_alert(
                             f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
                             f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold {sell_percents[1]}% of position\n"
-                            f"Strategy: {strategy_name}"
+                            f"Strategy: {strategy_name}",
+                            alert_type="sell_success"
                         )
                 
                 if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
                     sell_attempts["profit3"] += 1
                     if await sell_token(mint, sell_percents[2]):
                         position["sold_stages"].add("profit3")
-                        await send_telegram_alert(
+                        await send_smart_alert(
                             f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
                             f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold final {sell_percents[2]}% of position\n"
                             f"Total profit: {(profit_multiplier-1)*100:.1f}%!\n"
-                            f"Strategy: {strategy_name} SUCCESS! 🎯"
+                            f"Strategy: {strategy_name} SUCCESS! 🎯",
+                            alert_type="sell_success"
                         )
                         break
                 
@@ -1320,11 +1448,12 @@ async def wait_and_auto_sell(mint: str):
             if await sell_token(mint, 100):
                 current_price = await get_token_price_usd(mint) or entry_price
                 profit_percent = ((current_price / entry_price) - 1) * 100
-                await send_telegram_alert(
+                await send_smart_alert(
                     f"⏰ Max hold time reached for {mint[:8]}\n"
                     f"Force sold after {MAX_HOLD_TIME_SEC/60:.0f} minutes\n"
                     f"Final P&L: {profit_percent:+.1f}%\n"
-                    f"Strategy used: {strategy_name}"
+                    f"Strategy used: {strategy_name}",
+                    alert_type="sell_success"
                 )
         
         # Clean up position
@@ -1333,7 +1462,7 @@ async def wait_and_auto_sell(mint: str):
             
     except Exception as e:
         logging.error(f"Auto-sell error for {mint}: {e}")
-        await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
+        await send_smart_alert(f"⚠️ Auto-sell error for {mint}: {e}", alert_type="risk_warning")
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
 
@@ -1358,7 +1487,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                     sell_attempts["2x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_2X):
                         position["sold_stages"].add("2x")
-                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
+                        await send_smart_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...", alert_type="sell_success")
                     elif sell_attempts["2x"] >= max_sell_attempts:
                         position["sold_stages"].add("2x")
                 
@@ -1366,7 +1495,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                     sell_attempts["5x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_5X):
                         position["sold_stages"].add("5x")
-                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
+                        await send_smart_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...", alert_type="sell_success")
                     elif sell_attempts["5x"] >= max_sell_attempts:
                         position["sold_stages"].add("5x")
                 
@@ -1374,7 +1503,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                     sell_attempts["10x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_10X):
                         position["sold_stages"].add("10x")
-                        await send_telegram_alert(f"🌙 Sold final {AUTO_SELL_PERCENT_10X}% at 5min timer for {mint[:8]}...")
+                        await send_smart_alert(f"🌙 Sold final {AUTO_SELL_PERCENT_10X}% at 5min timer for {mint[:8]}...", alert_type="sell_success")
                         break
                     elif sell_attempts["10x"] >= max_sell_attempts:
                         position["sold_stages"].add("10x")
@@ -1492,5 +1621,7 @@ __all__ = [
     'get_dynamic_position_size',
     'get_minimum_liquidity_required',
     'USE_DYNAMIC_SIZING',
-    'SCALE_WITH_BALANCE'
+    'SCALE_WITH_BALANCE',
+    'send_smart_alert',  # Add this to exports
+    'evaluate_pumpfun_opportunity'  # Add this to exports
 ]
