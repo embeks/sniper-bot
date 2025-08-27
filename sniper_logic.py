@@ -809,7 +809,14 @@ async def mempool_listener(name, program_id=None):
             
             subscription_id = response_data["result"]
             logging.info(f"[{name}] Listener subscribed with ID: {subscription_id}")
-            await send_telegram_alert(f"📱 {name} listener ACTIVE")
+            current_time = time.time()
+            last_alert = last_alert_sent.get(name, 0)
+            if current_time - last_alert > 1800:  # 30 minutes
+                await send_telegram_alert(f"📡 {name} listener ACTIVE")
+                last_alert_sent[name] = current_time
+            else:
+                logging.info(f"[{name}] Reconnected successfully (alert suppressed)")
+            
             listener_status[name] = "ACTIVE"
             last_seen_token[name] = time.time()
             retry_attempts = 0
