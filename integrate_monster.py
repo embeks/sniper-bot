@@ -62,6 +62,9 @@ aggressive_metrics = {
     "worst_trade": 0
 }
 
+# Add global for tracking last progress alert
+last_progress_alert_time = 0
+
 def is_aggressive_mode_active():
     """Check if we're still in aggressive mode timeframe"""
     if not AGGRESSIVE_MODE or not AGGRESSIVE_START_TIME:
@@ -74,8 +77,10 @@ def is_aggressive_mode_active():
     
     return True
 
-async def check_aggressive_progress():
+async def check_aggressive_progress(force_alert=False):
     """Monitor progress toward aggressive goals"""
+    global last_progress_alert_time
+    
     if not is_aggressive_mode_active():
         return False
     
@@ -96,7 +101,14 @@ async def check_aggressive_progress():
         required_multiplier = (hours_elapsed / AGGRESSIVE_DURATION_HOURS) * TARGET_MULTIPLIER
         on_track = aggressive_metrics["current_multiplier"] >= required_multiplier * 0.8  # 80% of target is acceptable
         
-        progress_msg = f"""
+        # Only send alert if 30 minutes have passed since last alert OR if forced
+        current_time = time.time()
+        should_send_alert = force_alert or (current_time - last_progress_alert_time > 1800)
+        
+        if should_send_alert:
+            last_progress_alert_time = current_time
+            
+            progress_msg = f"""
 ⚡ AGGRESSIVE MODE STATUS ⚡
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 Time: {hours_elapsed:.1f}h / {AGGRESSIVE_DURATION_HOURS}h ({hours_remaining:.1f}h left)
@@ -112,8 +124,8 @@ Worst Trade: {aggressive_metrics['worst_trade']:.3f} SOL
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 Status: {'🟢 ON TRACK!' if on_track else '🔴 NEED MORE AGGRESSION!'}
 """
-        
-        await send_telegram_alert(progress_msg)
+            
+            await send_telegram_alert(progress_msg)
         
         # Return True if we need to increase aggression
         return not on_track
@@ -164,26 +176,35 @@ def log_configuration():
 def calculate_position_size_fixed(pool_liquidity_sol: float, ai_score: float = 0.5, force_buy: bool = False) -> float:
     """Calculate optimal position size based on mode"""
     
+    logging.info(f"[SIZING] Aggressive mode active: {is_aggressive_mode_active()}, AI Score: {ai_score:.2f}")
+    
     if is_aggressive_mode_active():
-        # AGGRESSIVE MODE: 25-40% of balance
-        min_size = float(os.getenv("MIN_POSITION_SIZE", 0.25))
-        max_size = float(os.getenv("MAX_POSITION_SIZE", 0.40))
-        high_conviction = float(os.getenv("HIGH_CONVICTION_SIZE", 0.40))
-        
-        if force_buy:
-            return high_conviction
+        # AGGRESSIVE MODE: Use percentage of balance
+        try:
+            from utils import rpc, keypair
+            balance = rpc.get_balance(keypair.pubkey()).value / 1e9
             
-        # Scale based on AI score
-        if ai_score >= 0.9:
-            return high_conviction
-        elif ai_score >= 0.8:
-            return max_size
-        elif ai_score >= 0.7:
-            return (min_size + max_size) / 2
-        elif ai_score >= 0.5:
-            return min_size
-        else:
-            return min_size * 0.5  # Still take small positions
+            # Calculate position as percentage of balance
+            if force_buy or ai_score >= 0.9:
+                position_pct = 0.40  # 40% for high conviction
+            elif ai_score >= 0.8:
+                position_pct = 0.35
+            elif ai_score >= 0.7:
+                position_pct = 0.30
+            elif ai_score >= 0.5:
+                position_pct = 0.25
+            else:
+                position_pct = 0.20  # Still take 20% positions
+            
+            position_size = balance * position_pct
+            logging.info(f"[SIZING] Aggressive: Balance={balance:.2f}, Pct={position_pct*100:.0f}%, Size={position_size:.2f}")
+            
+            # Ensure minimum position
+            return max(position_size, 0.05)
+            
+        except Exception as e:
+            logging.error(f"[SIZING] Error getting balance: {e}, using fallback")
+            return 0.10  # Fallback to 0.10 SOL
             
     else:
         # SAFE MODE: Conservative sizing
@@ -719,8 +740,8 @@ class PortfolioRiskManager:
             # Aggressive sizing
             size = calculate_position_size_fixed(pool_liquidity, ai_score)
             
-            # If behind schedule, increase size
-            needs_boost = await check_aggressive_progress()
+            # If behind schedule, increase size (but don't spam alerts)
+            needs_boost = await check_aggressive_progress(force_alert=False)
             if needs_boost:
                 size *= 1.2  # 20% boost
                 logging.info(f"[RISK] Boosting position size by 20% to catch up")
@@ -874,9 +895,6 @@ Strategy Breakdown:
 Status: {"🟢 PROFITABLE" if hourly_profit > 0 else "🔴 WARMING UP"}
 """
             
-            if is_aggressive_mode_active():
-                await check_aggressive_progress()
-            
             await send_telegram_alert(report)
     
     async def auto_compound_profits(self):
@@ -894,9 +912,6 @@ Status: {"🟢 PROFITABLE" if hourly_profit > 0 else "🔴 WARMING UP"}
                     f"Profits: {self.stats['total_profit_sol']:.2f} SOL\n"
                     f"Increasing position size to {new_size:.2f} SOL"
                 )
-
-# Continue with rest of the file (EliteMEVProtection, SpeedOptimizer, etc.) - keeping all your existing code...
-# [Rest of your original code continues here unchanged until the elite_buy_token function]
 
 # ============================================
 # ELITE COMPONENTS (keeping all your existing components)
@@ -1247,7 +1262,6 @@ async def telegram_webhook(request: Request):
             
         elif text == "/aggressive":
             # Toggle aggressive mode
-            
             current = is_aggressive_mode_active()
             os.environ["AGGRESSIVE_MODE"] = "false" if current else "true"
             
@@ -1258,8 +1272,6 @@ async def telegram_webhook(request: Request):
                 aggressive_metrics["trades_executed"] = 0
                 aggressive_metrics["wins"] = 0
                 aggressive_metrics["losses"] = 0
-                
-               
                 
                 await send_telegram_alert(
                     f"⚡ AGGRESSIVE MODE ACTIVATED ⚡\n\n"
@@ -1278,12 +1290,11 @@ async def telegram_webhook(request: Request):
                 
         elif text == "/progress":
             if is_aggressive_mode_active():
-                await check_aggressive_progress()
+                await check_aggressive_progress(force_alert=True)
             else:
                 await send_telegram_alert("Aggressive mode not active. Use /aggressive to enable.")
             
         elif text == "/elite":
-            
             ENABLE_ELITE_FEATURES = not ENABLE_ELITE_FEATURES
             status = "ON 🚀" if ENABLE_ELITE_FEATURES else "OFF"
             await send_telegram_alert(f"🎯 Elite Features: {status}")
@@ -1420,6 +1431,8 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             else:
                 competitor_count = 10
         except Exception as e:
+            logging.
+        except Exception as e:
             logging.warning(f"Competition analysis error: {e}, using defaults")
             competition_level = "medium"
             competitor_count = 10
@@ -1521,7 +1534,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             await send_telegram_alert(
                 f"✅ {mode} BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
-                f"Amount: {amount_sol} SOL\n"
+                f"Amount: {amount_sol:.3f} SOL\n"
                 f"AI Score: {ai_score:.2f}\n"
                 f"Competition: {competition_level}\n"
                 f"Risk Status: {'SAFE' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}"
@@ -1582,7 +1595,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             await send_telegram_alert(
                 f"✅ {mode} BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
-                f"Amount: {amount_sol} SOL\n"
+                f"Amount: {amount_sol:.3f} SOL\n"
                 f"Risk Status: {'SAFE' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}"
             )
             logging.info(f"[MONSTER BUY] SUCCESS! Bought {mint[:8]}...")
@@ -1772,7 +1785,7 @@ async def aggressive_progress_monitor():
     while is_aggressive_mode_active():
         await asyncio.sleep(1800)  # Every 30 minutes
         
-        needs_boost = await check_aggressive_progress()
+        needs_boost = await check_aggressive_progress(force_alert=True)
         
         if needs_boost:
             # Increase position sizes if behind schedule
