@@ -1155,6 +1155,7 @@ async def status():
 async def telegram_webhook(request: Request):
     """Handle Telegram commands"""
     try:
+        global AGGRESSIVE_START_TIME
         data = await request.json()
         message = data.get("message") or data.get("edited_message")
         if not message:
@@ -1245,7 +1246,7 @@ async def telegram_webhook(request: Request):
             
         elif text == "/aggressive":
             # Toggle aggressive mode
-            global AGGRESSIVE_START_TIME
+            
             current = is_aggressive_mode_active()
             os.environ["AGGRESSIVE_MODE"] = "false" if current else "true"
             
