@@ -129,7 +129,7 @@ class RaydiumAggregatorClient:
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
         """FIXED pool finding - handles dict return type properly"""
         try:
-            limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))
+            limit = int(os.getenv("POOL_SCAN_LIMIT", "20"))
             logging.info(f"[Raydium] Doing limited scan (max {limit} pools)...")
             
             try:
@@ -138,6 +138,7 @@ class RaydiumAggregatorClient:
                 socket.setdefaulttimeout(5)
                 
                 try:
+                    # CRITICAL FIX: Don't use offset - it doesn't exist on dict
                     filters = [{"dataSize": 752}]  # V4 pool size
                     
                     response = self.client.get_program_accounts(
@@ -174,7 +175,7 @@ class RaydiumAggregatorClient:
                     logging.warning("[Raydium] No accounts returned from RPC")
                     return None
                 
-                # Take last N pools (most recent)
+                # Take last N pools (most recent) - NO OFFSET
                 pools_to_check = accounts[-limit:] if len(accounts) > limit else accounts
                 logging.info(f"[Raydium] Checking {len(pools_to_check)} recent pools...")
                 
