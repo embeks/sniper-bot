@@ -38,7 +38,7 @@ MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
 RISKY_LP_THRESHOLD = 1.5
 TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
 RPC_URL = os.getenv("RPC_URL")
@@ -51,7 +51,7 @@ RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.03))
 ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", 0.01))
 
 # Quality filters - keeping your original values
-MIN_AI_SCORE = float(os.getenv("MIN_AI_SCORE", 0.20))
+MIN_AI_SCORE = float(os.getenv("MIN_AI_SCORE", 0.10))
 MIN_HOLDER_COUNT = int(os.getenv("MIN_HOLDER_COUNT", 10))
 MAX_TOP_HOLDER_PERCENT = float(os.getenv("MAX_TOP_HOLDER_PERCENT", 35))
 MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", 5))
@@ -79,8 +79,8 @@ ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower()
 MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 0.5))
 
 # FIXED: Proper delays for pool initialization
-MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 500))
-PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 2.0))
+MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 200))
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 1.0))
 
 # ============================================
 # MOMENTUM SCANNER CONFIGURATION (YOUR ELITE STRATEGY)
