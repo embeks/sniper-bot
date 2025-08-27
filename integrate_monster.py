@@ -1435,9 +1435,7 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             
             if cached_pool:
                 lp_data = cached_pool
-                logging.info(f"
-                lp_data = cached_pool
-                logging.info(f"[ELITE] Using cached pool data for {mint[:8]}...")
+                logging.info(f"[ELITE] Using cached pool data for {mint[:8]}...")  
             else:
                 try:
                     lp_data = await get_liquidity_and_ownership(mint)
