@@ -1,8 +1,7 @@
-# integrate_monster.py - COMPLETE PRODUCTION READY ELITE MONEY PRINTER WITH SCALING AND FIXES
+# integrate_monster.py - COMPLETE PRODUCTION READY WITH AGGRESSIVE MODE
 """
-Elite Money Printer Integration - ALL FEATURES PRESERVED + FIXED RISK MANAGEMENT
-Ready for 24/7 profitable operation on Render with scaling capabilities
-All critical bugs fixed including risk manager false triggers
+AGGRESSIVE MODE: 1 SOL → 5-10 SOL in 36 hours
+After 36 hours, set AGGRESSIVE_MODE=false to revert to safe trading
 """
 
 import asyncio
@@ -42,32 +41,115 @@ from utils import (
 load_dotenv()
 
 # ============================================
+# AGGRESSIVE MODE CONFIGURATION
+# ============================================
+
+AGGRESSIVE_MODE = os.getenv("AGGRESSIVE_MODE", "false").lower() == "true"
+AGGRESSIVE_START_TIME = time.time() if AGGRESSIVE_MODE else None
+AGGRESSIVE_DURATION_HOURS = float(os.getenv("AGGRESSIVE_DURATION_HOURS", 36))
+TARGET_MULTIPLIER = float(os.getenv("TARGET_MULTIPLIER", 10))
+TIMEFRAME_HOURS = float(os.getenv("TIMEFRAME_HOURS", 36))
+
+# Track aggressive mode metrics
+aggressive_metrics = {
+    "start_balance": None,
+    "target_balance": None,
+    "trades_executed": 0,
+    "wins": 0,
+    "losses": 0,
+    "current_multiplier": 1.0,
+    "best_trade": 0,
+    "worst_trade": 0
+}
+
+def is_aggressive_mode_active():
+    """Check if we're still in aggressive mode timeframe"""
+    if not AGGRESSIVE_MODE or not AGGRESSIVE_START_TIME:
+        return False
+    
+    hours_elapsed = (time.time() - AGGRESSIVE_START_TIME) / 3600
+    if hours_elapsed > AGGRESSIVE_DURATION_HOURS:
+        logging.info(f"[AGGRESSIVE] {AGGRESSIVE_DURATION_HOURS}-hour period ended, reverting to safe mode")
+        return False
+    
+    return True
+
+async def check_aggressive_progress():
+    """Monitor progress toward aggressive goals"""
+    if not is_aggressive_mode_active():
+        return False
+    
+    try:
+        from utils import rpc, keypair
+        current_balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+        
+        if aggressive_metrics["start_balance"] is None:
+            aggressive_metrics["start_balance"] = current_balance
+            aggressive_metrics["target_balance"] = current_balance * TARGET_MULTIPLIER
+            logging.info(f"[AGGRESSIVE] Starting balance: {current_balance:.2f} SOL, Target: {aggressive_metrics['target_balance']:.2f} SOL")
+            
+        aggressive_metrics["current_multiplier"] = current_balance / aggressive_metrics["start_balance"]
+        hours_elapsed = (time.time() - AGGRESSIVE_START_TIME) / 3600
+        hours_remaining = AGGRESSIVE_DURATION_HOURS - hours_elapsed
+        
+        # Calculate required growth rate
+        required_multiplier = (hours_elapsed / AGGRESSIVE_DURATION_HOURS) * TARGET_MULTIPLIER
+        on_track = aggressive_metrics["current_multiplier"] >= required_multiplier * 0.8  # 80% of target is acceptable
+        
+        progress_msg = f"""
+⚡ AGGRESSIVE MODE STATUS ⚡
+━━━━━━━━━━━━━━━━━━━━━━━━━
+Time: {hours_elapsed:.1f}h / {AGGRESSIVE_DURATION_HOURS}h ({hours_remaining:.1f}h left)
+Progress: {aggressive_metrics['current_multiplier']:.2f}x / {TARGET_MULTIPLIER}x
+Current: {current_balance:.2f} SOL
+Target: {aggressive_metrics['target_balance']:.2f} SOL
+━━━━━━━━━━━━━━━━━━━━━━━━━
+Trades: {aggressive_metrics['trades_executed']}
+Wins: {aggressive_metrics['wins']} | Losses: {aggressive_metrics['losses']}
+Win Rate: {(aggressive_metrics['wins']/max(1, aggressive_metrics['trades_executed'])*100):.0f}%
+Best Trade: +{aggressive_metrics['best_trade']:.3f} SOL
+Worst Trade: {aggressive_metrics['worst_trade']:.3f} SOL
+━━━━━━━━━━━━━━━━━━━━━━━━━
+Status: {'🟢 ON TRACK!' if on_track else '🔴 NEED MORE AGGRESSION!'}
+"""
+        
+        await send_telegram_alert(progress_msg)
+        
+        # Return True if we need to increase aggression
+        return not on_track
+            
+    except Exception as e:
+        logging.error(f"[AGGRESSIVE] Progress check error: {e}")
+    
+    return False
+
+# ============================================
 # STARTUP CONFIGURATION LOGGING
 # ============================================
 
 def log_configuration():
     """Log all critical configuration at startup"""
+    mode = "AGGRESSIVE 36-HOUR" if is_aggressive_mode_active() else "SAFE STEADY"
+    
     config_items = [
+        ("MODE", mode),
+        ("AGGRESSIVE_MODE", os.getenv("AGGRESSIVE_MODE", "false")),
+        ("TARGET_MULTIPLIER", os.getenv("TARGET_MULTIPLIER", "10")),
+        ("MIN_POSITION_SIZE", os.getenv("MIN_POSITION_SIZE", "0.25" if AGGRESSIVE_MODE else "0.03")),
+        ("MAX_POSITION_SIZE", os.getenv("MAX_POSITION_SIZE", "0.40" if AGGRESSIVE_MODE else "0.10")),
         ("MOMENTUM_SCANNER", os.getenv("MOMENTUM_SCANNER", "true")),
         ("MOMENTUM_AUTO_BUY", os.getenv("MOMENTUM_AUTO_BUY", "true")),
-        ("MOMENTUM_MIN_LIQUIDITY", os.getenv("MOMENTUM_MIN_LIQUIDITY", "2000")),
-        ("POOL_SCAN_LIMIT", os.getenv("POOL_SCAN_LIMIT", "20")),
-        ("OVERRIDE_DECIMALS_TO_9", os.getenv("OVERRIDE_DECIMALS_TO_9", "false")),
-        ("IGNORE_JUPITER_PRICE_FIELD", os.getenv("IGNORE_JUPITER_PRICE_FIELD", "false")),
-        ("RUG_LP_THRESHOLD", os.getenv("RUG_LP_THRESHOLD", "1.5")),
-        ("LP_CHECK_TIMEOUT", os.getenv("LP_CHECK_TIMEOUT", "3")),
-        ("BUY_AMOUNT_SOL", os.getenv("BUY_AMOUNT_SOL", "0.03")),
+        ("RUG_LP_THRESHOLD", os.getenv("RUG_LP_THRESHOLD", "1.5" if AGGRESSIVE_MODE else "3.0")),
+        ("BUY_AMOUNT_SOL", os.getenv("BUY_AMOUNT_SOL", "0.25" if AGGRESSIVE_MODE else "0.03")),
         ("USE_DYNAMIC_SIZING", os.getenv("USE_DYNAMIC_SIZING", "true")),
-        ("SCALE_WITH_BALANCE", os.getenv("SCALE_WITH_BALANCE", "true")),
         ("HELIUS_API", "SET" if os.getenv("HELIUS_API") else "NOT SET"),
-        ("JUPITER_BASE_URL", os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")),
         ("MAX_CONSECUTIVE_LOSSES", os.getenv("MAX_CONSECUTIVE_LOSSES", "10")),
-        ("MAX_DAILY_LOSS", os.getenv("MAX_DAILY_LOSS", "0.40")),
-        ("MAX_DRAWDOWN", os.getenv("MAX_DRAWDOWN", "0.50")),
+        ("MAX_DAILY_LOSS", os.getenv("MAX_DAILY_LOSS", "0.50" if AGGRESSIVE_MODE else "0.20")),
+        ("MAX_DRAWDOWN", os.getenv("MAX_DRAWDOWN", "0.60" if AGGRESSIVE_MODE else "0.30")),
     ]
     
     logging.info("=" * 60)
-    logging.info("ELITE MONEY PRINTER CONFIGURATION")
+    logging.info(f"MONEY PRINTER CONFIGURATION - {mode}")
     logging.info("=" * 60)
     
     for key, value in config_items:
@@ -76,48 +158,66 @@ def log_configuration():
     logging.info("=" * 60)
 
 # ============================================
-# FIXED POSITION SIZING
+# ENHANCED POSITION SIZING FOR AGGRESSIVE MODE
 # ============================================
 
 def calculate_position_size_fixed(pool_liquidity_sol: float, ai_score: float = 0.5, force_buy: bool = False) -> float:
-    """Calculate optimal position size - NEVER returns 0"""
-    base_amount = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+    """Calculate optimal position size based on mode"""
     
-    if force_buy:
-        return max(base_amount, 0.03)
-    
-    if base_amount <= 0.05:
-        return base_amount
-    
-    if pool_liquidity_sol < 0.1:
-        return float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.01"))
-    
-    # Liquidity-based sizing
-    if pool_liquidity_sol < 5:
-        max_size = 0.05
-    elif pool_liquidity_sol < 20:
-        max_size = 0.1
-    elif pool_liquidity_sol < 50:
-        max_size = 0.5
-    elif pool_liquidity_sol < 100:
-        max_size = 1.0
-    elif pool_liquidity_sol < 500:
-        max_size = 2.0
+    if is_aggressive_mode_active():
+        # AGGRESSIVE MODE: 25-40% of balance
+        min_size = float(os.getenv("MIN_POSITION_SIZE", 0.25))
+        max_size = float(os.getenv("MAX_POSITION_SIZE", 0.40))
+        high_conviction = float(os.getenv("HIGH_CONVICTION_SIZE", 0.40))
+        
+        if force_buy:
+            return high_conviction
+            
+        # Scale based on AI score
+        if ai_score >= 0.9:
+            return high_conviction
+        elif ai_score >= 0.8:
+            return max_size
+        elif ai_score >= 0.7:
+            return (min_size + max_size) / 2
+        elif ai_score >= 0.5:
+            return min_size
+        else:
+            return min_size * 0.5  # Still take small positions
+            
     else:
-        max_size = min(5.0, pool_liquidity_sol * 0.03)
-    
-    confidence_multiplier = 0.5 + ai_score
-    final_size = min(base_amount, max_size * confidence_multiplier)
-    
-    min_amount = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.01"))
-    return max(round(final_size, 3), min_amount)
+        # SAFE MODE: Conservative sizing
+        base_amount = float(os.getenv("BUY_AMOUNT_SOL", 0.03))
+        
+        if force_buy:
+            return max(base_amount, 0.03)
+        
+        if base_amount <= 0.05:
+            return base_amount
+        
+        # Scale based on liquidity
+        if pool_liquidity_sol < 5:
+            max_size = 0.03
+        elif pool_liquidity_sol < 20:
+            max_size = 0.05
+        elif pool_liquidity_sol < 50:
+            max_size = 0.10
+        elif pool_liquidity_sol < 100:
+            max_size = 0.20
+        else:
+            max_size = min(0.50, pool_liquidity_sol * 0.01)
+        
+        confidence_multiplier = 0.5 + ai_score * 0.5
+        final_size = min(base_amount, max_size * confidence_multiplier)
+        
+        return max(round(final_size, 3), 0.01)
 
 # ============================================
-# AI SCORING ENGINE (No NumPy)
+# AI SCORING ENGINE (Enhanced for Aggressive Mode)
 # ============================================
 
 class AIScorer:
-    """Machine Learning scoring for token potential - Pure Python"""
+    """Machine Learning scoring for token potential"""
     
     def __init__(self):
         self.historical_data = deque(maxlen=1000)
@@ -127,16 +227,37 @@ class AIScorer:
         """Score token from 0-1 based on multiple factors"""
         score = 0.0
         
+        # In aggressive mode, be more optimistic
+        if is_aggressive_mode_active():
+            score += 0.15  # Baseline boost
+        
         # 1. Liquidity Score
         lp_sol = pool_data.get("liquidity", 0)
         if lp_sol > 100:
             score += 0.3
         elif lp_sol > 50:
-            score += 0.2
+            score += 0.25
         elif lp_sol > 20:
+            score += 0.2
+        elif lp_sol > 10:
+            score += 0.15
+        elif lp_sol > 5 and is_aggressive_mode_active():
             score += 0.1
         
-        # 2. Holder Distribution Score
+        # 2. PumpFun bonus (high value)
+        try:
+            if mint in pumpfun_tokens:
+                score += 0.2
+                if pumpfun_tokens[mint].get("migrated", False):
+                    score += 0.3  # Migration is super high value
+        except:
+            pass
+        
+        # 3. Migration watch list bonus
+        if mint in migration_watch_list:
+            score += 0.25
+        
+        # 4. Holder Distribution Score
         holders = await self.get_holder_metrics(mint)
         if holders:
             concentration = holders.get("top10_percent", 100)
@@ -145,15 +266,15 @@ class AIScorer:
             elif concentration < 70:
                 score += 0.1
         
-        # 3. Developer Behavior Score
+        # 5. Developer Behavior Score
         dev_score = await self.analyze_dev_wallet(mint)
         score += dev_score * 0.2
         
-        # 4. Social Sentiment Score
+        # 6. Social Sentiment Score
         social_score = await self.get_social_sentiment(mint)
         score += social_score * 0.2
         
-        # 5. Technical Pattern Score
+        # 7. Technical Pattern Score
         pattern_score = self.match_winning_patterns(pool_data)
         score += pattern_score * 0.1
         
@@ -427,11 +548,11 @@ class ArbitrageBot:
         return []
 
 # ============================================
-# FIXED PORTFOLIO RISK MANAGER - NO MORE FALSE TRIGGERS
+# PORTFOLIO RISK MANAGER - AGGRESSIVE VERSION
 # ============================================
 
 class PortfolioRiskManager:
-    """Advanced risk management to protect capital during scaling - FIXED"""
+    """Risk management adjusted for aggressive or safe mode"""
     
     def __init__(self):
         self.session_start_balance = None
@@ -440,17 +561,29 @@ class PortfolioRiskManager:
         self.losses_today = 0
         self.consecutive_losses = 0
         self.last_reset = datetime.now()
-        self.last_drawdown_alert = 0  # Add this line
-        # Use environment variables with proper defaults
-        self.max_drawdown = float(os.getenv("MAX_DRAWDOWN", "0.50"))  # 50% drawdown allowed
-        self.max_daily_loss = float(os.getenv("MAX_DAILY_LOSS", "0.40"))  # 40% daily loss allowed
-        self.max_trades_per_day = int(os.getenv("MAX_TRADES_PER_DAY", "100"))  # More trades allowed
-        self.max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "10"))  # Less strict
+        self.last_drawdown_alert = 0
+        self.actual_trades_executed = 0
+        
+        # Adjust limits based on mode
+        if is_aggressive_mode_active():
+            # AGGRESSIVE MODE SETTINGS
+            self.max_drawdown = float(os.getenv("MAX_DRAWDOWN", "0.60"))
+            self.max_daily_loss = float(os.getenv("DAILY_LOSS_LIMIT", "0.50"))
+            self.max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "10"))
+            self.max_trades_per_day = 200
+            self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "0.20"))
+        else:
+            # SAFE MODE SETTINGS
+            self.max_drawdown = 0.30
+            self.max_daily_loss = 0.20
+            self.max_consecutive_losses = 5
+            self.max_trades_per_day = 50
+            self.stop_loss_pct = 0.30
+        
         self.position_scaling_enabled = True
-        self.actual_trades_executed = 0  # Track real trades only
         
     async def check_risk_limits(self) -> bool:
-        """Return True if safe to trade, False if limits hit - FIXED to avoid false triggers"""
+        """Return True if safe to trade - adjusted for mode"""
         try:
             from utils import rpc, keypair
             balance = rpc.get_balance(keypair.pubkey()).value / 1e9
@@ -476,57 +609,64 @@ class PortfolioRiskManager:
                 self.peak_balance = balance
                 logging.info(f"[RISK] New peak balance: {balance:.2f} SOL")
             
-            # Check drawdown from peak - FIXED: More lenient with rate limiting
-            if self.peak_balance > 0:
-                drawdown = (self.peak_balance - balance) / self.peak_balance
-                if drawdown > self.max_drawdown:
-                    current_time = time.time()
-                    # Only send alert if it's been more than 1 hour since last alert
-                    if current_time - self.last_drawdown_alert > 3600:
-                        await send_telegram_alert(
-                            f"⚠️ Drawdown: {drawdown*100:.1f}%\n"
-                            f"Peak: {self.peak_balance:.2f} SOL\n"
-                            f"Current: {balance:.2f} SOL\n"
-                            f"Continuing with caution..."
-                        )
-                        self.last_drawdown_alert = current_time
-                    # Don't stop trading, just be cautious
-                    self.position_scaling_enabled = False
-                    # Still allow trading with reduced size
-                    return True
-            
-            # Check daily loss - FIXED: More lenient
-            if self.session_start_balance > 0:
-                daily_loss = (self.session_start_balance - balance) / self.session_start_balance
-                if daily_loss > self.max_daily_loss:
-                    # Only stop if it's a real disaster
-                    if daily_loss > 0.6:  # 60% loss is the real limit
-                        await send_telegram_alert(
-                            f"⛔ EMERGENCY STOP: {daily_loss*100:.1f}% loss today\n"
-                            f"Started: {self.session_start_balance:.2f} SOL\n"
-                            f"Current: {balance:.2f} SOL"
-                        )
-                        return False
-                    # Otherwise just warn
-                    logging.warning(f"[RISK] Daily loss at {daily_loss*100:.1f}% but continuing")
-            
-            # Check consecutive losses - FIXED: Only count real trade losses
-            if self.consecutive_losses >= self.max_consecutive_losses and self.actual_trades_executed > 0:
-                logging.warning(f"[RISK] {self.consecutive_losses} consecutive losses, being cautious")
-                # Don't stop, just take a short break
-                await asyncio.sleep(30)  # 30 second cooldown
-                self.consecutive_losses = 0
-            
-            # Check trade frequency - FIXED: Higher limit
-            if self.trades_today >= self.max_trades_per_day:
-                # Only warn, don't stop
-                logging.info(f"[RISK] Hit {self.max_trades_per_day} trades today, continuing anyway")
+            # In aggressive mode, only stop for catastrophic loss
+            if is_aggressive_mode_active():
+                if self.peak_balance > 0:
+                    drawdown = (self.peak_balance - balance) / self.peak_balance
+                    if drawdown > self.max_drawdown:
+                        current_time = time.time()
+                        if current_time - self.last_drawdown_alert > 1800:  # Alert every 30 min
+                            await send_telegram_alert(
+                                f"⚠️ AGGRESSIVE MODE - High drawdown: {drawdown*100:.1f}%\n"
+                                f"But continuing to trade for recovery!"
+                            )
+                            self.last_drawdown_alert = current_time
+                        # Don't stop trading, just reduce position sizes
+                        self.position_scaling_enabled = False
+                
+                # Never stop trading in aggressive mode
+                return True
+            else:
+                # SAFE MODE: Normal risk checks
+                if self.peak_balance > 0:
+                    drawdown = (self.peak_balance - balance) / self.peak_balance
+                    if drawdown > self.max_drawdown:
+                        current_time = time.time()
+                        if current_time - self.last_drawdown_alert > 3600:
+                            await send_telegram_alert(
+                                f"⚠️ Drawdown: {drawdown*100:.1f}%\n"
+                                f"Peak: {self.peak_balance:.2f} SOL\n"
+                                f"Current: {balance:.2f} SOL\n"
+                                f"Reducing position sizes..."
+                            )
+                            self.last_drawdown_alert = current_time
+                        self.position_scaling_enabled = False
+                        return True
+                
+                # Check daily loss
+                if self.session_start_balance > 0:
+                    daily_loss = (self.session_start_balance - balance) / self.session_start_balance
+                    if daily_loss > self.max_daily_loss:
+                        if daily_loss > 0.4:
+                            await send_telegram_alert(
+                                f"⛔ Daily loss limit: {daily_loss*100:.1f}%\n"
+                                f"Pausing trading for safety"
+                            )
+                            return False
+                        else:
+                            logging.warning(f"[RISK] Daily loss at {daily_loss*100:.1f}%")
+                
+                # Check consecutive losses
+                if self.consecutive_losses >= self.max_consecutive_losses and self.actual_trades_executed > 0:
+                    logging.warning(f"[RISK] {self.consecutive_losses} consecutive losses, taking break")
+                    await asyncio.sleep(30)
+                    self.consecutive_losses = 0
             
             # Re-enable scaling if recovered
             if not self.position_scaling_enabled:
                 if self.peak_balance > 0:
                     current_drawdown = (self.peak_balance - balance) / self.peak_balance
-                    if current_drawdown < 0.2:  # Recovered to within 20%
+                    if current_drawdown < 0.2:
                         self.position_scaling_enabled = True
                         await send_telegram_alert("✅ Risk levels normalized, full position sizing restored")
             
@@ -534,23 +674,36 @@ class PortfolioRiskManager:
             
         except Exception as e:
             logging.error(f"[RISK] Error checking limits: {e}")
-            return True  # Allow trading if risk check fails
+            return True
     
     def record_trade(self, profit: float):
-        """Record trade result for risk tracking - FIXED to only count real trades"""
-        # Only count as a trade if it's actually executed (not skipped tokens)
-        if abs(profit) > 0.001:  # Only real trades with actual profit/loss
+        """Record trade result for risk tracking"""
+        if abs(profit) > 0.001:
             self.trades_today += 1
             self.actual_trades_executed += 1
             
-            # Only count significant losses (more than 1% loss)
+            if is_aggressive_mode_active():
+                aggressive_metrics["trades_executed"] += 1
+                
+                # Track best/worst trades
+                if profit > aggressive_metrics["best_trade"]:
+                    aggressive_metrics["best_trade"] = profit
+                if profit < aggressive_metrics["worst_trade"]:
+                    aggressive_metrics["worst_trade"] = profit
+                
             if profit < -0.01:
                 self.losses_today += 1
                 self.consecutive_losses += 1
-                logging.info(f"[RISK] Real loss recorded: {profit:.3f} SOL, consecutive: {self.consecutive_losses}")
-            elif profit > 0.01:  # Only reset on real wins
+                logging.info(f"[RISK] Loss recorded: {profit:.3f} SOL, consecutive: {self.consecutive_losses}")
+                
+                if is_aggressive_mode_active():
+                    aggressive_metrics["losses"] += 1
+            elif profit > 0.01:
                 self.consecutive_losses = 0
-                logging.info(f"[RISK] Win recorded: {profit:.3f} SOL, streak broken")
+                logging.info(f"[RISK] Win recorded: {profit:.3f} SOL")
+                
+                if is_aggressive_mode_active():
+                    aggressive_metrics["wins"] += 1
             
             # Update revenue optimizer if available
             if profit > 0:
@@ -559,25 +712,43 @@ class PortfolioRiskManager:
             
             revenue_optimizer.total_trades += 1
     
-    async def get_position_size_with_risk(self, mint: str, pool_liquidity: float) -> float:
+    async def get_position_size_with_risk(self, mint: str, pool_liquidity: float, ai_score: float = 0.5) -> float:
         """Get position size considering risk parameters"""
-        if not self.position_scaling_enabled:
-            # Use smaller size when risk is high but don't stop trading
-            return float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.02"))
         
-        # Use dynamic sizing from utils
-        if USE_DYNAMIC_SIZING:
-            from utils import get_dynamic_position_size
-            base_size = await get_dynamic_position_size(mint, pool_liquidity)
+        if is_aggressive_mode_active():
+            # Aggressive sizing
+            size = calculate_position_size_fixed(pool_liquidity, ai_score)
+            
+            # If behind schedule, increase size
+            needs_boost = await check_aggressive_progress()
+            if needs_boost:
+                size *= 1.2  # 20% boost
+                logging.info(f"[RISK] Boosting position size by 20% to catch up")
+            
+            # If scaling disabled due to drawdown, reduce but don't stop
+            if not self.position_scaling_enabled:
+                size *= 0.7
+                logging.info(f"[RISK] Reducing position due to drawdown")
+            
+            return max(0.05, size)  # Minimum 0.05 SOL in aggressive mode
         else:
-            base_size = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
-        
-        # Only reduce size if we've had many real losses
-        if self.losses_today > 5 and self.actual_trades_executed > 10:
-            base_size *= 0.7
-            logging.info(f"[RISK] Reducing position to {base_size:.3f} SOL due to {self.losses_today} losses today")
-        
-        return max(0.01, base_size)
+            # Safe mode sizing
+            if not self.position_scaling_enabled:
+                return float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", "0.02"))
+            
+            # Use dynamic sizing from utils
+            if USE_DYNAMIC_SIZING:
+                from utils import get_dynamic_position_size
+                base_size = await get_dynamic_position_size(mint, pool_liquidity)
+            else:
+                base_size = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+            
+            # Reduce size if many losses
+            if self.losses_today > 5 and self.actual_trades_executed > 10:
+                base_size *= 0.7
+                logging.info(f"[RISK] Reducing position to {base_size:.3f} SOL due to {self.losses_today} losses")
+            
+            return max(0.01, base_size)
 
 # Initialize risk manager globally
 risk_manager = PortfolioRiskManager()
@@ -617,18 +788,20 @@ class MonsterBot:
     
     async def start(self):
         """Start all strategies"""
+        mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
+        
         await send_telegram_alert(
-            "🚀 MONSTER BOT ACTIVATED 🚀\n\n"
-            "Strategies Online:\n"
-            "✅ AI-Powered Sniper\n"
-            "✅ MEV Bundle Execution\n"
-            "✅ Copy Trading\n"
-            "✅ Social Scanner\n"
-            "✅ DEX Arbitrage\n"
-            "✅ Dynamic Position Sizing\n"
-            "✅ Fixed Risk Management\n\n"
-            "Target: $300 → $3000 in 48hrs\n"
-            "LET'S GO! 💰"
+            f"🚀 MONSTER BOT ACTIVATED - {mode} MODE 🚀\n\n"
+            f"Strategies Online:\n"
+            f"✅ AI-Powered Sniper\n"
+            f"✅ MEV Bundle Execution\n"
+            f"✅ Copy Trading\n"
+            f"✅ Social Scanner\n"
+            f"✅ DEX Arbitrage\n"
+            f"✅ Dynamic Position Sizing\n"
+            f"✅ Risk Management\n\n"
+            f"{'Target: ' + str(TARGET_MULTIPLIER) + 'x in ' + str(AGGRESSIVE_DURATION_HOURS) + 'h' if is_aggressive_mode_active() else 'Steady profit mode'}\n"
+            f"LET'S GO! 💰"
         )
         
         tasks = [
@@ -640,6 +813,9 @@ class MonsterBot:
             asyncio.create_task(self.auto_compound_profits())
         ]
         
+        if is_aggressive_mode_active():
+            tasks.append(asyncio.create_task(aggressive_progress_monitor()))
+        
         await asyncio.gather(*tasks)
     
     async def run_sniper(self):
@@ -650,7 +826,7 @@ class MonsterBot:
     async def monitor_performance(self):
         """Track and report performance"""
         while True:
-            await asyncio.sleep(3600)
+            await asyncio.sleep(3600 if not is_aggressive_mode_active() else 1800)  # Every 30min in aggressive mode
             
             runtime = (time.time() - self.stats["start_time"]) / 3600
             
@@ -673,8 +849,10 @@ class MonsterBot:
                 balance = 0
                 balance_usd = 0
             
+            mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
+            
             report = f"""
-📊 MONSTER BOT PERFORMANCE REPORT 📊
+📊 PERFORMANCE REPORT - {mode} MODE 📊
 
 Runtime: {runtime:.1f} hours
 Total Trades: {self.stats['total_trades']}
@@ -688,19 +866,23 @@ Risk Status: {"🟢 SAFE" if risk_manager.position_scaling_enabled else "🟡 CA
 Actual Trades: {risk_manager.actual_trades_executed}
 
 Strategy Breakdown:
-• Sniper: {self.stats['strategies']['sniper']['profit']:.2f} SOL
-• Copy Trade: {self.stats['strategies']['copy']['profit']:.2f} SOL
-• Arbitrage: {self.stats['strategies']['arb']['profit']:.2f} SOL
-• Social: {self.stats['strategies']['social']['profit']:.2f} SOL
+- Sniper: {self.stats['strategies']['sniper']['profit']:.2f} SOL
+- Copy Trade: {self.stats['strategies']['copy']['profit']:.2f} SOL
+- Arbitrage: {self.stats['strategies']['arb']['profit']:.2f} SOL
+- Social: {self.stats['strategies']['social']['profit']:.2f} SOL
 
 Status: {"🟢 PROFITABLE" if hourly_profit > 0 else "🔴 WARMING UP"}
 """
+            
+            if is_aggressive_mode_active():
+                await check_aggressive_progress()
+            
             await send_telegram_alert(report)
     
     async def auto_compound_profits(self):
         """Automatically increase position sizes with profits"""
         while True:
-            await asyncio.sleep(3600 * 6)
+            await asyncio.sleep(3600 * 6 if not is_aggressive_mode_active() else 3600 * 2)  # Faster in aggressive mode
             
             if self.stats["total_profit_sol"] > 10 and risk_manager.position_scaling_enabled:
                 current_size = float(os.getenv("BUY_AMOUNT_SOL", "1.0"))
@@ -713,8 +895,11 @@ Status: {"🟢 PROFITABLE" if hourly_profit > 0 else "🔴 WARMING UP"}
                     f"Increasing position size to {new_size:.2f} SOL"
                 )
 
+# Continue with rest of the file (EliteMEVProtection, SpeedOptimizer, etc.) - keeping all your existing code...
+# [Rest of your original code continues here unchanged until the elite_buy_token function]
+
 # ============================================
-# ELITE COMPONENTS
+# ELITE COMPONENTS (keeping all your existing components)
 # ============================================
 
 class EliteMEVProtection:
@@ -740,6 +925,11 @@ class EliteMEVProtection:
         """Get dynamic tip based on competition"""
         level = await self.estimate_competition_level(mint)
         base_tip = self.jito_tips.get(level, 0.001)
+        
+        # In aggressive mode, use higher tips for speed
+        if is_aggressive_mode_active():
+            base_tip *= 1.5
+            
         return base_tip + random.uniform(0.00001, 0.00005)
 
 class SpeedOptimizer:
@@ -774,7 +964,9 @@ class SpeedOptimizer:
     def get_cached_pool(self, mint: str) -> Optional[Dict]:
         """Get cached pool if fresh"""
         if mint in self.cached_pools:
-            if time.time() - self.cache_time.get(mint, 0) < 60:
+            # Shorter cache time in aggressive mode for fresher data
+            cache_duration = 30 if is_aggressive_mode_active() else 60
+            if time.time() - self.cache_time.get(mint, 0) < cache_duration:
                 return self.cached_pools[mint]
         return None
 
@@ -820,7 +1012,19 @@ class SmartExitStrategy:
         except:
             is_pumpfun = False
         
-        if is_pumpfun:
+        if is_aggressive_mode_active():
+            # Aggressive exit targets
+            return {
+                "target_1": entry_price * float(os.getenv("TAKE_PROFIT_1", 2.0)),
+                "target_1_percent": float(os.getenv("PARTIAL_EXIT_1", 30)),
+                "target_2": entry_price * float(os.getenv("TAKE_PROFIT_2", 3.0)),
+                "target_2_percent": float(os.getenv("PARTIAL_EXIT_2", 30)),
+                "target_3": entry_price * float(os.getenv("TAKE_PROFIT_3", 5.0)),
+                "target_3_percent": float(os.getenv("PARTIAL_EXIT_3", 40)),
+                "stop_loss": entry_price * (1 - float(os.getenv("STOP_LOSS_PCT", 0.20))),
+                "strategy": "AGGRESSIVE"
+            }
+        elif is_pumpfun:
             return {
                 "target_1": entry_price * 3,
                 "target_1_percent": 30,
@@ -901,7 +1105,7 @@ HONEYPOT_CHECK = os.getenv("HONEYPOT_CHECK", "false").lower() == "true"
 DYNAMIC_EXIT_STRATEGY = os.getenv("DYNAMIC_EXIT_STRATEGY", "true").lower() == "true"
 
 # ============================================
-# WEB SERVER WITH WEBHOOK
+# WEB SERVER WITH WEBHOOK (keeping all your existing endpoints)
 # ============================================
 
 app = FastAPI()
@@ -912,10 +1116,11 @@ AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CH
 @app.get("/")
 async def health_check():
     """Health check endpoint for Render"""
+    mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
     return {
-        "status": "🚀 ELITE Money Printer Active",
-        "mode": "PRODUCTION",
-        "features": "Fixed Risk Manager + All Elite Features",
+        "status": f"🚀 Money Printer Active - {mode} Mode",
+        "mode": mode,
+        "features": "All Systems Operational",
         "risk_settings": f"Drawdown: {risk_manager.max_drawdown*100:.0f}%, Daily Loss: {risk_manager.max_daily_loss*100:.0f}%"
     }
 
@@ -931,7 +1136,7 @@ async def status():
         
     return {
         "bot": "running" if is_bot_running() else "paused",
-        "mode": "elite" if ENABLE_ELITE_FEATURES else "standard",
+        "mode": "aggressive" if is_aggressive_mode_active() else "safe",
         "mev_protection": "active" if USE_JITO_BUNDLES else "disabled",
         "risk_management": "active" if risk_manager.position_scaling_enabled else "cautious",
         "cached_pools": len(speed_optimizer.cached_pools),
@@ -969,7 +1174,8 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert("✅ Bot already running")
             else:
                 start_bot()
-                await send_telegram_alert("✅ ELITE Bot is now active! 💰")
+                mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
+                await send_telegram_alert(f"✅ Bot started in {mode} mode! 💰")
                 
         elif text == "/stop":
             if not is_bot_running():
@@ -983,7 +1189,7 @@ async def telegram_webhook(request: Request):
             try:
                 status_msg = get_bot_status_message()
                 
-                elite_stats = f"\n🎯 ELITE STATS:\n"
+                elite_stats = f"\n🎯 STATS:\n"
                 elite_stats += f"• Cached Pools: {len(speed_optimizer.cached_pools)}\n"
                 elite_stats += f"• PumpFun Tracking: {len(pumpfun_tokens)}\n"
                 elite_stats += f"• Migration Watch: {len(migration_watch_list)}\n"
@@ -994,8 +1200,18 @@ async def telegram_webhook(request: Request):
                     elite_stats += f"• Win Rate: {win_rate:.1f}%\n"
                     elite_stats += f"• Total Trades: {revenue_optimizer.total_trades}\n"
                 
+                # Add aggressive mode status if active
+                if is_aggressive_mode_active():
+                    hours_elapsed = (time.time() - AGGRESSIVE_START_TIME) / 3600
+                    hours_remaining = AGGRESSIVE_DURATION_HOURS - hours_elapsed
+                    
+                    elite_stats += f"\n⚡ AGGRESSIVE MODE ⚡\n"
+                    elite_stats += f"• Time Left: {hours_remaining:.1f}h\n"
+                    elite_stats += f"• Progress: {aggressive_metrics['current_multiplier']:.2f}x/{TARGET_MULTIPLIER}x\n"
+                    elite_stats += f"• Trades: {aggressive_metrics['trades_executed']}\n"
+                
                 # Add risk status
-                risk_status = f"\n⚡ RISK STATUS (FIXED):\n"
+                risk_status = f"\n⚡ RISK STATUS:\n"
                 risk_status += f"• Trades Today: {risk_manager.trades_today}\n"
                 risk_status += f"• Actual Trades: {risk_manager.actual_trades_executed}\n"
                 risk_status += f"• Losses Today: {risk_manager.losses_today}\n"
@@ -1027,6 +1243,45 @@ async def telegram_webhook(request: Request):
             summary = get_wallet_summary()
             await send_telegram_alert(f"👛 Wallet:\n{summary}")
             
+        elif text == "/aggressive":
+            # Toggle aggressive mode
+            current = is_aggressive_mode_active()
+            os.environ["AGGRESSIVE_MODE"] = "false" if current else "true"
+            
+            if not current:
+                # Starting aggressive mode
+                global AGGRESSIVE_START_TIME
+                AGGRESSIVE_START_TIME = time.time()
+                aggressive_metrics["start_balance"] = None
+                aggressive_metrics["trades_executed"] = 0
+                aggressive_metrics["wins"] = 0
+                aggressive_metrics["losses"] = 0
+                
+                # Reinitialize risk manager with aggressive settings
+                global risk_manager
+                risk_manager = PortfolioRiskManager()
+                
+                await send_telegram_alert(
+                    f"⚡ AGGRESSIVE MODE ACTIVATED ⚡\n\n"
+                    f"Target: {TARGET_MULTIPLIER}x in {AGGRESSIVE_DURATION_HOURS}h\n"
+                    f"Position Sizes: 25-40%\n"
+                    f"Risk Limits: Relaxed\n\n"
+                    f"LET'S GO! 🚀"
+                )
+            else:
+                await send_telegram_alert(
+                    f"🛑 AGGRESSIVE MODE DEACTIVATED\n\n"
+                    f"Reverting to safe trading mode\n"
+                    f"Position Sizes: 3-10%\n"
+                    f"Risk Limits: Normal"
+                )
+                
+        elif text == "/progress":
+            if is_aggressive_mode_active():
+                await check_aggressive_progress()
+            else:
+                await send_telegram_alert("Aggressive mode not active. Use /aggressive to enable.")
+            
         elif text == "/elite":
             global ENABLE_ELITE_FEATURES
             ENABLE_ELITE_FEATURES = not ENABLE_ELITE_FEATURES
@@ -1042,30 +1297,30 @@ async def telegram_webhook(request: Request):
             
         elif text == "/risk":
             risk_msg = f"""
-⚡ Risk Management Settings (FIXED):
-• Max Drawdown: {risk_manager.max_drawdown*100:.0f}%
-• Max Daily Loss: {risk_manager.max_daily_loss*100:.0f}%
-• Max Trades/Day: {risk_manager.max_trades_per_day}
-• Max Consecutive Losses: {risk_manager.max_consecutive_losses}
-• Position Scaling: {'ENABLED' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}
+⚡ Risk Management Settings:
+- Max Drawdown: {risk_manager.max_drawdown*100:.0f}%
+- Max Daily Loss: {risk_manager.max_daily_loss*100:.0f}%
+- Max Trades/Day: {risk_manager.max_trades_per_day}
+- Max Consecutive Losses: {risk_manager.max_consecutive_losses}
+- Position Scaling: {'ENABLED' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}
 
 Current Session:
-• Trades Today: {risk_manager.trades_today}
-• Actual Trades: {risk_manager.actual_trades_executed}
-• Losses Today: {risk_manager.losses_today}
-• Consecutive Losses: {risk_manager.consecutive_losses}
+- Trades Today: {risk_manager.trades_today}
+- Actual Trades: {risk_manager.actual_trades_executed}
+- Losses Today: {risk_manager.losses_today}
+- Consecutive Losses: {risk_manager.consecutive_losses}
 """
             if risk_manager.peak_balance and risk_manager.session_start_balance:
                 risk_msg += f"""
 Performance:
-• Session Start: {risk_manager.session_start_balance:.2f} SOL
-• Peak Balance: {risk_manager.peak_balance:.2f} SOL
-• Current Mode: {'SAFE' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}
+- Session Start: {risk_manager.session_start_balance:.2f} SOL
+- Peak Balance: {risk_manager.peak_balance:.2f} SOL
+- Current Mode: {'AGGRESSIVE' if is_aggressive_mode_active() else 'SAFE'}
 """
             await send_telegram_alert(risk_msg)
             
         elif text == "/resetrisk":
-            # New command to reset risk counters
+            # Reset risk counters
             risk_manager.consecutive_losses = 0
             risk_manager.losses_today = 0
             risk_manager.position_scaling_enabled = True
@@ -1089,32 +1344,32 @@ Performance:
             await send_telegram_alert(tracking_info)
             
         elif text == "/config":
+            mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
             config_msg = f"""
-⚙️ Current Configuration:
-RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', '1.5')} SOL
-BUY_AMOUNT_SOL: {os.getenv('BUY_AMOUNT_SOL', '0.03')} SOL
+⚙️ Current Configuration ({mode} MODE):
+RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', '1.5' if is_aggressive_mode_active() else '3.0')} SOL
+BUY_AMOUNT_SOL: {os.getenv('BUY_AMOUNT_SOL', '0.25' if is_aggressive_mode_active() else '0.03')} SOL
 MIN_AI_SCORE: {os.getenv('MIN_AI_SCORE', '0.10')}
-POOL_SCAN_LIMIT: {os.getenv('POOL_SCAN_LIMIT', '20')}
-LP_CHECK_TIMEOUT: {os.getenv('LP_CHECK_TIMEOUT', '3')}s
 PUMPFUN_MIGRATION_BUY: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL
-MAX_CONSECUTIVE_LOSSES: {os.getenv('MAX_CONSECUTIVE_LOSSES', '10')}
-MAX_DAILY_LOSS: {os.getenv('MAX_DAILY_LOSS', '0.40')} (40%)
-MAX_DRAWDOWN: {os.getenv('MAX_DRAWDOWN', '0.50')} (50%)
+MAX_CONSECUTIVE_LOSSES: {risk_manager.max_consecutive_losses}
+MAX_DAILY_LOSS: {risk_manager.max_daily_loss*100:.0f}%
+MAX_DRAWDOWN: {risk_manager.max_drawdown*100:.0f}%
 Elite Features: {'ON' if ENABLE_ELITE_FEATURES else 'OFF'}
 MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 Dynamic Sizing: {'ON' if USE_DYNAMIC_SIZING else 'OFF'}
-Risk Management: {'ACTIVE' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}
 """
             await send_telegram_alert(config_msg)
             
         elif text == "/help":
             help_text = """
-📚 ELITE Commands:
+📚 Commands:
 /start - Start the bot
 /stop - Stop the bot
 /status - Get bot status
 /wallet - Check wallet balance
 /forcebuy <MINT> - Force buy a token
+/aggressive - Toggle aggressive mode (36h sprint)
+/progress - Check aggressive progress
 /elite - Toggle elite features
 /launch - Launch sniper systems
 /risk - View risk management status
@@ -1123,14 +1378,8 @@ Risk Management: {'ACTIVE' if risk_manager.position_scaling_enabled else 'CAUTIO
 /config - Show configuration
 /help - Show this message
 
-💡 Risk Manager Fixed:
-- No more false triggers
-- Only counts real trade losses
-- 40% daily loss allowed
-- 50% drawdown allowed
-- 10 consecutive losses allowed
-- Drawdown alerts rate limited to 1/hour
-"""
+Current Mode: """ + ("⚡ AGGRESSIVE" if is_aggressive_mode_active() else "🛡️ SAFE")
+            
             await send_telegram_alert(help_text)
             
         return {"ok": True}
@@ -1140,11 +1389,11 @@ Risk Management: {'ACTIVE' if risk_manager.position_scaling_enabled else 'CAUTIO
         return {"ok": True}
 
 # ============================================
-# ELITE BUY FUNCTION
+# ELITE BUY FUNCTION (Modified for aggressive mode)
 # ============================================
 
 async def elite_buy_token(mint: str, force_amount: float = None):
-    """Elite buy with all optimizations and risk management - WITH FIXED RISK MANAGER"""
+    """Elite buy with all optimizations and risk management"""
     try:
         # Check risk limits first
         if not await risk_manager.check_risk_limits():
@@ -1156,12 +1405,11 @@ async def elite_buy_token(mint: str, force_amount: float = None):
         
         is_force_buy = force_amount is not None and force_amount > 0
         
-        # Honeypot check
-        if HONEYPOT_CHECK and not is_force_buy:
+        # Skip honeypot check in aggressive mode for speed
+        if HONEYPOT_CHECK and not is_force_buy and not is_aggressive_mode_active():
             is_honeypot = await simulator.detect_honeypot(mint)
             if is_honeypot:
                 logging.info(f"[ELITE] Skipping potential honeypot: {mint[:8]}...")
-                await send_telegram_alert(f"⚠️ Skipped {mint[:8]}... - Potential honeypot detected")
                 return False
         
         # Competition analysis
@@ -1187,6 +1435,8 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             
             if cached_pool:
                 lp_data = cached_pool
+                logging.info(f"
+                lp_data = cached_pool
                 logging.info(f"[ELITE] Using cached pool data for {mint[:8]}...")
             else:
                 try:
@@ -1211,13 +1461,13 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             except:
                 pass
             
-            min_score = float(os.getenv("MIN_AI_SCORE", 0.1))
+            min_score = float(os.getenv("MIN_AI_SCORE", 0.1 if is_aggressive_mode_active() else 0.2))
             if ai_score < min_score:
                 logging.info(f"[ELITE] Token {mint[:8]}... AI score too low: {ai_score:.2f}")
                 return False
             
             # Get risk-adjusted position size
-            amount_sol = await risk_manager.get_position_size_with_risk(mint, pool_liquidity)
+            amount_sol = await risk_manager.get_position_size_with_risk(mint, pool_liquidity, ai_score)
             
             # Adjust for competition
             if competition_level == "ultra":
@@ -1226,18 +1476,18 @@ async def elite_buy_token(mint: str, force_amount: float = None):
                 amount_sol *= 1.2
             
             if amount_sol < 0.01:
-                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+                amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.25" if is_aggressive_mode_active() else "0.03"))
                 logging.warning(f"[ELITE] Final amount too low, using fallback: {amount_sol}")
             
-            max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0))
+            max_position = float(os.getenv("MAX_POSITION_SIZE_SOL", 5.0 if is_aggressive_mode_active() else 1.0))
             amount_sol = min(amount_sol, max_position)
         
         if amount_sol == 0 or amount_sol < 0.01:
-            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.25" if is_aggressive_mode_active() else "0.03"))
             logging.error(f"[ELITE] CRITICAL: Amount was {amount_sol}, forced to {amount_sol}")
         
-        # Simulate transaction
-        if SIMULATE_BEFORE_BUY:
+        # Skip simulation in aggressive mode for speed
+        if SIMULATE_BEFORE_BUY and not is_aggressive_mode_active():
             sim_result = await simulator.simulate_buy(mint, int(amount_sol * 1e9))
             if not sim_result.get("will_succeed", True):
                 logging.warning(f"[ELITE] Simulation failed: {sim_result.get('error')}")
@@ -1268,8 +1518,10 @@ async def elite_buy_token(mint: str, force_amount: float = None):
             # Record successful trade with 0 profit initially
             risk_manager.record_trade(0)
             
+            mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
+            
             await send_telegram_alert(
-                f"✅ BUY SUCCESS\n"
+                f"✅ {mode} BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
                 f"Amount: {amount_sol} SOL\n"
                 f"AI Score: {ai_score:.2f}\n"
@@ -1312,7 +1564,7 @@ async def monster_buy_token(mint: str, force_amount: float = None):
             amount_sol = await risk_manager.get_position_size_with_risk(mint, pool_liquidity)
         
         if amount_sol < 0.01:
-            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+            amount_sol = float(os.getenv("BUY_AMOUNT_SOL", "0.25" if is_aggressive_mode_active() else "0.03"))
         
         logging.info(f"[MONSTER BUY] Executing real buy for {mint[:8]}... with {amount_sol} SOL")
         
@@ -1327,8 +1579,10 @@ async def monster_buy_token(mint: str, force_amount: float = None):
         if result:
             risk_manager.record_trade(0)
             
+            mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
+            
             await send_telegram_alert(
-                f"✅ BUY SUCCESS\n"
+                f"✅ {mode} BUY SUCCESS\n"
                 f"Token: {mint[:8]}...\n"
                 f"Amount: {amount_sol} SOL\n"
                 f"Risk Status: {'SAFE' if risk_manager.position_scaling_enabled else 'CAUTIOUS'}"
@@ -1360,6 +1614,8 @@ async def start_elite_sniper():
         except Exception as e:
             logging.warning(f"Pre-warm failed: {e}")
     
+    mode = "AGGRESSIVE 36-HOUR SPRINT" if is_aggressive_mode_active() else "SAFE STEADY PROFIT"
+    
     features_list = [
         "✅ Smart Token Detection",
         "✅ PumpFun Migration Sniper",
@@ -1367,9 +1623,17 @@ async def start_elite_sniper():
         "✅ Multi-DEX Support",
         "✅ Auto Profit Taking",
         "✅ Momentum Scanner",
-        "✅ FIXED Risk Management",
+        "✅ Risk Management",
         "✅ Rate Limited Alerts"
     ]
+    
+    if is_aggressive_mode_active():
+        features_list.extend([
+            f"⚡ Target: {TARGET_MULTIPLIER}x in {AGGRESSIVE_DURATION_HOURS}h",
+            "⚡ Position Sizes: 25-40%",
+            "⚡ Relaxed Risk Limits",
+            "⚡ Aggressive Entry Criteria"
+        ])
     
     if ENABLE_ELITE_FEATURES:
         features_list.extend([
@@ -1380,16 +1644,30 @@ async def start_elite_sniper():
         ])
     
     await send_telegram_alert(
-        "💰 ELITE MONEY PRINTER STARTING 💰\n\n"
-        "Features Active:\n" + "\n".join(features_list) + "\n\n"
-        f"Risk Management: FIXED & ACTIVE\n"
+        f"💰 {mode} STARTING 💰\n\n"
+        f"Features Active:\n" + "\n".join(features_list) + "\n\n"
+        f"Risk Management: ACTIVE\n"
         f"Max Drawdown: {risk_manager.max_drawdown*100:.0f}%\n"
         f"Max Daily Loss: {risk_manager.max_daily_loss*100:.0f}%\n"
-        f"Max Consecutive: {risk_manager.max_consecutive_losses}\n"
-        f"Alert Rate Limiting: 1 per hour\n\n"
-        "No more spam alerts!\n"
-        "Initializing all systems..."
+        f"Max Consecutive: {risk_manager.max_consecutive_losses}\n\n"
+        f"Initializing all systems..."
     )
+    
+    # Initialize aggressive metrics if in aggressive mode
+    if is_aggressive_mode_active():
+        try:
+            from utils import rpc, keypair
+            balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+            aggressive_metrics["start_balance"] = balance
+            aggressive_metrics["target_balance"] = balance * TARGET_MULTIPLIER
+            await send_telegram_alert(
+                f"⚡ AGGRESSIVE MODE ⚡\n"
+                f"Starting Balance: {balance:.2f} SOL\n"
+                f"Target: {aggressive_metrics['target_balance']:.2f} SOL\n"
+                f"Timeframe: {AGGRESSIVE_DURATION_HOURS} hours"
+            )
+        except:
+            pass
     
     # Replace buy function with elite version
     import utils
@@ -1469,23 +1747,52 @@ async def start_elite_sniper():
     # Risk monitoring task
     tasks.append(asyncio.create_task(risk_performance_monitor()))
     
-    mode = "ELITE MONEY PRINTER" if ENABLE_ELITE_FEATURES else "MONSTER BOT"
+    # Aggressive progress monitoring
+    if is_aggressive_mode_active():
+        tasks.append(asyncio.create_task(aggressive_progress_monitor()))
+    
+    mode_emoji = "⚡" if is_aggressive_mode_active() else "🛡️"
     
     await send_telegram_alert(
-        f"🚀 {mode} READY 🚀\n\n"
+        f"🚀 {mode_emoji} BOT READY {mode_emoji} 🚀\n\n"
+        f"Mode: {mode}\n"
         f"Active Strategies: {len(tasks)}\n"
         f"Min LP: {get_minimum_liquidity_required()} SOL\n"
-        f"Buy Amount: Dynamic (${150*float(os.getenv('BUY_AMOUNT_SOL', '0.03')):.0f})\n"
-        f"PumpFun Migration: {os.getenv('PUMPFUN_MIGRATION_BUY', '0.1')} SOL\n\n"
-        f"{'Elite Features: ACTIVE ⚡' if ENABLE_ELITE_FEATURES else ''}\n"
-        f"Risk Management: {'🟢 SAFE' if risk_manager.position_scaling_enabled else '🟡 CAUTIOUS'}\n"
-        f"Risk Counters FIXED - No false triggers!\n"
-        f"Drawdown alerts limited to 1/hour\n"
+        f"Buy Amount: Dynamic\n\n"
         f"Hunting for profits... 💰"
     )
     
     # Run all tasks
     await asyncio.gather(*tasks)
+
+# ============================================
+# AGGRESSIVE PROGRESS MONITOR
+# ============================================
+
+async def aggressive_progress_monitor():
+    """Monitor aggressive mode progress and auto-adjust"""
+    while is_aggressive_mode_active():
+        await asyncio.sleep(1800)  # Every 30 minutes
+        
+        needs_boost = await check_aggressive_progress()
+        
+        if needs_boost:
+            # Increase position sizes if behind schedule
+            current_min = float(os.getenv("MIN_POSITION_SIZE", 0.25))
+            current_max = float(os.getenv("MAX_POSITION_SIZE", 0.40))
+            
+            new_min = min(current_min * 1.2, 0.40)
+            new_max = min(current_max * 1.2, 0.50)
+            
+            os.environ["MIN_POSITION_SIZE"] = str(new_min)
+            os.environ["MAX_POSITION_SIZE"] = str(new_max)
+            
+            await send_telegram_alert(
+                f"📈 BOOSTING AGGRESSION\n"
+                f"Behind schedule - increasing positions\n"
+                f"Min: {current_min:.2f} → {new_min:.2f} SOL\n"
+                f"Max: {current_max:.2f} → {new_max:.2f} SOL"
+            )
 
 # ============================================
 # RISK PERFORMANCE MONITOR
@@ -1631,31 +1938,36 @@ async def main():
         print("ERROR: SOLANA_PRIVATE_KEY not set")
         return
     
-    if ENABLE_ELITE_FEATURES:
+    mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
+    
+    if is_aggressive_mode_active():
+        print(f"""
+╔══════════════════════════════════════════╗
+║    AGGRESSIVE MODE ACTIVATED            ║
+║    Target: {TARGET_MULTIPLIER}x in {AGGRESSIVE_DURATION_HOURS:.0f} hours          ║
+║                                          ║
+║  Position Sizes: 25-40% per trade       ║
+║  Risk Limits: Relaxed                   ║
+║  Stop Loss: 20%                         ║
+║                                          ║
+║  After {AGGRESSIVE_DURATION_HOURS:.0f} hours, set:                   ║
+║  AGGRESSIVE_MODE=false                  ║
+║  To revert to safe trading              ║
+╚══════════════════════════════════════════╝
+        """)
+    else:
         print("""
 ╔══════════════════════════════════════════╗
-║    ELITE MONEY PRINTER v4.1 FIXED       ║
-║         💰 MAXIMUM PROFITS 💰            ║
+║    SAFE MODE - STEADY PROFITS           ║
 ║                                          ║
-║  Features:                               ║
-║  • FIXED Risk Management                ║
-║  • No False Triggers                    ║
-║  • Rate Limited Drawdown Alerts         ║
-║  • Dynamic Position Sizing              ║
-║  • 50% Max Drawdown Protection          ║
-║  • 40% Daily Loss Allowed               ║
-║  • MEV Protection (Jito)                ║
-║  • PumpFun Migration Sniper             ║
-║  • Momentum Scanner                     ║
-║  • DexScreener Monitor Fixed            ║
-║  • Raydium Pool Scanner Fixed           ║
-║                                          ║
-║   TARGET: $300 → $3000 in 48hrs 🚀      ║
+║  Position Sizes: 3-10% per trade        ║
+║  Risk Limits: Normal                    ║
+║  Target: Consistent daily gains         ║
 ╚══════════════════════════════════════════╝
         """)
     
     logging.info("=" * 50)
-    logging.info("ELITE MONEY PRINTER WITH ALL FIXES STARTING!")
+    logging.info(f"STARTING IN {mode} MODE!")
     logging.info("=" * 50)
     
     await run_bot_with_web_server()
@@ -1691,6 +2003,7 @@ async def cleanup():
                 
                 final_stats = (
                     f"📊 FINAL SESSION STATS\n"
+                    f"Mode: {'AGGRESSIVE' if is_aggressive_mode_active() else 'SAFE'}\n"
                     f"Total Trades: {risk_manager.trades_today}\n"
                     f"Actual Trades: {risk_manager.actual_trades_executed}\n"
                     f"Session P&L: {session_profit:+.2f} SOL\n"
@@ -1700,6 +2013,13 @@ async def cleanup():
                 if revenue_optimizer.total_trades > 0:
                     win_rate = (revenue_optimizer.winning_trades/revenue_optimizer.total_trades*100)
                     final_stats += f"Win Rate: {win_rate:.1f}%\n"
+                
+                # Add aggressive mode results if applicable
+                if is_aggressive_mode_active():
+                    final_stats += f"\n⚡ AGGRESSIVE RESULTS ⚡\n"
+                    final_stats += f"Target: {aggressive_metrics['target_balance']:.2f} SOL\n"
+                    final_stats += f"Achieved: {aggressive_metrics['current_multiplier']:.2f}x\n"
+                    final_stats += f"Best Trade: +{aggressive_metrics['best_trade']:.3f} SOL\n"
                 
                 await send_telegram_alert(final_stats)
             except:
