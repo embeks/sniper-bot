@@ -1048,6 +1048,9 @@ async def mempool_listener(name, program_id=None):
                             
                             # Use mode-specific thresholds
                             if raydium_indicators >= RAYDIUM_MIN_INDICATORS:
+                                if raydium_indicators == 1 and len(logs) < 15:
+                                     pass
+                                else:
                                 is_pool_creation = True
                                 logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
                         
