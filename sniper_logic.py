@@ -1248,11 +1248,11 @@ async def mempool_listener(name, program_id=None):
                                         continue
                                     
                                     if lp_amount >= RUG_LP_THRESHOLD * 2:
-                                        risk_level = "SAFE"
-                                        buy_amount = SAFE_BUY_AMOUNT
+                                         risk_level = "SAFE"
+                                         buy_amount = SAFE_BUY_AMOUNT
                                     elif lp_amount >= RUG_LP_THRESHOLD:
-                                        risk_level = "MEDIUM"
-                                        buy_amount = RISKY_BUY_AMOUNT
+                                         risk_level = "MEDIUM"
+                                         buy_amount = RISKY_BUY_AMOUNT
                                     else:risk_level = "HIGH"
                                          buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                    
