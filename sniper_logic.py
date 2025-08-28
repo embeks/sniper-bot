@@ -1310,10 +1310,10 @@ async def mempool_listener(name, program_id=None):
                                         f"Attempting snipe..."
                                     )
                                     
-                                   original_amount = os.getenv("BUY_AMOUNT_SOL")
-                                   os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
                                    
-                                   try:
+                                    try:
                                        success = await buy_token(potential_mint)
                                        if success:
                                            already_bought.add(potential_mint)
@@ -1336,10 +1336,10 @@ async def mempool_listener(name, program_id=None):
                                                f"Token: {potential_mint[:16]}..."
                                            )
                                            mark_broken_token(potential_mint, 0)
-                                   except Exception as e:
+                                    except Exception as e:
                                        logging.error(f"[{name}] Buy error: {e}")
                                        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
-                                   finally:
+                                    finally:
                                        if original_amount:
                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
                
