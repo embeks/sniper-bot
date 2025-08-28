@@ -51,8 +51,8 @@ def get_mode_filters():
             "min_ai_score": 0.15,
             "min_buys_count": 3,
             "min_buy_sell_ratio": 0.8,
-            "raydium_min_indicators": 3,
-            "raydium_min_logs": 5,
+            "raydium_min_indicators": 8,
+            "raydium_min_logs": 50,
             "pumpfun_min_indicators": 3,
             "pumpfun_min_logs": 5,
             "mempool_delay_ms": 100,  # Faster execution
@@ -1048,59 +1048,53 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"  Logs: {len(logs)} (need {RAYDIUM_MIN_LOGS})")
                                 logging.info(f"  Has init: {has_init_pool}, Has create: {has_create_pool}, Has liquidity: {has_liquidity}")
                             
-                            # Use mode-specific thresholds
-                            if raydium_indicators >= RAYDIUM_MIN_INDICATORS:
-                                if raydium_indicators == 3 and len(logs) < 30:
-                                    pass
-                                elif raydium_indicators >= 9 or len(logs) >= 50:
-                                    is_pool_creation = True  # High confidence
-                                    logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
-                                elif raydium_indicators >= 4 and has_init_pool and len(logs) >= 40:
+                                    # Use mode-specific thresholds
+                            is_pool_creation = False
+                            if raydium_indicators >= RAYDIUM_MIN_INDICATORS and len(logs) >= RAYDIUM_MIN_LOGS:
+                                if has_init_pool and (has_liquidity or len(logs) >= (RAYDIUM_MIN_LOGS + 20)):
                                     is_pool_creation = True
-                                    logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
-                               
-                        
+
+                            if is_pool_creation:
+                                logging.info(
+                                    f"[RAYDIUM] POOL CREATION DETECTED – Score: {raydium_indicators}, Logs: {len(logs)}"
+                                )
+                            else:
+                                logging.debug(
+                                    f"[RAYDIUM] skipped (init={has_init_pool}, liq={has_liquidity}, "
+                                    f"ind={raydium_indicators}/{RAYDIUM_MIN_INDICATORS}, "
+                                    f"logs={len(logs)}/{RAYDIUM_MIN_LOGS})"
+                                )    
+                                continue
+
                         elif name == "PumpFun":
-                            # MODE-AWARE PumpFun detection
+                            # Minimal, strict PumpFun creation detector (no duplicates)
                             pumpfun_create_indicators = 0
                             has_mint_creation = False
                             has_bonding = False
-                            
+
                             for log in logs:
-                                log_lower = log.lower()
-                                
-                                # PumpFun specific creation patterns
-                                if "create" in log_lower and ("token" in log_lower or "coin" in log_lower):
-                                    pumpfun_create_indicators += 3
-                                
-                                if "initialize" in log_lower and "mint" in log_lower:
-                                    pumpfun_create_indicators += 2
+                                ll = log.lower()
+                                # mint creation
+                                if "initializemint" in ll or "createmint" in ll:
                                     has_mint_creation = True
-                                
-                                # PumpFun uses "launch" for new tokens
-                                if "launch" in log_lower:
-                                    pumpfun_create_indicators += 3
-                                
-                                # Bonding curve initialization is key indicator
-                                if "bonding" in log_lower and ("init" in log_lower or "create" in log_lower):
-                                    pumpfun_create_indicators += 4
-                                    has_bonding = True
-                                
-                                # Also look for pump.fun specific patterns
-                                if "pump" in log_lower and "fun" in log_lower:
                                     pumpfun_create_indicators += 1
-                            
-                            # DEBUG
-                            if pumpfun_create_indicators > 0:
-                                logging.info(f"[{name}] PumpFun Debug:")
-                                logging.info(f"  Indicators: {pumpfun_create_indicators} (need {PUMPFUN_MIN_INDICATORS})")
-                                logging.info(f"  Logs: {len(logs)} (need {PUMPFUN_MIN_LOGS})")
-                            
-                            # Use mode-specific thresholds
-                            if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS:
+                                # bonding curve creation
+                                if "bondingcurve" in ll or "createbondingcurve" in ll:
+                                    has_bonding = True
+                                    pumpfun_create_indicators += 1
+
+                            is_pool_creation = False
+                            if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS and has_mint_creation and has_bonding:
                                 is_pool_creation = True
-                                logging.info(f"[PUMPFUN] TOKEN DETECTED - Score: {pumpfun_create_indicators}")
-                        
+                                logging.info(f"[PUMPFUN] TOKEN DETECTED – Score: {pumpfun_create_indicators}")
+                            else:
+                                logging.debug(
+                                    f"[PUMPFUN] skipped (mint={has_mint_creation}, bonding={has_bonding}, "
+                                    f"ind={pumpfun_create_indicators}/{PUMPFUN_MIN_INDICATORS})"
+                            )
+                            continue
+
+        
                         elif name == "Moonshot":
                             # Moonshot token launches
                             for log in logs:
@@ -1123,7 +1117,7 @@ async def mempool_listener(name, program_id=None):
                         logging.info(f"[{name}] POOL/TOKEN CREATION DETECTED! Total found: {pool_creations_found}")
                         
                         # Fetch full transaction if needed - WITH TIMEOUT
-                        if len(account_keys) == 0:
+                        if len(account_keys) == 0 and (has_liquidity or raydium_indicators >= (RAYDIUM_MIN_INDICATORS + 4)):
                             logging.info(f"[{name}] Fetching full transaction...")
                             try:
                                 if signature in processed_signatures_cache:
