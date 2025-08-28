@@ -1055,9 +1055,22 @@ async def mempool_listener(name, program_id=None):
                                     is_pool_creation = True
 
                             if is_pool_creation:
+                                key = (tx_sig, "Raydium")  # tx_sig should be your current transaction signature/id
+                                if key in seen_txids:
+                                    logging.debug("[Raydium] duplicate detection suppressed for %s", tx_sig)
+                                    continue
+                                seen_txids.add(key)
+                                
                                 logging.info(
                                     f"[RAYDIUM] POOL CREATION DETECTED – Score: {raydium_indicators}, Logs: {len(logs)}"
                                 )
+                                # whatever you already do on success:
+                                total_found += 1
+                                logging.info("[Raydium] POOL/TOKEN CREATION DETECTED! Total found: %s", total_found)
+                                logging.info("[Raydium] Fetching full transaction...")
+                                fetch_full_transaction(tx_sig)  # your existing call
+
+                                continue
                             else:
                                 logging.debug(
                                     f"[RAYDIUM] skipped (init={has_init_pool}, liq={has_liquidity}, "
