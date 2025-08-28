@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import os
@@ -512,7 +511,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         if lp_amount >= RUG_LP_THRESHOLD * 2:
             return True, f"Excellent liquidity ({lp_amount:.1f} SOL), bypassing checks"
         
-        return False, "Failed quality checks"
+        return False, "Insufficient data for quality verification"
         
     except Exception as e:
         logging.error(f"Quality check error: {e}")
@@ -1275,7 +1274,6 @@ async def mempool_listener(name, program_id=None):
         except Exception as e:
             logging.error(f"[{name} ERROR] {str(e)}")
             listener_status[name] = f"RETRYING ({retry_attempts + 1})"
-            
         finally:
             if watchdog_task and not watchdog_task.done():
                 watchdog_task.cancel()
@@ -1444,11 +1442,11 @@ async def trending_scanner():
                 if is_mooning or has_momentum or is_pumpfun_grad:
                     quality_finds += 1
                     
-                     alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
-                     if is_pumpfun_grad:
+                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
+                    if is_pumpfun_grad:
                         alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
-                     
-                     await send_telegram_alert(
+                    
+                    await send_telegram_alert(
                         alert_msg +
                         f"Token: `{mint}`\n"
                         f"Liquidity: ${lp_usd:,.0f}\n"
@@ -1458,10 +1456,10 @@ async def trending_scanner():
                         f"• 24h: {price_change_h24:+.1f}%\n"
                         f"Source: {source}\n\n"
                         f"Attempting to buy..."
-                     )
-
-                     original_amount = None
-                     try:
+                    )
+                    
+                    original_amount = None
+                    try:
                         if is_pumpfun_grad:
                             original_amount = os.getenv("BUY_AMOUNT_SOL")
                             os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
@@ -1474,13 +1472,12 @@ async def trending_scanner():
                             asyncio.create_task(wait_and_auto_sell(mint))
                         else:
                             logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-
-                     except Exception as e:
-                            logging.error(f"[Trending] Buy error: {e}")
-                     finally:
+                            
+                    except Exception as e:
+                        logging.error(f"[Trending] Buy error: {e}")
+                    finally:
                         if original_amount:
-                                 os.environ["BUY_AMOUNT_SOL"] = original_amount
-                        
+                            os.environ["BUY_AMOUNT_SOL"] = original_amount
             
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
@@ -1790,27 +1787,27 @@ async def momentum_scanner():
                         # Execute buy
                         original_amount = os.getenv("BUY_AMOUNT_SOL")
                         try:
-                            os.environ["BUY_AMOUNT_SOL"] = str(position_size)  # Use the adjusted position_size
+                            os.environ["BUY_AMOUNT_SOL"] = str(position_size)
                             success = await buy_token(token_address)
-                        if success:
-                            momentum_bought.add(token_address)
-                            already_bought.add(token_address)
-                            await send_telegram_alert(
-                                f"✅ MOMENTUM BUY SUCCESS\n"
-                                f"Token: {token_symbol}\n"
-                                f"Amount: {position_size} SOL\n"  # Show actual amount used
-                                f"Strategy: Momentum Play\n\n"
-                                f"Monitoring with your exit rules..."
-                            )
-                            # Start auto-sell
-                            asyncio.create_task(wait_and_auto_sell(token_address))
-                         except Exception as e:
+                            if success:
+                                momentum_bought.add(token_address)
+                                already_bought.add(token_address)
+                                await send_telegram_alert(
+                                    f"✅ MOMENTUM BUY SUCCESS\n"
+                                    f"Token: {token_symbol}\n"
+                                    f"Amount: {position_size} SOL\n"
+                                    f"Strategy: Momentum Play\n\n"
+                                    f"Monitoring with your exit rules..."
+                                )
+                                # Start auto-sell
+                                asyncio.create_task(wait_and_auto_sell(token_address))
+                        except Exception as e:
                             logging.error(f"[Momentum Scanner] Buy error: {e}")
                             await send_telegram_alert(f"❌ Momentum buy error: {str(e)[:100]}")
-                         finally:
-                             if original_amount:
-                                 os.environ["BUY_AMOUNT_SOL"] = original_amount
-                                 
+                        finally:
+                            if original_amount:
+                                os.environ["BUY_AMOUNT_SOL"] = original_amount
+                                
                     elif score >= MIN_SCORE_ALERT:
                         # ALERT ONLY - Good setup needs approval
                         await send_telegram_alert(
@@ -2024,4 +2021,3 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
-
