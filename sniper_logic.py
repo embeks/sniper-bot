@@ -1,3 +1,10 @@
+# sniper_logic.py - DUAL MODE STRATEGY IMPLEMENTATION
+"""
+DUAL MODE SUPPORT:
+- AGGRESSIVE MODE: Lower filters, faster trades, higher risk
+- SAFE MODE: Strict filters, quality trades, lower risk
+"""
+
 import asyncio
 import json
 import os
@@ -27,6 +34,60 @@ from raydium_aggregator import RaydiumAggregatorClient
 load_dotenv()
 
 # ============================================
+# DUAL MODE CONFIGURATION
+# ============================================
+AGGRESSIVE_MODE = os.getenv("AGGRESSIVE_MODE", "false").lower() == "true"
+
+def get_mode_filters():
+    """Get filter settings based on current mode"""
+    if AGGRESSIVE_MODE:
+        return {
+            # AGGRESSIVE MODE FILTERS
+            "min_liquidity_sol": 1.5,
+            "min_liquidity_usd": 2000,
+            "min_volume_usd": 1000,
+            "min_holder_count": 20,
+            "max_top_holder_percent": 70,
+            "min_ai_score": 0.15,
+            "min_buys_count": 3,
+            "min_buy_sell_ratio": 0.8,
+            "raydium_min_indicators": 3,
+            "raydium_min_logs": 5,
+            "pumpfun_min_indicators": 3,
+            "pumpfun_min_logs": 5,
+            "mempool_delay_ms": 100,  # Faster execution
+            "pumpfun_init_delay": 0.5,
+            "safe_buy_amount": 0.15,
+            "risky_buy_amount": 0.10,
+            "ultra_risky_buy_amount": 0.05,
+            "alert_prefix": "🚨 AGGRESSIVE"
+        }
+    else:
+        return {
+            # SAFE MODE FILTERS
+            "min_liquidity_sol": 3.0,
+            "min_liquidity_usd": 10000,
+            "min_volume_usd": 5000,
+            "min_holder_count": 50,
+            "max_top_holder_percent": 30,
+            "min_ai_score": 0.30,
+            "min_buys_count": 10,
+            "min_buy_sell_ratio": 1.5,
+            "raydium_min_indicators": 4,
+            "raydium_min_logs": 6,
+            "pumpfun_min_indicators": 4,
+            "pumpfun_min_logs": 6,
+            "mempool_delay_ms": 300,  # More cautious
+            "pumpfun_init_delay": 1.5,
+            "safe_buy_amount": 0.10,
+            "risky_buy_amount": 0.05,
+            "ultra_risky_buy_amount": 0.02,
+            "alert_prefix": "🟢 SAFE"
+        }
+
+MODE_FILTERS = get_mode_filters()
+
+# ============================================
 # CRITICAL FIX: Transaction cache to prevent infinite loops
 # ============================================
 processed_signatures_cache = {}  # signature -> timestamp
@@ -37,30 +98,40 @@ MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
-RISKY_LP_THRESHOLD = 1.5
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
-# Enhanced position sizing
-SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", 0.05))
-RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.03))
-ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", 0.01))
+# Use mode-specific thresholds
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", MODE_FILTERS["min_liquidity_sol"]))
+RISKY_LP_THRESHOLD = RUG_LP_THRESHOLD * 0.5
 
-# Quality filters - keeping your original values
-MIN_AI_SCORE = float(os.getenv("MIN_AI_SCORE", 0.10))
-MIN_HOLDER_COUNT = int(os.getenv("MIN_HOLDER_COUNT", 10))
-MAX_TOP_HOLDER_PERCENT = float(os.getenv("MAX_TOP_HOLDER_PERCENT", 35))
-MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", 5))
-MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.2))
+# Enhanced position sizing - use mode filters
+SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", MODE_FILTERS["safe_buy_amount"]))
+RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", MODE_FILTERS["risky_buy_amount"]))
+ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", MODE_FILTERS["ultra_risky_buy_amount"]))
 
-# FIXED: Force detection thresholds to be minimal for maximum detection
-RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 3))
-RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 5))   
-PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 3))
-PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 5))
+# Quality filters - use mode-specific values
+MIN_AI_SCORE = float(os.getenv("MIN_AI_SCORE", MODE_FILTERS["min_ai_score"]))
+MIN_HOLDER_COUNT = int(os.getenv("MIN_HOLDER_COUNT", MODE_FILTERS["min_holder_count"]))
+MAX_TOP_HOLDER_PERCENT = float(os.getenv("MAX_TOP_HOLDER_PERCENT", MODE_FILTERS["max_top_holder_percent"]))
+MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", MODE_FILTERS["min_buys_count"]))
+MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", MODE_FILTERS["min_buy_sell_ratio"]))
+
+# Detection thresholds - use mode filters
+RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", MODE_FILTERS["raydium_min_indicators"]))
+RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", MODE_FILTERS["raydium_min_logs"]))   
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", MODE_FILTERS["pumpfun_min_indicators"]))
+PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", MODE_FILTERS["pumpfun_min_logs"]))
+
+# Delays - use mode filters
+MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", MODE_FILTERS["mempool_delay_ms"]))
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", MODE_FILTERS["pumpfun_init_delay"]))
+
+# Trending scanner configuration
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60 if AGGRESSIVE_MODE else 120))
+MIN_LP_USD = float(os.getenv("MIN_LP_USD", MODE_FILTERS["min_liquidity_usd"]))
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", MODE_FILTERS["min_volume_usd"]))
 
 # Anti-duplicate settings
 DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 300))
@@ -71,15 +142,11 @@ BLACKLIST_AFTER_BUY = os.getenv("BLACKLIST_AFTER_BUY", "true").lower() == "true"
 SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "true"
 
 # PumpFun Migration Settings
-PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
-PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.02))
+PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.15 if AGGRESSIVE_MODE else 0.10))
+PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.05 if AGGRESSIVE_MODE else 0.02))
 PUMPFUN_GRADUATION_MC = 69420
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
-MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 0.5))
-
-# FIXED: Proper delays for pool initialization
-MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 200))
-PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 1.0))
+MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 0.3 if AGGRESSIVE_MODE else 0.5))
 
 # ============================================
 # MOMENTUM SCANNER CONFIGURATION (YOUR ELITE STRATEGY)
@@ -88,31 +155,47 @@ PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 1.0))
 # Core Settings
 MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "true").lower() == "true"
 MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "true").lower() == "true"
-MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 3))
-MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 2))
+MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 2 if AGGRESSIVE_MODE else 3))
+MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 1 if AGGRESSIVE_MODE else 2))
 
-# Your Golden Rules
-MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))  # 50% minimum
-MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))  # 200% maximum
-MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 2000))
-MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 500000))  # $500k max market cap
-MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", 100))
-MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", 2000))
-MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", 2))
-MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", 24))
+# Momentum thresholds - adjust for mode
+if AGGRESSIVE_MODE:
+    MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 30))  # Lower threshold
+    MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 300))  # Higher ceiling
+    MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 1500))
+    MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 750000))  # Higher MC allowed
+    MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", 50))
+    MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", 3000))
+    MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", 1))
+    MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", 48))
+else:
+    MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))
+    MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))
+    MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 2000))
+    MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 500000))
+    MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", 100))
+    MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", 2000))
+    MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", 2))
+    MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", 24))
 
-# Position Sizing
-MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.1))
-MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.1))
-MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.05))
-MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", 0.02))
+# Position Sizing - adjust for mode
+if AGGRESSIVE_MODE:
+    MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.20))
+    MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.15))
+    MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.10))
+    MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", 0.05))
+else:
+    MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.10))
+    MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.08))
+    MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.05))
+    MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", 0.02))
 
 # Trading Hours (AEST)
 PRIME_HOURS = [21, 22, 23, 0, 1, 2, 3]  # 9 PM - 3 AM AEST (US market active)
 REDUCED_HOURS = list(range(6, 21))  # 6 AM - 9 PM AEST (be pickier)
 
 # Scan Settings
-MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", 120))
+MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", 60 if AGGRESSIVE_MODE else 120))
 MAX_MOMENTUM_TOKENS = 20  # Check top 20 gainers
 
 # Track momentum tokens
@@ -454,7 +537,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
 
 async def is_quality_token(mint: str, lp_amount: float) -> tuple:
     """
-    Enhanced quality check for tokens - FIXED to be less strict
+    Enhanced quality check for tokens - MODE AWARE
     Returns (is_quality, reason)
     """
     try:
@@ -468,7 +551,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
             if time_since_attempt < DUPLICATE_CHECK_WINDOW:
                 return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
         
-        # FIXED: Use actual threshold from config
+        # Use mode-specific threshold
         if lp_amount < RUG_LP_THRESHOLD:
             return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {RUG_LP_THRESHOLD})"
         
@@ -482,24 +565,29 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
                     if "pairs" in data and len(data["pairs"]) > 0:
                         pair = data["pairs"][0]  # Get best pair
                         
-                        # FIXED: Lower volume requirements
+                        # Mode-specific volume requirements
                         volume_h24 = float(pair.get("volume", {}).get("h24", 0))
-                        min_volume = float(os.getenv("MIN_VOLUME_USD", 300))  # FIXED: Much lower
+                        min_volume = MODE_FILTERS["min_volume_usd"]
                         if volume_h24 < min_volume:
-                            # Don't reject, just note it
-                            logging.info(f"Low volume ${volume_h24:.0f} but proceeding")
+                            if AGGRESSIVE_MODE:
+                                # Just note it in aggressive mode
+                                logging.info(f"Low volume ${volume_h24:.0f} but proceeding (aggressive mode)")
+                            else:
+                                return False, f"Low volume: ${volume_h24:.0f} (min: ${min_volume})"
                         
-                        # Check buy/sell ratio - more lenient
+                        # Check buy/sell ratio - mode aware
                         txns = pair.get("txns", {})
-                        buys_h1 = txns.get("h1", {}).get("buys", 1)  # Default to 1 to avoid division
+                        buys_h1 = txns.get("h1", {}).get("buys", 1)
                         sells_h1 = txns.get("h1", {}).get("sells", 1)
                         
-                        if sells_h1 > 0 and buys_h1 / sells_h1 < 0.5:  # FIXED: Much more lenient
+                        min_ratio = 0.3 if AGGRESSIVE_MODE else 0.5
+                        if sells_h1 > 0 and buys_h1 / sells_h1 < min_ratio:
                             return False, f"Bad buy/sell ratio: {buys_h1}/{sells_h1}"
                         
                         # Check price change (avoid massive dumps only)
                         price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0))
-                        if price_change_h1 < -50:  # FIXED: Only avoid major dumps
+                        max_dump = -70 if AGGRESSIVE_MODE else -50
+                        if price_change_h1 < max_dump:
                             return False, f"Dumping hard: {price_change_h1:.1f}% in 1h"
                         
                         # Passed all checks
@@ -515,9 +603,9 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         
     except Exception as e:
         logging.error(f"Quality check error: {e}")
-        # Be lenient on errors
-        if lp_amount >= RUG_LP_THRESHOLD * 2:
-            return True, "Quality check error but excellent LP"
+        # Be lenient on errors in aggressive mode
+        if AGGRESSIVE_MODE and lp_amount >= RUG_LP_THRESHOLD:
+            return True, "Quality check error but good LP (aggressive mode)"
         return False, "Quality check error"
 
 async def verify_pool_exists(mint: str) -> bool:
@@ -574,7 +662,10 @@ async def check_pumpfun_graduation(mint: str) -> bool:
                 data = response.json()
                 market_cap = data.get("usd_market_cap", 0)
                 
-                if market_cap > PUMPFUN_GRADUATION_MC * 0.9:
+                # More lenient in aggressive mode
+                threshold = PUMPFUN_GRADUATION_MC * 0.8 if AGGRESSIVE_MODE else PUMPFUN_GRADUATION_MC * 0.9
+                
+                if market_cap > threshold:
                     logging.info(f"[PumpFun] {mint[:8]}... approaching graduation: ${market_cap:.0f}")
                     return True
     except Exception as e:
@@ -588,7 +679,7 @@ async def raydium_graduation_scanner():
         logging.info("[Graduation Scanner] Disabled via config")
         return
         
-    await send_telegram_alert("🎓 Graduation Scanner ACTIVE - Checking every 30 seconds")
+    await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} 🎓 Graduation Scanner ACTIVE")
     
     while True:
         try:
@@ -617,7 +708,7 @@ async def raydium_graduation_scanner():
                             already_bought.add(mint)
                             
                             await send_telegram_alert(
-                                f"🎓 GRADUATION DETECTED!\n\n"
+                                f"{MODE_FILTERS['alert_prefix']} 🎓 GRADUATION DETECTED!\n\n"
                                 f"Token: `{mint}`\n"
                                 f"Liquidity: {lp_amount:.2f} SOL\n"
                                 f"Action: BUYING NOW!"
@@ -633,7 +724,7 @@ async def raydium_graduation_scanner():
                                         f"✅ GRADUATION SNIPE SUCCESS!\n"
                                         f"Token: {mint[:16]}...\n"
                                         f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
-                                        f"Like JOYBAIT - potential 27x!"
+                                        f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}"
                                     )
                                     asyncio.create_task(wait_and_auto_sell(mint))
                                 else:
@@ -647,7 +738,7 @@ async def raydium_graduation_scanner():
                 except Exception as e:
                     pass
             
-            await asyncio.sleep(30)
+            await asyncio.sleep(30 if AGGRESSIVE_MODE else 60)
             
         except Exception as e:
             logging.error(f"[Graduation Scanner] Error: {e}")
@@ -659,7 +750,7 @@ async def pumpfun_migration_monitor():
         logging.info("[Migration Monitor] Disabled via config")
         return
         
-    await send_telegram_alert("🎯 PumpFun Migration Monitor ACTIVE")
+    await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} 🎯 PumpFun Migration Monitor ACTIVE")
     
     while True:
         try:
@@ -676,7 +767,7 @@ async def pumpfun_migration_monitor():
                         migration_watch_list.discard(mint)
                         
                         await send_telegram_alert(
-                            f"🚨 PUMPFUN MIGRATION DETECTED 🚨\n\n"
+                            f"{MODE_FILTERS['alert_prefix']} PUMPFUN MIGRATION 🚨\n\n"
                             f"Token: `{mint}`\n"
                             f"Status: Graduated to Raydium!\n"
                             f"Liquidity: {lp_data.get('liquidity', 0):.2f} SOL\n"
@@ -693,7 +784,7 @@ async def pumpfun_migration_monitor():
                                     f"✅ MIGRATION SNIPE SUCCESS!\n"
                                     f"Token: {mint[:16]}...\n"
                                     f"Amount: {PUMPFUN_MIGRATION_BUY} SOL\n"
-                                    f"Type: PumpFun → Raydium Migration"
+                                    f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}"
                                 )
                                 asyncio.create_task(wait_and_auto_sell(mint))
                             else:
@@ -705,7 +796,7 @@ async def pumpfun_migration_monitor():
             if int(time.time()) % 60 == 0:
                 await scan_pumpfun_graduations()
             
-            await asyncio.sleep(5)
+            await asyncio.sleep(5 if AGGRESSIVE_MODE else 10)
             
         except Exception as e:
             logging.error(f"[Migration Monitor] Error: {e}")
@@ -728,7 +819,8 @@ async def scan_pumpfun_graduations():
                     if not mint:
                         continue
                     
-                    if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
+                    threshold = PUMPFUN_GRADUATION_MC * 0.7 if AGGRESSIVE_MODE else PUMPFUN_GRADUATION_MC * 0.8
+                    if market_cap > threshold:
                         if mint not in pumpfun_tokens:
                             pumpfun_tokens[mint] = {
                                 "discovered": time.time(),
@@ -742,7 +834,7 @@ async def scan_pumpfun_graduations():
                             
                             if market_cap > PUMPFUN_GRADUATION_MC * 0.95:
                                 await send_telegram_alert(
-                                    f"⚠️ GRADUATION IMMINENT\n\n"
+                                    f"{MODE_FILTERS['alert_prefix']} ⚠️ GRADUATION IMMINENT\n\n"
                                     f"Token: `{mint}`\n"
                                     f"Market Cap: ${market_cap:,.0f}\n"
                                     f"Graduation at: $69,420\n"
@@ -771,7 +863,7 @@ async def cleanup_recent_attempts():
             await asyncio.sleep(300)
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED detection logic and pool validation"""
+    """Enhanced mempool listener with MODE-AWARE detection logic"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -838,7 +930,7 @@ async def mempool_listener(name, program_id=None):
             current_time = time.time()
             last_alert = last_alert_sent.get(name, 0)
             if current_time - last_alert > 1800:  # 30 minutes
-                await send_telegram_alert(f"📡 {name} listener ACTIVE")
+                await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} 📡 {name} listener ACTIVE")
                 last_alert_sent[name] = current_time
             else:
                 logging.info(f"[{name}] Reconnected successfully (alert suppressed)")
@@ -891,12 +983,12 @@ async def mempool_listener(name, program_id=None):
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # ================== FIXED DETECTION LOGIC ==================
+                        # ================== MODE-AWARE DETECTION LOGIC ==================
                         is_pool_creation = False
                         pool_id = None  # Track the pool ID
                         
                         if name == "Raydium":
-                            # FIXED: More comprehensive Raydium pool creation detection
+                            # MODE-AWARE Raydium detection
                             raydium_indicators = 0
                             has_init_pool = False
                             has_create_pool = False
@@ -912,7 +1004,6 @@ async def mempool_listener(name, program_id=None):
                                         has_init_pool = True
                                         raydium_indicators += 2
                                 
-                                # FIXED: Add more detection patterns
                                 if "program log: instruction: initialize" in log_lower:
                                     has_init_pool = True
                                     raydium_indicators += 3
@@ -949,13 +1040,13 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"  Logs: {len(logs)} (need {RAYDIUM_MIN_LOGS})")
                                 logging.info(f"  Has init: {has_init_pool}, Has create: {has_create_pool}, Has liquidity: {has_liquidity}")
                             
-                            # FIXED: Use the minimal thresholds
+                            # Use mode-specific thresholds
                             if raydium_indicators >= RAYDIUM_MIN_INDICATORS:
                                 is_pool_creation = True
                                 logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
                         
                         elif name == "PumpFun":
-                            # FIXED: Better PumpFun detection
+                            # MODE-AWARE PumpFun detection
                             pumpfun_create_indicators = 0
                             has_mint_creation = False
                             has_bonding = False
@@ -990,7 +1081,7 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"  Indicators: {pumpfun_create_indicators} (need {PUMPFUN_MIN_INDICATORS})")
                                 logging.info(f"  Logs: {len(logs)} (need {PUMPFUN_MIN_LOGS})")
                             
-                            # Use minimal thresholds
+                            # Use mode-specific thresholds
                             if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS:
                                 is_pool_creation = True
                                 logging.info(f"[PUMPFUN] TOKEN DETECTED - Score: {pumpfun_create_indicators}")
@@ -1008,7 +1099,7 @@ async def mempool_listener(name, program_id=None):
                             # Skip Jupiter entirely - too noisy and unreliable
                             continue
                         
-                        # ================== END FIXED DETECTION LOGIC ==================
+                        # ================== END MODE-AWARE DETECTION LOGIC ==================
                         
                         if not is_pool_creation:
                             continue
@@ -1083,7 +1174,7 @@ async def mempool_listener(name, program_id=None):
                                 raydium.register_new_pool(pool_id, potential_mint)
                                 logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
                             
-                            # ========== ENHANCED PUMPFUN BUY LOGIC WITH VALIDATION ==========
+                            # ========== MODE-AWARE PUMPFUN BUY LOGIC ==========
                             if name == "PumpFun" and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     # Skip if already bought
@@ -1092,7 +1183,7 @@ async def mempool_listener(name, program_id=None):
                                     
                                     logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
                                     
-                                    # Shorter delay for faster execution
+                                    # Shorter delay in aggressive mode
                                     await asyncio.sleep(PUMPFUN_INIT_DELAY)
                                     
                                     # Check if graduated or about to graduate
@@ -1104,7 +1195,7 @@ async def mempool_listener(name, program_id=None):
                                     lp_data = await get_liquidity_and_ownership(potential_mint)
                                     lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
                                     
-                                    # FIXED: Be more lenient with PumpFun liquidity
+                                    # Be more lenient with PumpFun liquidity
                                     if lp_amount == 0:
                                         # For brand new PumpFun tokens, this might be normal
                                         logging.info(f"[PUMPFUN] New token {potential_mint[:8]}... - No LP yet, checking if tradeable")
@@ -1112,27 +1203,30 @@ async def mempool_listener(name, program_id=None):
                                         lp_amount = 0.1  # Pretend there's minimal liquidity
                                     
                                     # For PumpFun tokens, require minimum liquidity
-                                    min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN if not graduated else RUG_LP_THRESHOLD
+                                    min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN
                                     
-                                    # Skip if liquidity too low (but be lenient)
+                                    # Skip if liquidity too low (but be lenient in aggressive mode)
                                     if lp_amount < min_lp_for_pumpfun and lp_amount > 0:
-                                        logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL but proceeding cautiously")
+                                        if AGGRESSIVE_MODE:
+                                            logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL but proceeding (aggressive mode)")
+                                        else:
+                                            continue
                                     
                                     # Mark as attempted
                                     recent_buy_attempts[potential_mint] = time.time()
                                     
-                                    # Determine buy amount based on graduation status
+                                    # Determine buy amount based on graduation status and mode
                                     if graduated:
-                                        buy_amount = PUMPFUN_MIGRATION_BUY  # 0.1 SOL for graduates
+                                        buy_amount = PUMPFUN_MIGRATION_BUY
                                         buy_reason = "PumpFun Graduate"
                                     else:
-                                        # For early PumpFun tokens, use small amount
-                                        buy_amount = PUMPFUN_EARLY_BUY  # 0.02 SOL for bonding curve
+                                        # For early PumpFun tokens
+                                        buy_amount = PUMPFUN_EARLY_BUY
                                         buy_reason = "PumpFun Early Entry"
                                     
                                     # Alert before buying
                                     await send_telegram_alert(
-                                        f"🎯 PUMPFUN TOKEN DETECTED\n\n"
+                                        f"{MODE_FILTERS['alert_prefix']} PUMPFUN TOKEN\n\n"
                                         f"Token: `{potential_mint}`\n"
                                         f"Status: {buy_reason}\n"
                                         f"Liquidity: {lp_amount:.2f} SOL\n"
@@ -1158,6 +1252,7 @@ async def mempool_listener(name, program_id=None):
                                                 f"Token: {potential_mint[:16]}...\n"
                                                 f"Amount: {buy_amount} SOL\n"
                                                 f"Type: {buy_reason}\n"
+                                                f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}\n"
                                                 f"Monitoring for profits..."
                                             )
                                             asyncio.create_task(wait_and_auto_sell(potential_mint))
@@ -1197,9 +1292,12 @@ async def mempool_listener(name, program_id=None):
                                         logging.debug(f"[{name}] LP check error: {e}")
                                         continue
                                     
-                                    # FIXED: Be more lenient with liquidity
-                                    if lp_amount < 0.5:  # Very minimal threshold
-                                        logging.info(f"[{name}] Very low liquidity ({lp_amount:.2f} SOL) but checking quality")
+                                    # Mode-aware liquidity check
+                                    min_lp = RUG_LP_THRESHOLD * 0.5 if AGGRESSIVE_MODE else RUG_LP_THRESHOLD
+                                    if lp_amount < min_lp:
+                                        logging.info(f"[{name}] Low liquidity ({lp_amount:.2f} SOL < {min_lp:.2f})")
+                                        if not AGGRESSIVE_MODE:
+                                            continue
                                     
                                     # Quality check
                                     is_quality, reason = await is_quality_token(potential_mint, lp_amount)
@@ -1224,7 +1322,7 @@ async def mempool_listener(name, program_id=None):
                                     recent_buy_attempts[potential_mint] = time.time()
                                     
                                     await send_telegram_alert(
-                                        f"✅ QUALITY TOKEN DETECTED ✅\n\n"
+                                        f"{MODE_FILTERS['alert_prefix']} QUALITY TOKEN ✅\n\n"
                                         f"Platform: {name}\n"
                                         f"Token: `{potential_mint}`\n"
                                         f"Liquidity: {lp_amount:.2f} SOL\n"
@@ -1248,6 +1346,7 @@ async def mempool_listener(name, program_id=None):
                                                 f"Token: {potential_mint[:16]}...\n"
                                                 f"Amount: {buy_amount} SOL\n"
                                                 f"Risk: {risk_level}\n"
+                                                f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}\n"
                                                 f"Monitoring for profits..."
                                             )
                                             asyncio.create_task(wait_and_auto_sell(potential_mint))
@@ -1297,8 +1396,6 @@ async def mempool_listener(name, program_id=None):
             logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
             await asyncio.sleep(wait_time)
 
-MIN_LP_USD = float(os.getenv("MIN_LP_USD", 1500))
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 300))
 seen_trending = set()
 
 async def get_trending_pairs_dexscreener():
@@ -1370,7 +1467,7 @@ async def get_trending_pairs_birdeye():
     return None
 
 async def trending_scanner():
-    """Scan for quality trending tokens"""
+    """Scan for quality trending tokens - MODE AWARE"""
     global seen_trending
     consecutive_failures = 0
     max_consecutive_failures = 5
@@ -1416,8 +1513,9 @@ async def trending_scanner():
                 
                 is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
                 
-                min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
-                min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
+                # Mode-aware thresholds
+                min_lp = MIN_LP_USD * 0.7 if AGGRESSIVE_MODE else MIN_LP_USD
+                min_vol = MIN_VOLUME_USD * 0.7 if AGGRESSIVE_MODE else MIN_VOLUME_USD
                 
                 if lp_usd < min_lp:
                     logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
@@ -1427,7 +1525,9 @@ async def trending_scanner():
                     logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
                     continue
                 
-                if price_change_h1 < -30 and not is_pumpfun_grad:
+                # Mode-aware dump threshold
+                max_dump = -50 if AGGRESSIVE_MODE else -30
+                if price_change_h1 < max_dump and not is_pumpfun_grad:
                     logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
                     continue
                     
@@ -1436,15 +1536,19 @@ async def trending_scanner():
                 increment_stat("tokens_scanned", 1)
                 update_last_activity()
                 
-                is_mooning = price_change_h1 > 50 or price_change_h24 > 100
-                has_momentum = price_change_h1 > 20 and vol_usd > 50000
+                # Mode-aware momentum thresholds
+                moon_threshold = 30 if AGGRESSIVE_MODE else 50
+                momentum_threshold = 10 if AGGRESSIVE_MODE else 20
+                
+                is_mooning = price_change_h1 > moon_threshold or price_change_h24 > 100
+                has_momentum = price_change_h1 > momentum_threshold and vol_usd > 50000
                 
                 if is_mooning or has_momentum or is_pumpfun_grad:
                     quality_finds += 1
                     
-                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
+                    alert_msg = f"{MODE_FILTERS['alert_prefix']} TRENDING TOKEN 🔥\n\n"
                     if is_pumpfun_grad:
-                        alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
+                        alert_msg = f"{MODE_FILTERS['alert_prefix']} PUMPFUN GRADUATE TRENDING 🎓\n\n"
                     
                     await send_telegram_alert(
                         alert_msg +
@@ -1454,7 +1558,8 @@ async def trending_scanner():
                         f"Price Change:\n"
                         f"• 1h: {price_change_h1:+.1f}%\n"
                         f"• 24h: {price_change_h24:+.1f}%\n"
-                        f"Source: {source}\n\n"
+                        f"Source: {source}\n"
+                        f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}\n\n"
                         f"Attempting to buy..."
                     )
                     
@@ -1489,10 +1594,12 @@ async def trending_scanner():
             await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 async def rug_filter_passes(mint: str) -> bool:
-    """Check if token passes basic rug filters"""
+    """Check if token passes basic rug filters - MODE AWARE"""
     try:
         data = await get_liquidity_and_ownership(mint)
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+        
+        # Mode-specific threshold
+        min_lp = RUG_LP_THRESHOLD * 0.7 if AGGRESSIVE_MODE else RUG_LP_THRESHOLD
         
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
             min_lp = min_lp / 2
@@ -1506,7 +1613,7 @@ async def rug_filter_passes(mint: str) -> bool:
         return False
 
 # ============================================
-# MOMENTUM SCANNER - ELITE TRADING STRATEGY
+# MOMENTUM SCANNER - ELITE TRADING STRATEGY (MODE AWARE)
 # ============================================
 
 def detect_chart_pattern(price_data: list) -> str:
@@ -1528,8 +1635,9 @@ def detect_chart_pattern(price_data: list) -> str:
     avg_change = sum(changes) / len(changes) if changes else 0
     positive_candles = sum(1 for c in changes if c > 0)
     
-    # Vertical pump (bad)
-    if max_change > 100:
+    # Vertical pump (bad) - mode aware
+    vertical_threshold = 150 if AGGRESSIVE_MODE else 100
+    if max_change > vertical_threshold:
         return "vertical"
     
     # Pump and dump shape (bad)
@@ -1551,7 +1659,7 @@ def detect_chart_pattern(price_data: list) -> str:
 
 async def score_momentum_token(token_data: dict) -> tuple:
     """
-    Score a token based on your exact momentum criteria
+    Score a token based on momentum criteria - MODE AWARE
     Returns: (score, [list of signals that passed])
     """
     score = 0
@@ -1576,27 +1684,37 @@ async def score_momentum_token(token_data: dict) -> tuple:
         price_history = token_data.get("priceHistory", [])
         pattern = detect_chart_pattern(price_history) if price_history else "unknown"
         
-        # ===== MOMENTUM RULES (YOUR CRITERIA) =====
+        # ===== MODE-AWARE MOMENTUM RULES =====
         
-        # 1. Hour gain in sweet spot (50-200%)
+        # 1. Hour gain in sweet spot
         if MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN:
             score += 1
             signals.append(f"✅ 1h gain: {price_change_1h:.1f}%")
         elif price_change_1h > MOMENTUM_MAX_1H_GAIN:
-            signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
-            return (0, signals)  # Automatic disqualification
+            if AGGRESSIVE_MODE:
+                # Still consider in aggressive mode
+                score += 0.5
+                signals.append(f"⚠️ High gain: {price_change_1h:.1f}%")
+            else:
+                signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
+                return (0, signals)  # Automatic disqualification
         
         # 2. Still pumping (5m green)
         if price_change_5m > 0:
             score += 1
             signals.append(f"✅ Still pumping: {price_change_5m:.1f}% on 5m")
         else:
-            signals.append(f"⚠️ Cooling off: {price_change_5m:.1f}% on 5m")
+            if AGGRESSIVE_MODE and price_change_5m > -5:
+                score += 0.5
+                signals.append(f"⚠️ Slight cooling: {price_change_5m:.1f}% on 5m")
+            else:
+                signals.append(f"⚠️ Cooling off: {price_change_5m:.1f}% on 5m")
         
         # 3. Volume/Liquidity ratio > 2 (good activity)
         if liquidity_usd > 0:
             vol_liq_ratio = volume_h24 / liquidity_usd
-            if vol_liq_ratio > 2:
+            min_ratio = 1.5 if AGGRESSIVE_MODE else 2
+            if vol_liq_ratio > min_ratio:
                 score += 1
                 signals.append(f"✅ Volume/Liq ratio: {vol_liq_ratio:.1f}")
         
@@ -1605,17 +1723,21 @@ async def score_momentum_token(token_data: dict) -> tuple:
             score += 1
             signals.append(f"✅ Liquidity: ${liquidity_usd:,.0f}")
         else:
-            signals.append(f"❌ Low liquidity: ${liquidity_usd:,.0f}")
-            return (0, signals)  # Automatic disqualification
+            if AGGRESSIVE_MODE and liquidity_usd >= MOMENTUM_MIN_LIQUIDITY * 0.7:
+                score += 0.5
+                signals.append(f"⚠️ Okay liquidity: ${liquidity_usd:,.0f}")
+            else:
+                signals.append(f"❌ Low liquidity: ${liquidity_usd:,.0f}")
+                return (0, signals)
         
-        # 5. Room to grow (MC < $500k)
+        # 5. Room to grow (MC)
         if market_cap < MOMENTUM_MAX_MC:
             score += 1
             signals.append(f"✅ Room to grow: ${market_cap:,.0f} MC")
         else:
             signals.append(f"⚠️ High MC: ${market_cap:,.0f}")
         
-        # 6. Good age (2-24 hours)
+        # 6. Good age
         if MOMENTUM_MIN_AGE_HOURS <= age_hours <= MOMENTUM_MAX_AGE_HOURS:
             score += 0.5
             signals.append(f"✅ Good age: {age_hours:.1f}h old")
@@ -1628,11 +1750,11 @@ async def score_momentum_token(token_data: dict) -> tuple:
             score += 0.25
             signals.append("✅ Consolidating pattern")
         elif pattern in ["vertical", "pump_dump"]:
-            signals.append(f"❌ Bad pattern: {pattern}")
-            score -= 1
+            if not AGGRESSIVE_MODE:
+                signals.append(f"❌ Bad pattern: {pattern}")
+                score -= 1
         
         # 8. Check if NOT at ATH (bonus)
-        # Simple check: if 5m is negative but 1h is positive, might be pulling back
         if price_change_5m < 0 and price_change_1h > 50:
             score += 0.25
             signals.append("✅ Pulling back from high")
@@ -1665,9 +1787,12 @@ async def fetch_top_gainers() -> list:
                         price_change_1h = float(pair.get("priceChange", {}).get("h1", 0))
                         liquidity_usd = float(pair.get("liquidity", {}).get("usd", 0))
                         
-                        # Pre-filter
-                        if (MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN * 1.5 and
-                            liquidity_usd >= MOMENTUM_MIN_LIQUIDITY * 0.8):
+                        # Pre-filter with mode-aware thresholds
+                        min_gain = MOMENTUM_MIN_1H_GAIN * 0.8 if AGGRESSIVE_MODE else MOMENTUM_MIN_1H_GAIN
+                        min_liq = MOMENTUM_MIN_LIQUIDITY * 0.7 if AGGRESSIVE_MODE else MOMENTUM_MIN_LIQUIDITY
+                        
+                        if (price_change_1h >= min_gain and
+                            liquidity_usd >= min_liq):
                             filtered_pairs.append(pair)
                 
                 # Sort by 1h gain
@@ -1683,20 +1808,21 @@ async def fetch_top_gainers() -> list:
 
 async def momentum_scanner():
     """
-    Elite Momentum Scanner - Finds pumping tokens with your exact criteria
-    Implements the hybrid strategy for 70% win rate momentum plays
+    Elite Momentum Scanner - MODE AWARE
     """
     if not MOMENTUM_SCANNER_ENABLED:
         logging.info("[Momentum Scanner] Disabled via configuration")
         return
     
+    mode_text = "AGGRESSIVE" if AGGRESSIVE_MODE else "SAFE"
+    
     await send_telegram_alert(
-        "🔥 MOMENTUM SCANNER ACTIVE 🔥\n\n"
-        f"Mode: {'HYBRID AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERT ONLY'}\n"
+        f"{MODE_FILTERS['alert_prefix']} MOMENTUM SCANNER 🔥\n\n"
+        f"Mode: {mode_text} {'AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
         f"Auto-buy threshold: {MIN_SCORE_AUTO_BUY}/5\n"
         f"Alert threshold: {MIN_SCORE_ALERT}/5\n"
-        f"Target: 50-200% gainers\n"
-        f"Position sizes: 0.02-0.1 SOL\n\n"
+        f"Target: {MOMENTUM_MIN_1H_GAIN}-{MOMENTUM_MAX_1H_GAIN}% gainers\n"
+        f"Positions: {MOMENTUM_TEST_POSITION}-{MOMENTUM_POSITION_5_SCORE} SOL\n\n"
         f"Hunting for pumps..."
     )
     
@@ -1712,10 +1838,10 @@ async def momentum_scanner():
             current_hour = datetime.now().hour
             is_prime_time = current_hour in PRIME_HOURS
             
-            # Adjust thresholds based on time
-            if not is_prime_time and current_hour not in REDUCED_HOURS:
+            # Adjust thresholds based on time (unless in aggressive mode)
+            if not AGGRESSIVE_MODE and not is_prime_time and current_hour not in REDUCED_HOURS:
                 await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
-                continue  # Skip dead hours
+                continue  # Skip dead hours in safe mode
             
             # Fetch top gainers
             top_gainers = await fetch_top_gainers()
@@ -1771,12 +1897,12 @@ async def momentum_scanner():
                         # AUTO BUY - Perfect setup
                         position_size = MOMENTUM_POSITION_5_SCORE if score >= 5 else MOMENTUM_POSITION_4_SCORE
                         
-                        # Extra caution during off-hours
-                        if not is_prime_time:
+                        # Extra caution during off-hours (unless aggressive)
+                        if not AGGRESSIVE_MODE and not is_prime_time:
                             position_size = position_size * 0.5
                         
                         await send_telegram_alert(
-                            f"🎯 MOMENTUM AUTO-BUY 🎯\n\n"
+                            f"{MODE_FILTERS['alert_prefix']} MOMENTUM AUTO-BUY 🎯\n\n"
                             f"Token: {token_symbol} ({token_address[:8]}...)\n"
                             f"Score: {score}/5 ⭐\n"
                             f"Position: {position_size} SOL\n\n"
@@ -1796,8 +1922,8 @@ async def momentum_scanner():
                                     f"✅ MOMENTUM BUY SUCCESS\n"
                                     f"Token: {token_symbol}\n"
                                     f"Amount: {position_size} SOL\n"
-                                    f"Strategy: Momentum Play\n\n"
-                                    f"Monitoring with your exit rules..."
+                                    f"Mode: {mode_text}\n\n"
+                                    f"Monitoring with exit rules..."
                                 )
                                 # Start auto-sell
                                 asyncio.create_task(wait_and_auto_sell(token_address))
@@ -1811,7 +1937,7 @@ async def momentum_scanner():
                     elif score >= MIN_SCORE_ALERT:
                         # ALERT ONLY - Good setup needs approval
                         await send_telegram_alert(
-                            f"🔔 MOMENTUM OPPORTUNITY 🔔\n\n"
+                            f"{MODE_FILTERS['alert_prefix']} MOMENTUM OPPORTUNITY 🔔\n\n"
                             f"Token: {token_symbol} ({token_address[:8]}...)\n"
                             f"Score: {score}/5 ⭐\n"
                             f"Suggested: {MOMENTUM_POSITION_3_SCORE} SOL\n\n"
@@ -1879,22 +2005,20 @@ async def check_momentum_score(mint: str) -> dict:
     return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
 
 async def start_sniper():
-    """Start the ELITE sniper bot with MOMENTUM SCANNER"""
-    mode_text = "ELITE Money Printer Mode + Momentum Scanner"
+    """Start the ELITE sniper bot with DUAL MODE support"""
+    mode_text = f"{'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'} MODE"
     TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
     
     await send_telegram_alert(
-        f"💰 MONEY PRINTER LAUNCHING 💰\n\n"
+        f"💰 DUAL MODE SNIPER LAUNCHING 💰\n\n"
         f"Mode: {mode_text}\n"
         f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
         f"Min AI Score: {MIN_AI_SCORE}\n"
         f"Min Volume: ${MIN_VOLUME_USD:,.0f}\n"
         f"Migration Snipe: {PUMPFUN_MIGRATION_BUY} SOL\n"
-        f"Momentum Mode: {'HYBRID' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n\n"
-        f"Quality filters: ACTIVE ✅\n"
-        f"Duplicate prevention: ACTIVE ✅\n"
-        f"Pool verification: ACTIVE ✅\n"
-        f"MOMENTUM SCANNER: ACTIVE 🔥\n\n"
+        f"Momentum: {'AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n\n"
+        f"Filters: {MODE_FILTERS['alert_prefix']}\n"
+        f"Position Sizes: {SAFE_BUY_AMOUNT}-{ULTRA_RISKY_BUY_AMOUNT} SOL\n\n"
         f"Ready to print money! 🎯"
     )
 
@@ -1925,24 +2049,24 @@ async def start_sniper():
     if MOMENTUM_SCANNER_ENABLED:
         TASKS.append(asyncio.create_task(momentum_scanner()))
         await send_telegram_alert(
-            "🔥 Momentum Scanner: ACTIVE\n"
-            "Hunting for 50-200% gainers\n"
-            "Auto-buy score: 3/5\n"
-            "Alert score: 2+/5"
+            f"{MODE_FILTERS['alert_prefix']} Momentum Scanner: ACTIVE\n"
+            f"Hunting for {MOMENTUM_MIN_1H_GAIN}-{MOMENTUM_MAX_1H_GAIN}% gainers\n"
+            f"Auto-buy score: {MIN_SCORE_AUTO_BUY}/5\n"
+            f"Alert score: {MIN_SCORE_ALERT}+/5"
         )
     
     if ENABLE_PUMPFUN_MIGRATION:
         TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
         TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
-        await send_telegram_alert("🎯 PumpFun Migration Monitor: ACTIVE")
-        await send_telegram_alert("🎓 Graduation Scanner: ACTIVE")
+        await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} PumpFun Migration: ACTIVE")
+        await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} Graduation Scanner: ACTIVE")
     
     await send_telegram_alert(f"🎯 MONEY PRINTER ACTIVE - {mode_text}!")
 
 async def start_sniper_with_forced_token(mint: str):
     """Force buy a specific token with MOMENTUM SCORING"""
     try:
-        await send_telegram_alert(f"🚨 FORCE BUY: {mint}")
+        await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} FORCE BUY: {mint}")
         
         if not is_bot_running():
             await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
@@ -1967,7 +2091,7 @@ async def start_sniper_with_forced_token(mint: str):
             )
             
             # Use momentum recommendation if score is good
-            if momentum_data['score'] >= 3:
+            if momentum_data['score'] >= MIN_SCORE_AUTO_BUY:
                 buy_amount = momentum_data['recommendation']
             else:
                 buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
@@ -1995,7 +2119,8 @@ async def start_sniper_with_forced_token(mint: str):
                     f"✅ Force buy successful\n"
                     f"Token: {mint}\n"
                     f"Type: {token_type}\n"
-                    f"Amount: {buy_amount} SOL"
+                    f"Amount: {buy_amount} SOL\n"
+                    f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}"
                 )
                 await wait_and_auto_sell(mint)
             else:
