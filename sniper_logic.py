@@ -1235,27 +1235,27 @@ async def mempool_listener(name, program_id=None):
                                     # In aggressive mode, always try
                                     if AGGRESSIVE_MODE:
                                         min_lp = 0.0
-                                   else:
+                                    else:
                                         min_lp = RUG_LP_THRESHOLD
                                         if lp_amount < min_lp:
                                             continue
                                     
                                     is_quality, reason = await is_quality_token(potential_mint, lp_amount)
                                     
-                                   if not is_quality:
+                                    if not is_quality:
                                         logging.info(f"[{name}] Skipping {potential_mint[:8]}... - {reason}")
                                         record_skip("quality_check")
                                         continue
                                     
-                                   if lp_amount >= RUG_LP_THRESHOLD * 2:
-                                         risk_level = "SAFE"
-                                         buy_amount = SAFE_BUY_AMOUNT
-                                   elif lp_amount >= RUG_LP_THRESHOLD:
-                                         risk_level = "MEDIUM"
-                                         buy_amount = RISKY_BUY_AMOUNT
-                                   else:
-                                         risk_level = "HIGH"
-                                         buy_amount = ULTRA_RISKY_BUY_AMOUNT
+                                    if lp_amount >= RUG_LP_THRESHOLD * 2:
+                                        risk_level = "SAFE"
+                                        buy_amount = SAFE_BUY_AMOUNT
+                                    elif lp_amount >= RUG_LP_THRESHOLD:
+                                        risk_level = "MEDIUM"
+                                        buy_amount = RISKY_BUY_AMOUNT
+                                    else:
+                                        risk_level = "HIGH"
+                                       buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                    
                                    recent_buy_attempts[potential_mint] = time.time()
                                    
@@ -1546,6 +1546,9 @@ async def rug_filter_passes(mint: str) -> bool:
    except Exception as e:
        logging.error(f"Rug check error for {mint}: {e}")
        return False
+
+# Keep all other functions (momentum scanner, etc) the same as they were...
+# [The rest of the file continues with the existing functions]
 
 # ============================================
 # MOMENTUM SCANNER - ELITE TRADING STRATEGY (MODE AWARE)
