@@ -1317,8 +1317,7 @@ async def wait_and_auto_sell(mint: str):
                         )
                         break
                 
-                if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"]
-                < max_sell_attempts:
+               if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
                     sell_attempts["profit1"] += 1
                     if await sell_token(mint, sell_percents[0]):
                         position["sold_stages"].add("profit1")
@@ -1340,7 +1339,7 @@ async def wait_and_auto_sell(mint: str):
                             f"Strategy: {strategy_name}"
                         )
                 
-                if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
+               if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
                     sell_attempts["profit3"] += 1
                     if await sell_token(mint, sell_percents[2]):
                         position["sold_stages"].add("profit3")
