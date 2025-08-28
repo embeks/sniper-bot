@@ -1459,9 +1459,9 @@ async def trending_scanner():
                         f"Source: {source}\n\n"
                         f"Attempting to buy..."
                     )
-                    
+
+                    original_amount = None
                     try:
-                        original_amount = None
                         if is_pumpfun_grad:
                             original_amount = os.getenv("BUY_AMOUNT_SOL")
                             os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
