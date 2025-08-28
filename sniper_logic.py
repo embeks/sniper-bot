@@ -1257,7 +1257,7 @@ async def mempool_listener(name, program_id=None):
                                          risk_level = "HIGH"
                                          buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                    
-                                   recent_buy_attempts[potential_mint] = time.time()
+                                    recent_buy_attempts[potential_mint] = time.time()
                                    
                                    await send_telegram_alert(
                                        f"{MODE_FILTERS['alert_prefix']} QUALITY TOKEN ✅\n\n"
