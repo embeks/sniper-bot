@@ -1053,7 +1053,7 @@ async def mempool_listener(name, program_id=None):
                                 elif raydium_indicators >= 9 or len(logs) >= 50:
                                     is_pool_creation = True  # High confidence
                                     logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
-                                elif raydium_indicators >= 4 and has_init_pool:
+                                elif raydium_indicators >= 4 and has_init_pool and len(logs) >= 40:
                                     is_pool_creation = True
                                     logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
                                
