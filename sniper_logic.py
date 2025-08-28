@@ -1448,7 +1448,7 @@ async def trending_scanner():
                     if is_pumpfun_grad:
                         alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
                     
-                    await send_telegram_alert(
+                     await send_telegram_alert(
                         alert_msg +
                         f"Token: `{mint}`\n"
                         f"Liquidity: ${lp_usd:,.0f}\n"
