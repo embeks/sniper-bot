@@ -58,10 +58,10 @@ MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", 5))
 MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.2))
 
 # FIXED: Force detection thresholds to be minimal for maximum detection
-RAYDIUM_MIN_INDICATORS = 1  # Override env var - any indicator triggers
-RAYDIUM_MIN_LOGS = 1  # Override env var - minimal logs needed  
-PUMPFUN_MIN_INDICATORS = 1
-PUMPFUN_MIN_LOGS = 1
+RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 3))
+ARAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 5))   
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 3))
+PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 5))
 
 # Anti-duplicate settings
 DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 300))
@@ -169,12 +169,12 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
     # CRITICAL FIX 3: Clean cache periodically
     current_time = time.time()
     if current_time - last_cache_cleanup > CACHE_CLEANUP_INTERVAL:
-        old_sigs = [sig for sig, ts in processed_signatures_cache.items() 
-                   if current_time - ts > CACHE_CLEANUP_INTERVAL]
-        for sig in old_sigs:
-            del processed_signatures_cache[sig]
+        if len(processed_signatures_cache) > 1000:
+            # Keep only the 500 most recent signatures
+            sorted_sigs = sorted(processed_signatures_cache.items(), key=lambda x: x[1], reverse=True)
+            processed_signatures_cache = dict(sorted_sigs[:500])
+            logging.debug(f"[TX FETCH] Trimmed cache to 500 signatures")
         last_cache_cleanup = current_time
-        logging.debug(f"[TX FETCH] Cleaned {len(old_sigs)} old signatures from cache")
     
     try:
         if not rpc_url:
@@ -317,6 +317,8 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
             
             # CRITICAL FIX 5: Pass retry_count to prevent infinite recursion
             logging.debug(f"[TX FETCH] All encodings failed, trying fallback for {signature[:8]}...")
+            if retry_count >= MAX_FETCH_RETRIES - 1:
+                return []
             return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
         
     except asyncio.TimeoutError:
@@ -325,7 +327,10 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
     except Exception as e:
         logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
         # Try fallback method for PumpFun with retry count
-        return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
+        if retry_count >= MAX_FETCH_RETRIES - 1:
+            logging.warning(f"[TX FETCH] Max retries exhausted for {signature[:8]}...")
+            return []
+        return []
 
 async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
     """
@@ -504,16 +509,16 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
             pass
         
         # If we can't get DexScreener data but LP is good, allow it
-        if lp_amount >= RUG_LP_THRESHOLD:
-            return True, f"Good liquidity ({lp_amount:.1f} SOL), proceeding without data"
+        if lp_amount >= RUG_LP_THRESHOLD * 2:
+            return True, f"Excellent liquidity ({lp_amount:.1f} SOL), bypassing checks"
         
         return False, "Failed quality checks"
         
     except Exception as e:
         logging.error(f"Quality check error: {e}")
         # Be lenient on errors
-        if lp_amount >= RUG_LP_THRESHOLD:
-            return True, "Quality check error but good LP"
+        if lp_amount >= RUG_LP_THRESHOLD * 2:
+            return True, "Quality check error but excellent LP"
         return False, "Quality check error"
 
 async def verify_pool_exists(mint: str) -> bool:
@@ -523,17 +528,21 @@ async def verify_pool_exists(mint: str) -> bool:
     try:
         # Check cache first
         if mint in pool_verification_cache:
-            return pool_verification_cache[mint]
+            cached_time, cached_result = pool_verification_cache[mint]
+            if time.time() - cached_time < 300:
+                return cached_result
+            else:
+                del pool_verification_cache[mint]
         
         # Check if we have a detected pool ID
         if mint in detected_pools:
-            pool_verification_cache[mint] = True
+            pool_verification_cache[mint] = (time.time(), True)
             return True
         
         # Check Raydium
         pool = raydium.find_pool_realtime(mint)
         if pool:
-            pool_verification_cache[mint] = True
+            pool_verification_cache[mint] = (time.time(), True)
             return True
         
         # Check Jupiter
@@ -544,12 +553,12 @@ async def verify_pool_exists(mint: str) -> bool:
                 if resp.status_code == 200:
                     data = resp.json()
                     if mint in data.get("data", {}):
-                        pool_verification_cache[mint] = True
+                        pool_verification_cache[mint] = (time.time(), True)
                         return True
         except:
             pass
         
-        pool_verification_cache[mint] = False
+        pool_verification_cache[mint] = (time.time(), False)
         return False
         
     except Exception as e:
@@ -743,6 +752,24 @@ async def scan_pumpfun_graduations():
                                 )
     except Exception as e:
         logging.error(f"[PumpFun Scan] Error: {e}")
+
+async def cleanup_recent_attempts():
+    """Clean old buy attempts periodically"""
+    while True:
+        try:
+            current_time = time.time()
+            expired = [token for token, ts in recent_buy_attempts.items() 
+                      if current_time - ts > DUPLICATE_CHECK_WINDOW]
+            for token in expired:
+                del recent_buy_attempts[token]
+            
+            if expired:
+                logging.debug(f"[Cleanup] Removed {len(expired)} expired buy attempts")
+            
+            await asyncio.sleep(300)  # Clean every 5 minutes
+        except Exception as e:
+            logging.error(f"Cleanup error: {e}")
+            await asyncio.sleep(300)
 
 async def mempool_listener(name, program_id=None):
     """Enhanced mempool listener with FIXED detection logic and pool validation"""
@@ -1266,7 +1293,7 @@ async def mempool_listener(name, program_id=None):
                 msg = f"⚠️ {name} listener failed after {max_retries} attempts"
                 await send_telegram_alert(msg)
                 listener_status[name] = "FAILED"
-                break
+                return
             
             wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
             logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
@@ -1445,13 +1472,15 @@ async def trending_scanner():
                             if BLACKLIST_AFTER_BUY:
                                 BLACKLIST.add(mint)
                             asyncio.create_task(wait_and_auto_sell(mint))
-                            
-                        if is_pumpfun_grad and original_amount:
-                            os.environ["BUY_AMOUNT_SOL"] = original_amount
-                    except Exception as e:
-                        logging.error(f"[Trending] Buy error: {e}")
-                else:
-                    logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
+
+                        except Exception as e:
+                            logging.error(f"[Trending] Buy error: {e}")
+                        finally:
+                             if original_amount:
+                                 os.environ["BUY_AMOUNT_SOL"] = original_amount
+                            else:
+                                 logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
+                                
             
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
@@ -1747,7 +1776,7 @@ async def momentum_scanner():
                         
                         # Extra caution during off-hours
                         if not is_prime_time:
-                            position_size *= 0.5
+                            position_size = position_size * 0.5
                         
                         await send_telegram_alert(
                             f"🎯 MOMENTUM AUTO-BUY 🎯\n\n"
@@ -1760,26 +1789,28 @@ async def momentum_scanner():
                         
                         # Execute buy
                         original_amount = os.getenv("BUY_AMOUNT_SOL")
-                        os.environ["BUY_AMOUNT_SOL"] = str(position_size)
-                        
+                        try:
+                        os.environ["BUY_AMOUNT_SOL"] = str(position_size)  # Use the adjusted position_size
                         success = await buy_token(token_address)
-                        
-                        if original_amount:
-                            os.environ["BUY_AMOUNT_SOL"] = original_amount
-                        
                         if success:
                             momentum_bought.add(token_address)
                             already_bought.add(token_address)
                             await send_telegram_alert(
                                 f"✅ MOMENTUM BUY SUCCESS\n"
                                 f"Token: {token_symbol}\n"
-                                f"Amount: {position_size} SOL\n"
+                                f"Amount: {position_size} SOL\n"  # Show actual amount used
                                 f"Strategy: Momentum Play\n\n"
                                 f"Monitoring with your exit rules..."
                             )
                             # Start auto-sell
                             asyncio.create_task(wait_and_auto_sell(token_address))
-                        
+                        except Exception as e:
+                            logging.error(f"[Momentum Scanner] Buy error: {e}")
+                            await send_telegram_alert(f"❌ Momentum buy error: {str(e)[:100]}")
+                         finally:
+                             if original_amount:
+                                 os.environ["BUY_AMOUNT_SOL"] = original_amount
+                                 
                     elif score >= MIN_SCORE_ALERT:
                         # ALERT ONLY - Good setup needs approval
                         await send_telegram_alert(
@@ -1880,6 +1911,8 @@ async def start_sniper():
             logging.error(f"Force buy error: {e}")
 
     TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
+    TASKS.append(asyncio.create_task(cleanup_recent_attempts()))
+    
     
     # Start listeners (skip Jupiter if configured)
     listeners = ["Raydium", "PumpFun", "Moonshot"]
