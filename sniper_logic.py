@@ -1267,7 +1267,7 @@ async def mempool_listener(name, program_id=None):
                                         f"Attempting snipe..."
                                     )
                                     
-                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                   original_amount = os.getenv("BUY_AMOUNT_SOL")
                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
                                    
                                    try:
