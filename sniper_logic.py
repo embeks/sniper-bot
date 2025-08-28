@@ -1235,14 +1235,14 @@ async def mempool_listener(name, program_id=None):
                                     # In aggressive mode, always try
                                     if AGGRESSIVE_MODE:
                                         min_lp = 0.0
-                                    else:
+                                   else:
                                         min_lp = RUG_LP_THRESHOLD
                                         if lp_amount < min_lp:
                                             continue
                                     
                                     is_quality, reason = await is_quality_token(potential_mint, lp_amount)
                                     
-                                    if not is_quality:
+                                   if not is_quality:
                                         logging.info(f"[{name}] Skipping {potential_mint[:8]}... - {reason}")
                                         record_skip("quality_check")
                                         continue
