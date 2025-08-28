@@ -864,6 +864,8 @@ async def cleanup_recent_attempts():
 
 async def mempool_listener(name, program_id=None):
     """Enhanced mempool listener with MODE-AWARE detection logic"""
+    global processed_signatures_cache
+    
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -974,6 +976,10 @@ async def mempool_listener(name, program_id=None):
                         if signature in processed_txs:
                             continue
                         processed_txs.add(signature)
+
+                        if signature in processed_signatures_cache:
+                            continue
+                        processed_signatures_cache[signature] = time.time()
                         
                         if len(processed_txs) > 1000:
                             processed_txs.clear()
@@ -1111,6 +1117,8 @@ async def mempool_listener(name, program_id=None):
                         if len(account_keys) == 0:
                             logging.info(f"[{name}] Fetching full transaction...")
                             try:
+                                if signature in processed_signatures_cache:
+                                    continue
                                 # CRITICAL FIX: Add timeout to transaction fetching
                                 fetch_task = asyncio.create_task(fetch_transaction_accounts(signature))
                                 account_keys = await asyncio.wait_for(fetch_task, timeout=5)
