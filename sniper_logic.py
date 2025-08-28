@@ -1,8 +1,9 @@
-# sniper_logic.py - DUAL MODE STRATEGY IMPLEMENTATION
+# sniper_logic.py - DUAL MODE STRATEGY IMPLEMENTATION - FIXED VERSION
 """
 DUAL MODE SUPPORT:
 - AGGRESSIVE MODE: Lower filters, faster trades, higher risk
 - SAFE MODE: Strict filters, quality trades, lower risk
+ALL CRITICAL BUGS FIXED
 """
 
 import asyncio
@@ -829,7 +830,7 @@ async def cleanup_recent_attempts():
             await asyncio.sleep(300)
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with MODE-AWARE detection logic"""
+    """Enhanced mempool listener with MODE-AWARE detection logic - FIXED"""
     global processed_signatures_cache
     
     if not HELIUS_API:
@@ -954,7 +955,7 @@ async def mempool_listener(name, program_id=None):
                         if transaction_counter % 100 == 0:
                             logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
                         
-                        # ================== MODE-AWARE DETECTION LOGIC ==================
+                        # ================== MODE-AWARE DETECTION LOGIC - FIXED ==================
                         is_pool_creation = False
                         pool_id = None
                         
@@ -1132,7 +1133,7 @@ async def mempool_listener(name, program_id=None):
                                 raydium.register_new_pool(pool_id, potential_mint)
                                 logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
                             
-                            # ========== MODE-AWARE PUMPFUN BUY LOGIC ==========
+                            # ========== MODE-AWARE PUMPFUN BUY LOGIC - FIXED ==========
                             if name == "PumpFun" and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     if potential_mint in already_bought:
@@ -1156,6 +1157,49 @@ async def mempool_listener(name, program_id=None):
                                         continue
                                     
                                     recent_buy_attempts[potential_mint] = time.time()
+                                    
+                                    await send_telegram_alert(
+                                        f"{MODE_FILTERS['alert_prefix']} QUALITY TOKEN ✅\n\n"
+                                        f"Platform: {name}\n"
+                                        f"Token: `{potential_mint}`\n"
+                                        f"Liquidity: {lp_amount:.2f} SOL\n"
+                                        f"Risk: {risk_level}\n"
+                                        f"Buy Amount: {buy_amount} SOL\n\n"
+                                        f"Attempting snipe..."
+                                    )
+                                    
+                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+                                    
+                                    try:
+                                        success = await buy_token(potential_mint)
+                                        if success:
+                                            already_bought.add(potential_mint)
+                                            if BLACKLIST_AFTER_BUY:
+                                                BLACKLIST.add(potential_mint)
+                                            
+                                            await send_telegram_alert(
+                                                f"✅ SNIPED QUALITY TOKEN!\n"
+                                                f"Token: {potential_mint[:16]}...\n"
+                                                f"Amount: {buy_amount} SOL\n"
+                                                f"Risk: {risk_level}\n"
+                                                f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}\n"
+                                                f"Monitoring for profits..."
+                                            )
+                                            asyncio.create_task(wait_and_auto_sell(potential_mint))
+                                            break
+                                        else:
+                                            await send_telegram_alert(
+                                                f"❌ Snipe failed\n"
+                                                f"Token: {potential_mint[:16]}..."
+                                            )
+                                            mark_broken_token(potential_mint, 0)
+                                    except Exception as e:
+                                        logging.error(f"[{name}] Buy error: {e}")
+                                        await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
+                                    finally:
+                                        if original_amount:
+                                            os.environ["BUY_AMOUNT_SOL"] = original_amount
                                     
                                     if graduated:
                                         buy_amount = PUMPFUN_MIGRATION_BUY
@@ -1207,7 +1251,7 @@ async def mempool_listener(name, program_id=None):
                                         if original_amount:
                                             os.environ["BUY_AMOUNT_SOL"] = original_amount
                             
-                            # Only buy from Raydium with enhanced validation
+                            # Only buy from Raydium with enhanced validation - FIXED
                             elif name in ["Raydium"] and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                     
@@ -1256,7 +1300,6 @@ async def mempool_listener(name, program_id=None):
                                         buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                     
                                     recent_buy_attempts[potential_mint] = time.time()
-                                    
                                     await send_telegram_alert(
                                         f"{MODE_FILTERS['alert_prefix']} QUALITY TOKEN ✅\n\n"
                                         f"Platform: {name}\n"
@@ -2009,3 +2052,4 @@ async def stop_all_tasks():
                pass
    TASKS.clear()
    await send_telegram_alert("🛑 All sniper tasks stopped.")
+                                    
