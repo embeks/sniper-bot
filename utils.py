@@ -105,14 +105,14 @@ def get_rpc_client():
     """Get RPC client with fallback support"""
     try:
         client = Client(RPC_URL, commitment=Confirmed)
-        # Test connection
-        client.get_health()
+        # Test connection by getting recent blockhash
+        client.get_latest_blockhash()
         return client
     except:
         for fallback_url in RPC_FALLBACK_URLS:
             try:
                 client = Client(fallback_url, commitment=Confirmed)
-                client.get_health()
+                client.get_latest_blockhash()
                 logging.warning(f"Using fallback RPC: {fallback_url}")
                 return client
             except:
