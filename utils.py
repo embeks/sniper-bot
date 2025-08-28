@@ -1,4 +1,4 @@
-# utils.py - COMPLETE FIXED VERSION WITH ALL CRITICAL ISSUES RESOLVED
+# utils.py - COMPLETE DUAL MODE VERSION WITH ALL FIXES
 import os
 import json
 import logging
@@ -29,7 +29,69 @@ from raydium_aggregator import RaydiumAggregatorClient
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Environment variables
+# ============================================
+# DUAL MODE CONFIGURATION
+# ============================================
+AGGRESSIVE_MODE = os.getenv("AGGRESSIVE_MODE", "false").lower() == "true"
+
+def get_mode_config():
+    """Get configuration based on current mode"""
+    if AGGRESSIVE_MODE:
+        return {
+            "mode_name": "AGGRESSIVE",
+            "alert_prefix": "🚨 AGGRESSIVE",
+            "min_liquidity_sol": 1.5,
+            "min_liquidity_usd": 2000,
+            "buy_amount_sol": 0.15,
+            "safe_buy_amount": 0.15,
+            "risky_buy_amount": 0.10,
+            "ultra_risky_buy_amount": 0.05,
+            "take_profit_1": 2.0,
+            "take_profit_2": 3.5,
+            "take_profit_3": 7.0,
+            "sell_percent_1": 40,
+            "sell_percent_2": 30,
+            "sell_percent_3": 30,
+            "stop_loss_percent": 40,
+            "trailing_stop_percent": 30,
+            "max_hold_time_sec": 7200,  # 2 hours
+            "pumpfun_take_profit_1": 5.0,
+            "pumpfun_take_profit_2": 15.0,
+            "pumpfun_take_profit_3": 30.0,
+            "pumpfun_min_liquidity_graduated": 3.0,
+            "pumpfun_min_liquidity_near": 1.5,
+            "pumpfun_min_liquidity_early": 0.3
+        }
+    else:
+        return {
+            "mode_name": "SAFE",
+            "alert_prefix": "🟢 SAFE",
+            "min_liquidity_sol": 3.0,
+            "min_liquidity_usd": 10000,
+            "buy_amount_sol": 0.05,
+            "safe_buy_amount": 0.10,
+            "risky_buy_amount": 0.05,
+            "ultra_risky_buy_amount": 0.02,
+            "take_profit_1": 1.5,
+            "take_profit_2": 2.5,
+            "take_profit_3": 4.0,
+            "sell_percent_1": 40,
+            "sell_percent_2": 30,
+            "sell_percent_3": 30,
+            "stop_loss_percent": 30,
+            "trailing_stop_percent": 20,
+            "max_hold_time_sec": 3600,  # 1 hour
+            "pumpfun_take_profit_1": 10.0,
+            "pumpfun_take_profit_2": 25.0,
+            "pumpfun_take_profit_3": 50.0,
+            "pumpfun_min_liquidity_graduated": 5.0,
+            "pumpfun_min_liquidity_near": 2.0,
+            "pumpfun_min_liquidity_early": 0.5
+        }
+
+MODE_CONFIG = get_mode_config()
+
+# Environment variables - with mode overrides
 RPC_URL = os.getenv("RPC_URL")
 RPC_FALLBACK_URLS = [
     os.getenv("RPC_FALLBACK_1", "https://api.mainnet-beta.solana.com"),
@@ -39,12 +101,12 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.1))
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", MODE_CONFIG["buy_amount_sol"]))
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
 SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", MODE_CONFIG["min_liquidity_sol"]))
 BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 HELIUS_API = os.getenv("HELIUS_API")
 
@@ -53,28 +115,28 @@ AUTO_SELL_PERCENT_2X = 50
 AUTO_SELL_PERCENT_5X = 25
 AUTO_SELL_PERCENT_10X = 25
 
-# Profit-based trading configuration
-TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))
-TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 3.0))
-TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 5.0))
-SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 30))
-SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 30))
-SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 30))
-STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 20))
-TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))
-MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))
+# Profit-based trading configuration - use mode config
+TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", MODE_CONFIG["take_profit_1"]))
+TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", MODE_CONFIG["take_profit_2"]))
+TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", MODE_CONFIG["take_profit_3"]))
+SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", MODE_CONFIG["sell_percent_1"]))
+SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", MODE_CONFIG["sell_percent_2"]))
+SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", MODE_CONFIG["sell_percent_3"]))
+STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", MODE_CONFIG["stop_loss_percent"]))
+TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", MODE_CONFIG["trailing_stop_percent"]))
+MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", MODE_CONFIG["max_hold_time_sec"]))
 PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))
 
-# PumpFun configuration
+# PumpFun configuration - mode aware
 PUMPFUN_USE_MOON_STRATEGY = os.getenv("PUMPFUN_USE_MOON_STRATEGY", "true").lower() == "true"
-PUMPFUN_TAKE_PROFIT_1 = float(os.getenv("PUMPFUN_TAKE_PROFIT_1", 10.0))
-PUMPFUN_TAKE_PROFIT_2 = float(os.getenv("PUMPFUN_TAKE_PROFIT_2", 25.0))
-PUMPFUN_TAKE_PROFIT_3 = float(os.getenv("PUMPFUN_TAKE_PROFIT_3", 50.0))
+PUMPFUN_TAKE_PROFIT_1 = float(os.getenv("PUMPFUN_TAKE_PROFIT_1", MODE_CONFIG["pumpfun_take_profit_1"]))
+PUMPFUN_TAKE_PROFIT_2 = float(os.getenv("PUMPFUN_TAKE_PROFIT_2", MODE_CONFIG["pumpfun_take_profit_2"]))
+PUMPFUN_TAKE_PROFIT_3 = float(os.getenv("PUMPFUN_TAKE_PROFIT_3", MODE_CONFIG["pumpfun_take_profit_3"]))
 PUMPFUN_SELL_PERCENT_1 = float(os.getenv("PUMPFUN_SELL_PERCENT_1", 20))
 PUMPFUN_SELL_PERCENT_2 = float(os.getenv("PUMPFUN_SELL_PERCENT_2", 30))
 PUMPFUN_MOON_BAG = float(os.getenv("PUMPFUN_MOON_BAG", 50))
-NO_SELL_FIRST_MINUTES = int(os.getenv("NO_SELL_FIRST_MINUTES", 30))
-TRAILING_STOP_ACTIVATION = float(os.getenv("TRAILING_STOP_ACTIVATION", 5.0))
+NO_SELL_FIRST_MINUTES = int(os.getenv("NO_SELL_FIRST_MINUTES", 15 if AGGRESSIVE_MODE else 30))
+TRAILING_STOP_ACTIVATION = float(os.getenv("TRAILING_STOP_ACTIVATION", 3.0 if AGGRESSIVE_MODE else 5.0))
 
 # Trending tokens configuration
 TRENDING_USE_CUSTOM = os.getenv("TRENDING_USE_CUSTOM", "false").lower() == "true"
@@ -82,7 +144,7 @@ TRENDING_TAKE_PROFIT_1 = float(os.getenv("TRENDING_TAKE_PROFIT_1", 3.0))
 TRENDING_TAKE_PROFIT_2 = float(os.getenv("TRENDING_TAKE_PROFIT_2", 8.0))
 TRENDING_TAKE_PROFIT_3 = float(os.getenv("TRENDING_TAKE_PROFIT_3", 15.0))
 
-# Configuration flags - REMOVED DANGEROUS OVERRIDE
+# Configuration flags
 IGNORE_JUPITER_PRICE_FIELD = os.getenv("IGNORE_JUPITER_PRICE_FIELD", "false").lower() == "true"
 LP_CHECK_TIMEOUT = int(os.getenv("LP_CHECK_TIMEOUT", 3))
 
@@ -92,12 +154,12 @@ SCALE_WITH_BALANCE = os.getenv("SCALE_WITH_BALANCE", "true").lower() == "true"
 MIGRATION_BOOST_MULTIPLIER = float(os.getenv("MIGRATION_BOOST_MULTIPLIER", 2.0))
 TRENDING_BOOST_MULTIPLIER = float(os.getenv("TRENDING_BOOST_MULTIPLIER", 1.5))
 
-# AGGRESSIVE PumpFun settings for 48hr push
+# PumpFun liquidity thresholds - mode aware
 PUMPFUN_MIN_LIQUIDITY = {
-    "graduated": 5.0,
-    "near_graduation": 2.0,
-    "early": 0.5,
-    "ignore": 0.3
+    "graduated": MODE_CONFIG["pumpfun_min_liquidity_graduated"],
+    "near_graduation": MODE_CONFIG["pumpfun_min_liquidity_near"],
+    "early": MODE_CONFIG["pumpfun_min_liquidity_early"],
+    "ignore": 0.2 if AGGRESSIVE_MODE else 0.3
 }
 
 # Initialize clients with fallback support
@@ -150,7 +212,7 @@ BLACKLIST_FILE = "blacklist.json"
 TRADES_CSV_FILE = "trades.csv"
 BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
 
-# LRU cache for processed transactions (FIX #5)
+# LRU cache for processed transactions
 processed_transactions_cache = OrderedDict()
 MAX_CACHE_SIZE = 10000
 
@@ -189,7 +251,7 @@ LAST_SUMMARY_TIME = time.time()
 pumpfun_tokens = {}
 trending_tokens = set()
 
-# Known token decimals - CRITICAL FOR PRICE CALCULATIONS
+# Known token decimals
 KNOWN_TOKEN_DECIMALS = {
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
@@ -205,35 +267,73 @@ KNOWN_TOKEN_DECIMALS = {
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
-# SCALING FUNCTIONS
+# MODE HELPER FUNCTIONS
+# ============================================
+
+def is_aggressive_mode():
+    """Check if aggressive mode is active"""
+    return AGGRESSIVE_MODE
+
+def get_mode_name():
+    """Get current mode name for display"""
+    return MODE_CONFIG["mode_name"]
+
+def get_alert_prefix():
+    """Get alert prefix for current mode"""
+    return MODE_CONFIG["alert_prefix"]
+
+# ============================================
+# SCALING FUNCTIONS (MODE AWARE)
 # ============================================
 
 async def get_dynamic_position_size(mint: str, pool_liquidity_sol: float, is_migration: bool = False) -> float:
-    """Aggressive position sizing for 48hr gains"""
+    """Dynamic position sizing based on mode"""
     try:
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         
-        base_size = 0.1  # 10% per position
+        if AGGRESSIVE_MODE:
+            # Aggressive sizing: 10-20% per position
+            base_size = 0.15
+            
+            if is_migration:
+                base_size = 0.25  # 25% on migrations
+            elif mint in pumpfun_tokens:
+                pf_status = await check_pumpfun_token_status(mint)
+                if pf_status and pf_status.get("progress", 0) > 80:
+                    base_size = 0.20  # 20% on near-graduation
+        else:
+            # Safe sizing: 5-10% per position
+            base_size = 0.075
+            
+            if is_migration:
+                base_size = 0.10  # 10% on migrations
+            elif mint in pumpfun_tokens:
+                pf_status = await check_pumpfun_token_status(mint)
+                if pf_status and pf_status.get("progress", 0) > 80:
+                    base_size = 0.10  # 10% on near-graduation
         
-        if is_migration:
-            base_size = 0.2  # 20% on migrations
-        elif mint in pumpfun_tokens:
-            pf_status = await check_pumpfun_token_status(mint)
-            if pf_status and pf_status.get("progress", 0) > 80:
-                base_size = 0.15  # 15% on near-graduation
+        # Scale with balance if enabled
+        if SCALE_WITH_BALANCE:
+            position_size = base_size * balance
+        else:
+            position_size = base_size
         
-        return max(0.05, min(base_size * balance, 0.25))
+        # Apply limits based on mode
+        if AGGRESSIVE_MODE:
+            return max(0.05, min(position_size, 0.30))  # 5-30% in aggressive
+        else:
+            return max(0.02, min(position_size, 0.15))  # 2-15% in safe
         
     except Exception as e:
         logging.error(f"Dynamic sizing error: {e}")
-        return 0.1
+        return MODE_CONFIG["buy_amount_sol"]
 
 def get_minimum_liquidity_required(balance_sol: float = None) -> float:
-    """Aggressive liquidity for 48hr push"""
-    return 3.0  # FLAT 3 SOL
+    """Get minimum liquidity based on mode"""
+    return MODE_CONFIG["min_liquidity_sol"]
 
 async def evaluate_pumpfun_opportunity(mint: str, lp_sol: float) -> tuple[bool, float]:
-    """Aggressive PumpFun evaluation"""
+    """Evaluate PumpFun opportunity based on mode"""
     try:
         pf_status = await check_pumpfun_token_status(mint)
         if not pf_status:
@@ -244,15 +344,21 @@ async def evaluate_pumpfun_opportunity(mint: str, lp_sol: float) -> tuple[bool, 
         if lp_sol < PUMPFUN_MIN_LIQUIDITY["ignore"]:
             return False, 0
         
+        # Mode-specific position sizes
+        if AGGRESSIVE_MODE:
+            sizes = {"graduated": 0.20, "near": 0.15, "early": 0.10}
+        else:
+            sizes = {"graduated": 0.10, "near": 0.08, "early": 0.05}
+        
         if pf_status.get("graduated"):
             if lp_sol >= PUMPFUN_MIN_LIQUIDITY["graduated"]:
-                return True, 0.15
+                return True, sizes["graduated"]
         elif progress >= 80:
             if lp_sol >= PUMPFUN_MIN_LIQUIDITY["near_graduation"]:
-                return True, 0.1
+                return True, sizes["near"]
         elif progress >= 40:
             if lp_sol >= PUMPFUN_MIN_LIQUIDITY["early"]:
-                return True, 0.05
+                return True, sizes["early"]
         
         return False, 0
     except:
@@ -296,10 +402,16 @@ def is_valid_mint(mint: str) -> bool:
     except:
         return False
 
-# CRITICAL: Override send_telegram_alert to reduce spam
+# Enhanced Telegram alert with mode labels
 async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
-    """ANTI-SPAM VERSION - Only send important alerts"""
+    """Send Telegram alert with mode label"""
     global telegram_last_sent, ALERT_SUMMARY, LAST_SUMMARY_TIME
+    
+    # Add mode prefix if not already present
+    if not message.startswith(MODE_CONFIG["alert_prefix"]) and not message.startswith("📊") and not message.startswith("⚠️"):
+        # For buy/sell alerts, add mode prefix
+        if any(word in message for word in ["Sniped", "Sold", "BUY", "SELL", "TOKEN DETECTED"]):
+            message = f"{MODE_CONFIG['alert_prefix']}\n{message}"
     
     # Filter out spam messages
     SPAM_PATTERNS = [
@@ -320,7 +432,7 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
         ALERT_SUMMARY["skipped"] += 1
         
         if time.time() - LAST_SUMMARY_TIME > 3600:
-            summary_msg = f"📊 Hourly Summary:\nScanned: {ALERT_SUMMARY['detected']}\nSkipped: {ALERT_SUMMARY['skipped']}\nFailed: {ALERT_SUMMARY['failed']}\nSucceeded: {ALERT_SUMMARY['succeeded']}"
+            summary_msg = f"📊 Hourly Summary ({MODE_CONFIG['mode_name']} MODE):\nScanned: {ALERT_SUMMARY['detected']}\nSkipped: {ALERT_SUMMARY['skipped']}\nFailed: {ALERT_SUMMARY['failed']}\nSucceeded: {ALERT_SUMMARY['succeeded']}"
             ALERT_SUMMARY = {"detected": 0, "skipped": 0, "failed": 0, "succeeded": 0}
             LAST_SUMMARY_TIME = time.time()
             message = summary_msg
@@ -402,7 +514,8 @@ def log_trade(mint: str, action: str, sol_amount: float, token_amount: float):
                 mint,
                 action,
                 sol_amount,
-                token_amount
+                token_amount,
+                MODE_CONFIG["mode_name"]  # Add mode to log
             ])
     except Exception as e:
         logging.error(f"Failed to log trade: {e}")
@@ -412,25 +525,26 @@ def log_skipped_token(mint: str, reason: str):
     logging.info(f"[SKIP] {mint}: {reason}")
 
 def get_wallet_summary() -> str:
-    """Get wallet balance summary"""
+    """Get wallet balance summary with mode info"""
     try:
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         balance_usd = balance * 150
         
         if USE_DYNAMIC_SIZING:
-            test_position = 0.1
+            test_position = 0.1 if AGGRESSIVE_MODE else 0.05
             sizing_info = f"\n📏 Position Size: ~{test_position:.3f} SOL"
         else:
             sizing_info = f"\n📏 Fixed Size: {BUY_AMOUNT_SOL} SOL"
         
         return f"""Balance: {balance:.4f} SOL (${balance_usd:.0f})
 Address: {wallet_pubkey}{sizing_info}
-Min LP: {get_minimum_liquidity_required(balance)} SOL"""
+Min LP: {get_minimum_liquidity_required(balance)} SOL
+Mode: {MODE_CONFIG['mode_name']}"""
     except:
         return "Failed to fetch wallet info"
 
 def get_bot_status_message() -> str:
-    """Get detailed bot status"""
+    """Get detailed bot status with mode"""
     elapsed = int(time.time() - last_activity)
     raydium_elapsed = int(time.time() - last_seen_token["Raydium"])
     jupiter_elapsed = int(time.time() - last_seen_token["Jupiter"])
@@ -438,7 +552,7 @@ def get_bot_status_message() -> str:
     moonshot_elapsed = int(time.time() - last_seen_token["Moonshot"])
     
     return f"""
-🤖 Bot: {'RUNNING' if BOT_RUNNING else 'PAUSED'}
+🤖 Bot: {'RUNNING' if BOT_RUNNING else 'PAUSED'} [{MODE_CONFIG['mode_name']} MODE]
 📊 Daily Stats:
   • Scanned: {daily_stats['tokens_scanned']}
   • Attempted: {daily_stats['snipes_attempted']}
@@ -457,14 +571,15 @@ def get_bot_status_message() -> str:
 🚫 Broken Tokens: {len(BROKEN_TOKENS)}
 💰 Min LP Filter: {get_minimum_liquidity_required()} SOL
 🎯 Scaling: {'ON' if USE_DYNAMIC_SIZING else 'OFF'}
+⚙️ Mode: {MODE_CONFIG['mode_name']} ({MODE_CONFIG['alert_prefix']})
 """
 
 # ============================================
-# FIXED LIQUIDITY DETECTION FUNCTION (FIX #3)
+# LIQUIDITY DETECTION FUNCTION
 # ============================================
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get accurate liquidity - FIXED to return None instead of fake values"""
+    """Get accurate liquidity"""
     try:
         sol_mint = "So11111111111111111111111111111111111111112"
         
@@ -493,7 +608,7 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
                     sol_vault_key = pool["quoteVault"]
                 else:
                     logging.warning(f"[LP Check] Pool found but no SOL pair for {mint[:8]}...")
-                    return None  # FIX: Return None instead of fake value
+                    return None
                 
                 sol_vault = Pubkey.from_string(sol_vault_key)
                 response = rpc.get_balance(sol_vault)
@@ -543,13 +658,12 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
         except Exception as e:
             logging.debug(f"[LP Check] Jupiter quote check failed: {e}")
         
-        # FIX: Return None for brand new tokens instead of fake value
         logging.info(f"[LP Check] {mint[:8]}... liquidity unknown, returning None")
-        return None  # This is the critical fix - no fake values
+        return None
             
     except Exception as e:
         logging.error(f"[LP Check] Critical error for {mint}: {e}")
-        return None  # Return None on error too
+        return None
 
 async def get_trending_mints():
     """Placeholder for trending mints"""
@@ -573,7 +687,7 @@ async def daily_stats_reset_loop():
             for key in daily_stats["skip_reasons"]:
                 daily_stats["skip_reasons"][key] = 0
                 
-            await send_telegram_alert("📊 Daily stats reset")
+            await send_telegram_alert(f"📊 Daily stats reset - {MODE_CONFIG['mode_name']} MODE")
         except Exception as e:
             logging.error(f"Stats reset error: {e}")
             await asyncio.sleep(3600)
@@ -582,6 +696,10 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
     """Get swap quote from Jupiter API"""
     try:
         url = f"{JUPITER_BASE_URL}/v6/quote"
+        # Adjust slippage based on mode
+        if AGGRESSIVE_MODE:
+            slippage_bps = max(slippage_bps, 300)  # Higher slippage for speed
+        
         params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
@@ -614,13 +732,16 @@ async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str):
     try:
         url = f"{JUPITER_BASE_URL}/v6/swap"
         
+        # Adjust priority fee based on mode
+        priority_fee = 1000000 if AGGRESSIVE_MODE else 500000
+        
         body = {
             "quoteResponse": quote,
             "userPublicKey": user_pubkey,
             "wrapAndUnwrapSol": True,
             "dynamicComputeUnitLimit": True,
-            "prioritizationFeeLamports": 500000,
-            "slippageBps": 300
+            "prioritizationFeeLamports": priority_fee,
+            "slippageBps": 500 if AGGRESSIVE_MODE else 300
         }
         
         async with httpx.AsyncClient(timeout=15, verify=certifi.where()) as client:
@@ -682,7 +803,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
                 sig = str(result.value)
                 logging.info(f"[Jupiter] Transaction sent: {sig}")
                 
-                # FIX #11: Wait for confirmation
+                # Wait for confirmation
                 await asyncio.sleep(2)
                 
                 try:
@@ -822,7 +943,7 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, force_amount: Optional[float] = None, is_migration: bool = False):
-    """Execute buy with dynamic sizing and enhanced validation"""
+    """Execute buy with mode-aware sizing and validation"""
     try:
         if mint in BROKEN_TOKENS:
             log_skipped_token(mint, "Broken token")
@@ -835,7 +956,6 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         logging.info(f"[Buy] Checking liquidity for {mint[:8]}...")
         lp_data = await get_liquidity_and_ownership(mint)
         
-        # FIX: Handle None return properly
         if lp_data is None:
             logging.warning(f"[Buy] Could not determine liquidity for {mint[:8]}..., skipping")
             record_skip("lp_timeout")
@@ -855,7 +975,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
                 record_skip("low_lp")
                 return False
         
-        min_lp = get_minimum_liquidity_required() if not is_pumpfun else 0.5
+        min_lp = get_minimum_liquidity_required() if not is_pumpfun else PUMPFUN_MIN_LIQUIDITY["early"]
         
         if pool_liquidity < min_lp:
             log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
@@ -872,6 +992,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         else:
             amount_sol = BUY_AMOUNT_SOL
         
+        # Risk manager check
         try:
             from integrate_monster import risk_manager
             if risk_manager and not await risk_manager.check_risk_limits():
@@ -883,7 +1004,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
             logging.debug(f"[Buy] Risk check error: {e}, continuing")
         
         amount_lamports = int(amount_sol * 1e9)
-        logging.info(f"[Buy] Using dynamic position: {amount_sol:.3f} SOL for {mint[:8]}...")
+        logging.info(f"[Buy] Using {MODE_CONFIG['mode_name']} position: {amount_sol:.3f} SOL for {mint[:8]}...")
 
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
         jupiter_sig = await execute_jupiter_swap(mint, amount_lamports)
@@ -966,13 +1087,13 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         return False
 
 async def sell_token(mint: str, percent: float = 100.0):
-    """Execute sell transaction with wallet verification (FIX #1)"""
+    """Execute sell transaction with wallet verification"""
     try:
         from spl.token.constants import TOKEN_PROGRAM_ID
         
         owner = keypair.pubkey()
         
-        # FIX #1: Critical wallet verification
+        # Critical wallet verification
         if str(owner) != wallet_pubkey:
             logging.error(f"[CRITICAL] Wallet mismatch! Expected {wallet_pubkey}, got {str(owner)}")
             await send_telegram_alert(f"⚠️ CRITICAL: Wallet mismatch detected! Aborting sell for safety.")
@@ -1081,7 +1202,7 @@ async def get_token_decimals(mint: str) -> int:
     return 9
 
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price with PROPER decimal handling (FIX #2)"""
+    """Get current token price with proper decimal handling"""
     try:
         STABLECOIN_MINTS = {
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
@@ -1092,7 +1213,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             logging.info(f"[Price] {STABLECOIN_MINTS[mint]} stablecoin, returning $1.00")
             return 1.0
         
-        # Always get actual decimals - NO OVERRIDES
+        # Always get actual decimals
         actual_decimals = await get_token_decimals(mint)
         logging.info(f"[Price] Token {mint[:8]}... using {actual_decimals} decimals for calculations")
         
@@ -1168,7 +1289,6 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                     if "outAmount" in quote and float(quote["outAmount"]) > 0:
                         sol_price = 150.0
                         
-                        # Always use actual decimals - NO OVERRIDE
                         tokens_received = float(quote["outAmount"]) / (10 ** actual_decimals)
                         
                         sol_spent = 1.0
@@ -1188,7 +1308,6 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         
                         if price > 1000000:
                             logging.warning(f"[Price] Extreme price ${price:.2f} for {mint[:8]}... - likely decimal issue")
-                            # Don't try to fix, just return None
                             return None
                         
                         if price < 0.0000001:
@@ -1207,7 +1326,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         return None
 
 async def wait_and_auto_sell(mint: str):
-    """Monitor position and auto-sell with different strategies based on token type"""
+    """Monitor position and auto-sell with MODE-AWARE strategies"""
     try:
         if mint not in OPEN_POSITIONS:
             logging.warning(f"No position found for {mint}")
@@ -1220,25 +1339,30 @@ async def wait_and_auto_sell(mint: str):
         is_trending = mint in trending_tokens
         is_migration = position.get("is_migration", False)
         
+        # MODE-AWARE strategy selection
         if is_migration:
-            targets = [5.0, 15.0, 30.0]
-            sell_percents = [30, 30, 40]
-            strategy_name = "MIGRATION"
-            min_hold_time = 60
+            if AGGRESSIVE_MODE:
+                targets = [3.0, 10.0, 20.0]
+                sell_percents = [30, 30, 40]
+            else:
+                targets = [5.0, 15.0, 30.0]
+                sell_percents = [30, 30, 40]
+            strategy_name = f"MIGRATION ({MODE_CONFIG['mode_name']})"
+            min_hold_time = 30 if AGGRESSIVE_MODE else 60
         elif is_pumpfun and PUMPFUN_USE_MOON_STRATEGY:
             targets = [PUMPFUN_TAKE_PROFIT_1, PUMPFUN_TAKE_PROFIT_2, PUMPFUN_TAKE_PROFIT_3]
             sell_percents = [PUMPFUN_SELL_PERCENT_1, PUMPFUN_SELL_PERCENT_2, PUMPFUN_MOON_BAG]
-            strategy_name = "MOON SHOT"
+            strategy_name = f"MOON SHOT ({MODE_CONFIG['mode_name']})"
             min_hold_time = NO_SELL_FIRST_MINUTES * 60
         elif is_trending and TRENDING_USE_CUSTOM:
             targets = [TRENDING_TAKE_PROFIT_1, TRENDING_TAKE_PROFIT_2, TRENDING_TAKE_PROFIT_3]
             sell_percents = [30, 35, 35]
-            strategy_name = "TRENDING"
-            min_hold_time = 60
+            strategy_name = f"TRENDING ({MODE_CONFIG['mode_name']})"
+            min_hold_time = 30 if AGGRESSIVE_MODE else 60
         else:
             targets = [TAKE_PROFIT_1, TAKE_PROFIT_2, TAKE_PROFIT_3]
             sell_percents = [SELL_PERCENT_1, SELL_PERCENT_2, SELL_PERCENT_3]
-            strategy_name = "STANDARD"
+            strategy_name = f"STANDARD ({MODE_CONFIG['mode_name']})"
             min_hold_time = 0
         
         await asyncio.sleep(10)
@@ -1294,6 +1418,7 @@ async def wait_and_auto_sell(mint: str):
                     await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
                     continue
                 
+                # Trailing stop
                 if profit_multiplier >= TRAILING_STOP_ACTIVATION:
                     drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
                     if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
@@ -1306,6 +1431,7 @@ async def wait_and_auto_sell(mint: str):
                             )
                             break
                 
+                # Stop loss
                 if profit_percent <= -STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
                     sell_attempts["stop_loss"] += 1
                     logging.info(f"[{mint[:8]}] Stop loss triggered at {profit_percent:.1f}%")
@@ -1313,10 +1439,11 @@ async def wait_and_auto_sell(mint: str):
                         await send_telegram_alert(
                             f"🛑 Stop loss triggered for {mint[:8]}!\n"
                             f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
-                            f"Sold all to minimize losses"
+                            f"Mode: {MODE_CONFIG['mode_name']}"
                         )
                         break
                 
+                # Profit targets
                 if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
                     sell_attempts["profit1"] += 1
                     if await sell_token(mint, sell_percents[0]):
@@ -1378,7 +1505,7 @@ async def wait_and_auto_sell(mint: str):
                         f"⏰ Max hold time reached for {mint[:8]}\n"
                         f"Force sold after {MAX_HOLD_TIME_SEC/60:.0f} minutes\n"
                         f"Final P&L: {profit_percent:+.1f}%\n"
-                        f"Strategy used: {strategy_name}"
+                        f"Strategy: {strategy_name}"
                     )
         
         if mint in OPEN_POSITIONS and len(position.get("sold_stages", set())) >= 3 and sell_percents[2] == 100:
@@ -1399,7 +1526,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
         position = OPEN_POSITIONS[mint]
         
         start_time = time.time()
-        max_duration = 600
+        max_duration = 600 if AGGRESSIVE_MODE else 900
         max_sell_attempts = 3
         sell_attempts = {"2x": 0, "5x": 0, "10x": 0}
         
@@ -1407,27 +1534,32 @@ async def wait_and_auto_sell_timer_based(mint: str):
             try:
                 elapsed = time.time() - start_time
                 
-                if elapsed > 30 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
+                # MODE-AWARE timers
+                timer_1 = 20 if AGGRESSIVE_MODE else 30
+                timer_2 = 90 if AGGRESSIVE_MODE else 120
+                timer_3 = 240 if AGGRESSIVE_MODE else 300
+                
+                if elapsed > timer_1 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
                     sell_attempts["2x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_2X):
                         position["sold_stages"].add("2x")
-                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
+                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at {timer_1}s timer for {mint[:8]}... [{MODE_CONFIG['mode_name']}]")
                     elif sell_attempts["2x"] >= max_sell_attempts:
                         position["sold_stages"].add("2x")
                 
-                if elapsed > 120 and "5x" not in position["sold_stages"] and sell_attempts["5x"] < max_sell_attempts:
+                if elapsed > timer_2 and "5x" not in position["sold_stages"] and sell_attempts["5x"] < max_sell_attempts:
                     sell_attempts["5x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_5X):
                         position["sold_stages"].add("5x")
-                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
+                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at {timer_2/60:.1f}min timer for {mint[:8]}... [{MODE_CONFIG['mode_name']}]")
                     elif sell_attempts["5x"] >= max_sell_attempts:
                         position["sold_stages"].add("5x")
                 
-                if elapsed > 300 and "10x" not in position["sold_stages"] and sell_attempts["10x"] < max_sell_attempts:
+                if elapsed > timer_3 and "10x" not in position["sold_stages"] and sell_attempts["10x"] < max_sell_attempts:
                     sell_attempts["10x"] += 1
                     if await sell_token(mint, AUTO_SELL_PERCENT_10X):
                         position["sold_stages"].add("10x")
-                        await send_telegram_alert(f"🌙 KEEPING MOONBAG - Sold {AUTO_SELL_PERCENT_10X}% at 5min for {mint[:8]}...")
+                        await send_telegram_alert(f"🌙 KEEPING MOONBAG - Sold {AUTO_SELL_PERCENT_10X}% at {timer_3/60:.1f}min for {mint[:8]}... [{MODE_CONFIG['mode_name']}]")
                     elif sell_attempts["10x"] >= max_sell_attempts:
                         position["sold_stages"].add("10x")
                 
@@ -1547,5 +1679,11 @@ __all__ = [
     'SCALE_WITH_BALANCE',
     'evaluate_pumpfun_opportunity',
     'processed_transactions_cache',
-    'MAX_CACHE_SIZE'
+    'MAX_CACHE_SIZE',
+    # Mode helpers
+    'is_aggressive_mode',
+    'get_mode_name',
+    'get_alert_prefix',
+    'MODE_CONFIG',
+    'AGGRESSIVE_MODE'
 ]
