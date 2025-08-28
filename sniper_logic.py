@@ -1444,7 +1444,7 @@ async def trending_scanner():
                 if is_mooning or has_momentum or is_pumpfun_grad:
                     quality_finds += 1
                     
-                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
+                     alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
                      if is_pumpfun_grad:
                         alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
                      
