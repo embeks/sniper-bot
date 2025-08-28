@@ -1253,7 +1253,8 @@ async def mempool_listener(name, program_id=None):
                                     elif lp_amount >= RUG_LP_THRESHOLD:
                                          risk_level = "MEDIUM"
                                          buy_amount = RISKY_BUY_AMOUNT
-                                    else:risk_level = "HIGH"
+                                    else:
+                                         risk_level = "HIGH"
                                          buy_amount = ULTRA_RISKY_BUY_AMOUNT
                                    
                                    recent_buy_attempts[potential_mint] = time.time()
