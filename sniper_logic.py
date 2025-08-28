@@ -134,7 +134,7 @@ MIN_LP_USD = float(os.getenv("MIN_LP_USD", MODE_FILTERS["min_liquidity_usd"]))
 MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", MODE_FILTERS["min_volume_usd"]))
 
 # Anti-duplicate settings
-DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 300))
+DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 120 if AGGRESSIVE_MODE else 300))
 MAX_BUYS_PER_TOKEN = int(os.getenv("MAX_BUYS_PER_TOKEN", 1))
 BLACKLIST_AFTER_BUY = os.getenv("BLACKLIST_AFTER_BUY", "true").lower() == "true"
 
@@ -552,7 +552,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
                 return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
         
         # Use mode-specific threshold
-        if lp_amount < RUG_LP_THRESHOLD:
+        if not AGGRESSIVE_MODE and lp_amount < RUG_LP_THRESHOLD:
             return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {RUG_LP_THRESHOLD})"
         
         # Try to get token metrics from DexScreener
@@ -598,6 +598,8 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         # If we can't get DexScreener data but LP is good, allow it
         if lp_amount >= RUG_LP_THRESHOLD * 2:
             return True, f"Excellent liquidity ({lp_amount:.1f} SOL), bypassing checks"
+        if AGGRESSIVE_MODE and lp_amount >= 0.0:
+                return True, "Aggressive fallback: insufficient data but proceeding with micro size"
         
         return False, "Insufficient data for quality verification"
         
@@ -702,7 +704,7 @@ async def raydium_graduation_scanner():
                             pumpfun_tokens[mint]["migrated"] = True
                         
                         lp_data = await get_liquidity_and_ownership(mint)
-                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+                        lp_amount = lp_(data or {}).get("liquidity", 0) if lp_data else 0
                         
                         if lp_amount >= RUG_LP_THRESHOLD:
                             already_bought.add(mint)
@@ -1211,21 +1213,21 @@ async def mempool_listener(name, program_id=None):
                                     lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
                                     
                                     # Be more lenient with PumpFun liquidity
-                                    if lp_amount == 0:
-                                        # For brand new PumpFun tokens, this might be normal
-                                        logging.info(f"[PUMPFUN] New token {potential_mint[:8]}... - No LP yet, checking if tradeable")
-                                        # Try a small test buy anyway for very new tokens
-                                        lp_amount = 0.1  # Pretend there's minimal liquidity
+                                    if lp_amount == 0 and AGGRESSIVE_MODE:
+                                        pass
+                                        
+                                        
                                     
                                     # For PumpFun tokens, require minimum liquidity
                                     min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN
-                                    
-                                    # Skip if liquidity too low (but be lenient in aggressive mode)
-                                    if lp_amount < min_lp_for_pumpfun and lp_amount > 0:
-                                        if AGGRESSIVE_MODE:
-                                            logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL but proceeding (aggressive mode)")
-                                        else:
+                                    if not AGGRESSIVE_MODE:
+                                        if lp_amount < min_lp_for_pumpfun:
                                             continue
+                                        else:
+                                            pass
+                                    
+                                    
+                                    
                                     
                                     # Mark as attempted
                                     recent_buy_attempts[potential_mint] = time.time()
@@ -1293,26 +1295,36 @@ async def mempool_listener(name, program_id=None):
                                     await asyncio.sleep(MEMPOOL_DELAY_MS / 1000)
                                     
                                     # Get liquidity with timeout
-                                    lp_amount = 0
+                                    lp_amount = 0.0
+                                    allow_zero_lp_test = False
                                     try:
                                         lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-                                        lp_data = await asyncio.wait_for(lp_check_task, timeout=2.0)
-                                        
+                                        lp_data = await asyncio.wait_for(lp_check_task, timeout=1.0 if AGGRESSIVE_MODE else 2.0)
                                         if lp_data:
-                                            lp_amount = lp_data.get("liquidity", 0)
+                                            lp_amount = lp_data.get("liquidity", 0) or 0.0
                                     except asyncio.TimeoutError:
-                                        logging.info(f"[{name}] LP check timeout")
-                                        continue
-                                    except Exception as e:
-                                        logging.debug(f"[{name}] LP check error: {e}")
-                                        continue
+                                        if AGGRESSIVE_MODE:
+                                            lp_amount = 0.0
+                                        else:
+                                            continue
+                                    except Exception:
+                                        if AGGRESSIVE_MODE:
+                                            lp_amount = 0.0
+                                        else:
+                                            continue
                                     
                                     # Mode-aware liquidity check
-                                    min_lp = RUG_LP_THRESHOLD * 0.5 if AGGRESSIVE_MODE else RUG_LP_THRESHOLD
-                                    if lp_amount < min_lp:
-                                        logging.info(f"[{name}] Low liquidity ({lp_amount:.2f} SOL < {min_lp:.2f})")
-                                        if not AGGRESSIVE_MODE:
-                                            continue
+                                    if AGGRESSIVE_MODE:
+                                        min_lp = max(0.0, RUG_LP_THRESHOLD * 0.3)
+                                        allow_zero_lp_test = True
+                                    else:
+                                        min_lp = RUG_LP_THRESHOLD
+                                        allow_zero_lp_test = False
+                                        
+                                    if lp_amount < min_lp and not AGGRESSIVE_MODE:
+                                        continue
+                                        
+                                        
                                     
                                     # Quality check
                                     is_quality, reason = await is_quality_token(potential_mint, lp_amount)
