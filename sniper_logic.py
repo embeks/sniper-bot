@@ -1460,8 +1460,8 @@ async def trending_scanner():
                         f"Attempting to buy..."
                     )
 
-                    original_amount = None
-                    try:
+                     original_amount = None
+                     try:
                         if is_pumpfun_grad:
                             original_amount = os.getenv("BUY_AMOUNT_SOL")
                             os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
@@ -1475,7 +1475,7 @@ async def trending_scanner():
                         else:
                             logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
 
-                        except Exception as e:
+                     except Exception as e:
                             logging.error(f"[Trending] Buy error: {e}")
                         finally:
                              if original_amount:
