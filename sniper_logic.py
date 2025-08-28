@@ -44,7 +44,7 @@ def get_mode_filters():
     if AGGRESSIVE_MODE:
         return {
             # AGGRESSIVE MODE FILTERS
-            "min_liquidity_sol": 0.5,  # Lower for aggressive
+            "min_liquidity_sol": 0.5,
             "min_liquidity_usd": 500,
             "min_volume_usd": 100,
             "min_holder_count": 10,
@@ -91,7 +91,7 @@ MODE_FILTERS = get_mode_filters()
 # ============================================
 # CRITICAL FIX: Transaction cache to prevent infinite loops
 # ============================================
-processed_signatures_cache = OrderedDict()  # Use OrderedDict for LRU
+processed_signatures_cache = OrderedDict()
 CACHE_CLEANUP_INTERVAL = 300
 last_cache_cleanup = time.time()
 MAX_FETCH_RETRIES = 2
@@ -523,8 +523,6 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         
         # In aggressive mode, be very lenient
         if AGGRESSIVE_MODE:
-            if lp_amount < 0.1:
-                return True, "Aggressive mode: micro position allowed"
             return True, f"Aggressive mode: {lp_amount:.2f} SOL liquidity"
         
         # Safe mode checks
@@ -577,7 +575,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         
     except Exception as e:
         logging.error(f"Quality check error: {e}")
-        if AGGRESSIVE_MODE and lp_amount >= 0:
+        if AGGRESSIVE_MODE:
             return True, "Quality check error but aggressive mode"
         return False, "Quality check error"
 
@@ -1255,21 +1253,21 @@ async def mempool_listener(name, program_id=None):
                                         buy_amount = RISKY_BUY_AMOUNT
                                     else:
                                         risk_level = "HIGH"
-                                       buy_amount = ULTRA_RISKY_BUY_AMOUNT
-                                   
-                                   recent_buy_attempts[potential_mint] = time.time()
-                                   
-                                   await send_telegram_alert(
-                                       f"{MODE_FILTERS['alert_prefix']} QUALITY TOKEN ✅\n\n"
-                                       f"Platform: {name}\n"
-                                       f"Token: `{potential_mint}`\n"
-                                       f"Liquidity: {lp_amount:.2f} SOL\n"
-                                       f"Risk: {risk_level}\n"
-                                       f"Buy Amount: {buy_amount} SOL\n\n"
-                                       f"Attempting snipe..."
-                                   )
-                                   
-                                   original_amount = os.getenv("BUY_AMOUNT_SOL")
+                                        buy_amount = ULTRA_RISKY_BUY_AMOUNT
+                                    
+                                    recent_buy_attempts[potential_mint] = time.time()
+                                    
+                                    await send_telegram_alert(
+                                        f"{MODE_FILTERS['alert_prefix']} QUALITY TOKEN ✅\n\n"
+                                        f"Platform: {name}\n"
+                                        f"Token: `{potential_mint}`\n"
+                                        f"Liquidity: {lp_amount:.2f} SOL\n"
+                                        f"Risk: {risk_level}\n"
+                                        f"Buy Amount: {buy_amount} SOL\n\n"
+                                        f"Attempting snipe..."
+                                    )
+                                    
+                                    original_amount = os.getenv("BUY_AMOUNT_SOL")
                                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
                                    
                                    try:
@@ -1528,7 +1526,6 @@ async def trending_scanner():
            logging.error(f"[Trending Scanner ERROR] {e}")
            await asyncio.sleep(TREND_SCAN_INTERVAL)
 
-# The remaining functions stay the same...
 async def rug_filter_passes(mint: str) -> bool:
    """Check if token passes basic rug filters - MODE AWARE"""
    try:
@@ -1547,540 +1544,468 @@ async def rug_filter_passes(mint: str) -> bool:
        logging.error(f"Rug check error for {mint}: {e}")
        return False
 
-# Keep all other functions (momentum scanner, etc) the same as they were...
-# [The rest of the file continues with the existing functions]
-
-# ============================================
-# MOMENTUM SCANNER - ELITE TRADING STRATEGY (MODE AWARE)
-# ============================================
-
 def detect_chart_pattern(price_data: list) -> str:
-    """
-    Detect if chart shows good or bad patterns
-    Returns: 'steady_climb', 'pump_dump', 'vertical', 'consolidating', 'unknown'
-    """
-    if not price_data or len(price_data) < 5:
-        return "unknown"
-    
-    # Calculate changes between candles
-    changes = []
-    for i in range(1, len(price_data)):
-        change = ((price_data[i] - price_data[i-1]) / price_data[i-1]) * 100
-        changes.append(change)
-    
-    # Detect patterns
-    max_change = max(changes) if changes else 0
-    avg_change = sum(changes) / len(changes) if changes else 0
-    positive_candles = sum(1 for c in changes if c > 0)
-    
-    # Vertical pump (bad) - mode aware
-    vertical_threshold = 150 if AGGRESSIVE_MODE else 100
-    if max_change > vertical_threshold:
-        return "vertical"
-    
-    # Pump and dump shape (bad)
-    if len(changes) > 2:
-        first_half = changes[:len(changes)//2]
-        second_half = changes[len(changes)//2:]
-        if sum(first_half) > 50 and sum(second_half) < -30:
-            return "pump_dump"
-    
-    # Steady climb (good)
-    if positive_candles >= len(changes) * 0.6 and 0 < avg_change < 20:
-        return "steady_climb"
-    
-    # Consolidating (good for entry)
-    if -5 < avg_change < 5 and max_change < 20:
-        return "consolidating"
-    
-    return "unknown"
+   """Detect if chart shows good or bad patterns"""
+   if not price_data or len(price_data) < 5:
+       return "unknown"
+   
+   changes = []
+   for i in range(1, len(price_data)):
+       change = ((price_data[i] - price_data[i-1]) / price_data[i-1]) * 100
+       changes.append(change)
+   
+   max_change = max(changes) if changes else 0
+   avg_change = sum(changes) / len(changes) if changes else 0
+   positive_candles = sum(1 for c in changes if c > 0)
+   
+   vertical_threshold = 150 if AGGRESSIVE_MODE else 100
+   if max_change > vertical_threshold:
+       return "vertical"
+   
+   if len(changes) > 2:
+       first_half = changes[:len(changes)//2]
+       second_half = changes[len(changes)//2:]
+       if sum(first_half) > 50 and sum(second_half) < -30:
+           return "pump_dump"
+   
+   if positive_candles >= len(changes) * 0.6 and 0 < avg_change < 20:
+       return "steady_climb"
+   
+   if -5 < avg_change < 5 and max_change < 20:
+       return "consolidating"
+   
+   return "unknown"
 
 async def score_momentum_token(token_data: dict) -> tuple:
-    """
-    Score a token based on momentum criteria - MODE AWARE
-    Returns: (score, [list of signals that passed])
-    """
-    score = 0
-    signals = []
-    
-    try:
-        # Extract data
-        price_change_1h = float(token_data.get("priceChange", {}).get("h1", 0))
-        price_change_5m = float(token_data.get("priceChange", {}).get("m5", 0))
-        liquidity_usd = float(token_data.get("liquidity", {}).get("usd", 0))
-        volume_h24 = float(token_data.get("volume", {}).get("h24", 0))
-        market_cap = float(token_data.get("marketCap", 0))
-        created_at = token_data.get("pairCreatedAt", 0)
-        
-        # Calculate age in hours
-        if created_at:
-            age_hours = (time.time() * 1000 - created_at) / (1000 * 60 * 60)
-        else:
-            age_hours = 0
-        
-        # Get price history if available
-        price_history = token_data.get("priceHistory", [])
-        pattern = detect_chart_pattern(price_history) if price_history else "unknown"
-        
-        # ===== MODE-AWARE MOMENTUM RULES =====
-        
-        # 1. Hour gain in sweet spot
-        if MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN:
-            score += 1
-            signals.append(f"✅ 1h gain: {price_change_1h:.1f}%")
-        elif price_change_1h > MOMENTUM_MAX_1H_GAIN:
-            if AGGRESSIVE_MODE:
-                # Still consider in aggressive mode
-                score += 0.5
-                signals.append(f"⚠️ High gain: {price_change_1h:.1f}%")
-            else:
-                signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
-                return (0, signals)  # Automatic disqualification
-        
-        # 2. Still pumping (5m green)
-        if price_change_5m > 0:
-            score += 1
-            signals.append(f"✅ Still pumping: {price_change_5m:.1f}% on 5m")
-        else:
-            if AGGRESSIVE_MODE and price_change_5m > -5:
-                score += 0.5
-                signals.append(f"⚠️ Slight cooling: {price_change_5m:.1f}% on 5m")
-            else:
-                signals.append(f"⚠️ Cooling off: {price_change_5m:.1f}% on 5m")
-        
-        # 3. Volume/Liquidity ratio > 2 (good activity)
-        if liquidity_usd > 0:
-            vol_liq_ratio = volume_h24 / liquidity_usd
-            min_ratio = 1.5 if AGGRESSIVE_MODE else 2
-            if vol_liq_ratio > min_ratio:
-                score += 1
-                signals.append(f"✅ Volume/Liq ratio: {vol_liq_ratio:.1f}")
-        
-        # 4. Safe liquidity
-        if liquidity_usd >= MOMENTUM_MIN_LIQUIDITY:
-            score += 1
-            signals.append(f"✅ Liquidity: ${liquidity_usd:,.0f}")
-        else:
-            if AGGRESSIVE_MODE and liquidity_usd >= MOMENTUM_MIN_LIQUIDITY * 0.7:
-                score += 0.5
-                signals.append(f"⚠️ Okay liquidity: ${liquidity_usd:,.0f}")
-            else:
-                signals.append(f"❌ Low liquidity: ${liquidity_usd:,.0f}")
-                return (0, signals)
-        
-        # 5. Room to grow (MC)
-        if market_cap < MOMENTUM_MAX_MC:
-            score += 1
-            signals.append(f"✅ Room to grow: ${market_cap:,.0f} MC")
-        else:
-            signals.append(f"⚠️ High MC: ${market_cap:,.0f}")
-        
-        # 6. Good age
-        if MOMENTUM_MIN_AGE_HOURS <= age_hours <= MOMENTUM_MAX_AGE_HOURS:
-            score += 0.5
-            signals.append(f"✅ Good age: {age_hours:.1f}h old")
-        
-        # 7. Pattern bonus
-        if pattern == "steady_climb":
-            score += 0.5
-            signals.append("✅ Steady climb pattern")
-        elif pattern == "consolidating":
-            score += 0.25
-            signals.append("✅ Consolidating pattern")
-        elif pattern in ["vertical", "pump_dump"]:
-            if not AGGRESSIVE_MODE:
-                signals.append(f"❌ Bad pattern: {pattern}")
-                score -= 1
-        
-        # 8. Check if NOT at ATH (bonus)
-        if price_change_5m < 0 and price_change_1h > 50:
-            score += 0.25
-            signals.append("✅ Pulling back from high")
-        
-    except Exception as e:
-        logging.error(f"Error scoring momentum token: {e}")
-        return (0, [f"Error: {str(e)}"])
-    
-    return (int(score), signals)
+   """Score a token based on momentum criteria - MODE AWARE"""
+   score = 0
+   signals = []
+   
+   try:
+       price_change_1h = float(token_data.get("priceChange", {}).get("h1", 0))
+       price_change_5m = float(token_data.get("priceChange", {}).get("m5", 0))
+       liquidity_usd = float(token_data.get("liquidity", {}).get("usd", 0))
+       volume_h24 = float(token_data.get("volume", {}).get("h24", 0))
+       market_cap = float(token_data.get("marketCap", 0))
+       created_at = token_data.get("pairCreatedAt", 0)
+       
+       if created_at:
+           age_hours = (time.time() * 1000 - created_at) / (1000 * 60 * 60)
+       else:
+           age_hours = 0
+       
+       price_history = token_data.get("priceHistory", [])
+       pattern = detect_chart_pattern(price_history) if price_history else "unknown"
+       
+       if MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN:
+           score += 1
+           signals.append(f"✅ 1h gain: {price_change_1h:.1f}%")
+       elif price_change_1h > MOMENTUM_MAX_1H_GAIN:
+           if AGGRESSIVE_MODE:
+               score += 0.5
+               signals.append(f"⚠️ High gain: {price_change_1h:.1f}%")
+           else:
+               signals.append(f"❌ Too late: {price_change_1h:.1f}% gain")
+               return (0, signals)
+       
+       if price_change_5m > 0:
+           score += 1
+           signals.append(f"✅ Still pumping: {price_change_5m:.1f}% on 5m")
+       else:
+           if AGGRESSIVE_MODE and price_change_5m > -5:
+               score += 0.5
+               signals.append(f"⚠️ Slight cooling: {price_change_5m:.1f}% on 5m")
+           else:
+               signals.append(f"⚠️ Cooling off: {price_change_5m:.1f}% on 5m")
+       
+       if liquidity_usd > 0:
+           vol_liq_ratio = volume_h24 / liquidity_usd
+           min_ratio = 1.5 if AGGRESSIVE_MODE else 2
+           if vol_liq_ratio > min_ratio:
+               score += 1
+               signals.append(f"✅ Volume/Liq ratio: {vol_liq_ratio:.1f}")
+       
+       if liquidity_usd >= MOMENTUM_MIN_LIQUIDITY:
+           score += 1
+           signals.append(f"✅ Liquidity: ${liquidity_usd:,.0f}")
+       else:
+           if AGGRESSIVE_MODE and liquidity_usd >= MOMENTUM_MIN_LIQUIDITY * 0.7:
+               score += 0.5
+               signals.append(f"⚠️ Okay liquidity: ${liquidity_usd:,.0f}")
+           else:
+               signals.append(f"❌ Low liquidity: ${liquidity_usd:,.0f}")
+               return (0, signals)
+       
+       if market_cap < MOMENTUM_MAX_MC:
+           score += 1
+           signals.append(f"✅ Room to grow: ${market_cap:,.0f} MC")
+       else:
+           signals.append(f"⚠️ High MC: ${market_cap:,.0f}")
+       
+       if MOMENTUM_MIN_AGE_HOURS <= age_hours <= MOMENTUM_MAX_AGE_HOURS:
+           score += 0.5
+           signals.append(f"✅ Good age: {age_hours:.1f}h old")
+       
+       if pattern == "steady_climb":
+           score += 0.5
+           signals.append("✅ Steady climb pattern")
+       elif pattern == "consolidating":
+           score += 0.25
+           signals.append("✅ Consolidating pattern")
+       elif pattern in ["vertical", "pump_dump"]:
+           if not AGGRESSIVE_MODE:
+               signals.append(f"❌ Bad pattern: {pattern}")
+               score -= 1
+       
+       if price_change_5m < 0 and price_change_1h > 50:
+           score += 0.25
+           signals.append("✅ Pulling back from high")
+       
+   except Exception as e:
+       logging.error(f"Error scoring momentum token: {e}")
+       return (0, [f"Error: {str(e)}"])
+   
+   return (int(score), signals)
 
 async def fetch_top_gainers() -> list:
-    """
-    Fetch top gaining tokens from DexScreener
-    """
-    try:
-        url = "https://api.dexscreener.com/latest/dex/pairs/solana"
-        
-        async with httpx.AsyncClient(timeout=10, verify=False) as client:
-            response = await client.get(url)
-            
-            if response.status_code == 200:
-                data = response.json()
-                pairs = data.get("pairs", [])
-                
-                # Filter for Raydium/Orca pairs only (avoid scams)
-                filtered_pairs = []
-                for pair in pairs:
-                    if pair.get("dexId") in ["raydium", "orca"]:
-                        # Check basic criteria
-                        price_change_1h = float(pair.get("priceChange", {}).get("h1", 0))
-                        liquidity_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                        
-                        # Pre-filter with mode-aware thresholds
-                        min_gain = MOMENTUM_MIN_1H_GAIN * 0.8 if AGGRESSIVE_MODE else MOMENTUM_MIN_1H_GAIN
-                        min_liq = MOMENTUM_MIN_LIQUIDITY * 0.7 if AGGRESSIVE_MODE else MOMENTUM_MIN_LIQUIDITY
-                        
-                        if (price_change_1h >= min_gain and
-                            liquidity_usd >= min_liq):
-                            filtered_pairs.append(pair)
-                
-                # Sort by 1h gain
-                filtered_pairs.sort(key=lambda x: float(x.get("priceChange", {}).get("h1", 0)), reverse=True)
-                
-                # Return top candidates
-                return filtered_pairs[:MAX_MOMENTUM_TOKENS]
-                
-    except Exception as e:
-        logging.error(f"Error fetching gainers: {e}")
-    
-    return []
+   """Fetch top gaining tokens from DexScreener"""
+   try:
+       url = "https://api.dexscreener.com/latest/dex/pairs/solana"
+       
+       async with httpx.AsyncClient(timeout=10, verify=False) as client:
+           response = await client.get(url)
+           
+           if response.status_code == 200:
+               data = response.json()
+               pairs = data.get("pairs", [])
+               
+               filtered_pairs = []
+               for pair in pairs:
+                   if pair.get("dexId") in ["raydium", "orca"]:
+                       price_change_1h = float(pair.get("priceChange", {}).get("h1", 0))
+                       liquidity_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                       
+                       min_gain = MOMENTUM_MIN_1H_GAIN * 0.8 if AGGRESSIVE_MODE else MOMENTUM_MIN_1H_GAIN
+                       min_liq = MOMENTUM_MIN_LIQUIDITY * 0.7 if AGGRESSIVE_MODE else MOMENTUM_MIN_LIQUIDITY
+                       
+                       if (price_change_1h >= min_gain and
+                           liquidity_usd >= min_liq):
+                           filtered_pairs.append(pair)
+               
+               filtered_pairs.sort(key=lambda x: float(x.get("priceChange", {}).get("h1", 0)), reverse=True)
+               
+               return filtered_pairs[:MAX_MOMENTUM_TOKENS]
+               
+   except Exception as e:
+       logging.error(f"Error fetching gainers: {e}")
+   
+   return []
 
 async def momentum_scanner():
-    """
-    Elite Momentum Scanner - MODE AWARE
-    """
-    if not MOMENTUM_SCANNER_ENABLED:
-        logging.info("[Momentum Scanner] Disabled via configuration")
-        return
-    
-    mode_text = "AGGRESSIVE" if AGGRESSIVE_MODE else "SAFE"
-    
-    await send_telegram_alert(
-        f"{MODE_FILTERS['alert_prefix']} MOMENTUM SCANNER 🔥\n\n"
-        f"Mode: {mode_text} {'AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
-        f"Auto-buy threshold: {MIN_SCORE_AUTO_BUY}/5\n"
-        f"Alert threshold: {MIN_SCORE_ALERT}/5\n"
-        f"Target: {MOMENTUM_MIN_1H_GAIN}-{MOMENTUM_MAX_1H_GAIN}% gainers\n"
-        f"Positions: {MOMENTUM_TEST_POSITION}-{MOMENTUM_POSITION_5_SCORE} SOL\n\n"
-        f"Hunting for pumps..."
-    )
-    
-    consecutive_errors = 0
-    
-    while True:
-        try:
-            if not is_bot_running():
-                await asyncio.sleep(30)
-                continue
-            
-            # Check if we're in prime trading hours
-            current_hour = datetime.now().hour
-            is_prime_time = current_hour in PRIME_HOURS
-            
-            # Adjust thresholds based on time (unless in aggressive mode)
-            if not AGGRESSIVE_MODE and not is_prime_time and current_hour not in REDUCED_HOURS:
-                await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
-                continue  # Skip dead hours in safe mode
-            
-            # Fetch top gainers
-            top_gainers = await fetch_top_gainers()
-            
-            if not top_gainers:
-                consecutive_errors += 1
-                if consecutive_errors > 5:
-                    logging.warning("[Momentum Scanner] Multiple fetch failures")
-                    await asyncio.sleep(MOMENTUM_SCAN_INTERVAL * 2)
-                continue
-            
-            consecutive_errors = 0
-            candidates_found = 0
-            
-            # Analyze each token
-            for token_data in top_gainers:
-                try:
-                    token_address = token_data.get("baseToken", {}).get("address")
-                    token_symbol = token_data.get("baseToken", {}).get("symbol", "Unknown")
-                    
-                    if not token_address:
-                        continue
-                    
-                    # Skip if recently analyzed (within 5 minutes)
-                    if token_address in momentum_analyzed:
-                        last_check = momentum_analyzed[token_address].get("timestamp", 0)
-                        if time.time() - last_check < 300:  # 5 minutes
-                            continue
-                    
-                    # Skip if already bought
-                    if token_address in momentum_bought or token_address in already_bought:
-                        continue
-                    
-                    # Score the token
-                    score, signals = await score_momentum_token(token_data)
-                    
-                    # Store analysis
-                    momentum_analyzed[token_address] = {
-                        "score": score,
-                        "timestamp": time.time(),
-                        "signals": signals,
-                        "symbol": token_symbol
-                    }
-                    
-                    # Skip low scores
-                    if score < MIN_SCORE_ALERT:
-                        continue
-                    
-                    candidates_found += 1
-                    
-                    # Determine action based on score
-                    if score >= MIN_SCORE_AUTO_BUY and MOMENTUM_AUTO_BUY:
-                        # AUTO BUY - Perfect setup
-                        position_size = MOMENTUM_POSITION_5_SCORE if score >= 5 else MOMENTUM_POSITION_4_SCORE
-                        
-                        # Extra caution during off-hours (unless aggressive)
-                        if not AGGRESSIVE_MODE and not is_prime_time:
-                            position_size = position_size * 0.5
-                        
-                        await send_telegram_alert(
-                            f"{MODE_FILTERS['alert_prefix']} MOMENTUM AUTO-BUY 🎯\n\n"
-                            f"Token: {token_symbol} ({token_address[:8]}...)\n"
-                            f"Score: {score}/5 ⭐\n"
-                            f"Position: {position_size} SOL\n\n"
-                            f"Signals:\n" + "\n".join(signals[:5]) + "\n\n"
-                            f"Executing..."
-                        )
-                        
-                        # Execute buy
-                        original_amount = os.getenv("BUY_AMOUNT_SOL")
-                        try:
-                            os.environ["BUY_AMOUNT_SOL"] = str(position_size)
-                            success = await buy_token(token_address)
-                            if success:
-                                momentum_bought.add(token_address)
-                                already_bought.add(token_address)
-                                await send_telegram_alert(
-                                    f"✅ MOMENTUM BUY SUCCESS\n"
-                                    f"Token: {token_symbol}\n"
-                                    f"Amount: {position_size} SOL\n"
-                                    f"Mode: {mode_text}\n\n"
-                                    f"Monitoring with exit rules..."
-                                )
-                                # Start auto-sell
-                                asyncio.create_task(wait_and_auto_sell(token_address))
-                        except Exception as e:
-                            logging.error(f"[Momentum Scanner] Buy error: {e}")
-                            await send_telegram_alert(f"❌ Momentum buy error: {str(e)[:100]}")
-                        finally:
-                            if original_amount:
-                                os.environ["BUY_AMOUNT_SOL"] = original_amount
-                                
-                    elif score >= MIN_SCORE_ALERT:
-                        # ALERT ONLY - Good setup needs approval
-                        await send_telegram_alert(
-                            f"{MODE_FILTERS['alert_prefix']} MOMENTUM OPPORTUNITY 🔔\n\n"
-                            f"Token: {token_symbol} ({token_address[:8]}...)\n"
-                            f"Score: {score}/5 ⭐\n"
-                            f"Suggested: {MOMENTUM_POSITION_3_SCORE} SOL\n\n"
-                            f"Signals:\n" + "\n".join(signals[:5]) + "\n\n"
-                            f"Use /forcebuy {token_address} to execute"
-                        )
-                    
-                    # Rate limit between checks
-                    await asyncio.sleep(1)
-                    
-                except Exception as e:
-                    logging.error(f"Error analyzing momentum token: {e}")
-                    continue
-            
-            # Summary log
-            if candidates_found > 0:
-                logging.info(f"[Momentum Scanner] Found {candidates_found} candidates this scan")
-            
-            # Wait before next scan
-            await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
-            
-        except Exception as e:
-            logging.error(f"[Momentum Scanner] Error in main loop: {e}")
-            await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
+   """Elite Momentum Scanner - MODE AWARE"""
+   if not MOMENTUM_SCANNER_ENABLED:
+       logging.info("[Momentum Scanner] Disabled via configuration")
+       return
+   
+   mode_text = "AGGRESSIVE" if AGGRESSIVE_MODE else "SAFE"
+   
+   await send_telegram_alert(
+       f"{MODE_FILTERS['alert_prefix']} MOMENTUM SCANNER 🔥\n\n"
+       f"Mode: {mode_text} {'AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
+       f"Auto-buy threshold: {MIN_SCORE_AUTO_BUY}/5\n"
+       f"Alert threshold: {MIN_SCORE_ALERT}/5\n"
+       f"Target: {MOMENTUM_MIN_1H_GAIN}-{MOMENTUM_MAX_1H_GAIN}% gainers\n"
+       f"Positions: {MOMENTUM_TEST_POSITION}-{MOMENTUM_POSITION_5_SCORE} SOL\n\n"
+       f"Hunting for pumps..."
+   )
+   
+   consecutive_errors = 0
+   
+   while True:
+       try:
+           if not is_bot_running():
+               await asyncio.sleep(30)
+               continue
+           
+           current_hour = datetime.now().hour
+           is_prime_time = current_hour in PRIME_HOURS
+           
+           if not AGGRESSIVE_MODE and not is_prime_time and current_hour not in REDUCED_HOURS:
+               await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
+               continue
+           
+           top_gainers = await fetch_top_gainers()
+           
+           if not top_gainers:
+               consecutive_errors += 1
+               if consecutive_errors > 5:
+                   logging.warning("[Momentum Scanner] Multiple fetch failures")
+                   await asyncio.sleep(MOMENTUM_SCAN_INTERVAL * 2)
+               continue
+           
+           consecutive_errors = 0
+           candidates_found = 0
+           
+           for token_data in top_gainers:
+               try:
+                   token_address = token_data.get("baseToken", {}).get("address")
+                   token_symbol = token_data.get("baseToken", {}).get("symbol", "Unknown")
+                   
+                   if not token_address:
+                       continue
+                   
+                   if token_address in momentum_analyzed:
+                       last_check = momentum_analyzed[token_address].get("timestamp", 0)
+                       if time.time() - last_check < 300:
+                           continue
+                   
+                   if token_address in momentum_bought or token_address in already_bought:
+                       continue
+                   
+                   score, signals = await score_momentum_token(token_data)
+                   
+                   momentum_analyzed[token_address] = {
+                       "score": score,
+                       "timestamp": time.time(),
+                       "signals": signals,
+                       "symbol": token_symbol
+                   }
+                   
+                   if score < MIN_SCORE_ALERT:
+                       continue
+                   
+                   candidates_found += 1
+                   
+                   if score >= MIN_SCORE_AUTO_BUY and MOMENTUM_AUTO_BUY:
+                       position_size = MOMENTUM_POSITION_5_SCORE if score >= 5 else MOMENTUM_POSITION_4_SCORE
+                       
+                       if not AGGRESSIVE_MODE and not is_prime_time:
+                           position_size = position_size * 0.5
+                       
+                       await send_telegram_alert(
+                           f"{MODE_FILTERS['alert_prefix']} MOMENTUM AUTO-BUY 🎯\n\n"
+                           f"Token: {token_symbol} ({token_address[:8]}...)\n"
+                           f"Score: {score}/5 ⭐\n"
+                           f"Position: {position_size} SOL\n\n"
+                           f"Signals:\n" + "\n".join(signals[:5]) + "\n\n"
+                           f"Executing..."
+                       )
+                       
+                       original_amount = os.getenv("BUY_AMOUNT_SOL")
+                       try:
+                           os.environ["BUY_AMOUNT_SOL"] = str(position_size)
+                           success = await buy_token(token_address)
+                           if success:
+                               momentum_bought.add(token_address)
+                               already_bought.add(token_address)
+                               await send_telegram_alert(
+                                   f"✅ MOMENTUM BUY SUCCESS\n"
+                                   f"Token: {token_symbol}\n"
+                                   f"Amount: {position_size} SOL\n"
+                                   f"Mode: {mode_text}\n\n"
+                                   f"Monitoring with exit rules..."
+                               )
+                               asyncio.create_task(wait_and_auto_sell(token_address))
+                       except Exception as e:
+                           logging.error(f"[Momentum Scanner] Buy error: {e}")
+                           await send_telegram_alert(f"❌ Momentum buy error: {str(e)[:100]}")
+                       finally:
+                           if original_amount:
+                               os.environ["BUY_AMOUNT_SOL"] = original_amount
+                               
+                   elif score >= MIN_SCORE_ALERT:
+                       await send_telegram_alert(
+                           f"{MODE_FILTERS['alert_prefix']} MOMENTUM OPPORTUNITY 🔔\n\n"
+                           f"Token: {token_symbol} ({token_address[:8]}...)\n"
+                           f"Score: {score}/5 ⭐\n"
+                           f"Suggested: {MOMENTUM_POSITION_3_SCORE} SOL\n\n"
+                           f"Signals:\n" + "\n".join(signals[:5]) + "\n\n"
+                           f"Use /forcebuy {token_address} to execute"
+                       )
+                   
+                   await asyncio.sleep(1)
+                   
+               except Exception as e:
+                   logging.error(f"Error analyzing momentum token: {e}")
+                   continue
+           
+           if candidates_found > 0:
+               logging.info(f"[Momentum Scanner] Found {candidates_found} candidates this scan")
+           
+           await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
+           
+       except Exception as e:
+           logging.error(f"[Momentum Scanner] Error in main loop: {e}")
+           await asyncio.sleep(MOMENTUM_SCAN_INTERVAL)
 
 async def check_momentum_score(mint: str) -> dict:
-    """
-    Check momentum score for a specific token (used by forcebuy)
-    """
-    try:
-        # Fetch token data from DexScreener
-        url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-        
-        async with httpx.AsyncClient(timeout=10, verify=False) as client:
-            response = await client.get(url)
-            
-            if response.status_code == 200:
-                data = response.json()
-                pairs = data.get("pairs", [])
-                
-                if pairs:
-                    # Get best pair
-                    best_pair = pairs[0]
-                    score, signals = await score_momentum_token(best_pair)
-                    
-                    # Get position recommendation
-                    if score >= 5:
-                        recommendation = MOMENTUM_POSITION_5_SCORE
-                    elif score >= 4:
-                        recommendation = MOMENTUM_POSITION_4_SCORE
-                    elif score >= 3:
-                        recommendation = MOMENTUM_POSITION_3_SCORE
-                    else:
-                        recommendation = MOMENTUM_TEST_POSITION
-                    
-                    return {
-                        "score": score,
-                        "signals": signals,
-                        "recommendation": recommendation
-                    }
-        
-    except Exception as e:
-        logging.error(f"Error checking momentum score: {e}")
-    
-    return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
+   """Check momentum score for a specific token (used by forcebuy)"""
+   try:
+       url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+       
+       async with httpx.AsyncClient(timeout=10, verify=False) as client:
+           response = await client.get(url)
+           
+           if response.status_code == 200:
+               data = response.json()
+               pairs = data.get("pairs", [])
+               
+               if pairs:
+                   best_pair = pairs[0]
+                   score, signals = await score_momentum_token(best_pair)
+                   
+                   if score >= 5:
+                       recommendation = MOMENTUM_POSITION_5_SCORE
+                   elif score >= 4:
+                       recommendation = MOMENTUM_POSITION_4_SCORE
+                   elif score >= 3:
+                       recommendation = MOMENTUM_POSITION_3_SCORE
+                   else:
+                       recommendation = MOMENTUM_TEST_POSITION
+                   
+                   return {
+                       "score": score,
+                       "signals": signals,
+                       "recommendation": recommendation
+                   }
+       
+   except Exception as e:
+       logging.error(f"Error checking momentum score: {e}")
+   
+   return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
 
 async def start_sniper():
-    """Start the ELITE sniper bot with DUAL MODE support"""
-    mode_text = f"{'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'} MODE"
-    TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
-    
-    await send_telegram_alert(
-        f"💰 DUAL MODE SNIPER LAUNCHING 💰\n\n"
-        f"Mode: {mode_text}\n"
-        f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
-        f"Min AI Score: {MIN_AI_SCORE}\n"
-        f"Min Volume: ${MIN_VOLUME_USD:,.0f}\n"
-        f"Migration Snipe: {PUMPFUN_MIGRATION_BUY} SOL\n"
-        f"Momentum: {'AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n\n"
-        f"Filters: {MODE_FILTERS['alert_prefix']}\n"
-        f"Position Sizes: {SAFE_BUY_AMOUNT}-{ULTRA_RISKY_BUY_AMOUNT} SOL\n\n"
-        f"Ready to print money! 🎯"
-    )
+   """Start the ELITE sniper bot with DUAL MODE support"""
+   mode_text = f"{'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'} MODE"
+   TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
+   
+   await send_telegram_alert(
+       f"💰 DUAL MODE SNIPER LAUNCHING 💰\n\n"
+       f"Mode: {mode_text}\n"
+       f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
+       f"Min AI Score: {MIN_AI_SCORE}\n"
+       f"Min Volume: ${MIN_VOLUME_USD:,.0f}\n"
+       f"Migration Snipe: {PUMPFUN_MIGRATION_BUY} SOL\n"
+       f"Momentum: {'AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n\n"
+       f"Filters: {MODE_FILTERS['alert_prefix']}\n"
+       f"Position Sizes: {SAFE_BUY_AMOUNT}-{ULTRA_RISKY_BUY_AMOUNT} SOL\n\n"
+       f"Ready to print money! 🎯"
+   )
 
-    if FORCE_TEST_MINT:
-        await send_telegram_alert(f"🚨 Forced Test Buy: {FORCE_TEST_MINT}")
-        try:
-            success = await buy_token(FORCE_TEST_MINT)
-            if success:
-                await wait_and_auto_sell(FORCE_TEST_MINT)
-        except Exception as e:
-            logging.error(f"Force buy error: {e}")
+   if FORCE_TEST_MINT:
+       await send_telegram_alert(f"🚨 Forced Test Buy: {FORCE_TEST_MINT}")
+       try:
+           success = await buy_token(FORCE_TEST_MINT)
+           if success:
+               await wait_and_auto_sell(FORCE_TEST_MINT)
+       except Exception as e:
+           logging.error(f"Force buy error: {e}")
 
-    TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
-    TASKS.append(asyncio.create_task(cleanup_recent_attempts()))
-    
-    
-    # Start listeners (skip Jupiter if configured)
-    listeners = ["Raydium", "PumpFun", "Moonshot"]
-    if not SKIP_JUPITER_MEMPOOL:
-        listeners.append("Jupiter")
-    
-    for listener in listeners:
-        TASKS.append(asyncio.create_task(mempool_listener(listener)))
-    
-    TASKS.append(asyncio.create_task(trending_scanner()))
-    
-    # ADD MOMENTUM SCANNER - YOUR ELITE STRATEGY
-    if MOMENTUM_SCANNER_ENABLED:
-        TASKS.append(asyncio.create_task(momentum_scanner()))
-        await send_telegram_alert(
-            f"{MODE_FILTERS['alert_prefix']} Momentum Scanner: ACTIVE\n"
-            f"Hunting for {MOMENTUM_MIN_1H_GAIN}-{MOMENTUM_MAX_1H_GAIN}% gainers\n"
-            f"Auto-buy score: {MIN_SCORE_AUTO_BUY}/5\n"
-            f"Alert score: {MIN_SCORE_ALERT}+/5"
-        )
-    
-    if ENABLE_PUMPFUN_MIGRATION:
-        TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
-        TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
-        await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} PumpFun Migration: ACTIVE")
-        await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} Graduation Scanner: ACTIVE")
-    
-    await send_telegram_alert(f"🎯 MONEY PRINTER ACTIVE - {mode_text}!")
+   TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
+   TASKS.append(asyncio.create_task(cleanup_recent_attempts()))
+   
+   listeners = ["Raydium", "PumpFun", "Moonshot"]
+   if not SKIP_JUPITER_MEMPOOL:
+       listeners.append("Jupiter")
+   
+   for listener in listeners:
+       TASKS.append(asyncio.create_task(mempool_listener(listener)))
+   
+   TASKS.append(asyncio.create_task(trending_scanner()))
+   
+   if MOMENTUM_SCANNER_ENABLED:
+       TASKS.append(asyncio.create_task(momentum_scanner()))
+       await send_telegram_alert(
+           f"{MODE_FILTERS['alert_prefix']} Momentum Scanner: ACTIVE\n"
+           f"Hunting for {MOMENTUM_MIN_1H_GAIN}-{MOMENTUM_MAX_1H_GAIN}% gainers\n"
+           f"Auto-buy score: {MIN_SCORE_AUTO_BUY}/5\n"
+           f"Alert score: {MIN_SCORE_ALERT}+/5"
+       )
+   
+   if ENABLE_PUMPFUN_MIGRATION:
+       TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
+       TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
+       await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} PumpFun Migration: ACTIVE")
+       await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} Graduation Scanner: ACTIVE")
+   
+   await send_telegram_alert(f"🎯 MONEY PRINTER ACTIVE - {mode_text}!")
 
 async def start_sniper_with_forced_token(mint: str):
-    """Force buy a specific token with MOMENTUM SCORING"""
-    try:
-        await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} FORCE BUY: {mint}")
-        
-        if not is_bot_running():
-            await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
-            return
+   """Force buy a specific token with MOMENTUM SCORING"""
+   try:
+       await send_telegram_alert(f"{MODE_FILTERS['alert_prefix']} FORCE BUY: {mint}")
+       
+       if not is_bot_running():
+           await send_telegram_alert(f"⛔ Bot is paused. Cannot force buy {mint}")
+           return
 
-        if mint in BROKEN_TOKENS or mint in BLACKLIST or mint in already_bought:
-            await send_telegram_alert(f"❌ {mint} is blacklisted, broken, or already bought")
-            return
+       if mint in BROKEN_TOKENS or mint in BLACKLIST or mint in already_bought:
+           await send_telegram_alert(f"❌ {mint} is blacklisted, broken, or already bought")
+           return
 
-        # Initialize is_pumpfun first
-        is_pumpfun = mint in pumpfun_tokens
-        
-        # CHECK MOMENTUM SCORE FOR FORCE BUYS
-        momentum_data = await check_momentum_score(mint)
-        if momentum_data["score"] > 0:
-            await send_telegram_alert(
-                f"📊 MOMENTUM SCORE CHECK\n\n"
-                f"Token: {mint[:8]}...\n"
-                f"Score: {momentum_data['score']}/5 ⭐\n"
-                f"Signals:\n" + "\n".join(momentum_data['signals'][:5]) + "\n\n"
-                f"Recommended position: {momentum_data['recommendation']} SOL"
-            )
-            
-            # Use momentum recommendation if score is good
-            if momentum_data['score'] >= MIN_SCORE_AUTO_BUY:
-                buy_amount = momentum_data['recommendation']
-            else:
-                buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
-        else:
-            # Use default amounts
-            buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
-        
-        logging.info(f"[FORCEBUY] Attempting forced buy for {mint} with {buy_amount} SOL")
+       is_pumpfun = mint in pumpfun_tokens
+       
+       momentum_data = await check_momentum_score(mint)
+       if momentum_data["score"] > 0:
+           await send_telegram_alert(
+               f"📊 MOMENTUM SCORE CHECK\n\n"
+               f"Token: {mint[:8]}...\n"
+               f"Score: {momentum_data['score']}/5 ⭐\n"
+               f"Signals:\n" + "\n".join(momentum_data['signals'][:5]) + "\n\n"
+               f"Recommended position: {momentum_data['recommendation']} SOL"
+           )
+           
+           if momentum_data['score'] >= MIN_SCORE_AUTO_BUY:
+               buy_amount = momentum_data['recommendation']
+           else:
+               buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
+       else:
+           buy_amount = PUMPFUN_MIGRATION_BUY if is_pumpfun else BUY_AMOUNT_SOL
+       
+       logging.info(f"[FORCEBUY] Attempting forced buy for {mint} with {buy_amount} SOL")
 
-        original_amount = os.getenv("BUY_AMOUNT_SOL")
-        os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
-        
-        try:
-            result = await buy_token(mint)
-            if result:
-                already_bought.add(mint)
-                if BLACKLIST_AFTER_BUY:
-                    BLACKLIST.add(mint)
-                    
-                token_type = "PumpFun Graduate" if is_pumpfun else "Standard"
-                if momentum_data.get("score", 0) >= 3:
-                    token_type = f"Momentum Play (Score: {momentum_data['score']}/5)"
-                    
-                await send_telegram_alert(
-                    f"✅ Force buy successful\n"
-                    f"Token: {mint}\n"
-                    f"Type: {token_type}\n"
-                    f"Amount: {buy_amount} SOL\n"
-                    f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}"
-                )
-                await wait_and_auto_sell(mint)
-            else:
-                await send_telegram_alert(f"❌ Force buy failed for {mint}")
-        finally:
-            if original_amount:
-                os.environ["BUY_AMOUNT_SOL"] = original_amount
-            
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        await send_telegram_alert(f"❌ Force buy error: {e}")
-        logging.exception(f"[FORCEBUY] Exception: {e}\n{tb}")
+       original_amount = os.getenv("BUY_AMOUNT_SOL")
+       os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
+       
+       try:
+           result = await buy_token(mint)
+           if result:
+               already_bought.add(mint)
+               if BLACKLIST_AFTER_BUY:
+                   BLACKLIST.add(mint)
+                   
+               token_type = "PumpFun Graduate" if is_pumpfun else "Standard"
+               if momentum_data.get("score", 0) >= 3:
+                   token_type = f"Momentum Play (Score: {momentum_data['score']}/5)"
+                   
+               await send_telegram_alert(
+                   f"✅ Force buy successful\n"
+                   f"Token: {mint}\n"
+                   f"Type: {token_type}\n"
+                   f"Amount: {buy_amount} SOL\n"
+                   f"Mode: {'AGGRESSIVE' if AGGRESSIVE_MODE else 'SAFE'}"
+               )
+               await wait_and_auto_sell(mint)
+           else:
+               await send_telegram_alert(f"❌ Force buy failed for {mint}")
+       finally:
+           if original_amount:
+               os.environ["BUY_AMOUNT_SOL"] = original_amount
+           
+   except Exception as e:
+       import traceback
+       tb = traceback.format_exc()
+       await send_telegram_alert(f"❌ Force buy error: {e}")
+       logging.exception(f"[FORCEBUY] Exception: {e}\n{tb}")
 
 async def stop_all_tasks():
-    """Stop all running tasks"""
-    for task in TASKS:
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-    TASKS.clear()
-    await send_telegram_alert("🛑 All sniper tasks stopped.")
+   """Stop all running tasks"""
+   for task in TASKS:
+       if not task.done():
+           task.cancel()
+           try:
+               await task
+           except asyncio.CancelledError:
+               pass
+   TASKS.clear()
+   await send_telegram_alert("🛑 All sniper tasks stopped.")
