@@ -59,7 +59,7 @@ MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.2))
 
 # FIXED: Force detection thresholds to be minimal for maximum detection
 RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 3))
-ARAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 5))   
+RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 5))   
 PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 3))
 PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 5))
 
@@ -1445,9 +1445,9 @@ async def trending_scanner():
                     quality_finds += 1
                     
                     alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
-                    if is_pumpfun_grad:
+                     if is_pumpfun_grad:
                         alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
-                    
+                     
                      await send_telegram_alert(
                         alert_msg +
                         f"Token: `{mint}`\n"
@@ -1458,7 +1458,7 @@ async def trending_scanner():
                         f"• 24h: {price_change_h24:+.1f}%\n"
                         f"Source: {source}\n\n"
                         f"Attempting to buy..."
-                    )
+                     )
 
                      original_amount = None
                      try:
@@ -1477,8 +1477,8 @@ async def trending_scanner():
 
                      except Exception as e:
                             logging.error(f"[Trending] Buy error: {e}")
-                        finally:
-                             if original_amount:
+                     finally:
+                        if original_amount:
                                  os.environ["BUY_AMOUNT_SOL"] = original_amount
                         
             
@@ -1790,8 +1790,8 @@ async def momentum_scanner():
                         # Execute buy
                         original_amount = os.getenv("BUY_AMOUNT_SOL")
                         try:
-                        os.environ["BUY_AMOUNT_SOL"] = str(position_size)  # Use the adjusted position_size
-                        success = await buy_token(token_address)
+                            os.environ["BUY_AMOUNT_SOL"] = str(position_size)  # Use the adjusted position_size
+                            success = await buy_token(token_address)
                         if success:
                             momentum_bought.add(token_address)
                             already_bought.add(token_address)
@@ -1804,7 +1804,7 @@ async def momentum_scanner():
                             )
                             # Start auto-sell
                             asyncio.create_task(wait_and_auto_sell(token_address))
-                        except Exception as e:
+                         except Exception as e:
                             logging.error(f"[Momentum Scanner] Buy error: {e}")
                             await send_telegram_alert(f"❌ Momentum buy error: {str(e)[:100]}")
                          finally:
