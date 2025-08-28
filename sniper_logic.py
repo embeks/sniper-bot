@@ -1472,15 +1472,15 @@ async def trending_scanner():
                             if BLACKLIST_AFTER_BUY:
                                 BLACKLIST.add(mint)
                             asyncio.create_task(wait_and_auto_sell(mint))
+                        else:
+                            logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
 
                         except Exception as e:
                             logging.error(f"[Trending] Buy error: {e}")
                         finally:
                              if original_amount:
                                  os.environ["BUY_AMOUNT_SOL"] = original_amount
-                            else:
-                                 logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-                                
+                        
             
             if processed > 0:
                 logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
