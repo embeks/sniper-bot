@@ -149,7 +149,7 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
     """
     FIXED: Fetch transaction details with loop prevention and caching
     """
-    global last_cache_cleanup
+    global processed_signatures_cache, last_cache_cleanup
     
     # CRITICAL FIX 1: Prevent infinite loops
     if retry_count > MAX_FETCH_RETRIES:
@@ -341,6 +341,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
     """
     FIXED: Fallback method with loop prevention
     """
+    global processed_signatures_cache
     # FIX #3: Prevent infinite loops
     if retry_count >= MAX_FETCH_RETRIES:
         logging.warning(f"[FALLBACK] Max retries exhausted for {signature[:8]}...")
