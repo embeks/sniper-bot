@@ -45,7 +45,7 @@ load_dotenv()
 # AGGRESSIVE MODE CONFIGURATION
 # ============================================
 
-AGGRESSIVE_MODE = os.getenv("AGGRESSIVE_MODE", "false").lower() == "true"
+AGGRESSIVE_MODE = False  # Permanently disabled
 AGGRESSIVE_START_TIME = time.time() if AGGRESSIVE_MODE else None
 AGGRESSIVE_DURATION_HOURS = float(os.getenv("AGGRESSIVE_DURATION_HOURS", 36))
 TARGET_MULTIPLIER = float(os.getenv("TARGET_MULTIPLIER", 10))
