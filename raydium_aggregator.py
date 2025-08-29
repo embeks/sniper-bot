@@ -8,7 +8,6 @@ from typing import Optional, Dict, Any, Tuple, List
 import base64
 import base58
 import time
-import requests  # ADD THIS IMPORT
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -127,7 +126,7 @@ class RaydiumAggregatorClient:
             limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))
             logging.info(f"[Raydium] Doing pool scan (max {limit} pools)...")
             
-            # Use raw RPC call to avoid solana-py internal errors
+            # Use httpx for consistency with rest of codebase
             try:
                 payload = {
                     "jsonrpc": "2.0",
@@ -142,7 +141,8 @@ class RaydiumAggregatorClient:
                     ]
                 }
                 
-                response = requests.post(self.rpc_url, json=payload, timeout=10)
+                with httpx.Client(timeout=10) as client:
+                    response = client.post(self.rpc_url, json=payload)
                 
                 if response.status_code != 200:
                     logging.warning(f"[Raydium] RPC request failed: {response.status_code}")
@@ -155,7 +155,7 @@ class RaydiumAggregatorClient:
                     
                 accounts = data["result"]
                 
-            except requests.exceptions.Timeout:
+            except httpx.TimeoutException:
                 logging.warning("[Raydium] RPC request timed out")
                 return None
             except Exception as e:
