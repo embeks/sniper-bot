@@ -1,9 +1,6 @@
-
-
 import asyncio
 import json
 import os
-import websockets
 import logging
 import time
 import re
@@ -58,11 +55,11 @@ MAX_TOP_HOLDER_PERCENT = float(os.getenv("MAX_TOP_HOLDER_PERCENT", 35))
 MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", 5))
 MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.2))
 
-# FIXED: Force detection thresholds to be minimal for maximum detection
-RAYDIUM_MIN_INDICATORS = 1  # Override env var - any indicator triggers
-RAYDIUM_MIN_LOGS = 1  # Override env var - minimal logs needed  
-PUMPFUN_MIN_INDICATORS = 1
-PUMPFUN_MIN_LOGS = 1
+# FIX #2: Use ENV variables properly - don't override them
+RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", "3"))
+RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", "10"))
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", "3"))
+PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", "5"))
 
 # Anti-duplicate settings
 DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 300))
@@ -167,15 +164,27 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
     # Mark as processing
     processed_signatures_cache[signature] = time.time()
     
-    # CRITICAL FIX 3: Clean cache periodically
+    # FIX #6: Improved cache cleanup
     current_time = time.time()
     if current_time - last_cache_cleanup > CACHE_CLEANUP_INTERVAL:
+        # Keep only recent signatures (last 5 minutes)
+        cutoff_time = current_time - 300
         old_sigs = [sig for sig, ts in processed_signatures_cache.items() 
-                   if current_time - ts > CACHE_CLEANUP_INTERVAL]
+                   if ts < cutoff_time]
+        
         for sig in old_sigs:
             del processed_signatures_cache[sig]
+        
+        # Also limit total size
+        if len(processed_signatures_cache) > 500:
+            # Keep only newest 250
+            sorted_items = sorted(processed_signatures_cache.items(), 
+                                key=lambda x: x[1], reverse=True)
+            processed_signatures_cache = dict(sorted_items[:250])
+        
         last_cache_cleanup = current_time
-        logging.debug(f"[TX FETCH] Cleaned {len(old_sigs)} old signatures from cache")
+        if old_sigs:
+            logging.debug(f"[CACHE] Cleaned {len(old_sigs)} old signatures")
     
     try:
         if not rpc_url:
@@ -316,7 +325,7 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
                     logging.debug(f"[TX FETCH] {encoding} encoding failed: {e}")
                     continue
             
-            # CRITICAL FIX 5: Pass retry_count to prevent infinite recursion
+            # FIX #3: Pass retry_count to prevent infinite recursion
             logging.debug(f"[TX FETCH] All encodings failed, trying fallback for {signature[:8]}...")
             return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
         
@@ -332,9 +341,9 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
     """
     FIXED: Fallback method with loop prevention
     """
-    # CRITICAL FIX: Prevent infinite loops
-    if retry_count > MAX_FETCH_RETRIES:
-        logging.warning(f"[FALLBACK] Max retries reached for {signature[:8]}...")
+    # FIX #3: Prevent infinite loops
+    if retry_count >= MAX_FETCH_RETRIES:
+        logging.warning(f"[FALLBACK] Max retries exhausted for {signature[:8]}...")
         return []
     
     # Check if already processed
@@ -783,6 +792,7 @@ async def mempool_listener(name, program_id=None):
         watchdog_task = None
         
         try:
+            import websockets
             ws = await websockets.connect(
                 url, 
                 ping_interval=20,
@@ -924,8 +934,8 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"  Logs: {len(logs)} (need {RAYDIUM_MIN_LOGS})")
                                 logging.info(f"  Has init: {has_init_pool}, Has create: {has_create_pool}, Has liquidity: {has_liquidity}")
                             
-                            # FIXED: Use the minimal thresholds
-                            if raydium_indicators >= RAYDIUM_MIN_INDICATORS:
+                            # Use the ENV variable thresholds
+                            if raydium_indicators >= RAYDIUM_MIN_INDICATORS and len(logs) >= RAYDIUM_MIN_LOGS:
                                 is_pool_creation = True
                                 logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
                         
@@ -965,8 +975,8 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"  Indicators: {pumpfun_create_indicators} (need {PUMPFUN_MIN_INDICATORS})")
                                 logging.info(f"  Logs: {len(logs)} (need {PUMPFUN_MIN_LOGS})")
                             
-                            # Use minimal thresholds
-                            if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS:
+                            # Use ENV variable thresholds
+                            if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS and len(logs) >= PUMPFUN_MIN_LOGS:
                                 is_pool_creation = True
                                 logging.info(f"[PUMPFUN] TOKEN DETECTED - Score: {pumpfun_create_indicators}")
                         
