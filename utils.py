@@ -1305,7 +1305,7 @@ async def wait_and_auto_sell(mint: str):
                 
                 # Trailing stop logic
                 if profit_multiplier >= TRAILING_STOP_ACTIVATION:
-                    drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
+                   drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
                    if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
                        logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
                        if await sell_token(mint, 100):
@@ -1568,3 +1568,4 @@ __all__ = [
    'SCALE_WITH_BALANCE',
    'evaluate_pumpfun_opportunity'
 ]
+                    
