@@ -539,8 +539,8 @@ async def _get_liquidity_internal(mint: str) -> Optional[Dict[str, Any]]:
             logging.debug(f"[LP Check] Jupiter quote check failed: {e}")
         
         # For brand new tokens, assume minimal liquidity to allow discovery
-        logging.info(f"[LP Check] {mint[:8]}... is very new, assuming minimal liquidity")
-        return {"liquidity": 0.5}  # Allow buying new tokens with 0.5 SOL assumed liquidity
+        logging.info(f"[LP Check] {mint[:8]}... has no pool found")
+        return None  # Don't assume liquidity for unknown tokens
             
     except Exception as e:
         logging.error(f"[LP Check] Critical error for {mint}: {e}")
