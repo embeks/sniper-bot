@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Tuple, List
 import base64
 import base58
 import time
+import requests
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -121,98 +122,128 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """COMPLETELY FIXED pool finding - no offset usage at all"""
+        """FIXED pool finding using raw RPC to avoid offset errors"""
         try:
-            limit = int(os.getenv("POOL_SCAN_LIMIT", "20"))
-            logging.info(f"[Raydium] Doing limited scan (max {limit} pools)...")
+            limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))  # Increased limit
+            logging.info(f"[Raydium] Doing pool scan (max {limit} pools)...")
             
+            # Use raw RPC call to avoid solana-py internal errors
             try:
-                import socket
-                original_timeout = socket.getdefaulttimeout()
-                socket.setdefaulttimeout(5)
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getProgramAccounts",
+                    "params": [
+                        str(RAYDIUM_AMM_PROGRAM_ID),
+                        {
+                            "encoding": "base64",
+                            "filters": [{"dataSize": 752}],
+                            "withContext": False
+                        }
+                    ]
+                }
                 
-                try:
-                    filters = [{"dataSize": 752}]
+                response = requests.post(
+                    self.rpc_url, 
+                    json=payload, 
+                    timeout=10,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code != 200:
+                    logging.warning(f"[Raydium] RPC request failed: {response.status_code}")
+                    return None
                     
+                data = response.json()
+                if "result" not in data:
+                    logging.warning("[Raydium] No result in RPC response")
+                    return None
+                    
+                accounts = data["result"]
+                
+            except requests.exceptions.Timeout:
+                logging.warning("[Raydium] RPC request timed out")
+                return None
+            except Exception as e:
+                logging.warning(f"[Raydium] Raw RPC call failed: {e}")
+                # Fallback to client library but with better error handling
+                try:
                     response = self.client.get_program_accounts(
                         RAYDIUM_AMM_PROGRAM_ID,
                         encoding="base64",
-                        filters=filters
+                        filters=[{"dataSize": 752}]
                     )
-                finally:
-                    socket.setdefaulttimeout(original_timeout)
-                
-                # Handle response properly - FIXED ERROR HERE
-                accounts = []
-                if response is None:
-                    logging.warning("[Raydium] No response from get_program_accounts")
-                    return None
-                elif hasattr(response, 'value'):
-                    accounts = response.value if response.value else []
-                elif hasattr(response, 'result'):
-                    accounts = response.result if response.result else []
-                elif isinstance(response, dict):
-                    accounts = response.get('result', response.get('value', []))
-                elif isinstance(response, list):
-                    accounts = response
-                else:
-                    logging.warning(f"[Raydium] Unknown response type: {type(response)}")
-                    return None
-                
-                if not accounts:
-                    logging.warning("[Raydium] No accounts returned from RPC")
-                    return None
-                
-                # Take the last N pools without using offset
-                if len(accounts) > limit:
-                    # Simply slice the list - no offset attribute access
-                    pools_to_check = accounts[-limit:]
-                else:
-                    pools_to_check = accounts
                     
-                logging.info(f"[Raydium] Checking {len(pools_to_check)} recent pools...")
+                    if hasattr(response, 'value'):
+                        accounts = response.value if response.value else []
+                    elif isinstance(response, dict):
+                        accounts = response.get('result', [])
+                    else:
+                        accounts = []
+                        
+                except Exception as inner_e:
+                    logging.warning(f"[Raydium] Fallback also failed: {inner_e}")
+                    return None
+            
+            if not accounts:
+                logging.warning("[Raydium] No pool accounts found")
+                return None
+            
+            # Take the last N pools (most recent)
+            if len(accounts) > limit:
+                pools_to_check = accounts[-limit:]
+            else:
+                pools_to_check = accounts
                 
-                for account_info in pools_to_check:
-                    try:
-                        pool_id = None
-                        
-                        if isinstance(account_info, dict):
-                            pool_id = str(account_info.get("pubkey", account_info.get("address", "")))
-                        elif hasattr(account_info, 'pubkey'):
-                            pool_id = str(account_info.pubkey)
-                        elif hasattr(account_info, 'address'):
-                            pool_id = str(account_info.address)
-                        
-                        if not pool_id:
-                            continue
-                        
-                        data = self._read_b64_account(account_info)
-                        if not data:
-                            continue
-                            
-                        if len(data) != 752:
-                            continue
-                        
-                        if self._pool_bytes_contain_mints(data, token_mint, sol_mint):
-                            logging.info(f"[Raydium] Found pool {pool_id[:8]}... for {token_mint[:8]}!")
-                            return self.fetch_pool_data_from_chain(pool_id)
-                            
-                    except Exception as e:
+            logging.info(f"[Raydium] Checking {len(pools_to_check)} pools for {token_mint[:8]}...")
+            
+            for account_info in pools_to_check:
+                try:
+                    pool_id = None
+                    
+                    if isinstance(account_info, dict):
+                        pool_id = account_info.get("pubkey", "")
+                        if not pool_id and "account" in account_info:
+                            pool_id = account_info.get("address", "")
+                    elif hasattr(account_info, 'pubkey'):
+                        pool_id = str(account_info.pubkey)
+                    
+                    if not pool_id:
                         continue
-                
-                logging.info(f"[Raydium] Token not found in recent {len(pools_to_check)} pools")
-                
-            except socket.timeout:
-                logging.warning(f"[Raydium] Scan timed out after 5 seconds")
-                return None
-            except Exception as e:
-                logging.warning(f"[Raydium] Limited scan failed: {e}")
-                return None
-                
+                    
+                    # Extract account data
+                    if isinstance(account_info, dict):
+                        if "account" in account_info:
+                            acc_data = account_info["account"]
+                        else:
+                            acc_data = account_info
+                            
+                        if "data" in acc_data:
+                            if isinstance(acc_data["data"], list):
+                                data = base64.b64decode(acc_data["data"][0])
+                            else:
+                                data = base64.b64decode(acc_data["data"])
+                        else:
+                            continue
+                    else:
+                        data = self._read_b64_account(account_info)
+                        
+                    if not data or len(data) != 752:
+                        continue
+                    
+                    if self._pool_bytes_contain_mints(data, token_mint, sol_mint):
+                        logging.info(f"[Raydium] Found pool {pool_id[:8]}... for {token_mint[:8]}!")
+                        return self.fetch_pool_data_from_chain(pool_id)
+                        
+                except Exception as e:
+                    logging.debug(f"[Raydium] Error checking pool: {e}")
+                    continue
+            
+            logging.info(f"[Raydium] Token {token_mint[:8]} not found in {len(pools_to_check)} pools checked")
             return None
             
         except Exception as e:
-            logging.error(f"[Raydium] Smart pool search error: {e}")
+            logging.error(f"[Raydium] Pool search error: {e}")
             return None
     
     def fetch_pool_data_from_chain(self, pool_id: str) -> Optional[Dict[str, Any]]:
