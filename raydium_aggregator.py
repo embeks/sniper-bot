@@ -1,4 +1,5 @@
-# raydium_aggregator.py - FIXED VERSION WITH POOL VALIDATION
+
+# raydium_aggregator.py - FIXED VERSION WITH NO SPAM AND NO OFFSET ERRORS
 import os
 import json
 import logging
@@ -26,9 +27,6 @@ from spl.token.instructions import get_associated_token_address, create_associat
 RAYDIUM_AMM_PROGRAM_ID = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
 RAYDIUM_AUTHORITY = Pubkey.from_string("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
 WSOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
-
-# FIX: Define known valid pool data sizes
-VALID_POOL_SIZES = [752, 784, 1400, 1544]
 
 class RaydiumAggregatorClient:
     def __init__(self, rpc_url: str):
@@ -77,28 +75,19 @@ class RaydiumAggregatorClient:
             return None
     
     def _pool_bytes_contain_mints(self, data: bytes, token_mint: str, sol_mint: str) -> bool:
-        """Check if pool data contains our token pair with defensive validation"""
+        """Check if pool data contains our token pair"""
         try:
-            # FIX: Validate pool data size before parsing
-            if len(data) not in VALID_POOL_SIZES:
-                logging.debug(f"[Raydium] Invalid pool size for mint check: {len(data)}")
+            if len(data) != 752:
                 return False
             
-            # For 752 byte pools (standard Raydium V4)
-            if len(data) == 752:
-                coin_mint = Pubkey.from_bytes(data[119:151])
-                pc_mint = Pubkey.from_bytes(data[151:183])
-                
-                return (
-                    (str(coin_mint) == token_mint and str(pc_mint) == sol_mint) or
-                    (str(pc_mint) == token_mint and str(coin_mint) == sol_mint)
-                )
+            coin_mint = Pubkey.from_bytes(data[119:151])
+            pc_mint = Pubkey.from_bytes(data[151:183])
             
-            # For other known sizes, return False for now (can be extended)
-            return False
-            
-        except Exception as e:
-            logging.debug(f"[Raydium] Error checking pool mints: {e}")
+            return (
+                (str(coin_mint) == token_mint and str(pc_mint) == sol_mint) or
+                (str(pc_mint) == token_mint and str(coin_mint) == sol_mint)
+            )
+        except:
             return False
         
     def find_pool_realtime(self, token_mint: str) -> Optional[Dict[str, Any]]:
@@ -133,7 +122,7 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """COMPLETELY FIXED pool finding with validation"""
+        """COMPLETELY FIXED pool finding - no offset usage at all"""
         try:
             limit = int(os.getenv("POOL_SCAN_LIMIT", "20"))
             logging.info(f"[Raydium] Doing limited scan (max {limit} pools)...")
@@ -200,10 +189,8 @@ class RaydiumAggregatorClient:
                         data = self._read_b64_account(account_info)
                         if not data:
                             continue
-                        
-                        # FIX: Validate pool size before processing
-                        if len(data) not in VALID_POOL_SIZES:
-                            logging.debug(f"[Raydium] Skipping pool with unexpected size: {len(data)}")
+                            
+                        if len(data) != 752:
                             continue
                         
                         if self._pool_bytes_contain_mints(data, token_mint, sol_mint):
@@ -228,18 +215,8 @@ class RaydiumAggregatorClient:
             logging.error(f"[Raydium] Smart pool search error: {e}")
             return None
     
-    def _safe_extract_pubkey(self, data: bytes, offset: int) -> Optional[str]:
-        """Safely extract a pubkey from bytes with bounds checking"""
-        try:
-            if offset + 32 <= len(data):
-                return str(Pubkey.from_bytes(data[offset:offset+32]))
-            return None
-        except Exception as e:
-            logging.debug(f"[Raydium] Failed to extract pubkey at offset {offset}: {e}")
-            return None
-    
     def fetch_pool_data_from_chain(self, pool_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch pool data with defensive parsing"""
+        """Fetch pool data"""
         try:
             pool_pubkey = Pubkey.from_string(pool_id)
             
@@ -286,131 +263,108 @@ class RaydiumAggregatorClient:
             
             logging.info(f"[Raydium] Pool account data size: {len(data)} bytes")
             
-            # FIX: Comprehensive pool size validation
-            if len(data) not in VALID_POOL_SIZES:
-                logging.error(f"[Raydium] Unexpected pool data size: {len(data)} bytes")
-                logging.debug(f"[Raydium] Data preview: {data[:100].hex() if data else 'empty'}")
-                
-                # Try to handle non-standard but potentially valid pools
+            if len(data) != 752:
+                logging.warning(f"[Raydium] Non-standard pool size: {len(data)} (expected 752)")
                 if len(data) >= 183:
                     try:
-                        # Attempt minimal parsing for basic mint info
-                        coin_mint = self._safe_extract_pubkey(data, 119)
-                        pc_mint = self._safe_extract_pubkey(data, 151)
+                        offset = 119
+                        coin_mint = Pubkey.from_bytes(data[offset:offset+32])
+                        offset += 32
+                        pc_mint = Pubkey.from_bytes(data[offset:offset+32])
                         
-                        if coin_mint and pc_mint:
-                            logging.warning(f"[Raydium] Attempting fallback parsing for non-standard pool")
-                            return {
-                                "id": pool_id,
-                                "baseMint": coin_mint,
-                                "quoteMint": pc_mint,
-                                "version": 4,
-                                "programId": str(RAYDIUM_AMM_PROGRAM_ID),
-                                "poolSize": len(data)  # Include for debugging
-                            }
-                    except Exception as e:
-                        logging.error(f"[Raydium] Fallback parsing failed: {e}")
-                
+                        return {
+                            "id": pool_id,
+                            "baseMint": str(coin_mint),
+                            "quoteMint": str(pc_mint),
+                            "version": 4,
+                            "programId": str(RAYDIUM_AMM_PROGRAM_ID)
+                        }
+                    except:
+                        pass
                 return None
             
-            # Standard parsing for known pool sizes (752 bytes)
-            if len(data) != 752:
-                logging.warning(f"[Raydium] Pool size {len(data)} not fully implemented, using minimal data")
-                return {
-                    "id": pool_id,
-                    "baseMint": self._safe_extract_pubkey(data, 119) or "",
-                    "quoteMint": self._safe_extract_pubkey(data, 151) or "",
-                    "version": 4,
-                    "programId": str(RAYDIUM_AMM_PROGRAM_ID),
-                    "poolSize": len(data)
-                }
-            
-            # Safe extraction with validation
             offset = 87
             
-            # Use safe extraction for all pubkeys
-            coin_vault = self._safe_extract_pubkey(data, offset)
+            coin_vault = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            pc_vault = self._safe_extract_pubkey(data, offset)
+            pc_vault = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            coin_mint = self._safe_extract_pubkey(data, offset)
+            coin_mint = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            pc_mint = self._safe_extract_pubkey(data, offset)
+            pc_mint = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            lp_mint = self._safe_extract_pubkey(data, offset)
+            lp_mint = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            open_orders = self._safe_extract_pubkey(data, offset)
+            open_orders = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            market_id = self._safe_extract_pubkey(data, offset)
+            market_id = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            market_program_id = self._safe_extract_pubkey(data, offset)
+            market_program_id = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            target_orders = self._safe_extract_pubkey(data, offset)
+            target_orders = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            withdraw_queue = self._safe_extract_pubkey(data, offset)
+            withdraw_queue = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            token_temp_account = self._safe_extract_pubkey(data, offset)
+            token_temp_account = Pubkey.from_bytes(data[offset:offset+32])
             offset += 32
-            amm_owner = self._safe_extract_pubkey(data, offset)
+            amm_owner = Pubkey.from_bytes(data[offset:offset+32])
             
-            # Validate required fields
-            if not all([coin_vault, pc_vault, coin_mint, pc_mint]):
-                logging.error(f"[Raydium] Failed to extract required addresses from pool data")
-                return None
+            logging.info(f"[Raydium] Pool base mint: {str(coin_mint)[:8]}...")
+            logging.info(f"[Raydium] Pool quote mint: {str(pc_mint)[:8]}...")
             
-            logging.info(f"[Raydium] Pool base mint: {coin_mint[:8]}...")
-            logging.info(f"[Raydium] Pool quote mint: {pc_mint[:8]}...")
-            
-            market_program_id_actual = market_program_id or str(RAYDIUM_AUTHORITY)
+            market_program_id_actual = str(market_program_id)
             try:
-                if market_id:
-                    market_response = self.client.get_account_info(Pubkey.from_string(market_id))
-                    if market_response and market_response.value:
-                        if hasattr(market_response.value, 'owner'):
-                            market_program_id_actual = str(market_response.value.owner)
-                            logging.info(f"[Raydium] Market program: {market_program_id_actual[:8]}...")
+                market_response = self.client.get_account_info(market_id)
+                if market_response and market_response.value:
+                    if hasattr(market_response.value, 'owner'):
+                        market_program_id_actual = str(market_response.value.owner)
+                        logging.info(f"[Raydium] Market program: {market_program_id_actual[:8]}...")
             except:
                 logging.warning(f"[Raydium] Could not fetch market program ID, using default")
             
-            market_base_vault = coin_vault
-            market_quote_vault = pc_vault
-            market_bids = open_orders or coin_vault
-            market_asks = target_orders or pc_vault
-            market_event_queue = withdraw_queue or coin_vault
+            market_base_vault = str(coin_vault)
+            market_quote_vault = str(pc_vault)
+            market_bids = str(open_orders)
+            market_asks = str(target_orders)
+            market_event_queue = str(withdraw_queue)
             
             try:
-                if market_id:
-                    logging.info(f"[Raydium] Fetching market data for {market_id[:8]}...")
-                    market_response = self.client.get_account_info(Pubkey.from_string(market_id))
-                    
-                    market_value = None
-                    if hasattr(market_response, 'value'):
-                        market_value = market_response.value
-                    elif isinstance(market_response, dict) and 'result' in market_response:
-                        market_value = market_response['result']['value']
-                    
-                    if market_value:
-                        market_data = self._read_b64_account({"account": {"data": market_value.data if hasattr(market_value, 'data') else market_value['data']}})
-                        if market_data and len(market_data) >= 285:
-                            # Safe market data extraction
-                            market_base_vault = self._safe_extract_pubkey(market_data, 45) or market_base_vault
-                            market_quote_vault = self._safe_extract_pubkey(market_data, 77) or market_quote_vault
-                            market_event_queue = self._safe_extract_pubkey(market_data, 141) or market_event_queue
-                            market_bids = self._safe_extract_pubkey(market_data, 173) or market_bids
-                            market_asks = self._safe_extract_pubkey(market_data, 205) or market_asks
+                logging.info(f"[Raydium] Fetching market data for {str(market_id)[:8]}...")
+                market_response = self.client.get_account_info(market_id)
+                
+                market_value = None
+                if hasattr(market_response, 'value'):
+                    market_value = market_response.value
+                elif isinstance(market_response, dict) and 'result' in market_response:
+                    market_value = market_response['result']['value']
+                
+                if market_value:
+                    market_data = self._read_b64_account({"account": {"data": market_value.data if hasattr(market_value, 'data') else market_value['data']}})
+                    if market_data and len(market_data) >= 285:
+                        market_offset = 45
+                        market_base_vault = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
+                        market_offset += 32
+                        market_quote_vault = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
+                        market_offset += 32
+                        market_offset += 32
+                        market_event_queue = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
+                        market_offset += 32
+                        market_bids = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
+                        market_offset += 32
+                        market_asks = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
             except Exception as e:
                 logging.warning(f"[Raydium] Could not parse market data: {e}")
             
             pool_data = {
                 "id": pool_id,
-                "baseMint": coin_mint,
-                "quoteMint": pc_mint,
-                "lpMint": lp_mint or coin_mint,
-                "baseVault": coin_vault,
-                "quoteVault": pc_vault,
-                "openOrders": open_orders or coin_vault,
-                "targetOrders": target_orders or pc_vault,
-                "marketId": market_id or pool_id,
+                "baseMint": str(coin_mint),
+                "quoteMint": str(pc_mint),
+                "lpMint": str(lp_mint),
+                "baseVault": str(coin_vault),
+                "quoteVault": str(pc_vault),
+                "openOrders": str(open_orders),
+                "targetOrders": str(target_orders),
+                "marketId": str(market_id),
                 "marketProgramId": market_program_id_actual,
                 "marketAuthority": str(RAYDIUM_AUTHORITY),
                 "marketBaseVault": market_base_vault,
@@ -418,10 +372,9 @@ class RaydiumAggregatorClient:
                 "marketBids": market_bids,
                 "marketAsks": market_asks,
                 "marketEventQueue": market_event_queue,
-                "authority": amm_owner or str(RAYDIUM_AUTHORITY),
+                "authority": str(amm_owner),
                 "version": 4,
-                "programId": str(RAYDIUM_AMM_PROGRAM_ID),
-                "poolSize": len(data)  # Include for debugging
+                "programId": str(RAYDIUM_AMM_PROGRAM_ID)
             }
             
             logging.info(f"[Raydium] Successfully fetched pool data for {pool_id[:8]}...")
@@ -747,3 +700,4 @@ class RaydiumAggregatorClient:
                         return None
                     
         return None
+
