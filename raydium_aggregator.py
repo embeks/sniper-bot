@@ -1,5 +1,4 @@
-
-# raydium_aggregator.py - FIXED VERSION WITH NO SPAM AND NO OFFSET ERRORS
+# raydium_aggregator.py - FULLY FIXED VERSION
 import os
 import json
 import logging
@@ -143,7 +142,7 @@ class RaydiumAggregatorClient:
                 finally:
                     socket.setdefaulttimeout(original_timeout)
                 
-                # Handle response without using offset
+                # Handle response properly - FIXED ERROR HERE
                 accounts = []
                 if response is None:
                     logging.warning("[Raydium] No response from get_program_accounts")
@@ -164,8 +163,9 @@ class RaydiumAggregatorClient:
                     logging.warning("[Raydium] No accounts returned from RPC")
                     return None
                 
-                # Just take the last N pools without any offset manipulation
+                # Take the last N pools without using offset
                 if len(accounts) > limit:
+                    # Simply slice the list - no offset attribute access
                     pools_to_check = accounts[-limit:]
                 else:
                     pools_to_check = accounts
