@@ -1,4 +1,4 @@
-# raydium_aggregator.py - FULLY FIXED VERSION
+# raydium_aggregator.py - FIXED VERSION WITH NO SPAM AND NO OFFSET ERRORS
 import os
 import json
 import logging
@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, Tuple, List
 import base64
 import base58
 import time
-import requests
+import requests  # ADD THIS IMPORT
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -124,7 +124,7 @@ class RaydiumAggregatorClient:
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
         """FIXED pool finding using raw RPC to avoid offset errors"""
         try:
-            limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))  # Increased limit
+            limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))
             logging.info(f"[Raydium] Doing pool scan (max {limit} pools)...")
             
             # Use raw RPC call to avoid solana-py internal errors
@@ -137,18 +137,12 @@ class RaydiumAggregatorClient:
                         str(RAYDIUM_AMM_PROGRAM_ID),
                         {
                             "encoding": "base64",
-                            "filters": [{"dataSize": 752}],
-                            "withContext": False
+                            "filters": [{"dataSize": 752}]
                         }
                     ]
                 }
                 
-                response = requests.post(
-                    self.rpc_url, 
-                    json=payload, 
-                    timeout=10,
-                    headers={"Content-Type": "application/json"}
-                )
+                response = requests.post(self.rpc_url, json=payload, timeout=10)
                 
                 if response.status_code != 200:
                     logging.warning(f"[Raydium] RPC request failed: {response.status_code}")
@@ -166,24 +160,7 @@ class RaydiumAggregatorClient:
                 return None
             except Exception as e:
                 logging.warning(f"[Raydium] Raw RPC call failed: {e}")
-                # Fallback to client library but with better error handling
-                try:
-                    response = self.client.get_program_accounts(
-                        RAYDIUM_AMM_PROGRAM_ID,
-                        encoding="base64",
-                        filters=[{"dataSize": 752}]
-                    )
-                    
-                    if hasattr(response, 'value'):
-                        accounts = response.value if response.value else []
-                    elif isinstance(response, dict):
-                        accounts = response.get('result', [])
-                    else:
-                        accounts = []
-                        
-                except Exception as inner_e:
-                    logging.warning(f"[Raydium] Fallback also failed: {inner_e}")
-                    return None
+                return None
             
             if not accounts:
                 logging.warning("[Raydium] No pool accounts found")
@@ -199,34 +176,19 @@ class RaydiumAggregatorClient:
             
             for account_info in pools_to_check:
                 try:
-                    pool_id = None
-                    
-                    if isinstance(account_info, dict):
-                        pool_id = account_info.get("pubkey", "")
-                        if not pool_id and "account" in account_info:
-                            pool_id = account_info.get("address", "")
-                    elif hasattr(account_info, 'pubkey'):
-                        pool_id = str(account_info.pubkey)
-                    
+                    pool_id = account_info.get("pubkey", "")
                     if not pool_id:
                         continue
                     
                     # Extract account data
-                    if isinstance(account_info, dict):
-                        if "account" in account_info:
-                            acc_data = account_info["account"]
+                    acc_data = account_info.get("account", {})
+                    if "data" in acc_data:
+                        if isinstance(acc_data["data"], list):
+                            data = base64.b64decode(acc_data["data"][0])
                         else:
-                            acc_data = account_info
-                            
-                        if "data" in acc_data:
-                            if isinstance(acc_data["data"], list):
-                                data = base64.b64decode(acc_data["data"][0])
-                            else:
-                                data = base64.b64decode(acc_data["data"])
-                        else:
-                            continue
+                            data = base64.b64decode(acc_data["data"])
                     else:
-                        data = self._read_b64_account(account_info)
+                        continue
                         
                     if not data or len(data) != 752:
                         continue
@@ -731,4 +693,3 @@ class RaydiumAggregatorClient:
                         return None
                     
         return None
-
