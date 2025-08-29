@@ -603,7 +603,7 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
             "asLegacyTransaction": "false"
         }
         
-        async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
             response = await client.get(url, params=params)
             if response.status_code == 200:
                 quote = response.json()
@@ -1099,7 +1099,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         try:
             dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
             
-            async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
+            async with httpx.AsyncClient(timeout=10, verify=False) as client:
                 response = await client.get(dex_url)
                 if response.status_code == 200:
                     data = response.json()
@@ -1117,7 +1117,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             try:
                 url = f"https://public-api.birdeye.so/defi/price?address={mint}"
                 
-                async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
+                async with httpx.AsyncClient(timeout=10, verify=False) as client:
                     headers = {"X-API-KEY": BIRDEYE_API_KEY}
                     response = await client.get(url, headers=headers)
                     
