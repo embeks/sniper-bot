@@ -522,6 +522,12 @@ class RaydiumAggregatorClient:
                 logging.error(f"[Raydium] No pool found for {input_mint} <-> {output_mint}")
                 return None
             
+            # CRITICAL FIX: Check if this is a Jupiter-detected pool (minimal data)
+            if "jupiter-" in str(pool.get("id", "")):
+                logging.info(f"[Raydium] Jupiter pool detected - cannot build Raydium transaction")
+                logging.info(f"[Raydium] Will use Jupiter swap instead")
+                return None  # This will make buy_token() use Jupiter instead
+            
             required_fields = ["id", "baseMint", "quoteMint", "baseVault", "quoteVault", 
                              "openOrders", "targetOrders", "marketId", "marketProgramId"]
             for field in required_fields:
