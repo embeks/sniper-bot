@@ -754,8 +754,7 @@ async def scan_pumpfun_graduations():
                                 )
     except Exception as e:
         logging.error(f"[PumpFun Scan] Error: {e}")
-
-async def mempool_listener(name, program_id=None):
+        async def mempool_listener(name, program_id=None):
     """Enhanced mempool listener with FIXED detection logic and pool validation"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
@@ -879,6 +878,7 @@ async def mempool_listener(name, program_id=None):
                         
                         # ================== FIXED DETECTION LOGIC ==================
                         is_pool_creation = False
+                        is_token_creation = False
                         pool_id = None  # Track the pool ID
                         
                         if name == "Raydium":
@@ -941,7 +941,7 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
                         
                         elif name == "PumpFun":
-                            # FIXED: Better PumpFun detection
+                            # FIXED: Better PumpFun token creation detection
                             pumpfun_create_indicators = 0
                             has_mint_creation = False
                             has_bonding = False
@@ -949,37 +949,43 @@ async def mempool_listener(name, program_id=None):
                             for log in logs:
                                 log_lower = log.lower()
                                 
-                                # PumpFun specific creation patterns
-                                if "create" in log_lower and ("token" in log_lower or "coin" in log_lower):
-                                    pumpfun_create_indicators += 3
+                                # CRITICAL: Look for actual token CREATION, not trades
+                                if "program log: instruction: create" in log_lower:
+                                    is_token_creation = True
+                                    pumpfun_create_indicators += 5
                                 
-                                if "initialize" in log_lower and "mint" in log_lower:
-                                    pumpfun_create_indicators += 2
+                                # PumpFun specific creation patterns
+                                if "initialize" in log_lower and ("mint" in log_lower or "token" in log_lower):
+                                    pumpfun_create_indicators += 3
                                     has_mint_creation = True
                                 
-                                # PumpFun uses "launch" for new tokens
-                                if "launch" in log_lower:
-                                    pumpfun_create_indicators += 3
-                                
-                                # Bonding curve initialization is key indicator
+                                # Bonding curve initialization is key indicator for NEW tokens
                                 if "bonding" in log_lower and ("init" in log_lower or "create" in log_lower):
                                     pumpfun_create_indicators += 4
                                     has_bonding = True
+                                    is_token_creation = True
                                 
-                                # Also look for pump.fun specific patterns
-                                if "pump" in log_lower and "fun" in log_lower:
-                                    pumpfun_create_indicators += 1
+                                # Look for "launch" which indicates new token
+                                if "launch" in log_lower or "deploy" in log_lower:
+                                    pumpfun_create_indicators += 3
+                                    is_token_creation = True
                             
                             # DEBUG
                             if pumpfun_create_indicators > 0:
                                 logging.info(f"[{name}] PumpFun Debug:")
                                 logging.info(f"  Indicators: {pumpfun_create_indicators} (need {PUMPFUN_MIN_INDICATORS})")
                                 logging.info(f"  Logs: {len(logs)} (need {PUMPFUN_MIN_LOGS})")
+                                logging.info(f"  Is Creation: {is_token_creation}")
+                            
+                            # CRITICAL: Only process if it's actually a token CREATION
+                            if not is_token_creation:
+                                logging.debug(f"[{name}] Not a token creation, skipping")
+                                continue
                             
                             # Use ENV variable thresholds
                             if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS and len(logs) >= PUMPFUN_MIN_LOGS:
                                 is_pool_creation = True
-                                logging.info(f"[PUMPFUN] TOKEN DETECTED - Score: {pumpfun_create_indicators}")
+                                logging.info(f"[PUMPFUN] NEW TOKEN CREATION DETECTED - Score: {pumpfun_create_indicators}")
                         
                         elif name == "Moonshot":
                             # Moonshot token launches
@@ -1069,9 +1075,37 @@ async def mempool_listener(name, program_id=None):
                                 raydium.register_new_pool(pool_id, potential_mint)
                                 logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
                             
-                            # ========== ENHANCED PUMPFUN BUY LOGIC WITH VALIDATION ==========
+                            # ========== FIX 1: ADD TOKEN AGE VERIFICATION ==========
                             if name == "PumpFun" and is_bot_running():
                                 if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
+                                    # Check if token is actually new
+                                    try:
+                                        # Verify token age
+                                        from solana.rpc.api import Client
+                                        temp_client = Client(RPC_URL)
+                                        mint_account = temp_client.get_account_info(Pubkey.from_string(potential_mint))
+                                        
+                                        if mint_account and mint_account.value:
+                                            # Check if token is old
+                                            current_slot = temp_client.get_slot().value
+                                            # Get first signature for this account to estimate age
+                                            sigs = temp_client.get_signatures_for_address(
+                                                Pubkey.from_string(potential_mint),
+                                                limit=1
+                                            )
+                                            
+                                            if sigs and sigs.value:
+                                                first_sig = sigs.value[-1]  # Oldest signature
+                                                if hasattr(first_sig, 'slot'):
+                                                    token_age_slots = current_slot - first_sig.slot
+                                                    # If older than ~10 minutes (1500 slots), skip
+                                                    if token_age_slots > 1500:
+                                                        logging.info(f"[SKIP] {potential_mint[:8]}... is {token_age_slots} slots old - NOT A NEW TOKEN")
+                                                        record_skip("old_token")
+                                                        continue
+                                    except Exception as e:
+                                        logging.debug(f"Age check error: {e}, proceeding anyway")
+                                    
                                     # Skip if already bought
                                     if potential_mint in already_bought:
                                         continue
@@ -2003,4 +2037,28 @@ async def stop_all_tasks():
                 pass
     TASKS.clear()
     await send_telegram_alert("🛑 All sniper tasks stopped.")
+
+# ============================================
+# MAIN EXECUTION
+# ============================================
+
+if __name__ == "__main__":
+    print("Sniper logic module loaded. This should be imported, not run directly.")
+    print("Use main.py to start the bot.")
+    
+    # Log configuration summary
+    logging.info("=" * 60)
+    logging.info("SNIPER CONFIGURATION LOADED")
+    logging.info("=" * 60)
+    logging.info(f"RPC URL: {RPC_URL[:30]}...")
+    logging.info(f"Rug LP Threshold: {RUG_LP_THRESHOLD} SOL")
+    logging.info(f"Safe Buy Amount: {SAFE_BUY_AMOUNT} SOL")
+    logging.info(f"Risky Buy Amount: {RISKY_BUY_AMOUNT} SOL")
+    logging.info(f"Ultra Risky Buy Amount: {ULTRA_RISKY_BUY_AMOUNT} SOL")
+    logging.info(f"PumpFun Early Buy: {PUMPFUN_EARLY_BUY} SOL")
+    logging.info(f"PumpFun Migration Buy: {PUMPFUN_MIGRATION_BUY} SOL")
+    logging.info(f"Momentum Scanner: {'ENABLED' if MOMENTUM_SCANNER_ENABLED else 'DISABLED'}")
+    logging.info(f"Momentum Auto-Buy: {'ENABLED' if MOMENTUM_AUTO_BUY else 'DISABLED'}")
+    logging.info(f"Jupiter Mempool: {'DISABLED' if SKIP_JUPITER_MEMPOOL else 'ENABLED'}")
+    logging.info("=" * 60)
 
