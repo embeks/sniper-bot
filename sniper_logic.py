@@ -36,9 +36,6 @@ MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 HELIUS_API = os.getenv("HELIUS_API")
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
-RISKY_LP_THRESHOLD = 1.5
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
 RPC_URL = os.getenv("RPC_URL")
 SLIPPAGE_BPS = 100
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
@@ -54,6 +51,9 @@ MIN_HOLDER_COUNT = int(os.getenv("MIN_HOLDER_COUNT", 10))
 MAX_TOP_HOLDER_PERCENT = float(os.getenv("MAX_TOP_HOLDER_PERCENT", 35))
 MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", 5))
 MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.2))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
+RISKY_LP_THRESHOLD = 1.5
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
 
 # FIX #2: Use ENV variables properly - don't override them
 RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", "3"))
@@ -754,7 +754,8 @@ async def scan_pumpfun_graduations():
                                 )
     except Exception as e:
         logging.error(f"[PumpFun Scan] Error: {e}")
-        async def mempool_listener(name, program_id=None):
+
+async def mempool_listener(name, program_id=None):
     """Enhanced mempool listener with FIXED detection logic and pool validation"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
@@ -2061,4 +2062,3 @@ if __name__ == "__main__":
     logging.info(f"Momentum Auto-Buy: {'ENABLED' if MOMENTUM_AUTO_BUY else 'DISABLED'}")
     logging.info(f"Jupiter Mempool: {'DISABLED' if SKIP_JUPITER_MEMPOOL else 'ENABLED'}")
     logging.info("=" * 60)
-
