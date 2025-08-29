@@ -1,3 +1,5 @@
+
+
 # telegram_webhook.py 
 # =========================
 from fastapi import FastAPI, Request
@@ -12,15 +14,9 @@ load_dotenv()
 app = FastAPI()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CHAT_ID", 0))
-
-# FIX: Add task state tracking to prevent duplicate sniper tasks
-SNIPER_RUNNING = False
-
 # ✅ Command Router
 @app.post("/")
 async def telegram_webhook(request: Request):
-    global SNIPER_RUNNING
-    
     try:
         data = await request.json()
         message = data.get("message") or data.get("edited_message")
@@ -48,40 +44,28 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert("⏸ Bot already paused.")
             else:
                 stop_bot()
-                SNIPER_RUNNING = False  # Reset sniper flag when stopping
                 await stop_all_tasks()
                 await send_telegram_alert("🛑 Bot stopped.")
                 
         elif text == "/status":
             status_msg = get_bot_status_message()
-            sniper_status = "🟢 Running" if SNIPER_RUNNING else "🔴 Stopped"
-            await send_telegram_alert(f"📊 Status:\n{status_msg}\n🎯 Sniper: {sniper_status}")
+            await send_telegram_alert(f"📊 Status:\n{status_msg}")
             
         elif text == "/launch":
-            if not is_bot_running():
-                await send_telegram_alert("⛔ Bot is paused. Use /start first.")
-            elif SNIPER_RUNNING:
-                await send_telegram_alert("⚠️ Sniper already running! Use /stop first to restart.")
+            if is_bot_running():
+                asyncio.create_task(start_sniper())
+                await send_telegram_alert("🚀 Sniper launched.")
             else:
-                try:
-                    SNIPER_RUNNING = True
-                    asyncio.create_task(start_sniper())
-                    await send_telegram_alert("🚀 Sniper launched.")
-                except Exception as e:
-                    SNIPER_RUNNING = False
-                    await send_telegram_alert(f"❌ Launch failed: {str(e)[:100]}")
+                await send_telegram_alert("⛔ Bot is paused. Use /start first.")
                 
         elif text.startswith("/forcebuy "):
-            if not is_bot_running():
-                await send_telegram_alert("⛔ Bot is paused. Use /start first.")
+            parts = text.split(" ")
+            if len(parts) == 2:
+                mint = parts[1].strip()
+                await send_telegram_alert(f"🚨 Force buying: {mint}")
+                asyncio.create_task(start_sniper_with_forced_token(mint))
             else:
-                parts = text.split(" ")
-                if len(parts) == 2:
-                    mint = parts[1].strip()
-                    await send_telegram_alert(f"🚨 Force buying: {mint}")
-                    asyncio.create_task(start_sniper_with_forced_token(mint))
-                else:
-                    await send_telegram_alert("❌ Invalid format. Use /forcebuy <MINT>")
+                await send_telegram_alert("❌ Invalid format. Use /forcebuy <MINT>")
                 
         elif text == "/wallet":
             summary = get_wallet_summary()
@@ -101,22 +85,6 @@ async def telegram_webhook(request: Request):
             # Simple ping command for testing
             await send_telegram_alert("🏓 Pong! Commands are working!")
             
-        elif text == "/restart":
-            # Restart sniper (stop then start)
-            if not is_bot_running():
-                await send_telegram_alert("⛔ Bot is paused. Use /start first.")
-            else:
-                try:
-                    SNIPER_RUNNING = False
-                    await stop_all_tasks()
-                    await asyncio.sleep(2)  # Brief pause
-                    SNIPER_RUNNING = True
-                    asyncio.create_task(start_sniper())
-                    await send_telegram_alert("🔄 Sniper restarted successfully!")
-                except Exception as e:
-                    SNIPER_RUNNING = False
-                    await send_telegram_alert(f"❌ Restart failed: {str(e)[:100]}")
-            
         elif text == "/help":
             # Help command
             help_text = """
@@ -127,7 +95,6 @@ async def telegram_webhook(request: Request):
 /wallet - Check wallet balance
 /forcebuy <MINT> - Force buy a token
 /launch - Launch sniper
-/restart - Restart sniper
 /memory - Check memory usage
 /ping - Test commands
 /help - Show this message
@@ -141,7 +108,6 @@ async def telegram_webhook(request: Request):
         
     except Exception as e:
         print(f"Error in webhook: {e}")
-        logging.error(f"Webhook error: {e}")
         return {"ok": True}
 
 @app.on_event("startup")
@@ -149,25 +115,10 @@ async def startup_event():
     """Minimal startup to save memory"""
     print("Bot webhook started - waiting for commands...")
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean shutdown"""
-    global SNIPER_RUNNING
-    SNIPER_RUNNING = False
-    try:
-        await stop_all_tasks()
-    except:
-        pass
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint for Render"""
-    global SNIPER_RUNNING
-    return {
-        "status": "ok",
-        "sniper_running": SNIPER_RUNNING,
-        "bot_running": is_bot_running()
-    }
+    return {"status": "ok"}
 
 # ============================================
 # NEW FUNCTION FOR MONSTER BOT INTEGRATION
@@ -193,3 +144,4 @@ async def start_telegram_webhook():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
