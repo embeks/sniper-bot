@@ -364,7 +364,7 @@ class JitoClient:
                 "leader": self.next_leader
             }
             
-            async with httpx.AsyncClient(verify=certifi.where()) as client:
+            async with httpx.AsyncClient(verify=False) as client:
                 response = await client.post(
                     f"{self.block_engine_url}/bundles",
                     json=bundle,
@@ -1915,7 +1915,7 @@ async def run_bot_with_web_server():
         try:
             webhook_url = f"https://sniper-bot-web.onrender.com/webhook"
             
-            async with httpx.AsyncClient(verify=certifi.where()) as client:
+            async with httpx.AsyncClient(verify=False) as client:
                 response = await client.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
                     json={"url": webhook_url}
