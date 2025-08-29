@@ -1,4 +1,3 @@
-
 # utils.py - COMPLETE FIXED VERSION WITH BETTER LIQUIDITY DETECTION
 import os
 import json
@@ -180,28 +179,48 @@ KNOWN_TOKEN_DECIMALS = {
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
-# SCALING FUNCTIONS
+# SCALING FUNCTIONS - FIX #4
 # ============================================
 
 async def get_dynamic_position_size(mint: str, pool_liquidity_sol: float, is_migration: bool = False) -> float:
-    """Aggressive position sizing for 48hr gains"""
+    """Calculate position size - FIXED VERSION"""
     try:
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         
-        base_size = 0.1  # 10% per position
+        # Base position from env or default
+        base_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
         
-        if is_migration:
-            base_size = 0.2  # 20% on migrations
-        elif mint in pumpfun_tokens:
-            pf_status = await check_pumpfun_token_status(mint)
-            if pf_status and pf_status.get("progress", 0) > 80:
-                base_size = 0.15  # 15% on near-graduation
+        # Scale based on balance if enabled
+        if os.getenv("SCALE_WITH_BALANCE", "true").lower() == "true":
+            # Use 5-10% of balance depending on confidence
+            if is_migration:
+                base_size = balance * 0.10  # 10% for migrations
+            elif mint in pumpfun_tokens:
+                pf_status = await check_pumpfun_token_status(mint)
+                if pf_status and pf_status.get("progress", 0) > 80:
+                    base_size = balance * 0.07  # 7% for near-graduation
+                else:
+                    base_size = balance * 0.05  # 5% for regular pumpfun
+            else:
+                base_size = balance * 0.05  # 5% default
         
-        return max(0.05, min(base_size * balance, 0.25))
+        # Apply limits
+        min_size = float(os.getenv("MIN_POSITION_SIZE_SOL", "0.03"))
+        max_size = float(os.getenv("MAX_POSITION_SIZE_SOL", "0.25"))
+        
+        final_size = max(min_size, min(base_size, max_size))
+        
+        # CRITICAL: Never return 0 or negative
+        if final_size <= 0:
+            logging.error(f"[SIZING] Invalid size {final_size}, using fallback")
+            return 0.05
+            
+        logging.info(f"[SIZING] Balance: {balance:.2f}, Size: {final_size:.3f} SOL")
+        return final_size
         
     except Exception as e:
-        logging.error(f"Dynamic sizing error: {e}")
-        return 0.1
+        logging.error(f"[SIZING] Error: {e}, using fallback")
+        return float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
 
 def get_minimum_liquidity_required(balance_sol: float = None) -> float:
     """Aggressive liquidity for 48hr push"""
@@ -435,11 +454,11 @@ def get_bot_status_message() -> str:
 """
 
 # ============================================
-# FIXED LIQUIDITY DETECTION FUNCTION
+# FIXED LIQUIDITY DETECTION FUNCTION - FIX #7
 # ============================================
 
-async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get accurate liquidity with better fallbacks and no false zeros"""
+async def _get_liquidity_internal(mint: str) -> Optional[Dict[str, Any]]:
+    """Internal liquidity check function"""
     try:
         sol_mint = "So11111111111111111111111111111111111111112"
         
@@ -527,6 +546,22 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
         logging.error(f"[LP Check] Critical error for {mint}: {e}")
         # On error, still return something to not block trading
         return {"liquidity": 0.5}
+
+async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
+    """Get accurate liquidity with timeout protection - FIX #7"""
+    try:
+        # Add overall timeout
+        return await asyncio.wait_for(
+            _get_liquidity_internal(mint),
+            timeout=float(os.getenv("LP_CHECK_TIMEOUT", "3"))
+        )
+    except asyncio.TimeoutError:
+        logging.warning(f"[LP Check] Timeout for {mint[:8]}...")
+        # Return minimum viable data instead of None
+        return {"liquidity": 0.1}  # Assume minimal liquidity
+    except Exception as e:
+        logging.error(f"[LP Check] Error: {e}")
+        return {"liquidity": 0.1}
 
 async def get_trending_mints():
     """Placeholder for trending mints"""
@@ -691,13 +726,17 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         logging.error(f"[Jupiter] Swap execution error: {e}")
         return None
 
-async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
-    """Execute a sell using Jupiter"""
+async def execute_jupiter_sell(mint: str, amount: int, destination_wallet: Optional[Pubkey] = None) -> Optional[str]:
+    """Execute a sell using Jupiter - FIXED to use proper destination"""
     try:
         input_mint = mint
         output_mint = "So11111111111111111111111111111111111111112"
         
-        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}...")
+        # CRITICAL FIX: Use our wallet if no destination specified
+        if destination_wallet is None:
+            destination_wallet = keypair.pubkey()
+        
+        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}... to wallet {str(destination_wallet)[:8]}...")
         quote = await get_jupiter_quote(input_mint, output_mint, amount)
         if not quote:
             return None
@@ -931,12 +970,15 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         return False
 
 async def sell_token(mint: str, percent: float = 100.0):
-    """Execute sell transaction for a token"""
+    """Execute sell transaction for a token - FIX #1"""
     try:
-        from spl.token.constants import TOKEN_PROGRAM_ID
+        from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT
         
         owner = keypair.pubkey()
         token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
+        
+        # CRITICAL FIX: Ensure we're selling to OUR wallet
+        owner_wsol = get_associated_token_address(owner, WRAPPED_SOL_MINT)
         
         try:
             response = rpc.get_token_account_balance(token_account)
@@ -955,8 +997,10 @@ async def sell_token(mint: str, percent: float = 100.0):
             logging.warning(f"Zero balance to sell for {mint[:8]}...")
             return False
 
-        logging.info(f"[Sell] Attempting Jupiter sell for {mint[:8]}...")
-        jupiter_sig = await execute_jupiter_sell(mint, amount)
+        logging.info(f"[Sell] Attempting Jupiter sell for {mint[:8]}... to wallet {str(owner)[:8]}...")
+        
+        # CRITICAL FIX: Pass our wallet explicitly
+        jupiter_sig = await execute_jupiter_sell(mint, amount, owner_wsol)
         
         if jupiter_sig:
             await send_telegram_alert(
@@ -1510,4 +1554,3 @@ __all__ = [
     'SCALE_WITH_BALANCE',
     'evaluate_pumpfun_opportunity'
 ]
-
