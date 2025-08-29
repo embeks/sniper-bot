@@ -1,4 +1,4 @@
-# raydium_aggregator.py - FIXED VERSION WITH NO SPAM AND NO OFFSET ERRORS
+# raydium_aggregator.py - FIXED VERSION WITH JUPITER FAST POOL DETECTION
 import os
 import json
 import logging
@@ -90,10 +90,11 @@ class RaydiumAggregatorClient:
             return False
         
     def find_pool_realtime(self, token_mint: str) -> Optional[Dict[str, Any]]:
-        """Find Raydium pool - FIXED VERSION"""
+        """Find Raydium pool - JUPITER FAST VERSION"""
         try:
             sol_mint = "So11111111111111111111111111111111111111112"
             
+            # Check cache first
             if token_mint in self.known_pools:
                 logging.info(f"[Raydium] Using known pool for {token_mint[:8]}...")
                 return self.known_pools[token_mint]
@@ -105,15 +106,40 @@ class RaydiumAggregatorClient:
                     logging.info(f"[Raydium] Using cached pool for {token_mint[:8]}...")
                     return cached['pool']
             
-            logging.info(f"[Raydium] Searching for pool with {token_mint[:8]}...")
+            logging.info(f"[Raydium] Checking liquidity for {token_mint[:8]}...")
             
+            # Try Jupiter API first (much faster than scanning pools)
+            try:
+                url = f"https://quote-api.jup.ag/v6/quote?inputMint={sol_mint}&outputMint={token_mint}&amount=1000000000"
+                with httpx.Client(timeout=5) as client:
+                    resp = client.get(url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if "routePlan" in data and len(data["routePlan"]) > 0:
+                            # Token has liquidity, create minimal pool data
+                            pool_data = {
+                                "id": f"jupiter-{token_mint[:8]}",
+                                "baseMint": token_mint,
+                                "quoteMint": sol_mint,
+                                "version": 4,
+                                "programId": str(RAYDIUM_AMM_PROGRAM_ID),
+                                "verified": True
+                            }
+                            self.known_pools[token_mint] = pool_data
+                            self.pool_cache[cache_key] = {'pool': pool_data, 'timestamp': time.time()}
+                            logging.info(f"[Raydium] Found liquidity via Jupiter for {token_mint[:8]}...")
+                            return pool_data
+            except Exception as e:
+                logging.debug(f"[Raydium] Jupiter check failed: {e}")
+            
+            # If Jupiter fails, try the old method as fallback
             pool = self._find_pool_smart(token_mint, sol_mint)
             if pool:
                 self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
                 self.known_pools[token_mint] = pool
                 return pool
             
-            logging.info(f"[Raydium] No pool found for {token_mint[:8]}...")
+            logging.info(f"[Raydium] No liquidity found for {token_mint[:8]}...")
             return None
             
         except Exception as e:
@@ -121,10 +147,10 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """FIXED pool finding using raw RPC to avoid offset errors"""
+        """Fallback pool finding using raw RPC"""
         try:
             limit = int(os.getenv("POOL_SCAN_LIMIT", "50"))
-            logging.info(f"[Raydium] Doing pool scan (max {limit} pools)...")
+            logging.info(f"[Raydium] Fallback: Doing pool scan (max {limit} pools)...")
             
             # Use httpx for consistency with rest of codebase
             try:
@@ -141,7 +167,7 @@ class RaydiumAggregatorClient:
                     ]
                 }
                 
-                with httpx.Client(timeout=10) as client:
+                with httpx.Client(timeout=30) as client:
                     response = client.post(self.rpc_url, json=payload)
                 
                 if response.status_code != 200:
