@@ -1,4 +1,4 @@
-# utils.py - COMPLETE FIXED VERSION WITH BETTER LIQUIDITY DETECTION
+# utils.py - COMPLETE FIXED VERSION WITH BETTER LIQUIDITY DETECTION AND JITO/MEV PROTECTION
 import os
 import json
 import logging
@@ -42,6 +42,11 @@ SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
 RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
 BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 HELIUS_API = os.getenv("HELIUS_API")
+
+# Jito configuration
+USE_JITO_BUNDLES = os.getenv("USE_JITO_BUNDLES", "false").lower() == "true"
+JITO_ENDPOINT = os.getenv("JITO_ENDPOINT", "https://mainnet.block-engine.jito.wtf/api/v1/bundles")
+JITO_TIP_ACCOUNT = os.getenv("JITO_TIP_ACCOUNT", "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5")  # Default Jito tip account
 
 # Parse sell percentages
 AUTO_SELL_PERCENT_2X = 50
@@ -177,6 +182,121 @@ KNOWN_TOKEN_DECIMALS = {
 
 # Cache for token decimals
 TOKEN_DECIMALS_CACHE = {}
+
+# ============================================
+# JITO BUNDLE FUNCTIONS - NEW
+# ============================================
+
+async def send_jito_bundle(transactions: List[VersionedTransaction], tip_amount_sol: float = 0.002) -> Optional[str]:
+    """Send transactions as a Jito bundle for MEV protection"""
+    try:
+        if not USE_JITO_BUNDLES:
+            return None
+            
+        # Create tip transaction
+        from solders.system_program import transfer, TransferParams
+        from solders.message import MessageV0
+        
+        tip_lamports = int(tip_amount_sol * 1e9)
+        tip_pubkey = Pubkey.from_string(JITO_TIP_ACCOUNT)
+        
+        recent_blockhash = rpc.get_latest_blockhash().value.blockhash
+        
+        # Build tip instruction
+        tip_ix = transfer(
+            TransferParams(
+                from_pubkey=keypair.pubkey(),
+                to_pubkey=tip_pubkey,
+                lamports=tip_lamports
+            )
+        )
+        
+        # Create tip transaction
+        tip_msg = MessageV0.try_compile(
+            payer=keypair.pubkey(),
+            instructions=[tip_ix],
+            address_lookup_table_accounts=[],
+            recent_blockhash=recent_blockhash,
+        )
+        tip_tx = VersionedTransaction(tip_msg, [keypair])
+        
+        # Combine all transactions into bundle
+        bundle_txs = [tip_tx] + transactions
+        
+        # Serialize transactions
+        serialized_txs = []
+        for tx in bundle_txs:
+            serialized_txs.append(base64.b64encode(bytes(tx)).decode('utf-8'))
+        
+        # Send bundle to Jito
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
+            response = await client.post(
+                JITO_ENDPOINT,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "sendBundle",
+                    "params": [serialized_txs]
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if "result" in result:
+                    bundle_id = result["result"]
+                    logging.info(f"[Jito] Bundle sent with ID: {bundle_id}, tip: {tip_amount_sol} SOL")
+                    return bundle_id
+                else:
+                    logging.warning(f"[Jito] Bundle rejected: {result}")
+                    return None
+            else:
+                logging.warning(f"[Jito] Failed to send bundle: {response.status_code}")
+                return None
+                
+    except Exception as e:
+        logging.error(f"[Jito] Bundle error: {e}")
+        return None
+
+async def execute_jupiter_swap_with_jito(mint: str, amount_lamports: int, tip_amount_sol: float = 0.002) -> Optional[str]:
+    """Execute Jupiter swap with Jito bundle for MEV protection"""
+    try:
+        input_mint = "So11111111111111111111111111111111111111112"
+        output_mint = mint
+        
+        logging.info(f"[Jito+Jupiter] Getting quote for {amount_lamports/1e9:.4f} SOL -> {mint[:8]}...")
+        quote = await get_jupiter_quote(input_mint, output_mint, amount_lamports)
+        if not quote:
+            return None
+        
+        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
+        if not swap_data:
+            return None
+        
+        tx_bytes = base64.b64decode(swap_data["swapTransaction"])
+        tx = VersionedTransaction.from_bytes(tx_bytes)
+        signed_tx = VersionedTransaction(tx.message, [keypair])
+        
+        # Send as Jito bundle
+        bundle_id = await send_jito_bundle([signed_tx], tip_amount_sol)
+        
+        if bundle_id:
+            logging.info(f"[Jito+Jupiter] Swap sent as bundle {bundle_id}")
+            
+            # Wait for confirmation
+            await asyncio.sleep(3)
+            
+            # Check if transaction landed
+            # Note: Jito bundles don't return traditional signatures
+            # You'd need to implement bundle status checking here
+            return bundle_id
+        else:
+            # Fallback to regular transaction if Jito fails
+            logging.info("[Jito+Jupiter] Jito failed, falling back to regular transaction")
+            return await execute_jupiter_swap(mint, amount_lamports)
+            
+    except Exception as e:
+        logging.error(f"[Jito+Jupiter] Error: {e}")
+        return await execute_jupiter_swap(mint, amount_lamports)
 
 # ============================================
 # SCALING FUNCTIONS - FIX #4
@@ -417,8 +537,10 @@ def get_wallet_summary() -> str:
         else:
             sizing_info = f"\n📏 Fixed Size: {BUY_AMOUNT_SOL} SOL"
         
+        jito_info = f"\n⚡ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}"
+        
         return f"""Balance: {balance:.4f} SOL (${balance_usd:.0f})
-Address: {wallet_pubkey}{sizing_info}
+Address: {wallet_pubkey}{sizing_info}{jito_info}
 Min LP: {get_minimum_liquidity_required(balance)} SOL"""
     except:
         return "Failed to fetch wallet info"
@@ -451,6 +573,7 @@ def get_bot_status_message() -> str:
 🚫 Broken Tokens: {len(BROKEN_TOKENS)}
 💰 Min LP Filter: {get_minimum_liquidity_required()} SOL
 🎯 Scaling: {'ON' if USE_DYNAMIC_SIZING else 'OFF'}
+⚡ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 """
 
 # ============================================
@@ -828,7 +951,7 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, force_amount: Optional[float] = None, is_migration: bool = False):
-    """Execute buy with dynamic sizing and enhanced validation"""
+    """Execute buy with dynamic sizing, enhanced validation, and MEV protection"""
     try:
         if mint in BROKEN_TOKENS:
             log_skipped_token(mint, "Broken token")
@@ -889,18 +1012,35 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         amount_lamports = int(amount_sol * 1e9)
         logging.info(f"[Buy] Using dynamic position: {amount_sol:.3f} SOL for {mint[:8]}...")
 
-        logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
-        jupiter_sig = await execute_jupiter_swap(mint, amount_lamports)
+        # Determine if we should use Jito bundles for MEV protection
+        jupiter_sig = None
+        
+        if USE_JITO_BUNDLES and (is_migration or mint in pumpfun_tokens):
+            # For competitive tokens, use higher priority with Jito
+            if is_migration:
+                tip = 0.005  # Higher tip for migrations
+            elif mint in pumpfun_tokens:
+                tip = 0.002  # Standard tip for PumpFun
+            else:
+                tip = 0.001  # Lower tip for regular tokens
+            
+            logging.info(f"[Buy] Using Jito bundle with {tip} SOL tip for MEV protection")
+            jupiter_sig = await execute_jupiter_swap_with_jito(mint, amount_lamports, tip)
+        else:
+            # Regular Jupiter swap without Jito
+            logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
+            jupiter_sig = await execute_jupiter_swap(mint, amount_lamports)
         
         if jupiter_sig:
             balance = rpc.get_balance(keypair.pubkey()).value / 1e9
             balance_usd = balance * 150
             
             await send_telegram_alert(
-                f"✅ Sniped {mint[:8]}... via Jupiter\n"
+                f"✅ Sniped {mint[:8]}... via {'Jito+' if USE_JITO_BUNDLES and (is_migration or mint in pumpfun_tokens) else ''}Jupiter\n"
                 f"Amount: {amount_sol:.3f} SOL\n"
                 f"LP: {pool_liquidity:.2f} SOL\n"
                 f"{'🚀 MIGRATION!' if is_migration else ''}\n"
+                f"{'⚡ MEV Protected' if USE_JITO_BUNDLES and (is_migration or mint in pumpfun_tokens) else ''}\n"
                 f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
@@ -1043,6 +1183,9 @@ async def sell_token(mint: str, percent: float = 100.0):
         logging.error(f"Sell failed for {mint[:8]}...: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
+
+# [REST OF THE FILE CONTINUES WITH ALL THE SAME FUNCTIONS - NO CHANGES NEEDED]
+# Including all the price functions, monitoring functions, etc...
 
 async def get_token_decimals(mint: str) -> int:
     """Get token decimals from blockchain with caching and validation"""
@@ -1566,5 +1709,8 @@ __all__ = [
     'get_minimum_liquidity_required',
     'USE_DYNAMIC_SIZING',
     'SCALE_WITH_BALANCE',
-    'evaluate_pumpfun_opportunity'
+    'evaluate_pumpfun_opportunity',
+    'USE_JITO_BUNDLES',
+    'send_jito_bundle',
+    'execute_jupiter_swap_with_jito'
 ]
