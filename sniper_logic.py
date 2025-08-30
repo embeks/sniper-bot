@@ -1025,7 +1025,7 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"[RAYDIUM] POOL CREATION DETECTED - Score: {raydium_indicators}, Logs: {len(logs)}")
                         
                         elif name == "PumpFun":
-                            # PumpFun token creation detection
+                            # PumpFun token creation detection - FIXED VERSION
                             pumpfun_create_indicators = 0
                             has_mint_creation = False
                             has_bonding = False
@@ -1033,26 +1033,64 @@ async def mempool_listener(name, program_id=None):
                             for log in logs:
                                 log_lower = log.lower()
                                 
-                                # CRITICAL: Look for actual token CREATION, not trades
-                                if "program log: instruction: create" in log_lower:
-                                    is_token_creation = True
-                                    pumpfun_create_indicators += 5
-                                
-                                # PumpFun specific creation patterns
-                                if "initialize" in log_lower and ("mint" in log_lower or "token" in log_lower):
+                                # FIXED: More comprehensive detection patterns for PumpFun
+                                # Look for ANY creation-related keywords
+                                if "create" in log_lower:
                                     pumpfun_create_indicators += 3
-                                    has_mint_creation = True
+                                    # If it's specifically about creating a token/coin/mint
+                                    if any(word in log_lower for word in ["token", "coin", "mint", "bonding"]):
+                                        is_token_creation = True
+                                        pumpfun_create_indicators += 2
                                 
-                                # Bonding curve initialization is key indicator for NEW tokens
-                                if "bonding" in log_lower and ("init" in log_lower or "create" in log_lower):
+                                # Initialize is a strong signal
+                                if "initialize" in log_lower:
+                                    pumpfun_create_indicators += 2
+                                    if any(word in log_lower for word in ["mint", "token", "metadata", "bonding"]):
+                                        has_mint_creation = True
+                                        is_token_creation = True
+                                        pumpfun_create_indicators += 3
+                                
+                                # Bonding curve operations
+                                if "bonding" in log_lower:
+                                    pumpfun_create_indicators += 2
+                                    if any(word in log_lower for word in ["init", "create", "new", "initialize"]):
+                                        has_bonding = True
+                                        is_token_creation = True
+                                        pumpfun_create_indicators += 3
+                                
+                                # Launch/deploy are definitive creation signals
+                                if any(word in log_lower for word in ["launch", "deploy", "mint_new", "new_token"]):
                                     pumpfun_create_indicators += 4
-                                    has_bonding = True
                                     is_token_creation = True
                                 
-                                # Look for "launch" which indicates new token
-                                if "launch" in log_lower or "deploy" in log_lower:
-                                    pumpfun_create_indicators += 3
+                                # PumpFun specific instruction patterns
+                                if "instruction:" in log_lower:
+                                    # Check for creation-related instructions
+                                    if any(inst in log_lower for inst in ["create", "initialize", "mint_tokens", "init_mint"]):
+                                        is_token_creation = True
+                                        pumpfun_create_indicators += 3
+                                
+                                # Metadata initialization is often part of token creation
+                                if "metadata" in log_lower and any(word in log_lower for word in ["create", "initialize", "set"]):
+                                    pumpfun_create_indicators += 2
                                     is_token_creation = True
+                            
+                            # FIXED: Be more lenient - if we have enough indicators, assume it's creation
+                            # Many PumpFun creations don't explicitly say "create" but have other signals
+                            if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS and len(logs) >= PUMPFUN_MIN_LOGS:
+                                # If we have enough indicators but no explicit creation flag, check for trade signals
+                                if not is_token_creation:
+                                    # Look for signs this is just a trade
+                                    trade_indicators = 0
+                                    for log in logs:
+                                        log_lower = log.lower()
+                                        if any(word in log_lower for word in ["swap", "buy", "sell", "trade"]):
+                                            trade_indicators += 1
+                                    
+                                    # If there are no strong trade indicators, assume it might be creation
+                                    if trade_indicators < 2:
+                                        is_token_creation = True
+                                        logging.info(f"[{name}] Assuming token creation based on indicators")
                             
                             # DEBUG
                             if pumpfun_create_indicators > 0:
@@ -1060,9 +1098,10 @@ async def mempool_listener(name, program_id=None):
                                 logging.info(f"  Indicators: {pumpfun_create_indicators} (need {PUMPFUN_MIN_INDICATORS})")
                                 logging.info(f"  Logs: {len(logs)} (need {PUMPFUN_MIN_LOGS})")
                                 logging.info(f"  Is Creation: {is_token_creation}")
+                                logging.info(f"  Has Mint: {has_mint_creation}, Has Bonding: {has_bonding}")
                             
-                            # CRITICAL: Only process if it's actually a token CREATION
-                            if not is_token_creation:
+                            # Skip if it's definitely not a creation
+                            if not is_token_creation and pumpfun_create_indicators < PUMPFUN_MIN_INDICATORS:
                                 logging.debug(f"[{name}] Not a token creation, skipping")
                                 continue
                             
