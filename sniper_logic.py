@@ -80,10 +80,16 @@ RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
 RISKY_LP_THRESHOLD = 1.5
 TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
 
+# Enhanced pool detection thresholds
 RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", "3"))
 RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", "10"))
 PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", "3"))
 PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", "5"))
+
+# Pool verification settings
+POOL_CHECK_DELAY = float(os.getenv("POOL_CHECK_DELAY", 1.0))
+POOL_CHECK_TIMEOUT = float(os.getenv("POOL_CHECK_TIMEOUT", 30.0))
+MIN_POOL_CHECK_INTERVAL = float(os.getenv("MIN_POOL_CHECK_INTERVAL", 0.5))
 
 # Anti-duplicate settings
 DUPLICATE_CHECK_WINDOW = int(os.getenv("DUPLICATE_CHECK_WINDOW", 300))
@@ -141,13 +147,14 @@ seen_tokens = set()
 BLACKLIST = set()
 TASKS = []
 
-# Enhanced tracking
+# Enhanced tracking for pool detection
 pumpfun_tokens = {}
 migration_watch_list = set()
 already_bought = set()
 recent_buy_attempts = {}
 pool_verification_cache = {}
 detected_pools = {}
+pending_pool_checks = {}  # Tokens waiting for pool creation
 
 # Track concurrent processing
 tokens_being_processed = set()
@@ -174,6 +181,7 @@ def cleanup_all_caches():
     """Clean up all caches to prevent memory leaks"""
     global processed_signatures_cache, seen_tokens, momentum_analyzed
     global pool_verification_cache, detected_pools, recent_buy_attempts
+    global pending_pool_checks
     
     current_time = time.time()
     
@@ -200,6 +208,12 @@ def cleanup_all_caches():
     for token in old_attempts:
         del recent_buy_attempts[token]
     
+    # Clean pending_pool_checks - remove older than 60 seconds
+    old_pending = [token for token, data in pending_pool_checks.items()
+                   if current_time - data.get("timestamp", 0) > 60]
+    for token in old_pending:
+        del pending_pool_checks[token]
+    
     # Clear other caches if too large
     if len(pool_verification_cache) > 100:
         pool_verification_cache.clear()
@@ -211,6 +225,187 @@ def cleanup_all_caches():
     gc.collect()
     
     logging.debug(f"[CACHE] Cleanup complete - Sigs: {len(processed_signatures_cache)}, Tokens: {len(seen_tokens)}")
+
+# ============================================
+# ENHANCED POOL DETECTION FUNCTIONS
+# ============================================
+async def wait_for_pool_creation(mint: str, source: str, timeout: float = POOL_CHECK_TIMEOUT):
+    """
+    Wait for a pool to be created for a token
+    """
+    start_time = time.time()
+    check_count = 0
+    
+    logging.info(f"[{source}] Token {mint[:8]}... detected, waiting for pool creation...")
+    
+    # Add to pending pool checks
+    pending_pool_checks[mint] = {
+        "source": source,
+        "timestamp": time.time(),
+        "checks": 0
+    }
+    
+    while time.time() - start_time < timeout:
+        check_count += 1
+        
+        # Check if pool exists via multiple methods
+        pool_exists = await verify_pool_exists(mint)
+        
+        if pool_exists:
+            logging.info(f"[{source}] ✅ Pool found for {mint[:8]}... after {check_count} checks!")
+            
+            # Get liquidity
+            lp_data = await get_liquidity_and_ownership(mint)
+            lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
+            
+            if lp_amount > 0:
+                # Remove from pending
+                pending_pool_checks.pop(mint, None)
+                return True, lp_amount
+            
+        # Update check count
+        if mint in pending_pool_checks:
+            pending_pool_checks[mint]["checks"] = check_count
+        
+        # Dynamic wait time - start fast, slow down over time
+        if check_count < 10:
+            await asyncio.sleep(MIN_POOL_CHECK_INTERVAL)
+        elif check_count < 20:
+            await asyncio.sleep(1.0)
+        else:
+            await asyncio.sleep(2.0)
+    
+    # Timeout reached
+    pending_pool_checks.pop(mint, None)
+    logging.info(f"[{source}] ⏱️ Timeout waiting for pool creation for {mint[:8]}...")
+    return False, 0
+
+async def verify_pool_exists(mint: str) -> bool:
+    """Enhanced pool verification with multiple methods"""
+    try:
+        # Check cache first
+        if mint in pool_verification_cache:
+            cache_time = pool_verification_cache.get(f"{mint}_time", 0)
+            if time.time() - cache_time < 10:  # Cache for 10 seconds
+                return pool_verification_cache[mint]
+        
+        # Method 1: Check detected pools
+        if mint in detected_pools:
+            pool_verification_cache[mint] = True
+            pool_verification_cache[f"{mint}_time"] = time.time()
+            return True
+        
+        # Method 2: Check Raydium
+        pool = raydium.find_pool_realtime(mint)
+        if pool:
+            detected_pools[mint] = pool
+            pool_verification_cache[mint] = True
+            pool_verification_cache[f"{mint}_time"] = time.time()
+            return True
+        
+        # Method 3: Check Jupiter Quote API (most reliable)
+        try:
+            # Try to get a quote for swapping SOL to this token
+            quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint={mint}&amount=1000000000"
+            
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(quote_url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # If we get routes, pool exists
+                    if data.get("routePlan") or data.get("data"):
+                        pool_verification_cache[mint] = True
+                        pool_verification_cache[f"{mint}_time"] = time.time()
+                        return True
+        except:
+            pass
+        
+        # Method 4: Check Jupiter Price API
+        try:
+            url = f"https://price.jup.ag/v4/price?ids={mint}"
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if mint in data.get("data", {}):
+                        pool_verification_cache[mint] = True
+                        pool_verification_cache[f"{mint}_time"] = time.time()
+                        return True
+        except:
+            pass
+        
+        # No pool found
+        pool_verification_cache[mint] = False
+        pool_verification_cache[f"{mint}_time"] = time.time()
+        return False
+        
+    except Exception as e:
+        logging.error(f"Pool verification error for {mint[:8]}...: {e}")
+        return False
+
+def is_pool_initialization_transaction(logs: list, account_keys: list, name: str) -> bool:
+    """
+    Enhanced detection for ACTUAL pool initialization transactions
+    """
+    if name == "Raydium":
+        # Look for specific pool initialization patterns
+        pool_init_indicators = 0
+        
+        for log in logs:
+            log_lower = log.lower()
+            
+            # Strong indicators of pool creation
+            if "initialize2" in log_lower or "initializeinstruction2" in log_lower:
+                pool_init_indicators += 5
+            
+            if "init_pc_amount" in log_lower or "init_coin_amount" in log_lower:
+                pool_init_indicators += 4
+            
+            if "opentime" in log_lower:
+                pool_init_indicators += 3
+            
+            if "amm_v4" in log_lower and "initialize" in log_lower:
+                pool_init_indicators += 4
+            
+            # Check for liquidity addition
+            if "deposit" in log_lower and "liquidity" in log_lower:
+                pool_init_indicators += 3
+            
+            if "create_pool" in log_lower or "new_pool" in log_lower:
+                pool_init_indicators += 5
+            
+            # Raydium specific success messages
+            if "success" in log_lower and any(x in log_lower for x in ["pool", "amm", "liquidity"]):
+                pool_init_indicators += 2
+        
+        # Need strong evidence of pool creation
+        has_init_amounts = any("init_pc_amount" in log.lower() or "init_coin_amount" in log.lower() for log in logs)
+        has_pool_keywords = any("pool" in log.lower() or "amm" in log.lower() for log in logs)
+        
+        return pool_init_indicators >= 8 and (has_init_amounts or has_pool_keywords)
+    
+    elif name == "PumpFun":
+        # PumpFun graduation to Raydium
+        graduation_indicators = 0
+        
+        for log in logs:
+            log_lower = log.lower()
+            
+            if "migration" in log_lower or "graduated" in log_lower:
+                graduation_indicators += 5
+            
+            if "raydium" in log_lower and "create" in log_lower:
+                graduation_indicators += 4
+            
+            if "complete" in log_lower and "bonding" in log_lower:
+                graduation_indicators += 3
+            
+            if "liquidity" in log_lower and "added" in log_lower:
+                graduation_indicators += 3
+        
+        return graduation_indicators >= 5
+    
+    return False
 
 # ============================================
 # FIX: Fixed transaction fetching without infinite recursion
@@ -446,40 +641,6 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
             return True, "Quality check error but good LP"
         return False, "Quality check error"
 
-async def verify_pool_exists(mint: str) -> bool:
-    """Verify that a real trading pool exists for this token"""
-    try:
-        if mint in pool_verification_cache:
-            return pool_verification_cache[mint]
-        
-        if mint in detected_pools:
-            pool_verification_cache[mint] = True
-            return True
-        
-        pool = raydium.find_pool_realtime(mint)
-        if pool:
-            pool_verification_cache[mint] = True
-            return True
-        
-        try:
-            url = f"https://price.jup.ag/v4/price?ids={mint}"
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        pool_verification_cache[mint] = True
-                        return True
-        except:
-            pass
-        
-        pool_verification_cache[mint] = False
-        return False
-        
-    except Exception as e:
-        logging.error(f"Pool verification error: {e}")
-        return False
-
 async def check_pumpfun_graduation(mint: str) -> bool:
     """Check if a PumpFun token is ready to graduate"""
     try:
@@ -499,10 +660,10 @@ async def check_pumpfun_graduation(mint: str) -> bool:
     return False
 
 # ============================================
-# CONCURRENT TOKEN PROCESSING
+# ENHANCED TOKEN PROCESSING WITH POOL WAITING
 # ============================================
 async def process_potential_token(potential_mint: str, name: str, pool_id: str = None):
-    """Process a single token asynchronously"""
+    """Process a single token - wait for pool creation"""
     global tokens_being_processed
     
     try:
@@ -512,25 +673,33 @@ async def process_potential_token(potential_mint: str, name: str, pool_id: str =
         
         tokens_being_processed.add(potential_mint)
         
-        # Track if PumpFun
-        if name == "PumpFun" and potential_mint not in pumpfun_tokens:
-            pumpfun_tokens[potential_mint] = {
-                "discovered": time.time(),
-                "migrated": False
-            }
-            logging.info(f"[PumpFun] Tracking new token: {potential_mint[:8]}...")
-        
-        # Register Raydium pool if detected
-        if name == "Raydium" and pool_id:
+        # Check if this is actually a pool initialization
+        if pool_id:
+            # This is a confirmed pool creation
             detected_pools[potential_mint] = pool_id
             raydium.register_new_pool(pool_id, potential_mint)
-            logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
-        
-        # Process based on platform
-        if name == "PumpFun" and is_bot_running():
-            await process_pumpfun_token(potential_mint)
-        elif name in ["Raydium"] and is_bot_running():
+            logging.info(f"[{name}] ✅ Pool {pool_id[:8]}... created for token {potential_mint[:8]}...")
+            
+            # Process immediately
             await process_raydium_token(potential_mint, name)
+        else:
+            # Token detected, need to wait for pool
+            logging.info(f"[{name}] Token {potential_mint[:8]}... detected, checking for pool...")
+            
+            # Wait for pool creation
+            pool_found, lp_amount = await wait_for_pool_creation(potential_mint, name)
+            
+            if pool_found and lp_amount > 0:
+                logging.info(f"[{name}] Pool found with {lp_amount:.2f} SOL liquidity!")
+                
+                # Process based on platform
+                if name == "PumpFun":
+                    await process_pumpfun_token(potential_mint)
+                else:
+                    await process_raydium_token(potential_mint, name)
+            else:
+                logging.info(f"[{name}] No pool created for {potential_mint[:8]}... - skipping")
+                record_skip("no_pool_created")
             
     except Exception as e:
         logging.error(f"Error processing {potential_mint[:8]}...: {e}")
@@ -544,18 +713,12 @@ async def process_pumpfun_token(potential_mint: str):
     
     logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
     
-    await asyncio.sleep(PUMPFUN_INIT_DELAY)
-    
     graduated = await check_pumpfun_graduation(potential_mint)
     if graduated and potential_mint in pumpfun_tokens:
         pumpfun_tokens[potential_mint]["migrated"] = True
     
     lp_data = await get_liquidity_and_ownership(potential_mint)
     lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
-    
-    if lp_amount == 0:
-        logging.info(f"[PUMPFUN] New token {potential_mint[:8]}... - No LP yet, checking if tradeable")
-        lp_amount = 0.1
     
     recent_buy_attempts[potential_mint] = time.time()
     
@@ -567,7 +730,7 @@ async def process_pumpfun_token(potential_mint: str):
         buy_reason = "PumpFun Early Entry"
     
     await send_telegram_alert(
-        f"🎯 PUMPFUN TOKEN DETECTED\n\n"
+        f"🎯 PUMPFUN TOKEN WITH POOL\n\n"
         f"Token: `{potential_mint}`\n"
         f"Status: {buy_reason}\n"
         f"Liquidity: {lp_amount:.2f} SOL\n"
@@ -608,25 +771,15 @@ async def process_pumpfun_token(potential_mint: str):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
 
 async def process_raydium_token(potential_mint: str, name: str):
-    """Process Raydium token"""
+    """Process Raydium token with confirmed pool"""
     if potential_mint in BROKEN_TOKENS or potential_mint in BLACKLIST or potential_mint in already_bought:
         return
     
-    await asyncio.sleep(MEMPOOL_DELAY_MS / 1000)
+    logging.info(f"[{name}] Processing token with confirmed pool: {potential_mint[:8]}...")
     
-    lp_amount = 0
-    try:
-        lp_check_task = asyncio.create_task(get_liquidity_and_ownership(potential_mint))
-        lp_data = await asyncio.wait_for(lp_check_task, timeout=2.0)
-        
-        if lp_data:
-            lp_amount = lp_data.get("liquidity", 0)
-    except asyncio.TimeoutError:
-        logging.info(f"[{name}] LP check timeout")
-        return
-    except Exception as e:
-        logging.debug(f"[{name}] LP check error: {e}")
-        return
+    # Get liquidity
+    lp_data = await get_liquidity_and_ownership(potential_mint)
+    lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
     
     if lp_amount < 0.5:
         logging.info(f"[{name}] Very low liquidity ({lp_amount:.2f} SOL) but checking quality")
@@ -651,7 +804,7 @@ async def process_raydium_token(potential_mint: str, name: str):
     recent_buy_attempts[potential_mint] = time.time()
     
     await send_telegram_alert(
-        f"✅ QUALITY TOKEN DETECTED ✅\n\n"
+        f"✅ POOL CREATED - QUALITY TOKEN ✅\n\n"
         f"Platform: {name}\n"
         f"Token: `{potential_mint}`\n"
         f"Liquidity: {lp_amount:.2f} SOL\n"
@@ -671,7 +824,7 @@ async def process_raydium_token(potential_mint: str, name: str):
                 BLACKLIST.add(potential_mint)
             
             await send_telegram_alert(
-                f"✅ SNIPED QUALITY TOKEN!\n"
+                f"✅ SNIPED AT POOL CREATION!\n"
                 f"Token: {potential_mint[:16]}...\n"
                 f"Amount: {buy_amount} SOL\n"
                 f"Risk: {risk_level}\n"
@@ -692,10 +845,10 @@ async def process_raydium_token(potential_mint: str, name: str):
             os.environ["BUY_AMOUNT_SOL"] = original_amount
 
 # ============================================
-# FIX: Enhanced mempool listener with proper cleanup
+# ENHANCED MEMPOOL LISTENER WITH POOL DETECTION
 # ============================================
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with proper connection management"""
+    """Enhanced mempool listener that detects POOL CREATION not token creation"""
     if not HELIUS_API:
         logging.warning(f"[{name}] HELIUS_API not set, skipping mempool listener")
         await send_telegram_alert(f"⚠️ {name} listener disabled (no Helius API key)")
@@ -764,7 +917,7 @@ async def mempool_listener(name, program_id=None):
             current_time = time.time()
             last_alert = last_alert_sent.get(name, 0)
             if current_time - last_alert > 1800:
-                await send_telegram_alert(f"📡 {name} listener ACTIVE")
+                await send_telegram_alert(f"📡 {name} listener ACTIVE - Monitoring POOL CREATIONS")
                 last_alert_sent[name] = current_time
             
             listener_status[name] = "ACTIVE"
@@ -789,6 +942,7 @@ async def mempool_listener(name, program_id=None):
             processed_txs = set()
             transaction_counter = 0
             pool_creations_found = 0
+            token_creations_found = 0
             
             # Process messages
             while True:
@@ -816,36 +970,40 @@ async def mempool_listener(name, program_id=None):
                         transaction_counter += 1
                         
                         if transaction_counter % 100 == 0:
-                            logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations")
+                            logging.info(f"[{name}] Processed {transaction_counter} txs, found {pool_creations_found} pool creations, {token_creations_found} token creations")
                             # Periodic cleanup
                             if transaction_counter % 500 == 0:
                                 cleanup_all_caches()
                         
-                        # Detection logic
-                        is_pool_creation = detect_pool_creation(name, logs, account_keys)
+                        # Check if this is a POOL creation (not just token creation)
+                        is_pool_creation = is_pool_initialization_transaction(logs, account_keys, name)
                         
-                        if not is_pool_creation:
-                            continue
-                        
-                        pool_creations_found += 1
-                        logging.info(f"[{name}] POOL/TOKEN CREATION DETECTED! Total found: {pool_creations_found}")
-                        
-                        # Fetch full transaction if needed
-                        if len(account_keys) == 0:
-                            logging.info(f"[{name}] Fetching full transaction...")
-                            try:
-                                fetch_task = asyncio.create_task(fetch_transaction_accounts(signature))
-                                account_keys = await asyncio.wait_for(fetch_task, timeout=5)
-                            except asyncio.TimeoutError:
-                                logging.warning(f"[{name}] Transaction fetch timeout for {signature[:8]}...")
-                                continue
+                        if is_pool_creation:
+                            pool_creations_found += 1
+                            logging.info(f"[{name}] 🏊 POOL CREATION DETECTED! Total pools: {pool_creations_found}")
                             
+                            # Fetch full transaction if needed
                             if len(account_keys) == 0:
-                                logging.warning(f"[{name}] Could not fetch account keys")
-                                continue
-                        
-                        # Process tokens
-                        await process_detected_tokens(name, account_keys)
+                                logging.info(f"[{name}] Fetching full transaction for pool...")
+                                try:
+                                    fetch_task = asyncio.create_task(fetch_transaction_accounts(signature))
+                                    account_keys = await asyncio.wait_for(fetch_task, timeout=5)
+                                except asyncio.TimeoutError:
+                                    logging.warning(f"[{name}] Transaction fetch timeout for {signature[:8]}...")
+                                    continue
+                                
+                                if len(account_keys) == 0:
+                                    logging.warning(f"[{name}] Could not fetch account keys")
+                                    continue
+                            
+                            # Process pool creation
+                            await process_pool_creation(name, account_keys, logs)
+                        else:
+                            # Check if it's just a token creation (for tracking)
+                            is_token_creation = detect_token_creation(name, logs)
+                            if is_token_creation:
+                                token_creations_found += 1
+                                logging.debug(f"[{name}] Token creation detected (no pool yet) - Total: {token_creations_found}")
                 
                 except asyncio.TimeoutError:
                     continue
@@ -887,97 +1045,26 @@ async def mempool_listener(name, program_id=None):
             logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
             await asyncio.sleep(wait_time)
 
-def detect_pool_creation(name: str, logs: list, account_keys: list) -> bool:
-    """Detect if this is a pool/token creation"""
-    if name == "Raydium":
-        raydium_indicators = 0
-        
+def detect_token_creation(name: str, logs: list) -> bool:
+    """Detect if this is just a token creation (no pool)"""
+    if name == "PumpFun":
         for log in logs:
             log_lower = log.lower()
-            
-            if "initialize" in log_lower:
-                raydium_indicators += 1
-                if "pool" in log_lower or "amm" in log_lower:
-                    raydium_indicators += 2
-            
-            if "program log: instruction: initialize" in log_lower:
-                raydium_indicators += 3
-            
-            if "create" in log_lower and ("pool" in log_lower or "amm" in log_lower):
-                raydium_indicators += 3
-            
-            if "add_liquidity" in log_lower or "deposit" in log_lower:
-                raydium_indicators += 2
-            
-            if any(x in log_lower for x in ["init_pc_amount", "init_coin_amount", "opentime", "nonce"]):
-                raydium_indicators += 2
-            
-            if "instruction: initialize2" in log_lower:
-                raydium_indicators += 3
-        
-        if len(account_keys) > 10:
-            raydium_indicators += 1
-        
-        return raydium_indicators >= RAYDIUM_MIN_INDICATORS and len(logs) >= RAYDIUM_MIN_LOGS
-    
-    elif name == "PumpFun":
-        pumpfun_create_indicators = 0
-        is_token_creation = False
-        
-        for log in logs:
-            log_lower = log.lower()
-            
-            if "create" in log_lower:
-                pumpfun_create_indicators += 3
-                if any(word in log_lower for word in ["token", "coin", "mint", "bonding"]):
-                    is_token_creation = True
-                    pumpfun_create_indicators += 2
-            
-            if "initialize" in log_lower:
-                pumpfun_create_indicators += 2
-                if any(word in log_lower for word in ["mint", "token", "metadata", "bonding"]):
-                    is_token_creation = True
-                    pumpfun_create_indicators += 3
-            
-            if "bonding" in log_lower:
-                pumpfun_create_indicators += 2
-                if any(word in log_lower for word in ["init", "create", "new", "initialize"]):
-                    is_token_creation = True
-                    pumpfun_create_indicators += 3
-            
-            if any(word in log_lower for word in ["launch", "deploy", "mint_new", "new_token"]):
-                pumpfun_create_indicators += 4
-                is_token_creation = True
-        
-        if pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS and len(logs) >= PUMPFUN_MIN_LOGS:
-            if not is_token_creation:
-                trade_indicators = 0
-                for log in logs:
-                    log_lower = log.lower()
-                    if any(word in log_lower for word in ["swap", "buy", "sell", "trade"]):
-                        trade_indicators += 1
-                
-                if trade_indicators < 2:
-                    is_token_creation = True
-        
-        return is_token_creation and pumpfun_create_indicators >= PUMPFUN_MIN_INDICATORS
-    
-    elif name == "Moonshot":
-        for log in logs:
-            log_lower = log.lower()
-            if ("moon" in log_lower or "launch" in log_lower) and ("create" in log_lower or "initialize" in log_lower):
-                if len(logs) >= 5:
-                    return True
-    
+            if "create" in log_lower and "token" in log_lower and "pool" not in log_lower:
+                return True
     return False
 
-async def process_detected_tokens(name: str, account_keys: list):
-    """Process detected tokens from a transaction"""
+async def process_pool_creation(name: str, account_keys: list, logs: list):
+    """Process actual pool creation"""
     if CONCURRENT_PROCESSING_ENABLED:
         tasks = []
         tokens_to_process = []
         
-        for key in account_keys[:MAX_CONCURRENT_TOKENS]:
+        # Extract pool ID and token mint
+        pool_id = None
+        token_mint = None
+        
+        for i, key in enumerate(account_keys[:MAX_CONCURRENT_TOKENS + 5]):
             if isinstance(key, dict):
                 key = key.get("pubkey", "") or key.get("address", "")
             
@@ -987,33 +1074,38 @@ async def process_detected_tokens(name: str, account_keys: list):
             if key == "So11111111111111111111111111111111111111112":
                 continue
             
-            if key in seen_tokens or key in already_bought:
-                continue
+            # First non-system account is often the pool ID
+            if not pool_id and i < 3:
+                pool_id = key
             
-            try:
-                Pubkey.from_string(key)
-                potential_mint = key
-                seen_tokens.add(potential_mint)
-                tokens_to_process.append((potential_mint, None))
-            except:
-                continue
+            # Look for token mint
+            if key not in seen_tokens and key not in already_bought:
+                try:
+                    Pubkey.from_string(key)
+                    if not token_mint:
+                        token_mint = key
+                    seen_tokens.add(key)
+                except:
+                    continue
         
-        for potential_mint, pool_id in tokens_to_process:
+        if token_mint and pool_id:
+            logging.info(f"[{name}] Processing pool {pool_id[:8]}... for token {token_mint[:8]}...")
             task = asyncio.create_task(
-                process_potential_token(potential_mint, name, pool_id)
+                process_potential_token(token_mint, name, pool_id)
             )
             tasks.append(task)
         
         if tasks:
-            logging.info(f"[{name}] Processing {len(tasks)} tokens concurrently")
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     logging.error(f"[{name}] Task {i} failed: {result}")
     else:
-        # Sequential processing fallback
-        for key in account_keys:
+        # Sequential processing for pool creation
+        pool_id = None
+        token_mint = None
+        
+        for i, key in enumerate(account_keys):
             if isinstance(key, dict):
                 key = key.get("pubkey", "") or key.get("address", "")
             
@@ -1023,17 +1115,21 @@ async def process_detected_tokens(name: str, account_keys: list):
             if key == "So11111111111111111111111111111111111111112":
                 continue
             
-            if key in seen_tokens or key in already_bought:
-                continue
+            if not pool_id and i < 3:
+                pool_id = key
             
-            try:
-                Pubkey.from_string(key)
-                potential_mint = key
-                seen_tokens.add(potential_mint)
-                
-                await process_potential_token(potential_mint, name, None)
-            except:
-                continue
+            if key not in seen_tokens and key not in already_bought:
+                try:
+                    Pubkey.from_string(key)
+                    if not token_mint:
+                        token_mint = key
+                    seen_tokens.add(key)
+                    
+                    if token_mint and pool_id:
+                        await process_potential_token(token_mint, name, pool_id)
+                        break
+                except:
+                    continue
 
 # ============================================
 # SCANNER FUNCTIONS (keeping all existing ones)
@@ -1313,95 +1409,6 @@ async def trending_scanner():
                     continue
                 
                 await asyncio.sleep(TREND_SCAN_INTERVAL)
-                continue
-            
-            consecutive_failures = 0
-            processed = 0
-            quality_finds = 0
-            
-            for pair in pairs[:10]:
-                mint = pair.get("baseToken", {}).get("address")
-                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
-                
-                price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-                price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-                
-                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
-                    continue
-                
-                is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
-                
-                min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
-                min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
-                
-                if lp_usd < min_lp:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
-                    continue
-                    
-                if vol_usd < min_vol:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
-                    continue
-                
-                if price_change_h1 < -30 and not is_pumpfun_grad:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
-                    continue
-                    
-                seen_trending.add(mint)
-                processed += 1
-                increment_stat("tokens_scanned", 1)
-                update_last_activity()
-                
-                is_mooning = price_change_h1 > 50 or price_change_h24 > 100
-                has_momentum = price_change_h1 > 20 and vol_usd > 50000
-                
-                if is_mooning or has_momentum or is_pumpfun_grad:
-                    quality_finds += 1
-                    
-                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
-                    if is_pumpfun_grad:
-                        alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
-                    
-                    await send_telegram_alert(
-                        alert_msg +
-                        f"Token: `{mint}`\n"
-                        f"Liquidity: ${lp_usd:,.0f}\n"
-                        f"Volume 24h: ${vol_usd:,.0f}\n"
-                        f"Price Change:\n"
-                        f"• 1h: {price_change_h1:+.1f}%\n"
-                        f"• 24h: {price_change_h24:+.1f}%\n"
-                        f"Source: {source}\n\n"
-                        f"Attempting to buy..."
-                    )
-                    
-                    try:
-                        original_amount = None
-                        if is_pumpfun_grad:
-                            original_amount = os.getenv("BUY_AMOUNT_SOL")
-                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                        
-                        success = await buy_token(mint)
-                        if success:
-                            already_bought.add(mint)
-                            if BLACKLIST_AFTER_BUY:
-                                BLACKLIST.add(mint)
-                            asyncio.create_task(wait_and_auto_sell(mint))
-                            
-                        if is_pumpfun_grad and original_amount:
-                            os.environ["BUY_AMOUNT_SOL"] = original_amount
-                    except Exception as e:
-                        logging.error(f"[Trending] Buy error: {e}")
-                else:
-                    logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-            
-            if processed > 0:
-                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
-            
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
-            
-        except Exception as e:
-            logging.error(f"[Trending Scanner ERROR] {e}")
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 async def rug_filter_passes(mint: str) -> bool:
     """Check if token passes basic rug filters"""
@@ -1745,8 +1752,8 @@ async def check_momentum_score(mint: str) -> dict:
 # ============================================
 
 async def start_sniper():
-    """Start the ELITE sniper bot with CONCURRENT PROCESSING and periodic cleanup"""
-    mode_text = "ELITE Money Printer Mode + Momentum Scanner + CONCURRENT PROCESSING"
+    """Start the ELITE sniper bot with POOL DETECTION"""
+    mode_text = "POOL DETECTION Mode + Momentum Scanner + CONCURRENT PROCESSING"
     TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
     
     # Start periodic cleanup
@@ -1755,18 +1762,19 @@ async def start_sniper():
     TASKS.append(CLEANUP_TASK)
     
     await send_telegram_alert(
-        f"💰 MONEY PRINTER LAUNCHING 💰\n\n"
+        f"💰 POOL DETECTION SNIPER LAUNCHING 💰\n\n"
         f"Mode: {mode_text}\n"
         f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
         f"Min AI Score: {MIN_AI_SCORE}\n"
         f"Momentum Mode: {'HYBRID' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
         f"⚡ CONCURRENT PROCESSING: {MAX_CONCURRENT_TOKENS} tokens in parallel\n"
-        f"⚡ PERIODIC CLEANUP: Every 60 seconds\n\n"
+        f"⚡ PERIODIC CLEANUP: Every 60 seconds\n"
+        f"🏊 POOL DETECTION: Waiting for actual liquidity pools\n"
+        f"⏱️ Pool Check Timeout: {POOL_CHECK_TIMEOUT}s\n\n"
         f"Quality filters: ACTIVE ✅\n"
-        f"Duplicate prevention: ACTIVE ✅\n"
         f"Pool verification: ACTIVE ✅\n"
         f"Memory management: ACTIVE ✅\n"
-        f"Ready to print money FASTER! 🎯"
+        f"Ready to snipe REAL POOLS! 🎯"
     )
 
     if FORCE_TEST_MINT:
@@ -1800,7 +1808,7 @@ async def start_sniper():
         TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
         TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
     
-    await send_telegram_alert(f"🎯 MONEY PRINTER ACTIVE - {mode_text}!")
+    await send_telegram_alert(f"🎯 POOL DETECTION SNIPER ACTIVE - {mode_text}!")
 
 async def stop_all_tasks():
     """Stop all running tasks"""
@@ -1846,6 +1854,21 @@ async def start_sniper_with_forced_token(mint: str):
         if mint in BROKEN_TOKENS or mint in BLACKLIST or mint in already_bought:
             await send_telegram_alert(f"❌ {mint} is blacklisted, broken, or already bought")
             return
+
+        # Check if pool exists first
+        pool_exists = await verify_pool_exists(mint)
+        if not pool_exists:
+            await send_telegram_alert(
+                f"❌ No pool found for {mint}\n"
+                f"Token may not have liquidity yet.\n"
+                f"Waiting for pool creation..."
+            )
+            
+            # Wait for pool
+            pool_found, lp_amount = await wait_for_pool_creation(mint, "FORCEBUY", timeout=30)
+            if not pool_found:
+                await send_telegram_alert(f"❌ Pool creation timeout for {mint}")
+                return
 
         is_pumpfun = mint in pumpfun_tokens
         
@@ -1906,12 +1929,104 @@ if __name__ == "__main__":
     print("Use main.py to start the bot.")
     
     logging.info("=" * 60)
-    logging.info("SNIPER CONFIGURATION LOADED")
+    logging.info("POOL DETECTION SNIPER CONFIGURATION LOADED")
     logging.info("=" * 60)
     logging.info(f"RPC URL: {RPC_URL[:30] if RPC_URL else 'Not set'}...")
     logging.info(f"Rug LP Threshold: {RUG_LP_THRESHOLD} SOL")
+    logging.info(f"Pool Check Timeout: {POOL_CHECK_TIMEOUT}s")
+    logging.info(f"Pool Check Delay: {POOL_CHECK_DELAY}s")
     logging.info(f"Momentum Scanner: {'ENABLED' if MOMENTUM_SCANNER_ENABLED else 'DISABLED'}")
     logging.info(f"⚡ CONCURRENT PROCESSING: {'ENABLED' if CONCURRENT_PROCESSING_ENABLED else 'DISABLED'}")
     logging.info(f"⚡ Max Concurrent Tokens: {MAX_CONCURRENT_TOKENS}")
     logging.info(f"⚡ PERIODIC CLEANUP: Every 60 seconds")
+    logging.info(f"🏊 POOL DETECTION: ENABLED - Waiting for actual liquidity pools")
     logging.info("=" * 60)
+                continue
+            
+            consecutive_failures = 0
+            processed = 0
+            quality_finds = 0
+            
+            for pair in pairs[:10]:
+                mint = pair.get("baseToken", {}).get("address")
+                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
+                
+                price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+                price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+                
+                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
+                    continue
+                
+                is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
+                
+                min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
+                min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
+                
+                if lp_usd < min_lp:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
+                    continue
+                    
+                if vol_usd < min_vol:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
+                    continue
+                
+                if price_change_h1 < -30 and not is_pumpfun_grad:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
+                    continue
+                    
+                seen_trending.add(mint)
+                processed += 1
+                increment_stat("tokens_scanned", 1)
+                update_last_activity()
+                
+                is_mooning = price_change_h1 > 50 or price_change_h24 > 100
+                has_momentum = price_change_h1 > 20 and vol_usd > 50000
+                
+                if is_mooning or has_momentum or is_pumpfun_grad:
+                    quality_finds += 1
+                    
+                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
+                    if is_pumpfun_grad:
+                        alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
+                    
+                    await send_telegram_alert(
+                        alert_msg +
+                        f"Token: `{mint}`\n"
+                        f"Liquidity: ${lp_usd:,.0f}\n"
+                        f"Volume 24h: ${vol_usd:,.0f}\n"
+                        f"Price Change:\n"
+                        f"• 1h: {price_change_h1:+.1f}%\n"
+                        f"• 24h: {price_change_h24:+.1f}%\n"
+                        f"Source: {source}\n\n"
+                        f"Attempting to buy..."
+                    )
+                    
+                    try:
+                        original_amount = None
+                        if is_pumpfun_grad:
+                            original_amount = os.getenv("BUY_AMOUNT_SOL")
+                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                        
+                        success = await buy_token(mint)
+                        if success:
+                            already_bought.add(mint)
+                            if BLACKLIST_AFTER_BUY:
+                                BLACKLIST.add(mint)
+                            asyncio.create_task(wait_and_auto_sell(mint))
+                            
+                        if is_pumpfun_grad and original_amount:
+                            os.environ["BUY_AMOUNT_SOL"] = original_amount
+                    except Exception as e:
+                        logging.error(f"[Trending] Buy error: {e}")
+                else:
+                    logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
+            
+            if processed > 0:
+                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
+            
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
+            
+        except Exception as e:
+            logging.error(f"[Trending Scanner ERROR] {e}")
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
