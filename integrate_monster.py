@@ -21,12 +21,15 @@ import gc  # Added for garbage collection
 import signal
 import sys
 
+# Import buy manager to prevent circular dependencies
+from buy_manager import set_buy_function
+
 # Import your existing modules
 from sniper_logic import (
     mempool_listener, trending_scanner, 
     start_sniper_with_forced_token, stop_all_tasks,
     pumpfun_migration_monitor, pumpfun_tokens, migration_watch_list,
-    momentum_scanner, check_momentum_score
+    momentum_scanner, check_momentum_score, cleanup_all_caches
 )
 
 # Import utilities
@@ -1596,11 +1599,56 @@ async def monster_buy_token(mint: str, force_amount: float = None):
         return False
 
 # ============================================
+# MEMORY WATCHDOG
+# ============================================
+
+async def memory_watchdog():
+    """Monitor memory usage and prevent crashes"""
+    import psutil
+    process = psutil.Process()
+    
+    while True:
+        try:
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            
+            if memory_mb > 400:  # Warning at 400MB
+                logging.warning(f"[MEMORY] High usage: {memory_mb:.1f} MB")
+                
+                # Force cleanup
+                try:
+                    cleanup_all_caches()
+                except:
+                    pass
+                gc.collect()
+                
+                # Clean singleton instances if over 600MB
+                if memory_mb > 600:
+                    logging.error(f"[MEMORY] Critical: {memory_mb:.1f} MB - cleaning up")
+                    
+                    # Reset lazy loaded instances
+                    global _ai_scorer, _jito_client, _monster_bot
+                    global _mev_protection, _speed_optimizer, _simulator
+                    _ai_scorer = None
+                    _jito_client = None
+                    _monster_bot = None
+                    _mev_protection = None
+                    _speed_optimizer = None
+                    _simulator = None
+                    
+                    gc.collect()
+                    
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logging.error(f"[MEMORY] Watchdog error: {e}")
+            await asyncio.sleep(30)
+
+# ============================================
 # ELITE SNIPER LAUNCHER
 # ============================================
 
 async def start_elite_sniper():
-    """Start the elite money printer with risk management"""
+    """Start the elite money printer with risk management and memory watchdog"""
     
     log_configuration()
     
@@ -1624,7 +1672,8 @@ async def start_elite_sniper():
         "✅ Auto Profit Taking",
         "✅ Momentum Scanner",
         "✅ Risk Management",
-        "✅ Rate Limited Alerts"
+        "✅ Rate Limited Alerts",
+        "✅ Memory Watchdog"
     ]
     
     if is_aggressive_mode_active():
@@ -1669,22 +1718,12 @@ async def start_elite_sniper():
         except:
             pass
     
-    # Replace buy function with elite version
-    import utils
+    # Set buy function using manager - FIX FOR CIRCULAR DEPENDENCY
+    from buy_manager import set_buy_function
     if ENABLE_ELITE_FEATURES:
-        utils.buy_token = elite_buy_token
-        try:
-            import sniper_logic
-            sniper_logic.buy_token = elite_buy_token
-        except:
-            pass
+        set_buy_function(elite_buy_token)
     else:
-        utils.buy_token = monster_buy_token
-        try:
-            import sniper_logic
-            sniper_logic.buy_token = monster_buy_token
-        except:
-            pass
+        set_buy_function(monster_buy_token)
     
     # Start core listeners
     tasks = []
@@ -1750,6 +1789,9 @@ async def start_elite_sniper():
     if is_aggressive_mode_active():
         tasks.append(asyncio.create_task(aggressive_progress_monitor()))
     
+    # Add memory watchdog
+    tasks.append(asyncio.create_task(memory_watchdog()))
+    
     mode_emoji = "⚡" if is_aggressive_mode_active() else "🛡️"
     
     await send_telegram_alert(
@@ -1757,7 +1799,8 @@ async def start_elite_sniper():
         f"Mode: {mode}\n"
         f"Active Strategies: {len(tasks)}\n"
         f"Min LP: {get_minimum_liquidity_required()} SOL\n"
-        f"Buy Amount: Dynamic\n\n"
+        f"Buy Amount: Dynamic\n"
+        f"Memory Watchdog: ACTIVE\n\n"
         f"Hunting for profits... 💰"
     )
     
@@ -1949,6 +1992,7 @@ async def main():
 ║  Memory leaks: FIXED ✓                  ║
 ║  Circular deps: FIXED ✓                 ║
 ║  Risk management: ACTIVE ✓              ║
+║  Memory watchdog: ACTIVE ✓              ║
 ╚══════════════════════════════════════════╝
     """)
     
