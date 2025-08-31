@@ -13,8 +13,11 @@ import random
 from dexscreener_monitor import start_dexscreener_monitor
 import gc  # Added for garbage collection
 
+# Import buy manager instead of directly from utils to prevent circular dependencies
+from buy_manager import execute_buy as buy_token
+
 from utils import (
-    is_valid_mint, buy_token, log_skipped_token, send_telegram_alert,
+    is_valid_mint, log_skipped_token, send_telegram_alert,
     get_trending_mints, wait_and_auto_sell, get_liquidity_and_ownership,
     is_bot_running, keypair, BUY_AMOUNT_SOL, BROKEN_TOKENS,
     mark_broken_token, daily_stats_reset_loop,
@@ -34,6 +37,22 @@ CACHE_CLEANUP_INTERVAL = 300  # Clean cache every 5 minutes
 last_cache_cleanup = time.time()
 MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
 MAX_CACHE_SIZE = 100  # Maximum signatures to keep in cache
+
+# Automated cleanup task
+CLEANUP_TASK = None
+
+async def periodic_cleanup():
+    """Run cleanup every 60 seconds"""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            cleanup_all_caches()
+            gc.collect()
+            logging.debug("[CLEANUP] Periodic cleanup completed")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.error(f"[CLEANUP] Error: {e}")
 
 # CONCURRENT PROCESSING CONFIGURATION
 MAX_CONCURRENT_TOKENS = int(os.getenv("MAX_CONCURRENT_TOKENS", 3))
@@ -158,45 +177,40 @@ def cleanup_all_caches():
     
     current_time = time.time()
     
-    # Keep only last 100 signatures
-    if len(processed_signatures_cache) > MAX_CACHE_SIZE:
+    # Clean signature cache - keep only last 50
+    if len(processed_signatures_cache) > 50:
+        # Sort by timestamp and keep newest
         sorted_sigs = sorted(processed_signatures_cache.items(), key=lambda x: x[1], reverse=True)
-        processed_signatures_cache = dict(sorted_sigs[:MAX_CACHE_SIZE//2])
-        logging.debug(f"[CACHE] Cleaned signature cache, kept {len(processed_signatures_cache)} entries")
+        processed_signatures_cache = dict(sorted_sigs[:25])
     
-    # Clear old seen tokens (keep last 500)
-    if len(seen_tokens) > 500:
-        # Convert to list, keep last 250
+    # Clean seen_tokens - keep only last 200
+    if len(seen_tokens) > 200:
         token_list = list(seen_tokens)
-        seen_tokens.clear()
-        seen_tokens.update(token_list[-250:])
-        logging.debug(f"[CACHE] Cleaned seen_tokens, kept {len(seen_tokens)} entries")
+        seen_tokens = set(token_list[-100:])
     
-    # Clean momentum analyzed (remove entries older than 1 hour)
-    old_momentum = []
-    for token, data in momentum_analyzed.items():
-        if current_time - data.get("timestamp", 0) > 3600:
-            old_momentum.append(token)
+    # Clean momentum_analyzed - remove older than 30 minutes
+    old_momentum = [token for token, data in momentum_analyzed.items() 
+                     if current_time - data.get("timestamp", 0) > 1800]
     for token in old_momentum:
         del momentum_analyzed[token]
     
-    # Clean recent buy attempts (remove entries older than 5 minutes)
-    old_attempts = []
-    for token, timestamp in recent_buy_attempts.items():
-        if current_time - timestamp > 300:
-            old_attempts.append(token)
+    # Clean recent_buy_attempts - remove older than 5 minutes
+    old_attempts = [token for token, timestamp in recent_buy_attempts.items() 
+                    if current_time - timestamp > 300]
     for token in old_attempts:
         del recent_buy_attempts[token]
     
-    # Limit other caches
-    if len(pool_verification_cache) > 200:
+    # Clear other caches if too large
+    if len(pool_verification_cache) > 100:
         pool_verification_cache.clear()
     
-    if len(detected_pools) > 200:
+    if len(detected_pools) > 100:
         detected_pools.clear()
     
     # Force garbage collection
     gc.collect()
+    
+    logging.debug(f"[CACHE] Cleanup complete - Sigs: {len(processed_signatures_cache)}, Tokens: {len(seen_tokens)}")
 
 # ============================================
 # FIX: Fixed transaction fetching without infinite recursion
@@ -1022,88 +1036,7 @@ async def process_detected_tokens(name: str, account_keys: list):
                 continue
 
 # ============================================
-# SCANNER FUNCTIONS
-# ============================================
-
-# [Keep all the remaining functions from the original file as they are]
-# Including: raydium_graduation_scanner, pumpfun_migration_monitor, 
-# scan_pumpfun_graduations, get_trending_pairs_dexscreener, 
-# get_trending_pairs_birdeye, trending_scanner, rug_filter_passes,
-# detect_chart_pattern, score_momentum_token, fetch_top_gainers,
-# momentum_scanner, check_momentum_score, start_sniper,
-# start_sniper_with_forced_token, stop_all_tasks
-
-# Due to length limits, I'm including the key functions that need to be present
-async def start_sniper():
-    """Start the ELITE sniper bot with CONCURRENT PROCESSING"""
-    mode_text = "ELITE Money Printer Mode + Momentum Scanner + CONCURRENT PROCESSING"
-    TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
-    
-    await send_telegram_alert(
-        f"💰 MONEY PRINTER LAUNCHING 💰\n\n"
-        f"Mode: {mode_text}\n"
-        f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
-        f"Min AI Score: {MIN_AI_SCORE}\n"
-        f"Momentum Mode: {'HYBRID' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
-        f"⚡ CONCURRENT PROCESSING: {MAX_CONCURRENT_TOKENS} tokens in parallel\n\n"
-        f"Quality filters: ACTIVE ✅\n"
-        f"Duplicate prevention: ACTIVE ✅\n"
-        f"Pool verification: ACTIVE ✅\n"
-        f"Ready to print money FASTER! 🎯"
-    )
-
-    if FORCE_TEST_MINT:
-        await send_telegram_alert(f"🚨 Forced Test Buy: {FORCE_TEST_MINT}")
-        try:
-            success = await buy_token(FORCE_TEST_MINT)
-            if success:
-                await wait_and_auto_sell(FORCE_TEST_MINT)
-        except Exception as e:
-            logging.error(f"Force buy error: {e}")
-
-    TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
-    
-    listeners = ["Raydium", "PumpFun", "Moonshot"]
-    if not SKIP_JUPITER_MEMPOOL:
-        listeners.append("Jupiter")
-    
-    for listener in listeners:
-        TASKS.append(asyncio.create_task(mempool_listener(listener)))
-    
-    TASKS.append(asyncio.create_task(trending_scanner()))
-    
-    if MOMENTUM_SCANNER_ENABLED:
-        TASKS.append(asyncio.create_task(momentum_scanner()))
-        await send_telegram_alert(
-            "🔥 Momentum Scanner: ACTIVE\n"
-            "Hunting for 50-200% gainers"
-        )
-    
-    if ENABLE_PUMPFUN_MIGRATION:
-        TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
-        TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
-    
-    await send_telegram_alert(f"🎯 MONEY PRINTER ACTIVE - {mode_text}!")
-
-async def stop_all_tasks():
-    """Stop all running tasks"""
-    for task in TASKS:
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-    TASKS.clear()
-    
-    # Final cleanup
-    cleanup_all_caches()
-    gc.collect()
-    
-    await send_telegram_alert("🛑 All sniper tasks stopped.")
-
-# ============================================
-# GRADUATION AND MIGRATION SCANNERS
+# SCANNER FUNCTIONS (keeping all existing ones)
 # ============================================
 
 async def raydium_graduation_scanner():
@@ -1808,6 +1741,96 @@ async def check_momentum_score(mint: str) -> dict:
     return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
 
 # ============================================
+# MAIN SNIPER FUNCTIONS
+# ============================================
+
+async def start_sniper():
+    """Start the ELITE sniper bot with CONCURRENT PROCESSING and periodic cleanup"""
+    mode_text = "ELITE Money Printer Mode + Momentum Scanner + CONCURRENT PROCESSING"
+    TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
+    
+    # Start periodic cleanup
+    global CLEANUP_TASK
+    CLEANUP_TASK = asyncio.create_task(periodic_cleanup())
+    TASKS.append(CLEANUP_TASK)
+    
+    await send_telegram_alert(
+        f"💰 MONEY PRINTER LAUNCHING 💰\n\n"
+        f"Mode: {mode_text}\n"
+        f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
+        f"Min AI Score: {MIN_AI_SCORE}\n"
+        f"Momentum Mode: {'HYBRID' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
+        f"⚡ CONCURRENT PROCESSING: {MAX_CONCURRENT_TOKENS} tokens in parallel\n"
+        f"⚡ PERIODIC CLEANUP: Every 60 seconds\n\n"
+        f"Quality filters: ACTIVE ✅\n"
+        f"Duplicate prevention: ACTIVE ✅\n"
+        f"Pool verification: ACTIVE ✅\n"
+        f"Memory management: ACTIVE ✅\n"
+        f"Ready to print money FASTER! 🎯"
+    )
+
+    if FORCE_TEST_MINT:
+        await send_telegram_alert(f"🚨 Forced Test Buy: {FORCE_TEST_MINT}")
+        try:
+            success = await buy_token(FORCE_TEST_MINT)
+            if success:
+                await wait_and_auto_sell(FORCE_TEST_MINT)
+        except Exception as e:
+            logging.error(f"Force buy error: {e}")
+
+    TASKS.append(asyncio.create_task(daily_stats_reset_loop()))
+    
+    listeners = ["Raydium", "PumpFun", "Moonshot"]
+    if not SKIP_JUPITER_MEMPOOL:
+        listeners.append("Jupiter")
+    
+    for listener in listeners:
+        TASKS.append(asyncio.create_task(mempool_listener(listener)))
+    
+    TASKS.append(asyncio.create_task(trending_scanner()))
+    
+    if MOMENTUM_SCANNER_ENABLED:
+        TASKS.append(asyncio.create_task(momentum_scanner()))
+        await send_telegram_alert(
+            "🔥 Momentum Scanner: ACTIVE\n"
+            "Hunting for 50-200% gainers"
+        )
+    
+    if ENABLE_PUMPFUN_MIGRATION:
+        TASKS.append(asyncio.create_task(pumpfun_migration_monitor()))
+        TASKS.append(asyncio.create_task(raydium_graduation_scanner()))
+    
+    await send_telegram_alert(f"🎯 MONEY PRINTER ACTIVE - {mode_text}!")
+
+async def stop_all_tasks():
+    """Stop all running tasks"""
+    global CLEANUP_TASK
+    
+    for task in TASKS:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    
+    # Also stop the cleanup task
+    if CLEANUP_TASK and not CLEANUP_TASK.done():
+        CLEANUP_TASK.cancel()
+        try:
+            await CLEANUP_TASK
+        except asyncio.CancelledError:
+            pass
+    
+    TASKS.clear()
+    
+    # Final cleanup
+    cleanup_all_caches()
+    gc.collect()
+    
+    await send_telegram_alert("🛑 All sniper tasks stopped.")
+
+# ============================================
 # FORCE BUY FUNCTION
 # ============================================
 
@@ -1890,4 +1913,5 @@ if __name__ == "__main__":
     logging.info(f"Momentum Scanner: {'ENABLED' if MOMENTUM_SCANNER_ENABLED else 'DISABLED'}")
     logging.info(f"⚡ CONCURRENT PROCESSING: {'ENABLED' if CONCURRENT_PROCESSING_ENABLED else 'DISABLED'}")
     logging.info(f"⚡ Max Concurrent Tokens: {MAX_CONCURRENT_TOKENS}")
+    logging.info(f"⚡ PERIODIC CLEANUP: Every 60 seconds")
     logging.info("=" * 60)
