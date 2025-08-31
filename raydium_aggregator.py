@@ -1,4 +1,4 @@
-# raydium_aggregator.py - OPTIMIZED VERSION
+# raydium_aggregator.py - FIXED VERSION WITH DISABLED POOL SCANNING
 import os
 import json
 import logging
@@ -35,7 +35,6 @@ class RaydiumAggregatorClient:
         self.pool_cache = {}
         self.cache_duration = 300
         self.known_pools = {}
-        self.failed_lookups = {}  # Track failed pools to avoid retrying
         
     def _read_b64_account(self, acc: Any) -> Optional[bytes]:
         """Centralized base64 extraction that handles both dict and object shapes"""
@@ -92,15 +91,9 @@ class RaydiumAggregatorClient:
             return False
         
     def find_pool_realtime(self, token_mint: str) -> Optional[Dict[str, Any]]:
-        """Find Raydium pool - OPTIMIZED VERSION"""
+        """Find Raydium pool - FIXED VERSION"""
         try:
             sol_mint = "So11111111111111111111111111111111111111112"
-            
-            # Skip if recently failed
-            if token_mint in self.failed_lookups:
-                if time.time() - self.failed_lookups[token_mint] < 300:  # 5 min cooldown
-                    logging.info(f"[Raydium] Skipping {token_mint[:8]}... (recent failure)")
-                    return None
             
             # Check cache first
             if token_mint in self.known_pools:
@@ -116,30 +109,14 @@ class RaydiumAggregatorClient:
             
             logging.info(f"[Raydium] Checking for pool {token_mint[:8]}...")
             
-            # OPTIMIZATION: Try Jupiter first for instant detection
-            if os.getenv("PREFER_JUPITER", "true").lower() == "true":
-                try:
-                    url = f"https://quote-api.jup.ag/v6/quote?inputMint={sol_mint}&outputMint={token_mint}&amount=1000000"
-                    with httpx.Client(timeout=2, verify=False) as client:
-                        resp = client.get(url)
-                        if resp.status_code == 200 and resp.json().get("routePlan"):
-                            logging.info(f"[Raydium] Token {token_mint[:8]}... has liquidity (via Jupiter quick check)")
-                            # Don't return fake pool data, but mark as having liquidity
-                            # Let the actual pool finding continue if needed
-                except:
-                    pass
-            
-            # Try to find the actual Raydium pool
+            # Try to find the actual Raydium pool (disabled scan)
             pool = self._find_pool_smart(token_mint, sol_mint)
             if pool:
                 self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
                 self.known_pools[token_mint] = pool
                 return pool
             
-            # Mark as failed to avoid retrying
-            self.failed_lookups[token_mint] = time.time()
-            
-            # Check if token has liquidity elsewhere
+            # Check if token has liquidity on Jupiter
             try:
                 url = f"https://quote-api.jup.ag/v6/quote?inputMint={sol_mint}&outputMint={token_mint}&amount=1000000000"
                 with httpx.Client(timeout=5, verify=False) as client:
@@ -147,7 +124,7 @@ class RaydiumAggregatorClient:
                     if resp.status_code == 200:
                         data = resp.json()
                         if "routePlan" in data and len(data["routePlan"]) > 0:
-                            logging.info(f"[Raydium] Token {token_mint[:8]}... has liquidity on Jupiter but not Raydium")
+                            logging.info(f"[Raydium] Token {token_mint[:8]}... has liquidity on Jupiter (will use Jupiter for buy)")
                             return None
             except Exception as e:
                 logging.debug(f"[Raydium] Jupiter check failed: {e}")
@@ -160,101 +137,9 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """Fallback pool finding - OPTIMIZED to prevent timeouts"""
-        try:
-            # Quick Jupiter check first (instant)
-            try:
-                url = f"https://quote-api.jup.ag/v6/quote?inputMint={sol_mint}&outputMint={token_mint}&amount=1000000"
-                with httpx.Client(timeout=2, verify=False) as client:
-                    resp = client.get(url)
-                    if resp.status_code == 200 and resp.json().get("routePlan"):
-                        logging.info(f"[Raydium] Token {token_mint[:8]}... confirmed on Jupiter, checking for Raydium pool")
-                        # Continue to find actual Raydium pool
-            except:
-                pass
-            
-            # Reduced limit to prevent timeout
-            limit = int(os.getenv("POOL_SCAN_LIMIT", "20"))
-            logging.info(f"[Raydium] Quick scan for pool (max {limit} pools)...")
-            
-            try:
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getProgramAccounts",
-                    "params": [
-                        str(RAYDIUM_AMM_PROGRAM_ID),
-                        {
-                            "encoding": "base64",
-                            "filters": [{"dataSize": 752}]
-                        }
-                    ]
-                }
-                
-                # CRITICAL: Reduced timeout from 30s to 5s
-                with httpx.Client(timeout=5, verify=False) as client:
-                    response = client.post(self.rpc_url, json=payload)
-                
-                if response.status_code != 200:
-                    logging.warning(f"[Raydium] RPC request failed: {response.status_code}")
-                    return None
-                    
-                data = response.json()
-                if "result" not in data:
-                    logging.warning("[Raydium] No result in RPC response")
-                    return None
-                    
-                accounts = data["result"]
-                
-            except httpx.TimeoutException:
-                logging.warning("[Raydium] Pool scan timed out - using Jupiter only")
-                return None
-            except Exception as e:
-                logging.warning(f"[Raydium] Scan failed: {e}")
-                return None
-            
-            if not accounts:
-                logging.warning("[Raydium] No pool accounts found")
-                return None
-            
-            # Only check the LAST N pools (most recent)
-            pools_to_check = accounts[-limit:] if len(accounts) > limit else accounts
-                
-            logging.info(f"[Raydium] Checking {len(pools_to_check)} recent pools...")
-            
-            for account_info in pools_to_check:
-                try:
-                    pool_id = account_info.get("pubkey", "")
-                    if not pool_id:
-                        continue
-                    
-                    # Extract account data
-                    acc_data = account_info.get("account", {})
-                    if "data" in acc_data:
-                        if isinstance(acc_data["data"], list):
-                            data = base64.b64decode(acc_data["data"][0])
-                        else:
-                            data = base64.b64decode(acc_data["data"])
-                    else:
-                        continue
-                        
-                    if not data or len(data) != 752:
-                        continue
-                    
-                    if self._pool_bytes_contain_mints(data, token_mint, sol_mint):
-                        logging.info(f"[Raydium] Found pool {pool_id[:8]}... for {token_mint[:8]}!")
-                        return self.fetch_pool_data_from_chain(pool_id)
-                        
-                except Exception as e:
-                    logging.debug(f"[Raydium] Error checking pool: {e}")
-                    continue
-            
-            logging.info(f"[Raydium] Token {token_mint[:8]} not found in {len(pools_to_check)} pools")
-            return None
-            
-        except Exception as e:
-            logging.error(f"[Raydium] Pool search error: {e}")
-            return None
+        """Pool scanning disabled to prevent crashes - using Jupiter only"""
+        logging.info(f"[Raydium] Skipping pool scan for {token_mint[:8]}... (using Jupiter)")
+        return None
     
     def fetch_pool_data_from_chain(self, pool_id: str) -> Optional[Dict[str, Any]]:
         """Fetch pool data with retry mechanism for new pools"""
