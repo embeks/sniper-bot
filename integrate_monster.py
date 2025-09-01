@@ -1938,51 +1938,77 @@ async def elite_performance_monitor():
             await asyncio.sleep(60)
 
 # ============================================
-# MAIN ENTRY
+# MAIN ENTRY - FIXED VERSION
 # ============================================
 
 async def run_bot_with_web_server():
-    """Run bot with web server"""
-    asyncio.create_task(start_elite_sniper())
+    """Run bot with web server - FIXED VERSION"""
+    # Start the bot FIRST, don't wait for it
+    bot_task = asyncio.create_task(start_elite_sniper())
     
+    # Setup webhook if configured
     if BOT_TOKEN:
         try:
-            webhook_url = f"https://sniper-bot-web.onrender.com/webhook"
+            webhook_url = os.getenv("WEBHOOK_URL", "https://sniper-bot-web.onrender.com/webhook")
             
-            async with httpx.AsyncClient(verify=False) as client:
+            async with httpx.AsyncClient(verify=False, timeout=5) as client:
                 response = await client.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-                    json={"url": webhook_url}
+                    json={"url": webhook_url},
+                    timeout=5
                 )
                 if response.status_code == 200:
                     logging.info(f"[TELEGRAM] Webhook set to {webhook_url}")
         except Exception as e:
             logging.error(f"[TELEGRAM] Webhook setup error: {e}")
     
+    # Now start web server in background
     port = int(os.getenv("PORT", 10000))
     config = uvicorn.Config(
         app, 
         host="0.0.0.0", 
         port=port,
-        log_level="warning"
+        log_level="info",  # Changed from warning to info for better logging
+        loop="asyncio"  # Use existing loop
     )
     server = uvicorn.Server(config)
     
     logging.info(f"Starting web server on port {port}")
-    await server.serve()
+    
+    # Run both concurrently
+    try:
+        await asyncio.gather(
+            server.serve(),
+            bot_task,
+            return_exceptions=True
+        )
+    except Exception as e:
+        logging.error(f"[Server] Error: {e}")
 
 async def main():
-    """Main entry point"""
+    """Main entry point - FIXED"""
     
+    # Check critical environment variables
     if not os.getenv("HELIUS_API"):
-        print("ERROR: HELIUS_API not set")
+        print("ERROR: HELIUS_API not set in environment")
+        logging.error("HELIUS_API not configured")
         return
     
     if not os.getenv("SOLANA_PRIVATE_KEY"):
-        print("ERROR: SOLANA_PRIVATE_KEY not set")
+        print("ERROR: SOLANA_PRIVATE_KEY not set in environment")
+        logging.error("SOLANA_PRIVATE_KEY not configured")
         return
     
-    mode = "AGGRESSIVE" if is_aggressive_mode_active() else "SAFE"
+    # Add missing JUPITER_BASE_URL if not set
+    if not os.getenv("JUPITER_BASE_URL"):
+        os.environ["JUPITER_BASE_URL"] = "https://quote-api.jup.ag"
+        logging.info("Set JUPITER_BASE_URL to default")
+    
+    # Fix aggressive mode check
+    aggressive_mode = os.getenv("AGGRESSIVE_MODE", "false").lower() == "true"
+    compete_mode = os.getenv("COMPETE_MODE", "safe").lower()
+    
+    mode = "AGGRESSIVE" if (aggressive_mode or compete_mode == "aggressive") else "SAFE"
     
     print(f"""
 ╔══════════════════════════════════════════╗
@@ -1998,6 +2024,9 @@ async def main():
     
     logging.info("=" * 50)
     logging.info(f"STARTING IN {mode} MODE!")
+    logging.info(f"MOMENTUM_AUTO_BUY: {os.getenv('MOMENTUM_AUTO_BUY', 'false')}")
+    logging.info(f"MIN_AI_SCORE: {os.getenv('MIN_AI_SCORE', '0.30')}")
+    logging.info(f"RUG_LP_THRESHOLD: {os.getenv('RUG_LP_THRESHOLD', '5.0')}")
     logging.info("=" * 50)
     
     await run_bot_with_web_server()
@@ -2066,18 +2095,33 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 # ============================================
-# ENTRY POINT
+# ENTRY POINT - FIXED VERSION
 # ============================================
 
 if __name__ == "__main__":
+    # Set up logging with more detail
     log_level = logging.DEBUG if os.getenv("DEBUG", "false").lower() == "true" else logging.INFO
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),  # Console output
+            logging.FileHandler('bot.log', mode='a')  # Also log to file
+        ]
     )
     
+    # Reduce noise from external libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    
+    # Log startup info
+    logging.info("=" * 60)
+    logging.info("BOT STARTUP INITIATED")
+    logging.info(f"Python version: {sys.version}")
+    logging.info(f"Platform: Render (Production)")
+    logging.info(f"Mode: {os.getenv('COMPETE_MODE', 'safe')}")
+    logging.info("=" * 60)
     
     try:
         asyncio.run(main())
