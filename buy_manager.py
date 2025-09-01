@@ -1,9 +1,8 @@
-# buy_manager.py - COMPLETE FIXED VERSION
+# buy_manager.py
 """
 Centralized buy function manager to prevent circular imports
-This file was missing and causing your crashes - now properly implemented
+This handles all buy operations for the bot
 """
-
 from typing import Optional, Callable
 import logging
 import asyncio
