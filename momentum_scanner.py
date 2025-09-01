@@ -1,4 +1,3 @@
-
 """
 Elite Momentum Scanner - Finds pumping tokens with your exact criteria
 Implements the hybrid strategy for 70% win rate momentum plays
@@ -27,13 +26,13 @@ load_dotenv()
 # Core Settings
 MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "true").lower() == "true"
 MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "true").lower() == "true"
-MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 2))  # Perfect setups only
+MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 4))  # Perfect setups only
 MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 3))  # Alert for decent setups
 
 # Your Golden Rules
 MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))  # 50% minimum
 MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))  # 200% maximum
-MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 30000))  # $30k minimum
+MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 2000))  # $2k minimum (from your fixes)
 MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 500000))  # $500k max market cap
 MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", 100))
 MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", 2000))
@@ -41,9 +40,9 @@ MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", 2))
 MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", 24))
 
 # Position Sizing
-MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.20))  # Perfect setup
-MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.15))  # Good setup
-MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.10))  # Decent setup
+MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.10))  # Perfect setup
+MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.05))  # Good setup
+MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.02))  # Decent setup
 MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", 0.02))  # Testing
 
 # Trading Hours (AEST)
@@ -201,69 +200,138 @@ async def score_token(token_data: Dict) -> Tuple[int, List[str]]:
     return (int(score), signals)
 
 # ============================================
-# DEXSCREENER API INTERFACE
+# DEXSCREENER API INTERFACE - FIXED VERSION
 # ============================================
 
 async def fetch_top_gainers() -> List[Dict]:
     """
-    Fetch top gaining tokens from DexScreener
+    Fetch top gaining tokens from DexScreener - FIXED with retry and fallback
     """
-    try:
-        url = "https://api.dexscreener.com/latest/dex/pairs/solana"
-        
-        async with httpx.AsyncClient(timeout=10, verify=False) as client:
-            response = await client.get(url)
+    for attempt in range(3):
+        try:
+            # Try different endpoints
+            urls = [
+                "https://api.dexscreener.com/latest/dex/pairs/solana",
+                "https://api.dexscreener.com/latest/dex/search?q=SOL"
+            ]
             
-            if response.status_code == 200:
-                data = response.json()
-                pairs = data.get("pairs", [])
-                
-                # Filter for Raydium/Orca pairs only (avoid scams)
-                filtered_pairs = []
-                for pair in pairs:
-                    if pair.get("dexId") in ["raydium", "orca"]:
-                        # Check basic criteria
-                        price_change_1h = float(pair.get("priceChange", {}).get("h1", 0))
-                        liquidity_usd = float(pair.get("liquidity", {}).get("usd", 0))
+            for url in urls:
+                try:
+                    async with httpx.AsyncClient(timeout=15, verify=False) as client:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                            "Accept": "application/json",
+                            "Accept-Language": "en-US,en;q=0.9",
+                            "Cache-Control": "no-cache",
+                            "Referer": "https://dexscreener.com/",
+                            "Origin": "https://dexscreener.com"
+                        }
                         
-                        # Pre-filter
-                        if (MOMENTUM_MIN_1H_GAIN <= price_change_1h <= MOMENTUM_MAX_1H_GAIN * 1.5 and
-                            liquidity_usd >= MOMENTUM_MIN_LIQUIDITY * 0.8):
-                            filtered_pairs.append(pair)
-                
-                # Sort by 1h gain
-                filtered_pairs.sort(key=lambda x: float(x.get("priceChange", {}).get("h1", 0)), reverse=True)
-                
-                # Return top candidates
-                return filtered_pairs[:MAX_TOKENS_TO_CHECK]
-                
-    except Exception as e:
-        logging.error(f"Error fetching gainers: {e}")
+                        response = await client.get(url, headers=headers)
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            
+                            # Handle different response formats
+                            pairs = []
+                            if "pairs" in data:
+                                pairs = data["pairs"]
+                            elif "results" in data and len(data["results"]) > 0:
+                                # Search endpoint format
+                                for result in data["results"]:
+                                    if "pairs" in result:
+                                        pairs.extend(result["pairs"])
+                            
+                            if pairs:
+                                logging.info(f"[Momentum] Got {len(pairs)} pairs from {url}")
+                                
+                                # Filter for your criteria - USING YOUR ENV SETTINGS
+                                filtered_pairs = []
+                                for pair in pairs[:100]:  # Check more pairs
+                                    try:
+                                        # Skip if not Raydium/Orca
+                                        if pair.get("dexId") not in ["raydium", "orca"]:
+                                            continue
+                                        
+                                        # Extract metrics safely
+                                        price_change_1h = float(pair.get("priceChange", {}).get("h1", 0))
+                                        liquidity_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                                        
+                                        # Use your env settings
+                                        min_gain = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))
+                                        max_gain = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))
+                                        min_liq = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 2000))
+                                        
+                                        # Apply filters
+                                        if (min_gain <= price_change_1h <= max_gain and
+                                            liquidity_usd >= min_liq):
+                                            filtered_pairs.append(pair)
+                                            logging.debug(f"[Momentum] Found candidate: {pair.get('baseToken', {}).get('symbol')} +{price_change_1h:.1f}%")
+                                    
+                                    except Exception as e:
+                                        logging.debug(f"[Momentum] Error parsing pair: {e}")
+                                        continue
+                                
+                                if filtered_pairs:
+                                    # Sort by 1h gain descending
+                                    filtered_pairs.sort(
+                                        key=lambda x: float(x.get("priceChange", {}).get("h1", 0)), 
+                                        reverse=True
+                                    )
+                                    logging.info(f"[Momentum] Returning {len(filtered_pairs)} filtered pairs")
+                                    return filtered_pairs[:MAX_TOKENS_TO_CHECK]
+                                else:
+                                    logging.info(f"[Momentum] No pairs met criteria (min gain: {min_gain}%, min liq: ${min_liq})")
+                                
+                        elif response.status_code == 429:
+                            logging.warning(f"[Momentum] Rate limited, waiting {10 * (attempt + 1)}s...")
+                            await asyncio.sleep(10 * (attempt + 1))
+                        else:
+                            logging.warning(f"[Momentum] API returned status {response.status_code}")
+                            
+                except asyncio.TimeoutError:
+                    logging.warning(f"[Momentum] Timeout for {url}")
+                    continue
+                except Exception as e:
+                    logging.debug(f"[Momentum] Try {url} failed: {e}")
+                    continue
+                    
+        except Exception as e:
+            logging.error(f"[Momentum] Attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(5)
     
+    logging.warning("[Momentum] All attempts failed, returning empty")
     return []
 
 # ============================================
-# MAIN MOMENTUM SCANNER
+# MAIN MOMENTUM SCANNER - FIXED VERSION
 # ============================================
 
 async def momentum_scanner():
     """
     Main momentum scanner - Runs continuously finding pumping tokens
+    FIXED with better error handling and your exact settings
     """
     if not MOMENTUM_SCANNER_ENABLED:
         logging.info("[Momentum Scanner] Disabled via configuration")
         return
     
+    # Check if auto-buy is really enabled
+    auto_buy_enabled = os.getenv("MOMENTUM_AUTO_BUY", "false").lower() == "true"
+    
     await send_telegram_alert(
         "🔥 MOMENTUM SCANNER ACTIVE 🔥\n\n"
-        f"Mode: {'AUTO-BUY' if MOMENTUM_AUTO_BUY else 'ALERT ONLY'}\n"
+        f"Mode: {'AUTO-BUY' if auto_buy_enabled else 'ALERT ONLY'}\n"
         f"Auto-buy threshold: {MIN_SCORE_AUTO_BUY}/5\n"
         f"Alert threshold: {MIN_SCORE_ALERT}/5\n"
-        f"Position sizes: 0.02-0.2 SOL\n\n"
+        f"Min 1h gain: {os.getenv('MOMENTUM_MIN_1H_GAIN', 50)}%\n"
+        f"Min liquidity: ${os.getenv('MOMENTUM_MIN_LIQUIDITY', 2000)}\n"
+        f"Position sizes: 0.02-0.1 SOL\n\n"
         "Hunting for pumps..."
     )
     
     consecutive_errors = 0
+    scan_count = 0
     
     while True:
         try:
@@ -271,14 +339,18 @@ async def momentum_scanner():
                 await asyncio.sleep(30)
                 continue
             
+            scan_count += 1
+            logging.info(f"[Momentum Scanner] Starting scan #{scan_count}")
+            
             # Check if we're in prime trading hours
             current_hour = datetime.now().hour
             is_prime_time = current_hour in PRIME_HOURS
             
             # Adjust thresholds based on time
             if not is_prime_time and current_hour not in REDUCED_HOURS:
+                logging.info("[Momentum Scanner] Outside trading hours, waiting...")
                 await asyncio.sleep(SCAN_INTERVAL)
-                continue  # Skip dead hours
+                continue
             
             # Fetch top gainers
             top_gainers = await fetch_top_gainers()
@@ -286,12 +358,19 @@ async def momentum_scanner():
             if not top_gainers:
                 consecutive_errors += 1
                 if consecutive_errors > 5:
-                    logging.warning("[Momentum Scanner] Multiple fetch failures")
+                    logging.warning(f"[Momentum Scanner] Multiple fetch failures ({consecutive_errors})")
+                    # Don't give up, just wait longer
                     await asyncio.sleep(SCAN_INTERVAL * 2)
+                    consecutive_errors = 0  # Reset after waiting
+                else:
+                    await asyncio.sleep(SCAN_INTERVAL)
                 continue
             
+            # Success - reset error counter
             consecutive_errors = 0
             candidates_found = 0
+            
+            logging.info(f"[Momentum Scanner] Analyzing {len(top_gainers)} tokens")
             
             # Analyze each token
             for token_data in top_gainers:
@@ -323,6 +402,8 @@ async def momentum_scanner():
                         "symbol": token_symbol
                     }
                     
+                    logging.info(f"[Momentum] {token_symbol} scored {score}/5")
+                    
                     # Skip low scores
                     if score < MIN_SCORE_ALERT:
                         continue
@@ -330,7 +411,7 @@ async def momentum_scanner():
                     candidates_found += 1
                     
                     # Determine action based on score
-                    if score >= MIN_SCORE_AUTO_BUY and MOMENTUM_AUTO_BUY:
+                    if score >= MIN_SCORE_AUTO_BUY and auto_buy_enabled:
                         # AUTO BUY - Perfect setup
                         position_size = MOMENTUM_POSITION_5_SCORE if score >= 5 else MOMENTUM_POSITION_4_SCORE
                         
@@ -352,6 +433,7 @@ async def momentum_scanner():
                         
                         if success:
                             recently_bought.add(token_address)
+                            momentum_stats["auto_buys"] += 1
                             await send_telegram_alert(
                                 f"✅ MOMENTUM BUY SUCCESS\n"
                                 f"Token: {token_symbol}\n"
@@ -364,6 +446,7 @@ async def momentum_scanner():
                         
                     elif score >= MIN_SCORE_ALERT:
                         # ALERT ONLY - Good setup needs approval
+                        momentum_stats["alerts_sent"] += 1
                         await send_telegram_alert(
                             f"🔔 MOMENTUM OPPORTUNITY 🔔\n\n"
                             f"Token: {token_symbol} ({token_address[:8]}...)\n"
@@ -377,18 +460,25 @@ async def momentum_scanner():
                     await asyncio.sleep(1)
                     
                 except Exception as e:
-                    logging.error(f"Error analyzing token: {e}")
+                    logging.error(f"[Momentum] Error analyzing token: {e}")
                     continue
+            
+            # Update stats
+            momentum_stats["total_scans"] += 1
+            momentum_stats["tokens_analyzed"] += len(top_gainers)
             
             # Summary log
             if candidates_found > 0:
                 logging.info(f"[Momentum Scanner] Found {candidates_found} candidates this scan")
+            else:
+                logging.info(f"[Momentum Scanner] No candidates met criteria this scan")
             
             # Wait before next scan
             await asyncio.sleep(SCAN_INTERVAL)
             
         except Exception as e:
             logging.error(f"[Momentum Scanner] Error in main loop: {e}")
+            consecutive_errors += 1
             await asyncio.sleep(SCAN_INTERVAL)
 
 # ============================================
@@ -550,12 +640,16 @@ async def report_momentum_stats():
     while True:
         await asyncio.sleep(86400)  # Daily
         
+        win_rate = 0
+        if momentum_stats['auto_buys'] > 0:
+            win_rate = (momentum_stats['successful_trades'] / momentum_stats['auto_buys']) * 100
+        
         await send_telegram_alert(
             f"📊 MOMENTUM SCANNER DAILY REPORT\n\n"
             f"Scans: {momentum_stats['total_scans']}\n"
             f"Tokens Analyzed: {momentum_stats['tokens_analyzed']}\n"
             f"Auto Buys: {momentum_stats['auto_buys']}\n"
             f"Alerts Sent: {momentum_stats['alerts_sent']}\n"
-            f"Win Rate: {(momentum_stats['successful_trades']/max(momentum_stats['auto_buys'],1)*100):.1f}%\n"
+            f"Win Rate: {win_rate:.1f}%\n"
             f"Total Profit: {momentum_stats['total_profit']:.2f} SOL"
         )
