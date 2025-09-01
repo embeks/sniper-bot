@@ -87,25 +87,25 @@ SLIPPAGE_BPS = 100
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 # Enhanced position sizing
-SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", 0.05))
-RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.03))
+SAFE_BUY_AMOUNT = float(os.getenv("SAFE_BUY_AMOUNT", 0.1))
+RISKY_BUY_AMOUNT = float(os.getenv("RISKY_BUY_AMOUNT", 0.05))
 ULTRA_RISKY_BUY_AMOUNT = float(os.getenv("ULTRA_RISKY_BUY_AMOUNT", 0.01))
 
-# Quality filters
+# Quality filters - FIXED TO USE CORRECT ENV VARIABLES
 MIN_AI_SCORE = float(os.getenv("MIN_AI_SCORE", 0.10))
 MIN_HOLDER_COUNT = int(os.getenv("MIN_HOLDER_COUNT", 10))
 MAX_TOP_HOLDER_PERCENT = float(os.getenv("MAX_TOP_HOLDER_PERCENT", 35))
 MIN_BUYS_COUNT = int(os.getenv("MIN_BUYS_COUNT", 5))
-MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.2))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 2.0))
-RISKY_LP_THRESHOLD = 1.5
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))
+MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", 1.5))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 1.5))  # Updated to match new env
+RISKY_LP_THRESHOLD = 1.0
+TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", 60))  # Now matches env
 
 # Enhanced pool detection thresholds
-RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", "3"))
-RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", "10"))
-PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", "3"))
-PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", "5"))
+RAYDIUM_MIN_INDICATORS = int(os.getenv("RAYDIUM_MIN_INDICATORS", 1))  # More aggressive
+RAYDIUM_MIN_LOGS = int(os.getenv("RAYDIUM_MIN_LOGS", 20))
+PUMPFUN_MIN_INDICATORS = int(os.getenv("PUMPFUN_MIN_INDICATORS", 3))
+PUMPFUN_MIN_LOGS = int(os.getenv("PUMPFUN_MIN_LOGS", 1))  # More aggressive
 
 # Pool verification settings
 POOL_CHECK_DELAY = float(os.getenv("POOL_CHECK_DELAY", 1.0))
@@ -122,35 +122,36 @@ SKIP_JUPITER_MEMPOOL = os.getenv("SKIP_JUPITER_MEMPOOL", "true").lower() == "tru
 
 # PumpFun Migration Settings
 PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
-PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.02))
-PUMPFUN_GRADUATION_MC = 69420
+PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.05))
+PUMPFUN_GRADUATION_MC = int(os.getenv("PUMPFUN_MAX_MARKET_CAP", 50000))  # Use env value
 ENABLE_PUMPFUN_MIGRATION = os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true"
-MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 0.5))
+MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 1.0))
 
 # Pool initialization delays
 MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 200))
 PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 1.0))
 
 # ============================================
-# MOMENTUM SCANNER CONFIGURATION
+# MOMENTUM SCANNER CONFIGURATION - FIXED
 # ============================================
 MOMENTUM_SCANNER_ENABLED = os.getenv("MOMENTUM_SCANNER", "true").lower() == "true"
 MOMENTUM_AUTO_BUY = os.getenv("MOMENTUM_AUTO_BUY", "true").lower() == "true"
 MIN_SCORE_AUTO_BUY = int(os.getenv("MIN_SCORE_AUTO_BUY", 3))
-MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 2))
+MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", 3))
 
+# FIXED: Now using correct env variable names
 MOMENTUM_MIN_1H_GAIN = float(os.getenv("MOMENTUM_MIN_1H_GAIN", 50))
 MOMENTUM_MAX_1H_GAIN = float(os.getenv("MOMENTUM_MAX_1H_GAIN", 200))
-MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 2000))
+MOMENTUM_MIN_LIQUIDITY = float(os.getenv("MOMENTUM_MIN_LIQUIDITY", 2000))  # Now uses correct env
 MOMENTUM_MAX_MC = float(os.getenv("MOMENTUM_MAX_MC", 500000))
 MOMENTUM_MIN_HOLDERS = int(os.getenv("MOMENTUM_MIN_HOLDERS", 100))
 MOMENTUM_MAX_HOLDERS = int(os.getenv("MOMENTUM_MAX_HOLDERS", 2000))
 MOMENTUM_MIN_AGE_HOURS = float(os.getenv("MOMENTUM_MIN_AGE_HOURS", 2))
 MOMENTUM_MAX_AGE_HOURS = float(os.getenv("MOMENTUM_MAX_AGE_HOURS", 24))
 
-MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.1))
-MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.1))
-MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.05))
+MOMENTUM_POSITION_5_SCORE = float(os.getenv("MOMENTUM_POSITION_5_SCORE", 0.20))
+MOMENTUM_POSITION_4_SCORE = float(os.getenv("MOMENTUM_POSITION_4_SCORE", 0.15))
+MOMENTUM_POSITION_3_SCORE = float(os.getenv("MOMENTUM_POSITION_3_SCORE", 0.10))
 MOMENTUM_TEST_POSITION = float(os.getenv("MOMENTUM_TEST_POSITION", 0.02))
 
 PRIME_HOURS = [21, 22, 23, 0, 1, 2, 3]
@@ -421,8 +422,8 @@ def is_pool_initialization_transaction(logs: list, account_keys: list, name: str
             if "success" in log_lower and any(x in log_lower for x in ["pool", "amm", "liquidity"]):
                 pool_init_indicators += 2
         
-        # STRICTER REQUIREMENTS: Need both pool creation AND liquidity
-        return pool_init_indicators >= 10 and has_pool_create and has_liquidity_add
+        # FIXED: More aggressive detection
+        return pool_init_indicators >= 5 or (has_pool_create and has_liquidity_add)
     
     elif name == "PumpFun":
         # PumpFun graduation to Raydium
@@ -623,11 +624,11 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
         return []
 
 # ============================================
-# QUALITY CHECK FUNCTIONS
+# QUALITY CHECK FUNCTIONS - FIXED
 # ============================================
 async def is_quality_token(mint: str, lp_amount: float) -> tuple:
     """
-    Enhanced quality check for tokens
+    Enhanced quality check for tokens - FIXED to use proper thresholds
     Returns (is_quality, reason)
     """
     try:
@@ -639,8 +640,10 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
             if time_since_attempt < DUPLICATE_CHECK_WINDOW:
                 return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
         
-        if lp_amount < RUG_LP_THRESHOLD:
-            return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {RUG_LP_THRESHOLD})"
+        # FIXED: Use more aggressive threshold
+        min_lp_threshold = float(os.getenv("RUG_LP_THRESHOLD", 1.5))
+        if lp_amount < min_lp_threshold:
+            return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {min_lp_threshold})"
         
         # Try to get token metrics from DexScreener
         try:
@@ -653,7 +656,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
                         pair = data["pairs"][0]
                         
                         volume_h24 = float(pair.get("volume", {}).get("h24", 0))
-                        min_volume = float(os.getenv("MIN_VOLUME_USD", 300))
+                        min_volume = float(os.getenv("MIN_VOLUME_USD", 2000))  # Use env value
                         if volume_h24 < min_volume:
                             logging.info(f"Low volume ${volume_h24:.0f} but proceeding")
                         
@@ -661,7 +664,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
                         buys_h1 = txns.get("h1", {}).get("buys", 1)
                         sells_h1 = txns.get("h1", {}).get("sells", 1)
                         
-                        if sells_h1 > 0 and buys_h1 / sells_h1 < 0.5:
+                        if sells_h1 > 0 and buys_h1 / sells_h1 < 0.3:  # More aggressive
                             return False, f"Bad buy/sell ratio: {buys_h1}/{sells_h1}"
                         
                         price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0))
@@ -672,7 +675,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         except:
             pass
         
-        if lp_amount >= RUG_LP_THRESHOLD:
+        if lp_amount >= min_lp_threshold:
             return True, f"Good liquidity ({lp_amount:.1f} SOL), proceeding without data"
         
         return False, "Failed quality checks"
@@ -693,7 +696,9 @@ async def check_pumpfun_graduation(mint: str) -> bool:
                 data = response.json()
                 market_cap = data.get("usd_market_cap", 0)
                 
-                if market_cap > PUMPFUN_GRADUATION_MC * 0.9:
+                # Use env value for graduation threshold
+                graduation_mc = int(os.getenv("PUMPFUN_MAX_MARKET_CAP", 50000))
+                if market_cap > graduation_mc * 0.9:
                     logging.info(f"[PumpFun] {mint[:8]}... approaching graduation: ${market_cap:.0f}")
                     return True
     except Exception as e:
@@ -833,10 +838,13 @@ async def process_raydium_token(potential_mint: str, name: str):
         record_skip("quality_check")
         return
     
-    if lp_amount >= RUG_LP_THRESHOLD * 2:
+    # FIXED: Use proper thresholds
+    min_lp = float(os.getenv("RUG_LP_THRESHOLD", 1.5))
+    
+    if lp_amount >= min_lp * 2:
         risk_level = "SAFE"
         buy_amount = SAFE_BUY_AMOUNT
-    elif lp_amount >= RUG_LP_THRESHOLD:
+    elif lp_amount >= min_lp:
         risk_level = "MEDIUM"
         buy_amount = RISKY_BUY_AMOUNT
     else:
@@ -1208,7 +1216,8 @@ async def raydium_graduation_scanner():
                         lp_data = await get_liquidity_and_ownership(mint)
                         lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
                         
-                        if lp_amount >= RUG_LP_THRESHOLD:
+                        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 1.5))
+                        if lp_amount >= min_lp:
                             already_bought.add(mint)
                             
                             await send_telegram_alert(
@@ -1316,6 +1325,8 @@ async def scan_pumpfun_graduations():
             if response.status_code == 200:
                 coins = response.json()
                 
+                graduation_mc = int(os.getenv("PUMPFUN_MAX_MARKET_CAP", 50000))
+                
                 for coin in coins[:20]:
                     mint = coin.get("mint")
                     market_cap = coin.get("usd_market_cap", 0)
@@ -1323,7 +1334,7 @@ async def scan_pumpfun_graduations():
                     if not mint:
                         continue
                     
-                    if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
+                    if market_cap > graduation_mc * 0.8:
                         if mint not in pumpfun_tokens:
                             pumpfun_tokens[mint] = {
                                 "discovered": time.time(),
@@ -1335,24 +1346,24 @@ async def scan_pumpfun_graduations():
                             migration_watch_list.add(mint)
                             logging.info(f"[PumpFun] Added {mint[:8]}... to migration watch (MC: ${market_cap:.0f})")
                             
-                            if market_cap > PUMPFUN_GRADUATION_MC * 0.95:
+                            if market_cap > graduation_mc * 0.95:
                                 await send_telegram_alert(
                                     f"⚠️ GRADUATION IMMINENT\n\n"
                                     f"Token: `{mint}`\n"
                                     f"Market Cap: ${market_cap:,.0f}\n"
-                                    f"Graduation at: $69,420\n"
-                                    f"Status: {(market_cap/PUMPFUN_GRADUATION_MC)*100:.1f}% complete\n\n"
+                                    f"Graduation at: ${graduation_mc:,.0f}\n"
+                                    f"Status: {(market_cap/graduation_mc)*100:.1f}% complete\n\n"
                                     f"Monitoring for Raydium migration..."
                                 )
     except Exception as e:
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 # ============================================
-# TRENDING SCANNER
+# TRENDING SCANNER - FIXED
 # ============================================
 
-MIN_LP_USD = float(os.getenv("MIN_LP_USD", 1500))
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 300))
+MIN_LP_USD = float(os.getenv("MIN_LP_USD", 1500))  # Use env value
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 2000))  # Use env value
 seen_trending = set()
 
 async def get_trending_pairs_dexscreener():
@@ -1376,48 +1387,7 @@ async def get_trending_pairs_dexscreener():
                     return pairs
                 else:
                     logging.debug(f"DexScreener returned status {resp.status_code}")
-        except Exception as e:
-            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(2)
-    
-    return None
-
-async def get_trending_pairs_birdeye():
-    """Fetch trending pairs from Birdeye"""
-    if not BIRDEYE_API_KEY:
-        return None
-        
-    url = "https://public-api.birdeye.so/defi/tokenlist"
-    
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=30, verify=False) as client:
-                headers = {
-                    "X-API-KEY": BIRDEYE_API_KEY,
-                    "accept": "application/json"
-                }
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    pairs = []
-                    for tok in data.get("data", {}).get("tokens", [])[:20]:
-                        mint = tok.get("address")
-                        if not mint:
-                            continue
-                        lp_usd = float(tok.get("liquidity", 0))
-                        vol_usd = float(tok.get("v24hUSD", 0))
-                        pair = {
-                            "baseToken": {"address": mint},
-                            "liquidity": {"usd": lp_usd},
-                            "volume": {"h24": vol_usd},
-                        }
-                        pairs.append(pair)
-                    if pairs:
-                        logging.info(f"[Trending] Birdeye returned {len(pairs)} tokens")
-                    return pairs
-                else:
-                    logging.debug(f"Birdeye returned status {resp.status_code}")
-        except Exception as e:
+                    except Exception as e:
             logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(2)
     
@@ -1545,7 +1515,7 @@ async def rug_filter_passes(mint: str) -> bool:
     """Check if token passes basic rug filters"""
     try:
         data = await get_liquidity_and_ownership(mint)
-        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+        min_lp = float(os.getenv("RUG_LP_THRESHOLD", 1.5))
         
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
             min_lp = min_lp / 2
@@ -1559,7 +1529,7 @@ async def rug_filter_passes(mint: str) -> bool:
         return False
 
 # ============================================
-# MOMENTUM SCANNER
+# MOMENTUM SCANNER - FIXED
 # ============================================
 
 def detect_chart_pattern(price_data: list) -> str:
@@ -1720,7 +1690,7 @@ async def momentum_scanner():
         f"Auto-buy threshold: {MIN_SCORE_AUTO_BUY}/5\n"
         f"Alert threshold: {MIN_SCORE_ALERT}/5\n"
         f"Target: 50-200% gainers\n"
-        f"Position sizes: 0.02-0.1 SOL\n"
+        f"Position sizes: 0.02-0.20 SOL\n"
         f"Concurrent Processing: {'ON' if CONCURRENT_PROCESSING_ENABLED else 'OFF'}\n\n"
         f"Hunting for pumps..."
     )
