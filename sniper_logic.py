@@ -1387,8 +1387,8 @@ async def get_trending_pairs_dexscreener():
                     return pairs
                 else:
                     logging.debug(f"DexScreener returned status {resp.status_code}")
-                    except Exception as e:
-            logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
+        except Exception as e:
+            logging.error(f"DexScreener attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(2)
     
     return None
@@ -2042,3 +2042,53 @@ if __name__ == "__main__":
     logging.info(f"⚡ PERIODIC CLEANUP: Every 60 seconds")
     logging.info(f"🏊 POOL DETECTION: ENABLED - Waiting for actual liquidity pools")
     logging.info("=" * 60)
+
+async def get_trending_pairs_birdeye():
+    """Fetch trending pairs from Birdeye as fallback"""
+    if not BIRDEYE_API_KEY:
+        return None
+        
+    url = "https://public-api.birdeye.so/defi/tokenlist"
+    
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                headers = {
+                    "X-API-KEY": BIRDEYE_API_KEY,
+                    "Accept": "application/json"
+                }
+                params = {
+                    "sort_by": "v24hChangePercent",
+                    "sort_type": "desc",
+                    "offset": 0,
+                    "limit": 50
+                }
+                resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    tokens = data.get("data", {}).get("tokens", [])
+                    
+                    # Convert Birdeye format to match DexScreener format
+                    pairs = []
+                    for token in tokens[:20]:
+                        pairs.append({
+                            "baseToken": {"address": token.get("address")},
+                            "liquidity": {"usd": token.get("liquidity", 0)},
+                            "volume": {"h24": token.get("v24hUSD", 0)},
+                            "priceChange": {
+                                "h1": token.get("v1hChangePercent", 0),
+                                "h24": token.get("v24hChangePercent", 0)
+                            },
+                            "marketCap": token.get("mc", 0)
+                        })
+                    
+                    if pairs:
+                        logging.info(f"[Trending] Birdeye returned {len(pairs)} pairs")
+                    return pairs
+                else:
+                    logging.debug(f"Birdeye returned status {resp.status_code}")
+        except Exception as e:
+            logging.error(f"Birdeye attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+    
+    return None
