@@ -1,4 +1,4 @@
-# raydium_aggregator.py - FINAL FIXED VERSION WITH WORKING POOL SCANNING
+# raydium_aggregator.py - FIXED VERSION WITH PROPER RESPONSE HANDLING
 import os
 import json
 import logging
@@ -124,7 +124,7 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """FIXED: Actually scan for pools instead of returning None"""
+        """FIXED: Properly handle get_program_accounts response"""
         
         # Check environment configuration
         if not os.getenv("ENABLE_POOL_SCAN", "true").lower() == "true":
@@ -159,7 +159,7 @@ class RaydiumAggregatorClient:
             except Exception as e:
                 logging.debug(f"[Raydium] Jupiter check failed: {e}")
             
-            # Method 2: Scan Raydium program accounts
+            # Method 2: Scan Raydium program accounts - FIXED RESPONSE HANDLING
             if os.getenv("POOL_DETECTION_MODE", "aggressive").lower() == "aggressive":
                 logging.info(f"[Raydium] Scanning program accounts for pool...")
                 
@@ -175,15 +175,68 @@ class RaydiumAggregatorClient:
                         encoding="base64"
                     )
                     
-                    if response and response.value:
-                        logging.info(f"[Raydium] Found {len(response.value)} potential pools")
+                    # FIXED: Properly handle the response object
+                    accounts = None
+                    if response:
+                        if hasattr(response, 'value'):
+                            accounts = response.value
+                        elif hasattr(response, 'result'):
+                            accounts = response.result
+                        elif isinstance(response, dict):
+                            if 'result' in response:
+                                accounts = response['result']
+                            elif 'value' in response:
+                                accounts = response['value']
+                            else:
+                                accounts = response
+                        elif isinstance(response, list):
+                            accounts = response
+                        else:
+                            # If response is the actual data
+                            accounts = response
+                    
+                    if accounts:
+                        # Handle both list and single account responses
+                        if not isinstance(accounts, list):
+                            accounts = [accounts] if accounts else []
+                        
+                        logging.info(f"[Raydium] Found {len(accounts)} potential pools")
                         
                         # Limit scan to prevent timeout
-                        for account in response.value[:20]:
+                        for account in accounts[:20]:
                             try:
-                                pool_data = self._read_b64_account(account)
+                                # Extract account data properly
+                                account_data = None
+                                account_pubkey = None
+                                
+                                if isinstance(account, dict):
+                                    # Handle dictionary format
+                                    if 'pubkey' in account:
+                                        account_pubkey = account['pubkey']
+                                    elif 'address' in account:
+                                        account_pubkey = account['address']
+                                    
+                                    if 'account' in account:
+                                        account_data = account['account']
+                                    else:
+                                        account_data = account
+                                        
+                                elif hasattr(account, 'pubkey'):
+                                    # Handle object format
+                                    account_pubkey = str(account.pubkey)
+                                    if hasattr(account, 'account'):
+                                        account_data = account.account
+                                    else:
+                                        account_data = account
+                                
+                                if not account_pubkey:
+                                    continue
+                                
+                                # Extract pool data
+                                pool_data = self._read_b64_account({"account": account_data} if account_data else account)
+                                
                                 if pool_data and self._pool_bytes_contain_mints(pool_data, token_mint, sol_mint):
-                                    pool_id = str(account.pubkey)
+                                    pool_id = str(account_pubkey)
                                     logging.info(f"[Raydium] ✅ Found pool {pool_id[:8]}... for {token_mint[:8]}...")
                                     
                                     # Fetch full pool data
@@ -204,9 +257,13 @@ class RaydiumAggregatorClient:
                                 continue
                         
                         logging.info(f"[Raydium] No matching pool found in scan")
+                    else:
+                        logging.info(f"[Raydium] No program accounts returned")
                     
                 except Exception as e:
                     logging.error(f"[Raydium] Program account scan error: {e}")
+                    # Don't let this error stop pool detection
+                    pass
             
             # Method 3: Try alternative Jupiter endpoint
             try:
