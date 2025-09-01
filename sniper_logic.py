@@ -41,6 +41,27 @@ MAX_CACHE_SIZE = 100  # Maximum signatures to keep in cache
 # Automated cleanup task
 CLEANUP_TASK = None
 
+async def automated_cache_cleanup():
+    """Run cache cleanup every 60 seconds automatically"""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            cleanup_all_caches()
+            
+            # Also log memory usage
+            try:
+                import psutil
+                process = psutil.Process()
+                memory_mb = process.memory_info().rss / 1024 / 1024
+                if memory_mb > 400:
+                    logging.warning(f"[MEMORY] High usage: {memory_mb:.1f} MB - forcing cleanup")
+                    gc.collect()
+            except:
+                pass
+                
+        except Exception as e:
+            logging.error(f"[CLEANUP] Error: {e}")
+
 async def periodic_cleanup():
     """Run cleanup every 60 seconds"""
     while True:
@@ -178,23 +199,24 @@ SYSTEM_PROGRAMS = [
 # FIX: Cache cleanup function with size limits
 # ============================================
 def cleanup_all_caches():
-    """Clean up all caches to prevent memory leaks"""
+    """FIXED: Clean up all caches to prevent memory leaks with proper limits"""
     global processed_signatures_cache, seen_tokens, momentum_analyzed
     global pool_verification_cache, detected_pools, recent_buy_attempts
     global pending_pool_checks
     
     current_time = time.time()
     
-    # Clean signature cache - keep only last 50
-    if len(processed_signatures_cache) > 50:
-        # Sort by timestamp and keep newest
+    # Clean signature cache - keep only last 25 entries
+    if len(processed_signatures_cache) > 25:
         sorted_sigs = sorted(processed_signatures_cache.items(), key=lambda x: x[1], reverse=True)
         processed_signatures_cache = dict(sorted_sigs[:25])
+        logging.debug(f"[CACHE] Cleaned signatures, kept 25 most recent")
     
-    # Clean seen_tokens - keep only last 200
-    if len(seen_tokens) > 200:
+    # Clean seen_tokens - keep only last 100
+    if len(seen_tokens) > 100:
         token_list = list(seen_tokens)
         seen_tokens = set(token_list[-100:])
+        logging.debug(f"[CACHE] Cleaned tokens, kept 100 most recent")
     
     # Clean momentum_analyzed - remove older than 30 minutes
     old_momentum = [token for token, data in momentum_analyzed.items() 
@@ -215,16 +237,30 @@ def cleanup_all_caches():
         del pending_pool_checks[token]
     
     # Clear other caches if too large
-    if len(pool_verification_cache) > 100:
+    if len(pool_verification_cache) > 50:
+        # Keep only recent entries
+        recent_entries = sorted(
+            [(k, v) for k, v in pool_verification_cache.items() if not k.endswith("_time")],
+            key=lambda x: pool_verification_cache.get(f"{x[0]}_time", 0),
+            reverse=True
+        )[:25]
         pool_verification_cache.clear()
+        for k, v in recent_entries:
+            pool_verification_cache[k] = v
+            pool_verification_cache[f"{k}_time"] = current_time
     
-    if len(detected_pools) > 100:
-        detected_pools.clear()
+    if len(detected_pools) > 50:
+        # Keep only 50 most recent pools
+        if len(detected_pools) > 50:
+            items = list(detected_pools.items())
+            detected_pools.clear()
+            detected_pools.update(dict(items[-50:]))
     
     # Force garbage collection
     gc.collect()
     
-    logging.debug(f"[CACHE] Cleanup complete - Sigs: {len(processed_signatures_cache)}, Tokens: {len(seen_tokens)}")
+    logging.info(f"[CACHE] Cleanup complete - Sigs: {len(processed_signatures_cache)}, "
+                 f"Tokens: {len(seen_tokens)}, Pools: {len(detected_pools)}")
 
 # ============================================
 # ENHANCED POOL DETECTION FUNCTIONS
@@ -345,11 +381,13 @@ async def verify_pool_exists(mint: str) -> bool:
 
 def is_pool_initialization_transaction(logs: list, account_keys: list, name: str) -> bool:
     """
-    Enhanced detection for ACTUAL pool initialization transactions
+    FIXED: Enhanced detection for ACTUAL pool initialization transactions
     """
     if name == "Raydium":
         # Look for specific pool initialization patterns
         pool_init_indicators = 0
+        has_liquidity_add = False
+        has_pool_create = False
         
         for log in logs:
             log_lower = log.lower()
@@ -357,42 +395,46 @@ def is_pool_initialization_transaction(logs: list, account_keys: list, name: str
             # Strong indicators of pool creation
             if "initialize2" in log_lower or "initializeinstruction2" in log_lower:
                 pool_init_indicators += 5
+                has_pool_create = True
             
             if "init_pc_amount" in log_lower or "init_coin_amount" in log_lower:
                 pool_init_indicators += 4
+                has_liquidity_add = True
             
             if "opentime" in log_lower:
                 pool_init_indicators += 3
             
             if "amm_v4" in log_lower and "initialize" in log_lower:
                 pool_init_indicators += 4
+                has_pool_create = True
             
             # Check for liquidity addition
             if "deposit" in log_lower and "liquidity" in log_lower:
                 pool_init_indicators += 3
+                has_liquidity_add = True
             
             if "create_pool" in log_lower or "new_pool" in log_lower:
                 pool_init_indicators += 5
+                has_pool_create = True
             
             # Raydium specific success messages
             if "success" in log_lower and any(x in log_lower for x in ["pool", "amm", "liquidity"]):
                 pool_init_indicators += 2
         
-        # Need strong evidence of pool creation
-        has_init_amounts = any("init_pc_amount" in log.lower() or "init_coin_amount" in log.lower() for log in logs)
-        has_pool_keywords = any("pool" in log.lower() or "amm" in log.lower() for log in logs)
-        
-        return pool_init_indicators >= 8 and (has_init_amounts or has_pool_keywords)
+        # STRICTER REQUIREMENTS: Need both pool creation AND liquidity
+        return pool_init_indicators >= 10 and has_pool_create and has_liquidity_add
     
     elif name == "PumpFun":
         # PumpFun graduation to Raydium
         graduation_indicators = 0
+        has_migration = False
         
         for log in logs:
             log_lower = log.lower()
             
             if "migration" in log_lower or "graduated" in log_lower:
                 graduation_indicators += 5
+                has_migration = True
             
             if "raydium" in log_lower and "create" in log_lower:
                 graduation_indicators += 4
@@ -403,7 +445,7 @@ def is_pool_initialization_transaction(logs: list, account_keys: list, name: str
             if "liquidity" in log_lower and "added" in log_lower:
                 graduation_indicators += 3
         
-        return graduation_indicators >= 5
+        return graduation_indicators >= 8 and has_migration
     
     return False
 
@@ -1409,6 +1451,95 @@ async def trending_scanner():
                     continue
                 
                 await asyncio.sleep(TREND_SCAN_INTERVAL)
+                continue
+            
+            consecutive_failures = 0
+            processed = 0
+            quality_finds = 0
+            
+            for pair in pairs[:10]:
+                mint = pair.get("baseToken", {}).get("address")
+                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
+                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
+                
+                price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+                price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
+                
+                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
+                    continue
+                
+                is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
+                
+                min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
+                min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
+                
+                if lp_usd < min_lp:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
+                    continue
+                    
+                if vol_usd < min_vol:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
+                    continue
+                
+                if price_change_h1 < -30 and not is_pumpfun_grad:
+                    logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
+                    continue
+                    
+                seen_trending.add(mint)
+                processed += 1
+                increment_stat("tokens_scanned", 1)
+                update_last_activity()
+                
+                is_mooning = price_change_h1 > 50 or price_change_h24 > 100
+                has_momentum = price_change_h1 > 20 and vol_usd > 50000
+                
+                if is_mooning or has_momentum or is_pumpfun_grad:
+                    quality_finds += 1
+                    
+                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
+                    if is_pumpfun_grad:
+                        alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
+                    
+                    await send_telegram_alert(
+                        alert_msg +
+                        f"Token: `{mint}`\n"
+                        f"Liquidity: ${lp_usd:,.0f}\n"
+                        f"Volume 24h: ${vol_usd:,.0f}\n"
+                        f"Price Change:\n"
+                        f"• 1h: {price_change_h1:+.1f}%\n"
+                        f"• 24h: {price_change_h24:+.1f}%\n"
+                        f"Source: {source}\n\n"
+                        f"Attempting to buy..."
+                    )
+                    
+                    try:
+                        original_amount = None
+                        if is_pumpfun_grad:
+                            original_amount = os.getenv("BUY_AMOUNT_SOL")
+                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
+                        
+                        success = await buy_token(mint)
+                        if success:
+                            already_bought.add(mint)
+                            if BLACKLIST_AFTER_BUY:
+                                BLACKLIST.add(mint)
+                            asyncio.create_task(wait_and_auto_sell(mint))
+                            
+                        if is_pumpfun_grad and original_amount:
+                            os.environ["BUY_AMOUNT_SOL"] = original_amount
+                    except Exception as e:
+                        logging.error(f"[Trending] Buy error: {e}")
+                else:
+                    logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
+            
+            if processed > 0:
+                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
+            
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
+            
+        except Exception as e:
+            logging.error(f"[Trending Scanner ERROR] {e}")
+            await asyncio.sleep(TREND_SCAN_INTERVAL)
 
 async def rug_filter_passes(mint: str) -> bool:
     """Check if token passes basic rug filters"""
@@ -1758,7 +1889,7 @@ async def start_sniper():
     
     # Start periodic cleanup
     global CLEANUP_TASK
-    CLEANUP_TASK = asyncio.create_task(periodic_cleanup())
+    CLEANUP_TASK = asyncio.create_task(automated_cache_cleanup())
     TASKS.append(CLEANUP_TASK)
     
     await send_telegram_alert(
@@ -1941,92 +2072,3 @@ if __name__ == "__main__":
     logging.info(f"⚡ PERIODIC CLEANUP: Every 60 seconds")
     logging.info(f"🏊 POOL DETECTION: ENABLED - Waiting for actual liquidity pools")
     logging.info("=" * 60)
-                continue
-            
-            consecutive_failures = 0
-            processed = 0
-            quality_finds = 0
-            
-            for pair in pairs[:10]:
-                mint = pair.get("baseToken", {}).get("address")
-                lp_usd = float(pair.get("liquidity", {}).get("usd", 0))
-                vol_usd = float(pair.get("volume", {}).get("h24", 0) or pair.get("volume", {}).get("h1", 0))
-                
-                price_change_h1 = float(pair.get("priceChange", {}).get("h1", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-                price_change_h24 = float(pair.get("priceChange", {}).get("h24", 0) if isinstance(pair.get("priceChange"), dict) else 0)
-                
-                if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
-                    continue
-                
-                is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
-                
-                min_lp = MIN_LP_USD / 2 if is_pumpfun_grad else MIN_LP_USD
-                min_vol = MIN_VOLUME_USD / 2 if is_pumpfun_grad else MIN_VOLUME_USD
-                
-                if lp_usd < min_lp:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Low LP: ${lp_usd:.0f} (min: ${min_lp})")
-                    continue
-                    
-                if vol_usd < min_vol:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Low volume: ${vol_usd:.0f} (min: ${min_vol})")
-                    continue
-                
-                if price_change_h1 < -30 and not is_pumpfun_grad:
-                    logging.debug(f"[SKIP] {mint[:8]}... - Dumping: {price_change_h1:.1f}% in 1h")
-                    continue
-                    
-                seen_trending.add(mint)
-                processed += 1
-                increment_stat("tokens_scanned", 1)
-                update_last_activity()
-                
-                is_mooning = price_change_h1 > 50 or price_change_h24 > 100
-                has_momentum = price_change_h1 > 20 and vol_usd > 50000
-                
-                if is_mooning or has_momentum or is_pumpfun_grad:
-                    quality_finds += 1
-                    
-                    alert_msg = f"🔥 QUALITY TRENDING TOKEN 🔥\n\n"
-                    if is_pumpfun_grad:
-                        alert_msg = f"🎓 PUMPFUN GRADUATE TRENDING 🎓\n\n"
-                    
-                    await send_telegram_alert(
-                        alert_msg +
-                        f"Token: `{mint}`\n"
-                        f"Liquidity: ${lp_usd:,.0f}\n"
-                        f"Volume 24h: ${vol_usd:,.0f}\n"
-                        f"Price Change:\n"
-                        f"• 1h: {price_change_h1:+.1f}%\n"
-                        f"• 24h: {price_change_h24:+.1f}%\n"
-                        f"Source: {source}\n\n"
-                        f"Attempting to buy..."
-                    )
-                    
-                    try:
-                        original_amount = None
-                        if is_pumpfun_grad:
-                            original_amount = os.getenv("BUY_AMOUNT_SOL")
-                            os.environ["BUY_AMOUNT_SOL"] = str(PUMPFUN_MIGRATION_BUY)
-                        
-                        success = await buy_token(mint)
-                        if success:
-                            already_bought.add(mint)
-                            if BLACKLIST_AFTER_BUY:
-                                BLACKLIST.add(mint)
-                            asyncio.create_task(wait_and_auto_sell(mint))
-                            
-                        if is_pumpfun_grad and original_amount:
-                            os.environ["BUY_AMOUNT_SOL"] = original_amount
-                    except Exception as e:
-                        logging.error(f"[Trending] Buy error: {e}")
-                else:
-                    logging.info(f"[Trending] {mint[:8]}... good metrics but not enough momentum")
-            
-            if processed > 0:
-                logging.info(f"[Trending Scanner] Processed {processed} tokens, found {quality_finds} quality opportunities")
-            
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
-            
-        except Exception as e:
-            logging.error(f"[Trending Scanner ERROR] {e}")
-            await asyncio.sleep(TREND_SCAN_INTERVAL)
