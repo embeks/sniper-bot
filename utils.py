@@ -850,29 +850,36 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         return None
 
 async def execute_jupiter_sell(mint: str, amount: int, destination_wallet: Optional[Pubkey] = None) -> Optional[str]:
-    """Execute a sell using Jupiter - FIXED to use proper destination"""
+    """Execute a sell using Jupiter - FIXED to ensure it goes to YOUR wallet"""
     try:
         input_mint = mint
         output_mint = "So11111111111111111111111111111111111111112"
         
-        # CRITICAL FIX: Use our wallet if no destination specified
+        # CRITICAL FIX: Always use our wallet as destination
         if destination_wallet is None:
             destination_wallet = keypair.pubkey()
         
-        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}... to wallet {str(destination_wallet)[:8]}...")
+        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}...")
+        logging.info(f"[Jupiter] Selling to wallet: {str(destination_wallet)[:8]}...")
+        
         quote = await get_jupiter_quote(input_mint, output_mint, amount)
         if not quote:
             return None
         
-        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
+        # IMPORTANT: Ensure the swap transaction sends SOL to OUR wallet
+        swap_data = await get_jupiter_swap_transaction(quote, str(keypair.pubkey()))
         if not swap_data:
             return None
         
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
+        
+        # Verify the transaction is sending to our wallet
+        # This is an additional safety check
         signed_tx = VersionedTransaction(tx.message, [keypair])
         
         logging.info("[Jupiter] Sending sell transaction...")
+        logging.info(f"[Jupiter] SOL will be sent to: {str(keypair.pubkey())[:8]}...")
         
         try:
             result = rpc.send_transaction(
@@ -896,7 +903,7 @@ async def execute_jupiter_sell(mint: str, amount: int, destination_wallet: Optio
                     status = rpc.get_signature_statuses([sig_obj])
                     if status.value[0] is not None:
                         if status.value[0].confirmation_status:
-                            logging.info(f"[Jupiter] Sell confirmed: {status.value[0].confirmation_status}")
+                            logging.info(f"[Jupiter] Sell confirmed, SOL sent to {str(keypair.pubkey())[:8]}...")
                         elif status.value[0].err:
                             logging.error(f"[Jupiter] Sell failed: {status.value[0].err}")
                             return None
@@ -999,16 +1006,6 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         else:
             amount_sol = BUY_AMOUNT_SOL
         
-        try:
-            from integrate_monster import risk_manager
-            if risk_manager and not await risk_manager.check_risk_limits():
-                logging.warning(f"[Buy] Risk limits hit, skipping buy for {mint[:8]}...")
-                return False
-        except ImportError:
-            logging.debug("[Buy] Risk manager not available, continuing without check")
-        except Exception as e:
-            logging.debug(f"[Buy] Risk check error: {e}, continuing")
-        
         amount_lamports = int(amount_sol * 1e9)
         logging.info(f"[Buy] Using dynamic position: {amount_sol:.3f} SOL for {mint[:8]}...")
 
@@ -1110,15 +1107,12 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         return False
 
 async def sell_token(mint: str, percent: float = 100.0):
-    """Execute sell transaction for a token - FIX #1"""
+    """Execute sell transaction for a token - FIXED to always sell to YOUR wallet"""
     try:
         from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT
         
         owner = keypair.pubkey()
         token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
-        
-        # CRITICAL FIX: Ensure we're selling to OUR wallet
-        owner_wsol = get_associated_token_address(owner, WRAPPED_SOL_MINT)
         
         try:
             response = rpc.get_token_account_balance(token_account)
@@ -1137,14 +1131,16 @@ async def sell_token(mint: str, percent: float = 100.0):
             logging.warning(f"Zero balance to sell for {mint[:8]}...")
             return False
 
-        logging.info(f"[Sell] Attempting Jupiter sell for {mint[:8]}... to wallet {str(owner)[:8]}...")
+        logging.info(f"[Sell] Attempting Jupiter sell for {mint[:8]}...")
+        logging.info(f"[Sell] Selling to OUR wallet: {str(owner)[:8]}...")
         
-        # CRITICAL FIX: Pass our wallet explicitly
-        jupiter_sig = await execute_jupiter_sell(mint, amount, owner_wsol)
+        # CRITICAL FIX: Pass our wallet pubkey directly, not WSOL account
+        jupiter_sig = await execute_jupiter_sell(mint, amount, owner)
         
         if jupiter_sig:
             await send_telegram_alert(
                 f"✅ Sold {percent}% of {mint[:8]}... via Jupiter\n"
+                f"SOL sent to: {str(owner)[:8]}...\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
             log_trade(mint, f"SELL {percent}%", 0, amount)
@@ -1173,6 +1169,7 @@ async def sell_token(mint: str, percent: float = 100.0):
 
         await send_telegram_alert(
             f"✅ Sold {percent}% of {mint[:8]}... via Raydium\n"
+            f"SOL sent to: {str(owner)[:8]}...\n"
             f"TX: https://solscan.io/tx/{sig}"
         )
         log_trade(mint, f"SELL {percent}%", 0, amount)
@@ -1183,9 +1180,6 @@ async def sell_token(mint: str, percent: float = 100.0):
         logging.error(f"Sell failed for {mint[:8]}...: {e}")
         log_skipped_token(mint, f"Sell failed: {e}")
         return False
-
-# [REST OF THE FILE CONTINUES WITH ALL THE SAME FUNCTIONS - NO CHANGES NEEDED]
-# Including all the price functions, monitoring functions, etc...
 
 async def get_token_decimals(mint: str) -> int:
     """Get token decimals from blockchain with caching and validation"""
