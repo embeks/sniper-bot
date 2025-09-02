@@ -50,7 +50,7 @@ load_dotenv()
 # AGGRESSIVE MODE CONFIGURATION
 # ============================================
 
-AGGRESSIVE_MODE = False  # Permanently disabled
+AGGRESSIVE_MODE = os.getenv("AGGRESSIVE_MODE", "false").lower() == "true"
 AGGRESSIVE_START_TIME = time.time() if AGGRESSIVE_MODE else None
 AGGRESSIVE_DURATION_HOURS = float(os.getenv("AGGRESSIVE_DURATION_HOURS", 36))
 TARGET_MULTIPLIER = float(os.getenv("TARGET_MULTIPLIER", 10))
@@ -263,6 +263,7 @@ def log_configuration():
         ("MAX_POSITION_SIZE", os.getenv("MAX_POSITION_SIZE", "0.40" if AGGRESSIVE_MODE else "0.10")),
         ("MOMENTUM_SCANNER", os.getenv("MOMENTUM_SCANNER", "true")),
         ("MOMENTUM_AUTO_BUY", os.getenv("MOMENTUM_AUTO_BUY", "true")),
+        ("MOMENTUM_MIN_LIQUIDITY", os.getenv("MOMENTUM_MIN_LIQUIDITY", "5.0")),
         ("RUG_LP_THRESHOLD", os.getenv("RUG_LP_THRESHOLD", "1.5" if AGGRESSIVE_MODE else "3.0")),
         ("BUY_AMOUNT_SOL", os.getenv("BUY_AMOUNT_SOL", "0.25" if AGGRESSIVE_MODE else "0.03")),
         ("USE_DYNAMIC_SIZING", os.getenv("USE_DYNAMIC_SIZING", "true")),
@@ -2003,6 +2004,11 @@ async def main():
     if not os.getenv("JUPITER_BASE_URL"):
         os.environ["JUPITER_BASE_URL"] = "https://quote-api.jup.ag"
         logging.info("Set JUPITER_BASE_URL to default")
+    
+    # Add missing MOMENTUM_MIN_LIQUIDITY if not set
+    if not os.getenv("MOMENTUM_MIN_LIQUIDITY"):
+        os.environ["MOMENTUM_MIN_LIQUIDITY"] = "5.0"
+        logging.info("Set MOMENTUM_MIN_LIQUIDITY to default 5.0")
     
     # Fix aggressive mode check
     aggressive_mode = os.getenv("AGGRESSIVE_MODE", "false").lower() == "true"
