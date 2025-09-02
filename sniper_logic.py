@@ -88,6 +88,13 @@ MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 500))
 PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 2.0))
 
 # ============================================
+# AGE CHECKING CONFIGURATION - CRITICAL FIX
+# ============================================
+STRICT_AGE_CHECK = os.getenv("STRICT_AGE_CHECK", "true").lower() == "true"
+MAX_TOKEN_AGE_SECONDS = int(os.getenv("MAX_TOKEN_AGE_SECONDS", 60))
+SKIP_TRENDING_SCANNER = os.getenv("SKIP_TRENDING_SCANNER", "true").lower() == "true"
+
+# ============================================
 # MOMENTUM SCANNER CONFIGURATION - FROM ENV
 # ============================================
 
@@ -152,6 +159,36 @@ SYSTEM_PROGRAMS = [
     "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
     "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
 ]
+
+# ============================================
+# AGE CHECKING FUNCTION - CRITICAL FIX
+# ============================================
+async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
+    """Check if token/pool was created within the specified time"""
+    try:
+        # Check DexScreener for pool age
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+        async with httpx.AsyncClient(timeout=5, verify=False) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if "pairs" in data and len(data["pairs"]) > 0:
+                    for pair in data["pairs"]:
+                        created_at = pair.get("pairCreatedAt")
+                        if created_at:
+                            age_ms = time.time() * 1000 - created_at
+                            age_seconds = age_ms / 1000
+                            if age_seconds <= max_age_seconds:
+                                return True
+                            else:
+                                logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
+                                return False
+        
+        # If no data, assume it's new (risky but necessary for brand new tokens)
+        return True
+    except Exception as e:
+        logging.error(f"Age check error: {e}")
+        return False
 
 async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
     """
@@ -1057,14 +1094,21 @@ async def mempool_listener(name, program_id=None):
                                     raydium.register_new_pool(pool_id, potential_mint)
                                     logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {potential_mint[:8]}...")
                                 
-                                # ========== ENHANCED PUMPFUN BUY LOGIC WITH VALIDATION ==========
+                                # ========== ENHANCED PUMPFUN BUY LOGIC WITH AGE VALIDATION ==========
                                 if name == "PumpFun" and is_bot_running():
                                     if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
                                         # Skip if already bought
                                         if potential_mint in already_bought:
                                             continue
                                         
-                                        logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
+                                        # CRITICAL AGE CHECK FOR PUMPFUN
+                                        if STRICT_AGE_CHECK:
+                                            is_fresh = await is_fresh_token(potential_mint, MAX_TOKEN_AGE_SECONDS)
+                                            if not is_fresh:
+                                                logging.info(f"[{name}] Skipping old token {potential_mint[:8]}...")
+                                                continue
+                                        
+                                        logging.info(f"[PUMPFUN] Evaluating FRESH token: {potential_mint[:8]}...")
                                         
                                         # Shorter delay for faster execution - CRITICAL CHANGE
                                         await asyncio.sleep(0.1)  # REDUCED FROM PUMPFUN_INIT_DELAY
@@ -1106,7 +1150,7 @@ async def mempool_listener(name, program_id=None):
                                         
                                         # Alert before buying
                                         await send_telegram_alert(
-                                            f"🎯 PUMPFUN TOKEN DETECTED\n\n"
+                                            f"🎯 FRESH PUMPFUN TOKEN DETECTED\n\n"
                                             f"Token: `{potential_mint}`\n"
                                             f"Status: {buy_reason}\n"
                                             f"Liquidity: {lp_amount:.2f} SOL\n"
@@ -1124,7 +1168,7 @@ async def mempool_listener(name, program_id=None):
                                                     BLACKLIST.add(potential_mint)
                                                 
                                                 await send_telegram_alert(
-                                                    f"✅ PUMPFUN SNIPE SUCCESS!\n"
+                                                    f"✅ FRESH PUMPFUN SNIPE SUCCESS!\n"
                                                     f"Token: {potential_mint[:16]}...\n"
                                                     f"Amount: {buy_amount} SOL\n"
                                                     f"Type: {buy_reason}\n"
@@ -1142,9 +1186,17 @@ async def mempool_listener(name, program_id=None):
                                             logging.error(f"[PUMPFUN] Buy error: {e}")
                                             await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
                                 
-                                # Only buy from Raydium with enhanced validation
+                                # Only buy from Raydium with enhanced validation AND AGE CHECK
                                 elif name in ["Raydium"] and is_bot_running():
                                     if potential_mint not in BROKEN_TOKENS and potential_mint not in BLACKLIST:
+                                        
+                                        # CRITICAL AGE CHECK FOR RAYDIUM
+                                        if STRICT_AGE_CHECK:
+                                            is_fresh = await is_fresh_token(potential_mint, MAX_TOKEN_AGE_SECONDS)
+                                            if not is_fresh:
+                                                logging.info(f"[{name}] Skipping old token {potential_mint[:8]}...")
+                                                record_skip("old_token")
+                                                continue
                                         
                                         # Add delay to let pool settle
                                         await asyncio.sleep(MEMPOOL_DELAY_MS / 1000)
@@ -1191,7 +1243,7 @@ async def mempool_listener(name, program_id=None):
                                         recent_buy_attempts[potential_mint] = time.time()
                                         
                                         await send_telegram_alert(
-                                            f"✅ QUALITY TOKEN DETECTED ✅\n\n"
+                                            f"✅ FRESH QUALITY TOKEN DETECTED ✅\n\n"
                                             f"Platform: {name}\n"
                                             f"Token: `{potential_mint}`\n"
                                             f"Liquidity: {lp_amount:.2f} SOL\n"
@@ -1210,7 +1262,7 @@ async def mempool_listener(name, program_id=None):
                                                     BLACKLIST.add(potential_mint)
                                                 
                                                 await send_telegram_alert(
-                                                    f"✅ SNIPED QUALITY TOKEN!\n"
+                                                    f"✅ SNIPED FRESH QUALITY TOKEN!\n"
                                                     f"Token: {potential_mint[:16]}...\n"
                                                     f"Amount: {buy_amount} SOL\n"
                                                     f"Risk: {risk_level}\n"
@@ -1239,6 +1291,29 @@ async def mempool_listener(name, program_id=None):
                 listener_status[name] = f"RETRYING ({retry_attempts + 1})"
                 
             finally:
+                if watchdog_task and not watchdog_task.done():
+                    watchdog_task.cancel()
+                    try:
+                        await watchdog_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                if ws:
+                    await ws.close()
+                
+                retry_attempts += 1
+                
+                if retry_attempts >= max_retries:
+                    msg = f"⚠️ {name} listener failed after {max_retries} attempts"
+                    await send_telegram_alert(msg)
+                    listener_status[name] = "FAILED"
+                    break
+                
+                wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
+                logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
+                await asyncio.sleep(wait_time)
+    
+    finally:
         # Clean up when listener exits
         ACTIVE_LISTENERS.discard(listener_id)
 
@@ -1315,7 +1390,11 @@ async def get_trending_pairs_birdeye():
     return None
 
 async def trending_scanner():
-    """Scan for quality trending tokens"""
+    """Scan for quality trending tokens - DISABLED BY DEFAULT TO FOCUS ON FRESH LAUNCHES"""
+    if SKIP_TRENDING_SCANNER:
+        logging.info("[Trending Scanner] Disabled - focusing on fresh launches only")
+        return
+        
     global seen_trending
     consecutive_failures = 0
     max_consecutive_failures = 5
@@ -1358,6 +1437,13 @@ async def trending_scanner():
                 
                 if not mint or mint in seen_trending or mint in BLACKLIST or mint in BROKEN_TOKENS or mint in already_bought:
                     continue
+                
+                # AGE CHECK FOR TRENDING TOKENS
+                if STRICT_AGE_CHECK:
+                    is_fresh = await is_fresh_token(mint, MAX_TOKEN_AGE_SECONDS)
+                    if not is_fresh:
+                        logging.info(f"[Trending] Skipping old token {mint[:8]}...")
+                        continue
                 
                 is_pumpfun_grad = mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False)
                 
@@ -1831,22 +1917,26 @@ async def start_sniper():
     global ACTIVE_LISTENERS
     ACTIVE_LISTENERS.clear()
     
-    mode_text = "ELITE Money Printer Mode + Momentum Scanner"
+    mode_text = "ELITE Money Printer Mode + Momentum Scanner (AGE CHECK ENABLED)"
     TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
     
     await send_telegram_alert(
         f"💰 MONEY PRINTER LAUNCHING 💰\n\n"
         f"Mode: {mode_text}\n"
+        f"Age Check: {'ENABLED' if STRICT_AGE_CHECK else 'DISABLED'}\n"
+        f"Max Token Age: {MAX_TOKEN_AGE_SECONDS}s\n"
         f"Min LP: {RUG_LP_THRESHOLD} SOL\n"
         f"Min AI Score: {MIN_AI_SCORE}\n"
         f"Min Volume: ${MIN_VOLUME_USD:,.0f}\n"
         f"Migration Snipe: {PUMPFUN_MIGRATION_BUY} SOL\n"
-        f"Momentum Mode: {'HYBRID' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n\n"
+        f"Momentum Mode: {'HYBRID' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
+        f"Trending Scanner: {'DISABLED' if SKIP_TRENDING_SCANNER else 'ENABLED'}\n\n"
         f"Quality filters: ACTIVE ✅\n"
         f"Duplicate prevention: ACTIVE ✅\n"
         f"Pool verification: ACTIVE ✅\n"
+        f"AGE VALIDATION: ACTIVE 🎯\n"
         f"MOMENTUM SCANNER: ACTIVE 🔥\n\n"
-        f"Ready to print money! 🎯"
+        f"Ready to snipe FRESH tokens only! 🎯"
     )
 
     if FORCE_TEST_MINT:
@@ -1868,7 +1958,11 @@ async def start_sniper():
     for listener in listeners:
         TASKS.append(asyncio.create_task(mempool_listener(listener)))
     
-    TASKS.append(asyncio.create_task(trending_scanner()))
+    # Conditionally start trending scanner based on config
+    if not SKIP_TRENDING_SCANNER:
+        TASKS.append(asyncio.create_task(trending_scanner()))
+    else:
+        logging.info("[Trending Scanner] Disabled - focusing on fresh launches only")
     
     # ADD MOMENTUM SCANNER - YOUR ELITE STRATEGY
     if MOMENTUM_SCANNER_ENABLED:
@@ -1968,26 +2062,4 @@ async def stop_all_tasks():
             except asyncio.CancelledError:
                 pass
     TASKS.clear()
-    await send_telegram_alert("🛑 All sniper tasks stopped.")        if watchdog_task and not watchdog_task.done():
-                    watchdog_task.cancel()
-                    try:
-                        await watchdog_task
-                    except asyncio.CancelledError:
-                        pass
-                
-                if ws:
-                    await ws.close()
-                
-                retry_attempts += 1
-                
-                if retry_attempts >= max_retries:
-                    msg = f"⚠️ {name} listener failed after {max_retries} attempts"
-                    await send_telegram_alert(msg)
-                    listener_status[name] = "FAILED"
-                    break
-                
-                wait_time = min(retry_delay * (2 ** (retry_attempts - 1)), 300)
-                logging.info(f"[{name}] Retrying in {wait_time}s (attempt {retry_attempts}/{max_retries})")
-                await asyncio.sleep(wait_time)
-    
-    finally:
+    await send_telegram_alert("🛑 All sniper tasks stopped.")
