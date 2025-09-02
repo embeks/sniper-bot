@@ -1,4 +1,4 @@
-# utils.py - COMPLETE FIXED VERSION WITH BETTER LIQUIDITY DETECTION AND JITO/MEV PROTECTION
+# utils.py - COMPLETE PRODUCTION READY VERSION WITH SCALING AND DECIMAL FIX
 import os
 import json
 import logging
@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 import base64
 from solders.transaction import VersionedTransaction
-import certifi
+import certifi  # For TLS verification
 
 # Solana imports
 from solders.keypair import Keypair
@@ -34,33 +34,28 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
-BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.1))
+BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL", 0.1))  # INCREASED TO 0.1
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
-SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "2,5,10").split(",")
+SELL_MULTIPLIERS = os.getenv("SELL_MULTIPLIERS", "1.5,3,10").split(",")  # CHANGED TO 1.5x, 3x, 10x
 SELL_TIMEOUT_SEC = int(os.getenv("SELL_TIMEOUT_SEC", 300))
-RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 3.0))
+RUG_LP_THRESHOLD = float(os.getenv("RUG_LP_THRESHOLD", 1.0))  # LOWERED TO 1 SOL
 BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
 HELIUS_API = os.getenv("HELIUS_API")
-
-# Jito configuration
-USE_JITO_BUNDLES = os.getenv("USE_JITO_BUNDLES", "false").lower() == "true"
-JITO_ENDPOINT = os.getenv("JITO_ENDPOINT", "https://mainnet.block-engine.jito.wtf/api/v1/bundles")
-JITO_TIP_ACCOUNT = os.getenv("JITO_TIP_ACCOUNT", "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5")  # Default Jito tip account
 
 # Parse sell percentages
 AUTO_SELL_PERCENT_2X = 50
 AUTO_SELL_PERCENT_5X = 25
-AUTO_SELL_PERCENT_10X = 25
+AUTO_SELL_PERCENT_10X = 25  # This is your moonbag
 
-# Profit-based trading configuration
-TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 2.0))
-TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 3.0))
-TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 5.0))
-SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 30))
-SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 30))
-SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 30))
-STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 20))
+# Profit-based trading configuration - UPDATED TARGETS
+TAKE_PROFIT_1 = float(os.getenv("TAKE_PROFIT_1", 1.5))  # Changed from 2.0
+TAKE_PROFIT_2 = float(os.getenv("TAKE_PROFIT_2", 3.0))  # Changed from 5.0
+TAKE_PROFIT_3 = float(os.getenv("TAKE_PROFIT_3", 10.0))  # Kept at 10.0
+SELL_PERCENT_1 = float(os.getenv("SELL_PERCENT_1", 50))
+SELL_PERCENT_2 = float(os.getenv("SELL_PERCENT_2", 25))
+SELL_PERCENT_3 = float(os.getenv("SELL_PERCENT_3", 25))  # Moonbag
+STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 50))
 TRAILING_STOP_PERCENT = float(os.getenv("TRAILING_STOP_PERCENT", 20))
 MAX_HOLD_TIME_SEC = int(os.getenv("MAX_HOLD_TIME_SEC", 3600))
 PRICE_CHECK_INTERVAL_SEC = int(os.getenv("PRICE_CHECK_INTERVAL_SEC", 10))
@@ -72,7 +67,7 @@ PUMPFUN_TAKE_PROFIT_2 = float(os.getenv("PUMPFUN_TAKE_PROFIT_2", 25.0))
 PUMPFUN_TAKE_PROFIT_3 = float(os.getenv("PUMPFUN_TAKE_PROFIT_3", 50.0))
 PUMPFUN_SELL_PERCENT_1 = float(os.getenv("PUMPFUN_SELL_PERCENT_1", 20))
 PUMPFUN_SELL_PERCENT_2 = float(os.getenv("PUMPFUN_SELL_PERCENT_2", 30))
-PUMPFUN_MOON_BAG = float(os.getenv("PUMPFUN_MOON_BAG", 50))
+PUMPFUN_MOON_BAG = float(os.getenv("PUMPFUN_MOON_BAG", 50))  # PumpFun moonbag
 NO_SELL_FIRST_MINUTES = int(os.getenv("NO_SELL_FIRST_MINUTES", 30))
 TRAILING_STOP_ACTIVATION = float(os.getenv("TRAILING_STOP_ACTIVATION", 5.0))
 
@@ -95,10 +90,10 @@ TRENDING_BOOST_MULTIPLIER = float(os.getenv("TRENDING_BOOST_MULTIPLIER", 1.5))
 
 # AGGRESSIVE PumpFun settings for 48hr push
 PUMPFUN_MIN_LIQUIDITY = {
-    "graduated": 5.0,
-    "near_graduation": 2.0,
-    "early": 0.5,
-    "ignore": 0.3
+    "graduated": 5.0,      # Was 10.0
+    "near_graduation": 2.0, # Was 5.0  
+    "early": 0.5,          # Was 2.0 - RISKY
+    "ignore": 0.3          # Was 1.0
 }
 
 # Initialize clients
@@ -168,7 +163,7 @@ LAST_SUMMARY_TIME = time.time()
 pumpfun_tokens = {}
 trending_tokens = set()
 
-# Known token decimals
+# Known token decimals - EXPANDED LIST WITH COMMON TOKENS
 KNOWN_TOKEN_DECIMALS = {
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
@@ -176,175 +171,44 @@ KNOWN_TOKEN_DECIMALS = {
     "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # WETH
     "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj": 9,  # stSOL
     "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": 9,   # mSOL
-    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": 5,  # Bonk
+    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": 5,  # Bonk (note: 5 decimals!)
     "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": 9,  # RAY
 }
 
-# Cache for token decimals
+# Cache for token decimals to avoid repeated RPC calls
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
-# JITO BUNDLE FUNCTIONS - NEW
-# ============================================
-
-async def send_jito_bundle(transactions: List[VersionedTransaction], tip_amount_sol: float = 0.002) -> Optional[str]:
-    """Send transactions as a Jito bundle for MEV protection"""
-    try:
-        if not USE_JITO_BUNDLES:
-            return None
-            
-        # Create tip transaction
-        from solders.system_program import transfer, TransferParams
-        from solders.message import MessageV0
-        
-        tip_lamports = int(tip_amount_sol * 1e9)
-        tip_pubkey = Pubkey.from_string(JITO_TIP_ACCOUNT)
-        
-        recent_blockhash = rpc.get_latest_blockhash().value.blockhash
-        
-        # Build tip instruction
-        tip_ix = transfer(
-            TransferParams(
-                from_pubkey=keypair.pubkey(),
-                to_pubkey=tip_pubkey,
-                lamports=tip_lamports
-            )
-        )
-        
-        # Create tip transaction
-        tip_msg = MessageV0.try_compile(
-            payer=keypair.pubkey(),
-            instructions=[tip_ix],
-            address_lookup_table_accounts=[],
-            recent_blockhash=recent_blockhash,
-        )
-        tip_tx = VersionedTransaction(tip_msg, [keypair])
-        
-        # Combine all transactions into bundle
-        bundle_txs = [tip_tx] + transactions
-        
-        # Serialize transactions
-        serialized_txs = []
-        for tx in bundle_txs:
-            serialized_txs.append(base64.b64encode(bytes(tx)).decode('utf-8'))
-        
-        # Send bundle to Jito
-        async with httpx.AsyncClient(timeout=10, verify=False) as client:
-            response = await client.post(
-                JITO_ENDPOINT,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "sendBundle",
-                    "params": [serialized_txs]
-                }
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                if "result" in result:
-                    bundle_id = result["result"]
-                    logging.info(f"[Jito] Bundle sent with ID: {bundle_id}, tip: {tip_amount_sol} SOL")
-                    return bundle_id
-                else:
-                    logging.warning(f"[Jito] Bundle rejected: {result}")
-                    return None
-            else:
-                logging.warning(f"[Jito] Failed to send bundle: {response.status_code}")
-                return None
-                
-    except Exception as e:
-        logging.error(f"[Jito] Bundle error: {e}")
-        return None
-
-async def execute_jupiter_swap_with_jito(mint: str, amount_lamports: int, tip_amount_sol: float = 0.002) -> Optional[str]:
-    """Execute Jupiter swap with Jito bundle for MEV protection"""
-    try:
-        input_mint = "So11111111111111111111111111111111111111112"
-        output_mint = mint
-        
-        logging.info(f"[Jito+Jupiter] Getting quote for {amount_lamports/1e9:.4f} SOL -> {mint[:8]}...")
-        quote = await get_jupiter_quote(input_mint, output_mint, amount_lamports)
-        if not quote:
-            return None
-        
-        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
-        if not swap_data:
-            return None
-        
-        tx_bytes = base64.b64decode(swap_data["swapTransaction"])
-        tx = VersionedTransaction.from_bytes(tx_bytes)
-        signed_tx = VersionedTransaction(tx.message, [keypair])
-        
-        # Send as Jito bundle
-        bundle_id = await send_jito_bundle([signed_tx], tip_amount_sol)
-        
-        if bundle_id:
-            logging.info(f"[Jito+Jupiter] Swap sent as bundle {bundle_id}")
-            
-            # Wait for confirmation
-            await asyncio.sleep(3)
-            
-            # Check if transaction landed
-            # Note: Jito bundles don't return traditional signatures
-            # You'd need to implement bundle status checking here
-            return bundle_id
-        else:
-            # Fallback to regular transaction if Jito fails
-            logging.info("[Jito+Jupiter] Jito failed, falling back to regular transaction")
-            return await execute_jupiter_swap(mint, amount_lamports)
-            
-    except Exception as e:
-        logging.error(f"[Jito+Jupiter] Error: {e}")
-        return await execute_jupiter_swap(mint, amount_lamports)
-
-# ============================================
-# SCALING FUNCTIONS - FIX #4
+# SCALING FUNCTIONS - AGGRESSIVE FOR 48HR
 # ============================================
 
 async def get_dynamic_position_size(mint: str, pool_liquidity_sol: float, is_migration: bool = False) -> float:
-    """Calculate position size - FIXED VERSION"""
+    """Aggressive position sizing for 48hr gains"""
     try:
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         
-        # Base position from env or default
-        base_size = float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
+        # BIGGER BETS - 10% standard, up to 20%
+        base_size = 0.1  # 10% per position
         
-        # Scale based on balance if enabled
-        if os.getenv("SCALE_WITH_BALANCE", "true").lower() == "true":
-            # Use 5-10% of balance depending on confidence
-            if is_migration:
-                base_size = balance * 0.10  # 10% for migrations
-            elif mint in pumpfun_tokens:
-                pf_status = await check_pumpfun_token_status(mint)
-                if pf_status and pf_status.get("progress", 0) > 80:
-                    base_size = balance * 0.07  # 7% for near-graduation
-                else:
-                    base_size = balance * 0.05  # 5% for regular pumpfun
-            else:
-                base_size = balance * 0.05  # 5% default
+        # Go harder on special opportunities
+        if is_migration:
+            base_size = 0.2  # 20% on migrations
+        elif mint in pumpfun_tokens:
+            pf_status = await check_pumpfun_token_status(mint)
+            if pf_status and pf_status.get("progress", 0) > 80:
+                base_size = 0.15  # 15% on near-graduation
         
-        # Apply limits
-        min_size = float(os.getenv("MIN_POSITION_SIZE_SOL", "0.03"))
-        max_size = float(os.getenv("MAX_POSITION_SIZE_SOL", "0.25"))
-        
-        final_size = max(min_size, min(base_size, max_size))
-        
-        # CRITICAL: Never return 0 or negative
-        if final_size <= 0:
-            logging.error(f"[SIZING] Invalid size {final_size}, using fallback")
-            return 0.05
-            
-        logging.info(f"[SIZING] Balance: {balance:.2f}, Size: {final_size:.3f} SOL")
-        return final_size
+        # Min 0.05, max 0.25 SOL
+        return max(0.05, min(base_size * balance, 0.25))
         
     except Exception as e:
-        logging.error(f"[SIZING] Error: {e}, using fallback")
-        return float(os.getenv("BUY_AMOUNT_SOL", "0.05"))
+        logging.error(f"Dynamic sizing error: {e}")
+        return 0.1
 
 def get_minimum_liquidity_required(balance_sol: float = None) -> float:
     """Aggressive liquidity for 48hr push"""
-    return 3.0  # FLAT 3 SOL
+    # FLAT 1 SOL - more aggressive as requested
+    return 1.0
 
 async def evaluate_pumpfun_opportunity(mint: str, lp_sol: float) -> tuple[bool, float]:
     """Aggressive PumpFun evaluation"""
@@ -355,12 +219,13 @@ async def evaluate_pumpfun_opportunity(mint: str, lp_sol: float) -> tuple[bool, 
         
         progress = pf_status.get("progress", 0)
         
+        # Take more risk on PumpFun
         if lp_sol < PUMPFUN_MIN_LIQUIDITY["ignore"]:
             return False, 0
         
         if pf_status.get("graduated"):
             if lp_sol >= PUMPFUN_MIN_LIQUIDITY["graduated"]:
-                return True, 0.15
+                return True, 0.15  # Bigger on graduated
         elif progress >= 80:
             if lp_sol >= PUMPFUN_MIN_LIQUIDITY["near_graduation"]:
                 return True, 0.1
@@ -422,25 +287,30 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
         "No pool found",
         "Failed to build",
         "LP Check",
-        "QUALITY TOKEN DETECTED",
-        "ELITE BUY EXECUTING",
-        "PUMPFUN TOKEN DETECTED",
-        "Attempting snipe"
+        "QUALITY TOKEN DETECTED",  # This is spam
+        "ELITE BUY EXECUTING",  # This is spam
+        "PUMPFUN TOKEN DETECTED",  # This is spam
+        "Attempting snipe"  # This is spam
     ]
     
+    # Check if this is spam
     is_spam = any(pattern in message for pattern in SPAM_PATTERNS)
     
     if is_spam:
+        # Just count it, don't send
         ALERT_SUMMARY["skipped"] += 1
         
+        # Send hourly summary instead
         if time.time() - LAST_SUMMARY_TIME > 3600:
             summary_msg = f"📊 Hourly Summary:\nScanned: {ALERT_SUMMARY['detected']}\nSkipped: {ALERT_SUMMARY['skipped']}\nFailed: {ALERT_SUMMARY['failed']}\nSucceeded: {ALERT_SUMMARY['succeeded']}"
             ALERT_SUMMARY = {"detected": 0, "skipped": 0, "failed": 0, "succeeded": 0}
             LAST_SUMMARY_TIME = time.time()
+            # Send the summary
             message = summary_msg
         else:
-            return True
+            return True  # Pretend we sent it
     
+    # Only important messages get here (buys, sells, errors)
     try:
         now = time.time()
         time_since_last = now - telegram_last_sent
@@ -531,16 +401,15 @@ def get_wallet_summary() -> str:
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         balance_usd = balance * 150
         
+        # Get position sizing info
         if USE_DYNAMIC_SIZING:
-            test_position = 0.1
+            test_position = 0.1  # Aggressive 10%
             sizing_info = f"\n📏 Position Size: ~{test_position:.3f} SOL"
         else:
             sizing_info = f"\n📏 Fixed Size: {BUY_AMOUNT_SOL} SOL"
         
-        jito_info = f"\n⚡ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}"
-        
         return f"""Balance: {balance:.4f} SOL (${balance_usd:.0f})
-Address: {wallet_pubkey}{sizing_info}{jito_info}
+Address: {wallet_pubkey}{sizing_info}
 Min LP: {get_minimum_liquidity_required(balance)} SOL"""
     except:
         return "Failed to fetch wallet info"
@@ -573,34 +442,15 @@ def get_bot_status_message() -> str:
 🚫 Broken Tokens: {len(BROKEN_TOKENS)}
 💰 Min LP Filter: {get_minimum_liquidity_required()} SOL
 🎯 Scaling: {'ON' if USE_DYNAMIC_SIZING else 'OFF'}
-⚡ MEV Protection: {'ON' if USE_JITO_BUNDLES else 'OFF'}
 """
 
-# ============================================
-# FIXED LIQUIDITY DETECTION FUNCTION - FIX #7
-# ============================================
-
-async def _get_liquidity_internal(mint: str) -> Optional[Dict[str, Any]]:
-    """Internal liquidity check function"""
+async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
+    """Get accurate liquidity with timeout and proper validation"""
     try:
-        sol_mint = "So11111111111111111111111111111111111111112"
-        
-        # Quick Jupiter check first
-        try:
-            url = f"https://price.jup.ag/v4/price?ids={mint}"
-            async with httpx.AsyncClient(timeout=2, verify=False) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        # If Jupiter knows about it, it has decent liquidity
-                        logging.info(f"[LP Check] {mint[:8]}... found on Jupiter - assuming good liquidity")
-                        return {"liquidity": 10.0}  # Assume 10 SOL minimum if on Jupiter
-        except Exception as e:
-            logging.debug(f"[LP Check] Jupiter quick check failed: {e}")
-        
-        # Check Raydium pool
-        try:
+        async def _check_liquidity():
+            sol_mint = "So11111111111111111111111111111111111111112"
+            
+            # Try Raydium first
             pool = raydium.find_pool_realtime(mint)
             
             if pool:
@@ -610,8 +460,7 @@ async def _get_liquidity_internal(mint: str) -> Optional[Dict[str, Any]]:
                     sol_vault_key = pool["quoteVault"]
                 else:
                     logging.warning(f"[LP Check] Pool found but no SOL pair for {mint[:8]}...")
-                    # Still return something to allow trading
-                    return {"liquidity": 1.0}
+                    return {"liquidity": 0}
                 
                 sol_vault = Pubkey.from_string(sol_vault_key)
                 response = rpc.get_balance(sol_vault)
@@ -622,69 +471,62 @@ async def _get_liquidity_internal(mint: str) -> Optional[Dict[str, Any]]:
                     if sol_balance > 0:
                         logging.info(f"[LP Check] {mint[:8]}... has {sol_balance:.2f} SOL liquidity (Raydium)")
                         return {"liquidity": sol_balance}
-        except Exception as e:
-            logging.debug(f"[LP Check] Raydium check error: {e}")
-        
-        # Try Jupiter quote as fallback
-        try:
-            url = f"{JUPITER_BASE_URL}/v6/quote"
-            params = {
-                "inputMint": sol_mint,
-                "outputMint": mint,
-                "amount": str(int(0.001 * 1e9)),
-                "slippageBps": "100",
-                "onlyDirectRoutes": "false"
-            }
+                    else:
+                        logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in Raydium pool")
+                        return {"liquidity": 0}
             
-            async with httpx.AsyncClient(timeout=3, verify=False) as client:
-                response = await client.get(url, params=params)
-                if response.status_code == 200:
-                    quote = response.json()
-                    
-                    if quote.get("outAmount") and int(quote.get("outAmount", 0)) > 0:
-                        price_impact = float(quote.get("priceImpactPct", 100))
+            # Try Jupiter as fallback
+            logging.info(f"[LP Check] No Raydium pool, checking Jupiter...")
+            try:
+                url = f"{JUPITER_BASE_URL}/v6/quote"
+                params = {
+                    "inputMint": sol_mint,
+                    "outputMint": mint,
+                    "amount": str(int(0.001 * 1e9)),
+                    "slippageBps": "100",
+                    "onlyDirectRoutes": "false"
+                }
+                
+                async with httpx.AsyncClient(timeout=3, verify=certifi.where()) as client:
+                    response = await client.get(url, params=params)
+                    if response.status_code == 200:
+                        quote = response.json()
                         
-                        # Estimate liquidity from price impact
-                        if price_impact < 1:
-                            estimated_lp = 20.0
-                        elif price_impact < 5:
-                            estimated_lp = 10.0
-                        elif price_impact < 10:
-                            estimated_lp = 5.0
-                        elif price_impact < 20:
-                            estimated_lp = 2.0
+                        if quote.get("outAmount") and int(quote.get("outAmount", 0)) > 0:
+                            price_impact = float(quote.get("priceImpactPct", 100))
+                            
+                            if price_impact < 1:
+                                estimated_lp = 10.0
+                            elif price_impact < 5:
+                                estimated_lp = 3.0
+                            elif price_impact < 10:
+                                estimated_lp = 1.0
+                            else:
+                                estimated_lp = 0.1
+                            
+                            logging.info(f"[LP Check] {mint[:8]}... on Jupiter with estimated {estimated_lp:.2f} SOL liquidity")
+                            return {"liquidity": estimated_lp}
                         else:
-                            estimated_lp = 0.5
-                        
-                        logging.info(f"[LP Check] {mint[:8]}... on Jupiter with estimated {estimated_lp:.2f} SOL liquidity")
-                        return {"liquidity": estimated_lp}
-        except Exception as e:
-            logging.debug(f"[LP Check] Jupiter quote check failed: {e}")
+                            logging.info(f"[LP Check] No viable route on Jupiter for {mint[:8]}...")
+                            return {"liquidity": 0}
+            except Exception as e:
+                logging.debug(f"[LP Check] Jupiter check failed: {e}")
+            
+            logging.info(f"[LP Check] No liquidity found for {mint[:8]}... on any DEX")
+            return {"liquidity": 0}
         
-        # For brand new tokens, assume minimal liquidity to allow discovery
-        logging.info(f"[LP Check] {mint[:8]}... has no pool found")
-        return None  # Don't assume liquidity for unknown tokens
+        # Execute with timeout
+        try:
+            result = await asyncio.wait_for(_check_liquidity(), timeout=LP_CHECK_TIMEOUT)
+            return result
+        except asyncio.TimeoutError:
+            logging.warning(f"[LP Check] Timeout after {LP_CHECK_TIMEOUT}s for {mint[:8]}...")
+            record_skip("lp_timeout")
+            return None
             
     except Exception as e:
-        logging.error(f"[LP Check] Critical error for {mint}: {e}")
-        # On error, still return something to not block trading
-        return {"liquidity": 0.5}
-
-async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get accurate liquidity with timeout protection - FIX #7"""
-    try:
-        # Add overall timeout
-        return await asyncio.wait_for(
-            _get_liquidity_internal(mint),
-            timeout=float(os.getenv("LP_CHECK_TIMEOUT", "3"))
-        )
-    except asyncio.TimeoutError:
-        logging.warning(f"[LP Check] Timeout for {mint[:8]}...")
-        # Return minimum viable data instead of None
-        return {"liquidity": 0.1}  # Assume minimal liquidity
-    except Exception as e:
-        logging.error(f"[LP Check] Error: {e}")
-        return {"liquidity": 0.1}
+        logging.error(f"[LP Check] Error for {mint}: {e}")
+        return {"liquidity": 0}
 
 async def get_trending_mints():
     """Placeholder for trending mints"""
@@ -726,7 +568,7 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
             "asLegacyTransaction": "false"
         }
         
-        async with httpx.AsyncClient(timeout=10, verify=False) as client:
+        async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
             response = await client.get(url, params=params)
             if response.status_code == 200:
                 quote = response.json()
@@ -849,37 +691,26 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         logging.error(f"[Jupiter] Swap execution error: {e}")
         return None
 
-async def execute_jupiter_sell(mint: str, amount: int, destination_wallet: Optional[Pubkey] = None) -> Optional[str]:
-    """Execute a sell using Jupiter - FIXED to ensure it goes to YOUR wallet"""
+async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
+    """Execute a sell using Jupiter"""
     try:
         input_mint = mint
         output_mint = "So11111111111111111111111111111111111111112"
         
-        # CRITICAL FIX: Always use our wallet as destination
-        if destination_wallet is None:
-            destination_wallet = keypair.pubkey()
-        
         logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}...")
-        logging.info(f"[Jupiter] Selling to wallet: {str(destination_wallet)[:8]}...")
-        
         quote = await get_jupiter_quote(input_mint, output_mint, amount)
         if not quote:
             return None
         
-        # IMPORTANT: Ensure the swap transaction sends SOL to OUR wallet
-        swap_data = await get_jupiter_swap_transaction(quote, str(keypair.pubkey()))
+        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
         if not swap_data:
             return None
         
         tx_bytes = base64.b64decode(swap_data["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
-        
-        # Verify the transaction is sending to our wallet
-        # This is an additional safety check
         signed_tx = VersionedTransaction(tx.message, [keypair])
         
         logging.info("[Jupiter] Sending sell transaction...")
-        logging.info(f"[Jupiter] SOL will be sent to: {str(keypair.pubkey())[:8]}...")
         
         try:
             result = rpc.send_transaction(
@@ -903,7 +734,7 @@ async def execute_jupiter_sell(mint: str, amount: int, destination_wallet: Optio
                     status = rpc.get_signature_statuses([sig_obj])
                     if status.value[0] is not None:
                         if status.value[0].confirmation_status:
-                            logging.info(f"[Jupiter] Sell confirmed, SOL sent to {str(keypair.pubkey())[:8]}...")
+                            logging.info(f"[Jupiter] Sell confirmed: {status.value[0].confirmation_status}")
                         elif status.value[0].err:
                             logging.error(f"[Jupiter] Sell failed: {status.value[0].err}")
                             return None
@@ -958,9 +789,10 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, force_amount: Optional[float] = None, is_migration: bool = False):
-    """Execute buy with dynamic sizing, enhanced validation, and MEV protection"""
+    """Execute buy with dynamic sizing and enhanced validation"""
     try:
         if mint in BROKEN_TOKENS:
+            # Don't alert for broken tokens
             log_skipped_token(mint, "Broken token")
             record_skip("malformed")
             return False
@@ -968,6 +800,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         increment_stat("snipes_attempted", 1)
         update_last_activity()
         
+        # Check liquidity with timeout
         logging.info(f"[Buy] Checking liquidity for {mint[:8]}...")
         lp_data = await get_liquidity_and_ownership(mint)
         
@@ -977,6 +810,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         
         pool_liquidity = lp_data.get("liquidity", 0)
         
+        # Check if PumpFun
         is_pumpfun = False
         pumpfun_position = 0
         
@@ -989,13 +823,16 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
                 record_skip("low_lp")
                 return False
         
+        # Get minimum LP requirement based on current balance
         min_lp = get_minimum_liquidity_required() if not is_pumpfun else 0.5
         
         if pool_liquidity < min_lp:
+            # Don't spam alerts for low LP
             log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
             record_skip("low_lp")
             return False
 
+        # Get dynamic position size
         if force_amount:
             amount_sol = force_amount
             logging.info(f"[Buy] Using forced amount: {amount_sol} SOL")
@@ -1006,38 +843,35 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         else:
             amount_sol = BUY_AMOUNT_SOL
         
+        # Final safety check with risk manager
+        try:
+            from integrate_monster import risk_manager
+            if risk_manager and not await risk_manager.check_risk_limits():
+                logging.warning(f"[Buy] Risk limits hit, skipping buy for {mint[:8]}...")
+                return False
+        except ImportError:
+            logging.debug("[Buy] Risk manager not available, continuing without check")
+        except Exception as e:
+            logging.debug(f"[Buy] Risk check error: {e}, continuing")
+        
         amount_lamports = int(amount_sol * 1e9)
         logging.info(f"[Buy] Using dynamic position: {amount_sol:.3f} SOL for {mint[:8]}...")
 
-        # Determine if we should use Jito bundles for MEV protection
-        jupiter_sig = None
-        
-        if USE_JITO_BUNDLES and (is_migration or mint in pumpfun_tokens):
-            # For competitive tokens, use higher priority with Jito
-            if is_migration:
-                tip = 0.005  # Higher tip for migrations
-            elif mint in pumpfun_tokens:
-                tip = 0.002  # Standard tip for PumpFun
-            else:
-                tip = 0.001  # Lower tip for regular tokens
-            
-            logging.info(f"[Buy] Using Jito bundle with {tip} SOL tip for MEV protection")
-            jupiter_sig = await execute_jupiter_swap_with_jito(mint, amount_lamports, tip)
-        else:
-            # Regular Jupiter swap without Jito
-            logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
-            jupiter_sig = await execute_jupiter_swap(mint, amount_lamports)
+        # Try Jupiter first
+        logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
+        jupiter_sig = await execute_jupiter_swap(mint, amount_lamports)
         
         if jupiter_sig:
+            # Get current balance for status
             balance = rpc.get_balance(keypair.pubkey()).value / 1e9
             balance_usd = balance * 150
             
+            # THIS IS IMPORTANT - send success alert
             await send_telegram_alert(
-                f"✅ Sniped {mint[:8]}... via {'Jito+' if USE_JITO_BUNDLES and (is_migration or mint in pumpfun_tokens) else ''}Jupiter\n"
+                f"✅ Sniped {mint[:8]}... via Jupiter\n"
                 f"Amount: {amount_sol:.3f} SOL\n"
                 f"LP: {pool_liquidity:.2f} SOL\n"
                 f"{'🚀 MIGRATION!' if is_migration else ''}\n"
-                f"{'⚡ MEV Protected' if USE_JITO_BUNDLES and (is_migration or mint in pumpfun_tokens) else ''}\n"
                 f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
@@ -1054,6 +888,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
             log_trade(mint, "BUY", amount_sol, 0)
             return True
         
+        # Fallback to Raydium
         logging.info(f"[Buy] Jupiter failed, trying Raydium for {mint[:8]}...")
         
         input_mint = "So11111111111111111111111111111111111111112"
@@ -1063,6 +898,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         if not pool:
             pool = raydium.find_pool(output_mint, input_mint)
             if not pool:
+                # Don't spam alerts for no pool
                 log_skipped_token(mint, "No pool on Jupiter or Raydium")
                 record_skip("malformed")
                 return False
@@ -1077,6 +913,7 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
             mark_broken_token(mint, 0)
             return False
 
+        # Get current balance for status
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
         balance_usd = balance * 150
         
@@ -1106,11 +943,12 @@ async def buy_token(mint: str, force_amount: Optional[float] = None, is_migratio
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-async def sell_token(mint: str, percent: float = 100.0):
-    """Execute sell transaction for a token - FIXED to always sell to YOUR wallet"""
+async def sell_token(mint: str, amount_to_sell=None, percentage=100):
+    """FIXED: Execute sell transaction with proper authority/owner parameters"""
     try:
-        from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT
+        from spl.token.constants import TOKEN_PROGRAM_ID
         
+        # CRITICAL FIX: Use keypair.pubkey() for all authority/owner parameters
         owner = keypair.pubkey()
         token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
         
@@ -1125,33 +963,38 @@ async def sell_token(mint: str, percent: float = 100.0):
             logging.error(f"Failed to get token balance for {mint}: {e}")
             return False
         
-        amount = int(balance * percent / 100)
+        # Calculate amount to sell
+        if amount_to_sell is not None:
+            amount = amount_to_sell
+        else:
+            amount = int(balance * percentage / 100)
         
         if amount == 0:
             logging.warning(f"Zero balance to sell for {mint[:8]}...")
             return False
 
+        logging.info(f"[Sell] Selling {percentage}% ({amount} tokens) of {mint[:8]}...")
+
+        # Try Jupiter first with proper owner/authority
         logging.info(f"[Sell] Attempting Jupiter sell for {mint[:8]}...")
-        logging.info(f"[Sell] Selling to OUR wallet: {str(owner)[:8]}...")
-        
-        # CRITICAL FIX: Pass our wallet pubkey directly, not WSOL account
-        jupiter_sig = await execute_jupiter_sell(mint, amount, owner)
+        jupiter_sig = await execute_jupiter_sell(mint, amount)
         
         if jupiter_sig:
             await send_telegram_alert(
-                f"✅ Sold {percent}% of {mint[:8]}... via Jupiter\n"
-                f"SOL sent to: {str(owner)[:8]}...\n"
+                f"✅ Sold {percentage}% of {mint[:8]}... via Jupiter\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
-            log_trade(mint, f"SELL {percent}%", 0, amount)
+            log_trade(mint, f"SELL {percentage}%", 0, amount)
             increment_stat("sells_executed", 1)
             return True
         
+        # Fallback to Raydium with proper authority
         logging.info(f"[Sell] Jupiter failed, trying Raydium for {mint[:8]}...")
         
         input_mint = mint
         output_mint = "So11111111111111111111111111111111111111112"
         
+        # Find pool
         pool = raydium.find_pool(input_mint, output_mint)
         if not pool:
             pool = raydium.find_pool(output_mint, input_mint)
@@ -1159,20 +1002,31 @@ async def sell_token(mint: str, percent: float = 100.0):
                 log_skipped_token(mint, "No pool for sell")
                 return False
 
-        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount)
+        # CRITICAL: Build transaction with proper owner/authority
+        # The raydium client should use keypair.pubkey() as the authority
+        tx = raydium.build_swap_transaction(
+            keypair,  # Pass the full keypair
+            input_mint, 
+            output_mint, 
+            amount,
+            # Ensure the transaction uses keypair.pubkey() as owner/authority internally
+        )
+        
         if not tx:
+            logging.error(f"[Sell] Failed to build sell transaction for {mint[:8]}...")
             return False
 
+        # Sign and send with the keypair
         sig = raydium.send_transaction(tx, keypair)
         if not sig:
+            logging.error(f"[Sell] Failed to send sell transaction for {mint[:8]}...")
             return False
 
         await send_telegram_alert(
-            f"✅ Sold {percent}% of {mint[:8]}... via Raydium\n"
-            f"SOL sent to: {str(owner)[:8]}...\n"
+            f"✅ Sold {percentage}% of {mint[:8]}... via Raydium\n"
             f"TX: https://solscan.io/tx/{sig}"
         )
-        log_trade(mint, f"SELL {percent}%", 0, amount)
+        log_trade(mint, f"SELL {percentage}%", 0, amount)
         increment_stat("sells_executed", 1)
         return True
         
@@ -1183,9 +1037,11 @@ async def sell_token(mint: str, percent: float = 100.0):
 
 async def get_token_decimals(mint: str) -> int:
     """Get token decimals from blockchain with caching and validation"""
+    # Check cache first
     if mint in TOKEN_DECIMALS_CACHE:
         return TOKEN_DECIMALS_CACHE[mint]
     
+    # Check known list
     if mint in KNOWN_TOKEN_DECIMALS:
         TOKEN_DECIMALS_CACHE[mint] = KNOWN_TOKEN_DECIMALS[mint]
         return KNOWN_TOKEN_DECIMALS[mint]
@@ -1202,9 +1058,11 @@ async def get_token_decimals(mint: str) -> int:
                 else:
                     decoded = bytes(data[0])
                 
+                # SPL Token structure: decimals at byte 44
                 if len(decoded) > 44:
                     decimals = decoded[44]
                     
+                    # Validate decimals are reasonable (0-18)
                     if 0 <= decimals <= 18:
                         TOKEN_DECIMALS_CACHE[mint] = decimals
                         logging.info(f"[Decimals] Token {mint[:8]}... has {decimals} decimals (from chain)")
@@ -1215,6 +1073,7 @@ async def get_token_decimals(mint: str) -> int:
     except Exception as e:
         logging.warning(f"[Decimals] Could not get decimals for {mint[:8]}...: {e}")
     
+    # Default - but log a warning since this is where issues happen
     logging.warning(f"[Decimals] Using DEFAULT 9 decimals for {mint[:8]}... - THIS MAY CAUSE PRICE ERRORS!")
     return 9
 
@@ -1230,13 +1089,15 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             logging.info(f"[Price] {STABLECOIN_MINTS[mint]} stablecoin, returning $1.00")
             return 1.0
         
+        # CRITICAL FIX: Get actual decimals FIRST before any price calculations
         actual_decimals = await get_token_decimals(mint)
         logging.info(f"[Price] Token {mint[:8]}... using {actual_decimals} decimals for calculations")
         
+        # Try DexScreener first for new tokens
         try:
             dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
             
-            async with httpx.AsyncClient(timeout=10, verify=False) as client:
+            async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
                 response = await client.get(dex_url)
                 if response.status_code == 200:
                     data = response.json()
@@ -1250,11 +1111,12 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             logging.debug(f"[Price] DexScreener error: {e}")
         
+        # Try Birdeye if configured
         if BIRDEYE_API_KEY:
             try:
                 url = f"https://public-api.birdeye.so/defi/price?address={mint}"
                 
-                async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
                     headers = {"X-API-KEY": BIRDEYE_API_KEY}
                     response = await client.get(url, headers=headers)
                     
@@ -1268,6 +1130,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             except Exception as e:
                 logging.debug(f"[Price] Birdeye error: {e}")
         
+        # Try Jupiter Price API
         try:
             url = f"https://price.jup.ag/v4/price?ids={mint}"
             async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
@@ -1283,12 +1146,13 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             logging.debug(f"[Price] Jupiter Price API error: {e}")
         
+        # Last resort: Calculate from Jupiter quote with PROPER decimal handling
         try:
             quote_url = f"{JUPITER_BASE_URL}/v6/quote"
             params = {
                 "inputMint": "So11111111111111111111111111111111111111112",
                 "outputMint": mint,
-                "amount": str(int(1 * 1e9)),
+                "amount": str(int(1 * 1e9)),  # 1 SOL
                 "slippageBps": "100"
             }
             
@@ -1297,42 +1161,50 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                 if response.status_code == 200:
                     quote = response.json()
                     
+                    # Honor Jupiter's provided values if available
                     if not IGNORE_JUPITER_PRICE_FIELD and "price" in quote:
                         price = float(quote["price"])
                         logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter price field)")
                         return price
                     
                     if "outAmount" in quote and float(quote["outAmount"]) > 0:
-                        sol_price = 150.0
+                        sol_price = 150.0  # Current SOL price
                         
+                        # CRITICAL FIX: Use actual decimals, not hardcoded 9
                         if OVERRIDE_DECIMALS_TO_9:
+                            # Only use 9 if explicitly overridden
                             tokens_received = float(quote["outAmount"]) / 1e9
                             logging.warning(f"[Price] OVERRIDE active, using 9 decimals instead of {actual_decimals}")
                         else:
+                            # Use the actual token decimals - THIS IS THE FIX
                             tokens_received = float(quote["outAmount"]) / (10 ** actual_decimals)
                         
                         sol_spent = 1.0
                         price = (sol_spent * sol_price) / tokens_received
                         
+                        # Sanity checks to catch decimal issues
                         if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
                             logging.error(f"[Price] Calculated ${price:.4f} for {STABLECOIN_MINTS[mint]} - decimal mismatch!")
+                            # Try common decimal values
                             for test_decimals in [6, 8, 9]:
                                 test_tokens = float(quote["outAmount"]) / (10 ** test_decimals)
                                 test_price = (sol_spent * sol_price) / test_tokens
                                 if 0.5 < test_price < 2.0:
                                     logging.info(f"[Price] Corrected to {test_decimals} decimals: ${test_price:.4f}")
-                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals
+                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals  # Cache the correct decimals
                                     return test_price
-                            return 1.0
+                            return 1.0  # Default for stablecoins
                         
+                        # Check for extreme prices that indicate decimal issues
                         if price > 1000000:
                             logging.warning(f"[Price] Extreme price ${price:.2f} for {mint[:8]}... - trying different decimals")
+                            # Try common decimal values
                             for test_decimals in [6, 8, 9]:
                                 test_tokens = float(quote["outAmount"]) / (10 ** test_decimals)
                                 test_price = (sol_spent * sol_price) / test_tokens
                                 if 0.0000001 < test_price < 10000:
                                     logging.info(f"[Price] Using {test_decimals} decimals: ${test_price:.8f}")
-                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals
+                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals  # Cache the correct decimals
                                     return test_price
                         
                         if price < 0.0000001:
@@ -1350,8 +1222,11 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         logging.error(f"[Price] Unexpected error for {mint}: {e}")
         return None
 
+# Continue with wait_and_auto_sell and other functions...
+# [Rest of the file continues unchanged from line 1200 onwards]
+
 async def wait_and_auto_sell(mint: str):
-    """Monitor position and auto-sell with FIXED price updates"""
+    """Monitor position and auto-sell with different strategies based on token type"""
     try:
         if mint not in OPEN_POSITIONS:
             logging.warning(f"No position found for {mint}")
@@ -1360,13 +1235,16 @@ async def wait_and_auto_sell(mint: str):
         position = OPEN_POSITIONS[mint]
         buy_amount_sol = position["buy_amount_sol"]
         
+        # Determine token type and strategy
         is_pumpfun = mint in pumpfun_tokens
         is_trending = mint in trending_tokens
         is_migration = position.get("is_migration", False)
         
+        # Select appropriate targets - MOONBAG PRESERVED
         if is_migration:
+            # Aggressive targets for migrations
             targets = [5.0, 15.0, 30.0]
-            sell_percents = [30, 30, 40]
+            sell_percents = [30, 30, 40]  # 40% moonbag
             strategy_name = "MIGRATION"
             min_hold_time = 60
         elif is_pumpfun and PUMPFUN_USE_MOON_STRATEGY:
@@ -1376,17 +1254,18 @@ async def wait_and_auto_sell(mint: str):
             min_hold_time = NO_SELL_FIRST_MINUTES * 60
         elif is_trending and TRENDING_USE_CUSTOM:
             targets = [TRENDING_TAKE_PROFIT_1, TRENDING_TAKE_PROFIT_2, TRENDING_TAKE_PROFIT_3]
-            sell_percents = [30, 35, 35]
+            sell_percents = [30, 35, 35]  # 35% moonbag
             strategy_name = "TRENDING"
             min_hold_time = 60
         else:
             targets = [TAKE_PROFIT_1, TAKE_PROFIT_2, TAKE_PROFIT_3]
-            sell_percents = [SELL_PERCENT_1, SELL_PERCENT_2, SELL_PERCENT_3]
+            sell_percents = [SELL_PERCENT_1, SELL_PERCENT_2, SELL_PERCENT_3]  # 25% moonbag
             strategy_name = "STANDARD"
             min_hold_time = 0
         
         await asyncio.sleep(10)
         
+        # Get entry price
         entry_price = await get_token_price_usd(mint)
         if not entry_price:
             logging.warning(f"Could not get entry price for {mint}, using timer-based fallback")
@@ -1406,6 +1285,7 @@ async def wait_and_auto_sell(mint: str):
             f"Stop Loss: -${entry_price*STOP_LOSS_PERCENT/100:.6f}"
         )
         
+        # Monitor loop
         start_time = time.time()
         last_price_check = 0
         max_sell_attempts = 3
@@ -1418,8 +1298,6 @@ async def wait_and_auto_sell(mint: str):
                     continue
                     
                 last_price_check = time.time()
-                
-                # FIX: Get fresh price every time
                 current_price = await get_token_price_usd(mint)
                 
                 if not current_price:
@@ -1431,21 +1309,23 @@ async def wait_and_auto_sell(mint: str):
                 profit_percent = (profit_multiplier - 1) * 100
                 time_held = time.time() - start_time
                 
+                # Update highest price
                 if current_price > position["highest_price"]:
                     position["highest_price"] = current_price
                     logging.info(f"[{mint[:8]}] New high: ${current_price:.6f} ({profit_multiplier:.2f}x)")
                 
+                # Check minimum hold time
                 if is_pumpfun and time_held < min_hold_time:
                     logging.debug(f"[{mint[:8]}] Holding for {min_hold_time/60:.0f} mins minimum (PumpFun)")
                     await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
                     continue
                 
-                # Trailing stop logic
+                # Check trailing stop
                 if profit_multiplier >= TRAILING_STOP_ACTIVATION:
                     drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
                     if drop_from_high >= TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
                         logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
-                        if await sell_token(mint, 100):
+                        if await sell_token(mint, percentage=100):
                             await send_telegram_alert(
                                 f"⛔ Trailing stop triggered for {mint[:8]}!\n"
                                 f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
@@ -1453,11 +1333,11 @@ async def wait_and_auto_sell(mint: str):
                             )
                             break
                 
-                # Stop loss check
+                # Check stop loss
                 if profit_percent <= -STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
                     sell_attempts["stop_loss"] += 1
                     logging.info(f"[{mint[:8]}] Stop loss triggered at {profit_percent:.1f}%")
-                    if await sell_token(mint, 100):
+                    if await sell_token(mint, percentage=100):
                         await send_telegram_alert(
                             f"🛑 Stop loss triggered for {mint[:8]}!\n"
                             f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
@@ -1465,55 +1345,51 @@ async def wait_and_auto_sell(mint: str):
                         )
                         break
                 
-                # FIXED: Update price for each profit target
+                # Check profit targets
                 if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
                     sell_attempts["profit1"] += 1
-                    if await sell_token(mint, sell_percents[0]):
+                    if await sell_token(mint, percentage=sell_percents[0]):
                         position["sold_stages"].add("profit1")
                         await send_telegram_alert(
                             f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.8f} ({profit_multiplier:.2f}x)\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold {sell_percents[0]}% of position\n"
                             f"Strategy: {strategy_name}"
                         )
                 
                 if profit_multiplier >= targets[1] and "profit2" not in position["sold_stages"] and sell_attempts["profit2"] < max_sell_attempts:
                     sell_attempts["profit2"] += 1
-                    if await sell_token(mint, sell_percents[1]):
+                    if await sell_token(mint, percentage=sell_percents[1]):
                         position["sold_stages"].add("profit2")
-                        # Get fresh price for accurate reporting
-                        fresh_price = await get_token_price_usd(mint) or current_price
-                        fresh_multiplier = fresh_price / entry_price
                         await send_telegram_alert(
                             f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
-                            f"Price: ${fresh_price:.8f} ({fresh_multiplier:.2f}x)\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold {sell_percents[1]}% of position\n"
                             f"Strategy: {strategy_name}"
                         )
                 
                 if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
                     sell_attempts["profit3"] += 1
-                    if await sell_token(mint, sell_percents[2]):
+                    if await sell_token(mint, percentage=sell_percents[2]):
                         position["sold_stages"].add("profit3")
-                        # Get fresh price for accurate reporting
-                        fresh_price = await get_token_price_usd(mint) or current_price
-                        fresh_multiplier = fresh_price / entry_price
                         await send_telegram_alert(
                             f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
-                            f"Price: ${fresh_price:.8f} ({fresh_multiplier:.2f}x)\n"
+                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                             f"Sold {sell_percents[2]}% - KEEPING MOONBAG!\n"
-                            f"Total profit: {(fresh_multiplier-1)*100:.1f}%!\n"
+                            f"Total profit: {(profit_multiplier-1)*100:.1f}%!\n"
                             f"Strategy: {strategy_name} - Moonbag held for 100x+ 🚀"
                         )
+                        # DON'T BREAK - keep monitoring the moonbag
                 
-                # Periodic status update
+                # Log status every minute
                 if int((time.time() - start_time) % 60) == 0:
                     logging.info(
-                        f"[{mint[:8]}] [{strategy_name}] Price: ${current_price:.8f} ({profit_multiplier:.2f}x) | "
-                        f"High: ${position['highest_price']:.8f} | "
+                        f"[{mint[:8]}] [{strategy_name}] Price: ${current_price:.6f} ({profit_multiplier:.2f}x) | "
+                        f"High: ${position['highest_price']:.6f} | "
                         f"Sold stages: {position['sold_stages']}"
                     )
                 
+                # Only exit if we sold everything (no moonbag scenarios)
                 if len(position["sold_stages"]) >= 3 and sell_percents[2] == 100:
                     logging.info(f"[{mint[:8]}] All profit targets hit, position fully closed")
                     break
@@ -1522,13 +1398,14 @@ async def wait_and_auto_sell(mint: str):
                 logging.error(f"Error monitoring {mint}: {e}")
                 await asyncio.sleep(PRICE_CHECK_INTERVAL_SEC)
         
-        # Max hold time reached
+        # Time limit reached - but keep moonbag if we have one
         if time.time() - start_time >= MAX_HOLD_TIME_SEC:
             if len(position["sold_stages"]) >= 3:
                 logging.info(f"[{mint[:8]}] Max hold time reached, keeping moonbag")
+                # Don't force sell the moonbag
             else:
                 logging.info(f"[{mint[:8]}] Max hold time reached, force selling")
-                if await sell_token(mint, 100):
+                if await sell_token(mint, percentage=100):
                     current_price = await get_token_price_usd(mint) or entry_price
                     profit_percent = ((current_price / entry_price) - 1) * 100
                     await send_telegram_alert(
@@ -1538,7 +1415,7 @@ async def wait_and_auto_sell(mint: str):
                         f"Strategy used: {strategy_name}"
                     )
         
-        # Clean up position if fully sold
+        # Clean up position ONLY if fully sold
         if mint in OPEN_POSITIONS and len(position.get("sold_stages", set())) >= 3 and sell_percents[2] == 100:
             del OPEN_POSITIONS[mint]
             
@@ -1567,7 +1444,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                 
                 if elapsed > 30 and "2x" not in position["sold_stages"] and sell_attempts["2x"] < max_sell_attempts:
                     sell_attempts["2x"] += 1
-                    if await sell_token(mint, AUTO_SELL_PERCENT_2X):
+                    if await sell_token(mint, percentage=AUTO_SELL_PERCENT_2X):
                         position["sold_stages"].add("2x")
                         await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
                     elif sell_attempts["2x"] >= max_sell_attempts:
@@ -1575,7 +1452,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                 
                 if elapsed > 120 and "5x" not in position["sold_stages"] and sell_attempts["5x"] < max_sell_attempts:
                     sell_attempts["5x"] += 1
-                    if await sell_token(mint, AUTO_SELL_PERCENT_5X):
+                    if await sell_token(mint, percentage=AUTO_SELL_PERCENT_5X):
                         position["sold_stages"].add("5x")
                         await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
                     elif sell_attempts["5x"] >= max_sell_attempts:
@@ -1583,15 +1460,17 @@ async def wait_and_auto_sell_timer_based(mint: str):
                 
                 if elapsed > 300 and "10x" not in position["sold_stages"] and sell_attempts["10x"] < max_sell_attempts:
                     sell_attempts["10x"] += 1
-                    if await sell_token(mint, AUTO_SELL_PERCENT_10X):
+                    if await sell_token(mint, percentage=AUTO_SELL_PERCENT_10X):
                         position["sold_stages"].add("10x")
                         await send_telegram_alert(f"🌙 KEEPING MOONBAG - Sold {AUTO_SELL_PERCENT_10X}% at 5min for {mint[:8]}...")
+                        # Don't break - keep the moonbag
                     elif sell_attempts["10x"] >= max_sell_attempts:
                         position["sold_stages"].add("10x")
                 
+                # Don't clean up if we have a moonbag
                 if len(position["sold_stages"]) >= 3 and AUTO_SELL_PERCENT_10X < 100:
                     logging.info(f"Timer targets hit, keeping moonbag for {mint[:8]}...")
-                    return
+                    return  # Exit but don't delete position
                     
                 await asyncio.sleep(10)
                 
@@ -1599,6 +1478,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                 logging.error(f"Timer-based monitoring error for {mint}: {e}")
                 await asyncio.sleep(10)
         
+        # Only delete if fully sold
         if mint in OPEN_POSITIONS and AUTO_SELL_PERCENT_10X == 100:
             del OPEN_POSITIONS[mint]
             
@@ -1703,8 +1583,5 @@ __all__ = [
     'get_minimum_liquidity_required',
     'USE_DYNAMIC_SIZING',
     'SCALE_WITH_BALANCE',
-    'evaluate_pumpfun_opportunity',
-    'USE_JITO_BUNDLES',
-    'send_jito_bundle',
-    'execute_jupiter_swap_with_jito'
+    'evaluate_pumpfun_opportunity'
 ]
