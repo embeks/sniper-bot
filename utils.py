@@ -1,4 +1,4 @@
-# utils.py - COMPLETE PRODUCTION READY VERSION WITH SCALING AND DECIMAL FIX
+# utils.py - COMPLETE PRODUCTION READY VERSION WITH SCALING, DECIMAL FIX, AND AGE CHECKING
 import os
 import json
 import logging
@@ -141,7 +141,9 @@ daily_stats = {
         "malformed": 0,
         "buy_failed": 0,
         "no_route": 0,
-        "lp_timeout": 0
+        "lp_timeout": 0,
+        "old_token": 0,  # Added for age checking
+        "quality_check": 0
     }
 }
 
@@ -177,6 +179,36 @@ KNOWN_TOKEN_DECIMALS = {
 
 # Cache for token decimals to avoid repeated RPC calls
 TOKEN_DECIMALS_CACHE = {}
+
+# ============================================
+# AGE CHECKING FUNCTION - CRITICAL FIX
+# ============================================
+async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
+    """Check if token/pool was created within the specified time"""
+    try:
+        # Check DexScreener for pool age
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+        async with httpx.AsyncClient(timeout=5, verify=False) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if "pairs" in data and len(data["pairs"]) > 0:
+                    for pair in data["pairs"]:
+                        created_at = pair.get("pairCreatedAt")
+                        if created_at:
+                            age_ms = time.time() * 1000 - created_at
+                            age_seconds = age_ms / 1000
+                            if age_seconds <= max_age_seconds:
+                                return True
+                            else:
+                                logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
+                                return False
+        
+        # If no data, assume it's new (risky but necessary for brand new tokens)
+        return True
+    except Exception as e:
+        logging.error(f"Age check error: {e}")
+        return False
 
 # ============================================
 # SCALING FUNCTIONS - AGGRESSIVE FOR 48HR
@@ -1583,5 +1615,6 @@ __all__ = [
     'get_minimum_liquidity_required',
     'USE_DYNAMIC_SIZING',
     'SCALE_WITH_BALANCE',
-    'evaluate_pumpfun_opportunity'
+    'evaluate_pumpfun_opportunity',
+    'is_fresh_token'  # Added for age checking
 ]
