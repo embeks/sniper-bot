@@ -1051,7 +1051,7 @@ async def mempool_listener(name, program_id=None):
                                     logging.info(f"[PUMPFUN] Evaluating token: {potential_mint[:8]}...")
                                     
                                     # Shorter delay for faster execution
-                                    await asyncio.sleep(PUMPFUN_INIT_DELAY)
+                                    await asyncio.sleep(0.1)
                                     
                                     # Check if graduated or about to graduate
                                     graduated = await check_pumpfun_graduation(potential_mint)
