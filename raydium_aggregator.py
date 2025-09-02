@@ -1,4 +1,4 @@
-# raydium_aggregator.py - FIXED VERSION WITH PROPER RESPONSE HANDLING
+# raydium_aggregator.py - COMPLETE WORKING VERSION
 import os
 import json
 import logging
@@ -80,6 +80,7 @@ class RaydiumAggregatorClient:
             if len(data) != 752:
                 return False
             
+            # Raydium V4 pool structure offsets
             coin_mint = Pubkey.from_bytes(data[119:151])
             pc_mint = Pubkey.from_bytes(data[151:183])
             
@@ -91,7 +92,7 @@ class RaydiumAggregatorClient:
             return False
         
     def find_pool_realtime(self, token_mint: str) -> Optional[Dict[str, Any]]:
-        """Find Raydium pool - FIXED VERSION"""
+        """Find Raydium pool"""
         try:
             sol_mint = "So11111111111111111111111111111111111111112"
             
@@ -109,7 +110,7 @@ class RaydiumAggregatorClient:
             
             logging.info(f"[Raydium] Checking for pool {token_mint[:8]}...")
             
-            # FIXED: Actually try to find the pool
+            # Try to find the pool
             pool = self._find_pool_smart(token_mint, sol_mint)
             if pool:
                 self.pool_cache[cache_key] = {'pool': pool, 'timestamp': time.time()}
@@ -124,7 +125,7 @@ class RaydiumAggregatorClient:
             return None
     
     def _find_pool_smart(self, token_mint: str, sol_mint: str) -> Optional[Dict[str, Any]]:
-        """FIXED: Properly handle get_program_accounts response"""
+        """Smart pool finding with multiple strategies"""
         
         # Check environment configuration
         if not os.getenv("ENABLE_POOL_SCAN", "true").lower() == "true":
@@ -159,7 +160,7 @@ class RaydiumAggregatorClient:
             except Exception as e:
                 logging.debug(f"[Raydium] Jupiter check failed: {e}")
             
-            # Method 2: Scan Raydium program accounts - FIXED RESPONSE HANDLING
+            # Method 2: Scan Raydium program accounts
             if os.getenv("POOL_DETECTION_MODE", "aggressive").lower() == "aggressive":
                 logging.info(f"[Raydium] Scanning program accounts for pool...")
                 
@@ -175,7 +176,7 @@ class RaydiumAggregatorClient:
                         encoding="base64"
                     )
                     
-                    # FIXED: Properly handle the response object
+                    # Handle the response object
                     accounts = None
                     if response:
                         if hasattr(response, 'value'):
@@ -192,7 +193,6 @@ class RaydiumAggregatorClient:
                         elif isinstance(response, list):
                             accounts = response
                         else:
-                            # If response is the actual data
                             accounts = response
                     
                     if accounts:
@@ -262,7 +262,6 @@ class RaydiumAggregatorClient:
                     
                 except Exception as e:
                     logging.error(f"[Raydium] Program account scan error: {e}")
-                    # Don't let this error stop pool detection
                     pass
             
             # Method 3: Try alternative Jupiter endpoint
@@ -428,6 +427,7 @@ class RaydiumAggregatorClient:
                 logging.info(f"[Raydium] Pool base mint: {str(coin_mint)[:8]}...")
                 logging.info(f"[Raydium] Pool quote mint: {str(pc_mint)[:8]}...")
                 
+                # Try to get actual market program ID
                 market_program_id_actual = str(market_program_id)
                 try:
                     market_response = self.client.get_account_info(market_id)
@@ -438,12 +438,14 @@ class RaydiumAggregatorClient:
                 except:
                     logging.warning(f"[Raydium] Could not fetch market program ID, using default")
                 
+                # Default market account values
                 market_base_vault = str(coin_vault)
                 market_quote_vault = str(pc_vault)
                 market_bids = str(open_orders)
                 market_asks = str(target_orders)
                 market_event_queue = str(withdraw_queue)
                 
+                # Try to fetch actual market data
                 try:
                     logging.info(f"[Raydium] Fetching market data for {str(market_id)[:8]}...")
                     market_response = self.client.get_account_info(market_id)
@@ -462,7 +464,7 @@ class RaydiumAggregatorClient:
                             market_offset += 32
                             market_quote_vault = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
                             market_offset += 32
-                            market_offset += 32
+                            market_offset += 32  # Skip request queue
                             market_event_queue = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
                             market_offset += 32
                             market_bids = str(Pubkey.from_bytes(market_data[market_offset:market_offset+32]))
@@ -535,6 +537,7 @@ class RaydiumAggregatorClient:
         wsol_account = get_associated_token_address(owner, WSOL_MINT)
         instructions = []
         
+        # Check if WSOL account exists
         try:
             account_info = self.client.get_account_info(wsol_account)
             if account_info.value is None:
@@ -554,6 +557,7 @@ class RaydiumAggregatorClient:
                 )
             )
         
+        # Transfer SOL to WSOL account
         instructions.append(
             transfer(
                 TransferParams(
@@ -564,6 +568,7 @@ class RaydiumAggregatorClient:
             )
         )
         
+        # Sync native instruction
         sync_native_data = bytes([17])
         instructions.append(
             Instruction(
@@ -650,9 +655,11 @@ class RaydiumAggregatorClient:
             
             instructions = []
             
+            # Add compute budget instructions
             instructions.append(set_compute_unit_limit(400000))
             instructions.append(set_compute_unit_price(100000))
             
+            # Handle SOL -> Token swap
             if input_mint == sol_mint_str:
                 wsol_account, wrap_instructions = self.create_wsol_account_instructions(owner, amount_in)
                 instructions.extend(wrap_instructions)
@@ -665,6 +672,7 @@ class RaydiumAggregatorClient:
                 
                 user_source_token = wsol_account
                 
+            # Handle Token -> SOL swap
             else:
                 user_source_token = self.create_ata_if_needed(
                     owner,
@@ -694,11 +702,14 @@ class RaydiumAggregatorClient:
                 
                 user_dest_token = wsol_account
             
+            # Calculate minimum amount out
             if amount_in < 100000000:
                 min_amount_out = 1
             else:
                 min_amount_out = int(amount_in * (1 - slippage))
             
+            # Build swap instruction data
+            # Raydium swap instruction: [1 byte instruction type (9)] [8 bytes amount in] [8 bytes min amount out]
             data = bytes([9]) + amount_in.to_bytes(8, 'little') + min_amount_out.to_bytes(8, 'little')
             
             logging.info(f"[Raydium] Swap params:")
@@ -735,6 +746,7 @@ class RaydiumAggregatorClient:
             )
             instructions.append(swap_ix)
             
+            # Close WSOL account after swap if needed
             if input_mint != sol_mint_str:
                 close_ix = close_account(
                     CloseAccountParams(
@@ -757,8 +769,10 @@ class RaydiumAggregatorClient:
                 )
                 instructions.append(cleanup_close)
             
+            # Get recent blockhash
             recent_blockhash = self.client.get_latest_blockhash().value.blockhash
             
+            # Build message
             msg = MessageV0.try_compile(
                 payer=owner,
                 instructions=instructions,
@@ -766,6 +780,7 @@ class RaydiumAggregatorClient:
                 recent_blockhash=recent_blockhash,
             )
             
+            # Create transaction
             tx = VersionedTransaction(msg, [keypair])
             
             logging.info(f"[Raydium] Swap transaction built for {input_mint[:8]}... -> {output_mint[:8]}...")
