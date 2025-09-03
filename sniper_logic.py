@@ -1,3 +1,4 @@
+# sniper_logic.py - COMPLETE PRODUCTION READY VERSION WITH AGE CHECKING FIX
 import asyncio
 import json
 import os
@@ -19,7 +20,8 @@ from utils import (
     is_bot_running, keypair, BUY_AMOUNT_SOL, BROKEN_TOKENS,
     mark_broken_token, daily_stats_reset_loop,
     update_last_activity, increment_stat, record_skip,
-    listener_status, last_seen_token
+    listener_status, last_seen_token,
+    is_fresh_token, verify_token_age_on_chain, is_pumpfun_launch  # CRITICAL: Import age checking functions
 )
 from solders.pubkey import Pubkey
 from raydium_aggregator import RaydiumAggregatorClient
@@ -163,36 +165,6 @@ SYSTEM_PROGRAMS = [
     "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
     "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
 ]
-
-# ============================================
-# AGE CHECKING FUNCTION - CRITICAL FIX
-# ============================================
-async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
-    """Check if token/pool was created within the specified time"""
-    try:
-        # Check DexScreener for pool age
-        url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-        async with httpx.AsyncClient(timeout=5, verify=False) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                if "pairs" in data and len(data["pairs"]) > 0:
-                    for pair in data["pairs"]:
-                        created_at = pair.get("pairCreatedAt")
-                        if created_at:
-                            age_ms = time.time() * 1000 - created_at
-                            age_seconds = age_ms / 1000
-                            if age_seconds <= max_age_seconds:
-                                return True
-                            else:
-                                logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
-                                return False
-        
-        # If no data, assume it's new (risky but necessary for brand new tokens)
-        return True
-    except Exception as e:
-        logging.error(f"Age check error: {e}")
-        return False
 
 async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
     """
@@ -781,7 +753,7 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED duplicate prevention and anti-spam"""
+    """Enhanced mempool listener with FIXED duplicate prevention and AGE CHECKING"""
     
     # Generate unique listener ID
     listener_id = f"{name}_{program_id or 'default'}"
@@ -1125,9 +1097,24 @@ async def mempool_listener(name, program_id=None):
                                         
                                         # CRITICAL AGE CHECK FOR PUMPFUN
                                         if STRICT_AGE_CHECK:
+                                            # First check DexScreener
                                             is_fresh = await is_fresh_token(potential_mint, MAX_TOKEN_AGE_SECONDS)
                                             if not is_fresh:
                                                 logging.info(f"[{name}] Skipping old token {potential_mint[:8]}...")
+                                                record_skip("old_token")
+                                                continue
+                                            
+                                            # Double-check on chain
+                                            is_fresh_chain = await verify_token_age_on_chain(potential_mint, MAX_TOKEN_AGE_SECONDS)
+                                            if not is_fresh_chain:
+                                                logging.info(f"[{name}] Token {potential_mint[:8]}... failed blockchain age check")
+                                                record_skip("old_token")
+                                                continue
+                                            
+                                            # Check if it's actually a new PumpFun launch
+                                            is_actually_new = await is_pumpfun_launch(potential_mint)
+                                            if not is_actually_new:
+                                                logging.info(f"[PUMPFUN] Token {potential_mint[:8]}... is not actually new, skipping")
                                                 continue
                                         
                                         logging.info(f"[PUMPFUN] Evaluating FRESH token: {potential_mint[:8]}...")
@@ -1214,9 +1201,17 @@ async def mempool_listener(name, program_id=None):
                                         
                                         # CRITICAL AGE CHECK FOR RAYDIUM
                                         if STRICT_AGE_CHECK:
+                                            # First check DexScreener
                                             is_fresh = await is_fresh_token(potential_mint, MAX_TOKEN_AGE_SECONDS)
                                             if not is_fresh:
                                                 logging.info(f"[{name}] Skipping old token {potential_mint[:8]}...")
+                                                record_skip("old_token")
+                                                continue
+                                            
+                                            # Double-check on chain
+                                            is_fresh_chain = await verify_token_age_on_chain(potential_mint, MAX_TOKEN_AGE_SECONDS)
+                                            if not is_fresh_chain:
+                                                logging.info(f"[{name}] Token {potential_mint[:8]}... failed blockchain age check")
                                                 record_skip("old_token")
                                                 continue
                                         
