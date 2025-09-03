@@ -34,9 +34,13 @@ CACHE_CLEANUP_INTERVAL = 300  # Clean cache every 5 minutes
 last_cache_cleanup = time.time()
 MAX_FETCH_RETRIES = 2  # Maximum retries for transaction fetching
 
-# CRITICAL FIX: Track active listeners to prevent duplicates
-ACTIVE_LISTENERS = set()
-LISTENER_LOCKS = {}
+# ============================================
+# ENHANCED DUPLICATE PREVENTION WITH ANTI-SPAM
+# ============================================
+ACTIVE_LISTENERS = set()  # Track listener IDs
+LISTENER_TASKS = {}  # listener_id -> actual task object
+last_listener_status_msg = {}  # listener_id -> timestamp of last status message
+STATUS_MSG_COOLDOWN = 300  # Only send status message once per 5 minutes
 
 FORCE_TEST_MINT = os.getenv("FORCE_TEST_MINT")
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -777,17 +781,28 @@ async def scan_pumpfun_graduations():
         logging.error(f"[PumpFun Scan] Error: {e}")
 
 async def mempool_listener(name, program_id=None):
-    """Enhanced mempool listener with FIXED detection logic and pool validation"""
+    """Enhanced mempool listener with FIXED duplicate prevention and anti-spam"""
     
-    # CRITICAL FIX: Prevent duplicate listeners
-    global ACTIVE_LISTENERS
+    # Generate unique listener ID
     listener_id = f"{name}_{program_id or 'default'}"
     
+    # ENHANCED DUPLICATE PREVENTION - Check if already running
     if listener_id in ACTIVE_LISTENERS:
-        logging.warning(f"[{name}] Listener already running, skipping duplicate")
-        return
+        # Check if the task is actually still running
+        if listener_id in LISTENER_TASKS and not LISTENER_TASKS[listener_id].done():
+            logging.warning(f"[{name}] Listener already running, skipping duplicate")
+            return
+        else:
+            # Clean up dead task
+            logging.info(f"[{name}] Cleaning up dead listener task")
+            ACTIVE_LISTENERS.discard(listener_id)
+            if listener_id in LISTENER_TASKS:
+                del LISTENER_TASKS[listener_id]
     
+    # Mark as active
     ACTIVE_LISTENERS.add(listener_id)
+    # Store the current task
+    LISTENER_TASKS[listener_id] = asyncio.current_task()
     
     try:
         if not HELIUS_API:
@@ -853,7 +868,14 @@ async def mempool_listener(name, program_id=None):
                 
                 subscription_id = response_data["result"]
                 logging.info(f"[{name}] Listener subscribed with ID: {subscription_id}")
-                await send_telegram_alert(f"📱 {name} listener ACTIVE")
+                
+                # ANTI-SPAM FIX: Only send status alert if not sent recently
+                current_time = time.time()
+                if listener_id not in last_listener_status_msg or \
+                   current_time - last_listener_status_msg.get(listener_id, 0) > STATUS_MSG_COOLDOWN:
+                    await send_telegram_alert(f"📱 {name} listener ACTIVE")
+                    last_listener_status_msg[listener_id] = current_time
+                
                 listener_status[name] = "ACTIVE"
                 last_seen_token[name] = time.time()
                 retry_attempts = 0
@@ -1316,6 +1338,10 @@ async def mempool_listener(name, program_id=None):
     finally:
         # Clean up when listener exits
         ACTIVE_LISTENERS.discard(listener_id)
+        if listener_id in LISTENER_TASKS:
+            del LISTENER_TASKS[listener_id]
+        if listener_id in last_listener_status_msg:
+            del last_listener_status_msg[listener_id]
 
 MIN_LP_USD = float(os.getenv("MIN_LP_USD", 1500))
 MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 300))
@@ -1911,11 +1937,25 @@ async def check_momentum_score(mint: str) -> dict:
     return {"score": 0, "signals": ["Failed to fetch data"], "recommendation": 0}
 
 async def start_sniper():
-    """Start the ELITE sniper bot with MOMENTUM SCANNER"""
+    """Start the ELITE sniper bot with ENHANCED duplicate prevention"""
     
-    # CRITICAL FIX: Clear active listeners on start
-    global ACTIVE_LISTENERS
+    # CRITICAL FIX: Clean up everything before starting
+    global ACTIVE_LISTENERS, LISTENER_TASKS, last_listener_status_msg
+    
+    # Cancel existing tasks if any
+    for listener_id, task in LISTENER_TASKS.items():
+        if not task.done():
+            logging.info(f"[CLEANUP] Cancelling existing task for {listener_id}")
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    
+    # Clear all tracking
     ACTIVE_LISTENERS.clear()
+    LISTENER_TASKS.clear()
+    last_listener_status_msg.clear()
     
     mode_text = "ELITE Money Printer Mode + Momentum Scanner (AGE CHECK ENABLED)"
     TASKS.append(asyncio.create_task(start_dexscreener_monitor()))
@@ -1932,7 +1972,8 @@ async def start_sniper():
         f"Momentum Mode: {'HYBRID' if MOMENTUM_AUTO_BUY else 'ALERTS'}\n"
         f"Trending Scanner: {'DISABLED' if SKIP_TRENDING_SCANNER else 'ENABLED'}\n\n"
         f"Quality filters: ACTIVE ✅\n"
-        f"Duplicate prevention: ACTIVE ✅\n"
+        f"Duplicate prevention: ENHANCED ✅\n"
+        f"Anti-spam protection: ACTIVE ✅\n"
         f"Pool verification: ACTIVE ✅\n"
         f"AGE VALIDATION: ACTIVE 🎯\n"
         f"MOMENTUM SCANNER: ACTIVE 🔥\n\n"
@@ -1956,7 +1997,8 @@ async def start_sniper():
         listeners.append("Jupiter")
     
     for listener in listeners:
-        TASKS.append(asyncio.create_task(mempool_listener(listener)))
+        task = asyncio.create_task(mempool_listener(listener))
+        TASKS.append(task)
     
     # Conditionally start trending scanner based on config
     if not SKIP_TRENDING_SCANNER:
@@ -2049,11 +2091,21 @@ async def start_sniper_with_forced_token(mint: str):
         logging.exception(f"[FORCEBUY] Exception: {e}\n{tb}")
 
 async def stop_all_tasks():
-    """Stop all running tasks"""
-    # CRITICAL FIX: Clear active listeners when stopping
-    global ACTIVE_LISTENERS
-    ACTIVE_LISTENERS.clear()
+    """Stop all running tasks with ENHANCED cleanup"""
+    # CRITICAL FIX: Clear all listener tracking
+    global ACTIVE_LISTENERS, LISTENER_TASKS, last_listener_status_msg
     
+    # Cancel all listener tasks first
+    for listener_id, task in LISTENER_TASKS.items():
+        if not task.done():
+            logging.info(f"[STOP] Cancelling listener {listener_id}")
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    
+    # Cancel all other tasks
     for task in TASKS:
         if not task.done():
             task.cancel()
@@ -2061,5 +2113,11 @@ async def stop_all_tasks():
                 await task
             except asyncio.CancelledError:
                 pass
+    
+    # Clear all tracking structures
     TASKS.clear()
-    await send_telegram_alert("🛑 All sniper tasks stopped.")
+    ACTIVE_LISTENERS.clear()
+    LISTENER_TASKS.clear()
+    last_listener_status_msg.clear()
+    
+    await send_telegram_alert("🛑 All sniper tasks stopped and cleaned up.")
