@@ -1,4 +1,4 @@
-# utils.py - COMPLETE PRODUCTION READY VERSION WITH ANTI-SPAM FIX
+ # utils.py - COMPLETE PRODUCTION READY VERSION WITH AGE CHECKING FIX
 import os
 import json
 import logging
@@ -189,7 +189,7 @@ KNOWN_TOKEN_DECIMALS = {
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
-# AGE CHECKING FUNCTION - CRITICAL FIX
+# AGE CHECKING FUNCTIONS - CRITICAL FIX
 # ============================================
 async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
     """Check if token/pool was created within the specified time"""
@@ -206,16 +206,64 @@ async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
                         if created_at:
                             age_ms = time.time() * 1000 - created_at
                             age_seconds = age_ms / 1000
+                            
                             if age_seconds <= max_age_seconds:
                                 return True
                             else:
                                 logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
                                 return False
-        
-        # If no data, assume it's new (risky but necessary for brand new tokens)
-        return True
+                
+                # CRITICAL FIX: If no data, assume it's OLD not new
+                logging.info(f"[AGE CHECK] No data for {mint[:8]}... - assuming old token")
+                return False  # Changed from True to False
+                
     except Exception as e:
         logging.error(f"Age check error: {e}")
+        return False  # Changed from True to False
+
+async def verify_token_age_on_chain(mint: str, max_age_seconds: int = 60) -> bool:
+    """Verify token age by checking mint creation on chain"""
+    try:
+        mint_pubkey = Pubkey.from_string(mint)
+        
+        # Get recent signatures for the mint account
+        signatures = rpc.get_signatures_for_address(
+            mint_pubkey,
+            limit=1,
+            commitment="confirmed"
+        )
+        
+        if signatures and signatures.value:
+            # Get the oldest transaction (mint creation)
+            creation_sig = signatures.value[-1]
+            block_time = creation_sig.block_time
+            
+            if block_time:
+                age_seconds = time.time() - block_time
+                if age_seconds <= max_age_seconds:
+                    logging.info(f"[CHAIN CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - FRESH!")
+                    return True
+                else:
+                    logging.info(f"[CHAIN CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - TOO OLD")
+                    return False
+        
+        # If we can't verify, reject it
+        return False
+        
+    except Exception as e:
+        logging.error(f"Chain age check error: {e}")
+        return False
+
+async def is_pumpfun_launch(mint: str) -> bool:
+    """Check if this is a genuine PumpFun launch"""
+    try:
+        # Check if transaction has PumpFun program
+        if mint in pumpfun_tokens:
+            token_data = pumpfun_tokens[mint]
+            if time.time() - token_data["discovered"] < 300:  # Within 5 minutes
+                return True
+        return False
+    except:
         return False
 
 # ============================================
@@ -1304,8 +1352,6 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         return None
 
 # Continue with wait_and_auto_sell and other functions...
-# [Rest of the file continues unchanged from line 1200 onwards]
-
 async def wait_and_auto_sell(mint: str):
     """Monitor position and auto-sell with different strategies based on token type"""
     try:
@@ -1665,5 +1711,7 @@ __all__ = [
     'USE_DYNAMIC_SIZING',
     'SCALE_WITH_BALANCE',
     'evaluate_pumpfun_opportunity',
-    'is_fresh_token'  # Added for age checking
+    'is_fresh_token',  # Added for age checking
+    'verify_token_age_on_chain',  # Added for blockchain verification
+    'is_pumpfun_launch'  # Added for PumpFun checking
 ]
