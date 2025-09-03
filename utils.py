@@ -1,4 +1,4 @@
-# utils.py - COMPLETE PRODUCTION READY VERSION WITH SCALING, DECIMAL FIX, AND AGE CHECKING
+# utils.py - COMPLETE PRODUCTION READY VERSION WITH ANTI-SPAM FIX
 import os
 import json
 import logging
@@ -152,7 +152,9 @@ listener_status = {"Raydium": "OFFLINE", "Jupiter": "OFFLINE", "PumpFun": "OFFLI
 last_activity = time.time()
 last_seen_token = {"Raydium": time.time(), "Jupiter": time.time(), "PumpFun": time.time(), "Moonshot": time.time()}
 
-# Telegram batching - ANTI-SPAM
+# ============================================
+# ANTI-SPAM: Enhanced Telegram rate limiting
+# ============================================
 telegram_batch = []
 telegram_batch_time = 0
 telegram_batch_interval = 1.0
@@ -160,6 +162,12 @@ telegram_last_sent = 0
 telegram_min_interval = 0.5
 ALERT_SUMMARY = {"detected": 0, "skipped": 0, "failed": 0, "succeeded": 0}
 LAST_SUMMARY_TIME = time.time()
+
+# CRITICAL FIX: Track last messages to prevent duplicates
+last_messages = {}
+MESSAGE_COOLDOWN = 60  # Don't repeat same message within 60 seconds
+LISTENER_STATUS_COOLDOWN = 300  # Don't repeat listener status messages for 5 minutes
+last_listener_status_sent = {}
 
 # Track PumpFun and trending tokens
 pumpfun_tokens = {}
@@ -307,10 +315,33 @@ def is_valid_mint(mint: str) -> bool:
     except:
         return False
 
-# CRITICAL: Override send_telegram_alert to reduce spam
+# ============================================
+# CRITICAL FIX: Enhanced Anti-Spam Telegram Alert
+# ============================================
 async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
-    """ANTI-SPAM VERSION - Only send important alerts"""
-    global telegram_last_sent, ALERT_SUMMARY, LAST_SUMMARY_TIME
+    """ANTI-SPAM VERSION - Only send important alerts with deduplication"""
+    global telegram_last_sent, ALERT_SUMMARY, LAST_SUMMARY_TIME, last_messages, last_listener_status_sent
+    
+    # CRITICAL: Check if this is a listener status message
+    if "listener ACTIVE" in message or "listener active" in message.lower():
+        # Extract listener name
+        listener_name = None
+        for name in ["Raydium", "PumpFun", "Moonshot", "Jupiter"]:
+            if name in message:
+                listener_name = name
+                break
+        
+        if listener_name:
+            # Check if we sent this status recently
+            if listener_name in last_listener_status_sent:
+                time_since_last = time.time() - last_listener_status_sent[listener_name]
+                if time_since_last < LISTENER_STATUS_COOLDOWN:
+                    # Skip this duplicate listener status
+                    logging.debug(f"Skipping duplicate {listener_name} status (sent {time_since_last:.0f}s ago)")
+                    return True
+            
+            # Record when we send this status
+            last_listener_status_sent[listener_name] = time.time()
     
     # Filter out spam messages
     SPAM_PATTERNS = [
@@ -319,10 +350,14 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
         "No pool found",
         "Failed to build",
         "LP Check",
-        "QUALITY TOKEN DETECTED",  # This is spam
-        "ELITE BUY EXECUTING",  # This is spam
-        "PUMPFUN TOKEN DETECTED",  # This is spam
-        "Attempting snipe"  # This is spam
+        "QUALITY TOKEN DETECTED",
+        "ELITE BUY EXECUTING",
+        "PUMPFUN TOKEN DETECTED",
+        "Attempting snipe",
+        "Token detected:",
+        "Checking liquidity",
+        "mempool_listener",
+        "Listener already running"
     ]
     
     # Check if this is spam
@@ -341,6 +376,20 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
             message = summary_msg
         else:
             return True  # Pretend we sent it
+    
+    # Check for duplicate messages
+    message_hash = hash(message[:100] if len(message) > 100 else message)
+    if message_hash in last_messages:
+        if time.time() - last_messages[message_hash] < MESSAGE_COOLDOWN:
+            logging.debug(f"Skipping duplicate message (sent {time.time() - last_messages[message_hash]:.0f}s ago)")
+            return True  # Skip duplicate
+    
+    last_messages[message_hash] = time.time()
+    
+    # Clean up old message hashes periodically
+    if len(last_messages) > 100:
+        current_time = time.time()
+        last_messages = {k: v for k, v in last_messages.items() if current_time - v < MESSAGE_COOLDOWN * 2}
     
     # Only important messages get here (buys, sells, errors)
     try:
