@@ -1,4 +1,3 @@
-
 # raydium_aggregator.py - PRODUCTION READY VERSION WITH FIXES
 import os
 import json
@@ -534,7 +533,7 @@ class RaydiumAggregatorClient:
         amount_in: int,
         slippage: float = 0.05
     ) -> Optional[VersionedTransaction]:
-        """Build Raydium swap transaction - FIXED with validation"""
+        """Build Raydium swap transaction - FIXED with validation and proper account ordering"""
         try:
             pool = self.find_pool(input_mint, output_mint)
             if not pool:
@@ -616,6 +615,24 @@ class RaydiumAggregatorClient:
             logging.info(f"  Min amount out: {min_amount_out}")
             logging.info(f"  Slippage: {slippage*100}%")
             
+            # CRITICAL FIX: Determine correct account ordering based on pool's perspective
+            # Raydium expects accounts at positions 15 and 16 to match the pool's base/quote ordering
+            is_base_to_quote = (
+                (str(pool["baseMint"]) == input_mint and str(pool["quoteMint"]) == output_mint) or
+                (str(pool["baseMint"]) == output_mint and str(pool["quoteMint"]) == input_mint and input_mint != sol_mint_str)
+            )
+            
+            # For Raydium, accounts 15 and 16 must match the pool's perspective
+            if is_base_to_quote:
+                # Swapping base to quote (e.g., token to SOL when token is base)
+                pool_source_account = user_source_token
+                pool_dest_account = user_dest_token
+            else:
+                # Swapping quote to base (e.g., SOL to token when SOL is quote)
+                # Need to reverse for the pool's perspective
+                pool_source_account = user_dest_token  
+                pool_dest_account = user_source_token
+            
             # Build swap instruction accounts
             keys = [
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
@@ -633,8 +650,8 @@ class RaydiumAggregatorClient:
                 AccountMeta(pubkey=Pubkey.from_string(pool.get("marketBaseVault", pool["baseVault"])), is_signer=False, is_writable=True),
                 AccountMeta(pubkey=Pubkey.from_string(pool.get("marketQuoteVault", pool["quoteVault"])), is_signer=False, is_writable=True),
                 AccountMeta(pubkey=Pubkey.from_string(pool.get("marketAuthority", str(RAYDIUM_AUTHORITY))), is_signer=False, is_writable=False),
-                AccountMeta(pubkey=user_source_token, is_signer=False, is_writable=True),
-                AccountMeta(pubkey=user_dest_token, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=pool_source_account, is_signer=False, is_writable=True),  # Must align with pool's perspective
+                AccountMeta(pubkey=pool_dest_account, is_signer=False, is_writable=True),    # Must align with pool's perspective
                 AccountMeta(pubkey=owner, is_signer=True, is_writable=False),
             ]
             
