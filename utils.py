@@ -115,6 +115,7 @@ except Exception as e:
     raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
 
 wallet_pubkey = str(keypair.pubkey())
+print(f"ACTUAL WALLET BEING USED: {wallet_pubkey}")
 
 # Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID
 if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
