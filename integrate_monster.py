@@ -1,7 +1,8 @@
-# integrate_monster.py - MEDIUM VERSION WITH CONFIG INTEGRATION
+# integrate_monster.py - COMPLETE WITH STOP-LOSS INTEGRATION
 """
 Optimized integration - Uses config.py, no env mutations
 Uses only utils.buy_token with explicit amounts
+Arms stop-loss immediately after successful buy
 """
 
 import asyncio
@@ -27,15 +28,18 @@ from sniper_logic import (
     stop_all_tasks
 )
 
-# Import utils - USE ONLY buy_token
+# Import utils - USE ONLY buy_token and register_stop
 from utils import (
     buy_token,  # THE ONLY BUY FUNCTION WE USE
+    register_stop,  # ARM STOP-LOSS AFTER BUY
     send_telegram_alert,
     keypair, rpc,
     is_bot_running, start_bot, stop_bot, 
     get_wallet_summary, get_bot_status_message,
     get_liquidity_and_ownership,
-    get_dynamic_position_size
+    get_dynamic_position_size,
+    get_token_price_usd,
+    STOPS  # Access to stop-loss tracking
 )
 
 load_dotenv()
@@ -56,19 +60,23 @@ def log_configuration():
         ("RUG_LP_THRESHOLD", str(CONFIG.RUG_LP_THRESHOLD)),
         ("BUY_AMOUNT_SOL", str(CONFIG.BUY_AMOUNT_SOL)),
         ("USE_DYNAMIC_SIZING", str(CONFIG.USE_DYNAMIC_SIZING)),
-        ("POOL_SCAN_LIMIT", os.getenv("POOL_SCAN_LIMIT", "20")),
-        ("CACHE_TTL_SECONDS", str(CONFIG.CACHE_TTL_SECONDS)),
+        ("MIN_LP_SOL", str(CONFIG.MIN_LP_SOL)),
+        ("STOP_LOSS_PCT", f"{CONFIG.STOP_LOSS_PCT*100:.0f}%"),
+        ("STOP_CHECK_INTERVAL", f"{CONFIG.STOP_CHECK_INTERVAL_SEC}s"),
+        ("REQUIRE_AUTH_RENOUNCED", str(CONFIG.REQUIRE_AUTH_RENOUNCED)),
+        ("MAX_TRADE_TAX_BPS", f"{CONFIG.MAX_TRADE_TAX_BPS/100:.1f}%"),
         ("HELIUS_API", "SET" if os.getenv("HELIUS_API") else "NOT SET")
     ]
     
     logging.info("=" * 60)
-    logging.info("BOT CONFIGURATION (OPTIMIZED)")
+    logging.info("BOT CONFIGURATION (WITH STOP-LOSS ENGINE)")
     logging.info("=" * 60)
     
     for key, value in config_items:
         logging.info(f"{key}: {value}")
     
-    logging.info("BUY FUNCTION: utils.buy_token ONLY")
+    logging.info("BUY FUNCTION: utils.buy_token with pre-trade validation")
+    logging.info("STOP-LOSS: Armed immediately on buy")
     logging.info("=" * 60)
 
 # ============================================
@@ -150,7 +158,8 @@ class PerformanceTracker:
             self.daily_stats[today] = {
                 "trades": 0,
                 "wins": 0,
-                "profit": 0
+                "profit": 0,
+                "stops_hit": 0
             }
     
     def record_trade(self, mint: str, amount: float, profit: float = 0):
@@ -164,6 +173,8 @@ class PerformanceTracker:
         if profit > 0:
             self.winning_trades += 1
             self.daily_stats[today]["wins"] += 1
+        elif profit < 0:
+            self.daily_stats[today]["stops_hit"] += 1
         
         self.total_profit_sol += profit
         self.daily_stats[today]["profit"] += profit
@@ -186,16 +197,15 @@ class PerformanceTracker:
         today = datetime.now().date()
         if today in self.daily_stats:
             return self.daily_stats[today]
-        return {"trades": 0, "wins": 0, "profit": 0}
+        return {"trades": 0, "wins": 0, "profit": 0, "stops_hit": 0}
 
 # ============================================
-# SMART BUY WRAPPER
+# SMART BUY WRAPPER WITH STOP-LOSS
 # ============================================
 
 async def smart_buy_token(mint: str, amount: Optional[float] = None) -> bool:
     """
-    Wrapper around utils.buy_token that adds caching and position sizing
-    This is NOT a duplicate buy function - it calls utils.buy_token with explicit amount
+    Wrapper around utils.buy_token that adds caching, position sizing, and stop-loss
     """
     try:
         # Check cache first
@@ -222,16 +232,25 @@ async def smart_buy_token(mint: str, amount: Optional[float] = None) -> bool:
         logging.info(f"[SMART BUY] Attempting {mint[:8]}... with explicit amount: {amount:.3f} SOL (LP: {pool_liquidity:.1f})")
         
         # Call the actual buy function from utils with explicit amount
+        # NOTE: buy_token now handles pre-trade validation and stop-loss registration internally
         result = await buy_token(mint, amount=amount)
         
         # Track the trade
         if result:
             tracker.record_trade(mint, amount, 0)  # Profit tracked later
+            
+            # Get entry price for logging
+            entry_price = await get_token_price_usd(mint)
+            stop_price = entry_price * (1 - CONFIG.STOP_LOSS_PCT) if entry_price else 0
+            
             await send_telegram_alert(
                 f"✅ BUY SUCCESS via smart_buy\n"
                 f"Token: {mint[:8]}...\n"
                 f"Amount: {amount:.3f} SOL (explicit)\n"
-                f"Liquidity: {pool_liquidity:.1f} SOL"
+                f"Liquidity: {pool_liquidity:.1f} SOL\n"
+                f"Entry: ${entry_price:.6f if entry_price else 'Unknown'}\n"
+                f"Stop Armed: ${stop_price:.6f if stop_price else 'Pending'}\n"
+                f"Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}% protection active"
             )
         
         return result
@@ -243,12 +262,44 @@ async def smart_buy_token(mint: str, amount: Optional[float] = None) -> bool:
         return await buy_token(mint, amount=fallback_amount)
 
 # ============================================
+# FORCEBUY WITH STOP-LOSS
+# ============================================
+
+async def handle_forcebuy(mint: str, amount: Optional[float] = None) -> bool:
+    """Handle forcebuy with stop-loss registration"""
+    try:
+        # Use smart buy which calls buy_token with stop-loss
+        result = await smart_buy_token(mint, amount=amount)
+        
+        if result:
+            # Additional logging for forcebuy
+            if mint in STOPS:
+                stop_data = STOPS[mint]
+                await send_telegram_alert(
+                    f"✅ Force buy successful!\n"
+                    f"Amount used: {amount or CONFIG.BUY_AMOUNT_SOL} SOL\n"
+                    f"Stop-loss armed @ ${stop_data['stop_price']:.6f}"
+                )
+            else:
+                await send_telegram_alert(f"✅ Force buy successful! Amount: {amount or CONFIG.BUY_AMOUNT_SOL} SOL")
+        else:
+            await send_telegram_alert("❌ Force buy failed")
+        
+        return result
+        
+    except Exception as e:
+        logging.error(f"Forcebuy error: {e}")
+        await send_telegram_alert(f"❌ Force buy error: {e}")
+        return False
+
+# ============================================
 # INITIALIZE COMPONENTS
 # ============================================
 
 pool_cache = PoolCache(ttl_seconds=CONFIG.CACHE_TTL_SECONDS)
 position_sizer = SimplePositionSizer()
 tracker = PerformanceTracker()
+risk_manager = None  # Placeholder for risk manager if needed
 
 # ============================================
 # WEB SERVER
@@ -262,11 +313,14 @@ AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CH
 async def health_check():
     """Health check endpoint"""
     uptime_hours = (time.time() - tracker.start_time) / 3600
+    daily = tracker.get_daily_summary()
     return {
-        "status": "✅ Bot Active",
+        "status": "✅ Bot Active with Stop-Loss Engine",
         "trades": tracker.trades_executed,
         "win_rate": f"{tracker.get_win_rate():.1f}%",
         "profit": f"{tracker.total_profit_sol:.3f} SOL",
+        "stops_hit_today": daily["stops_hit"],
+        "active_stops": len(STOPS),
         "uptime": f"{uptime_hours:.1f} hours",
         "cached_pools": len(pool_cache.cache),
         "cache_ttl": CONFIG.CACHE_TTL_SECONDS
@@ -284,11 +338,15 @@ async def status():
         "today_trades": daily["trades"],
         "today_wins": daily["wins"],
         "today_profit": f"{daily['profit']:.3f} SOL",
+        "today_stops": daily["stops_hit"],
+        "active_stops": len(STOPS),
+        "stop_loss_pct": f"{CONFIG.STOP_LOSS_PCT*100:.0f}%",
         "cached_pools": len(pool_cache.cache),
         "cache_ttl": CONFIG.CACHE_TTL_SECONDS,
         "pumpfun_tracking": len(pumpfun_tokens),
         "migration_watch": len(migration_watch_list),
         "buy_amount": CONFIG.BUY_AMOUNT_SOL,
+        "min_lp_sol": CONFIG.MIN_LP_SOL,
         "dynamic_sizing": CONFIG.USE_DYNAMIC_SIZING
     }
 
@@ -312,10 +370,10 @@ async def telegram_webhook(request: Request):
         
         if text == "/start":
             if is_bot_running():
-                await send_telegram_alert("✅ Bot already running")
+                await send_telegram_alert("✅ Bot already running with stop-loss protection")
             else:
                 start_bot()
-                await send_telegram_alert("✅ Bot started! 💰")
+                await send_telegram_alert("✅ Bot started with stop-loss engine! 💰🛑")
                 
         elif text == "/stop":
             if not is_bot_running():
@@ -334,7 +392,9 @@ async def telegram_webhook(request: Request):
             perf_msg += f"• Total Trades: {tracker.trades_executed}\n"
             perf_msg += f"• Win Rate: {tracker.get_win_rate():.1f}%\n"
             perf_msg += f"• Total Profit: {tracker.total_profit_sol:.3f} SOL\n"
-            perf_msg += f"• Today: {daily['trades']} trades, {daily['wins']} wins\n"
+            perf_msg += f"• Today: {daily['trades']} trades, {daily['wins']} wins, {daily['stops_hit']} stops\n"
+            perf_msg += f"• Active Stops: {len(STOPS)}\n"
+            perf_msg += f"• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}% @ {CONFIG.STOP_CHECK_INTERVAL_SEC}s checks\n"
             perf_msg += f"• Cached Pools: {len(pool_cache.cache)} (TTL: {CONFIG.CACHE_TTL_SECONDS}s)\n"
             perf_msg += f"• PumpFun Tracking: {len(pumpfun_tokens)}"
             
@@ -348,21 +408,29 @@ async def telegram_webhook(request: Request):
                 
                 await send_telegram_alert(f"🚨 Force buying: {mint[:8]}... with amount: {amount or 'default'}")
                 
-                # Use smart buy with explicit amount
-                result = await smart_buy_token(mint, amount=amount)
-                
-                if result:
-                    await send_telegram_alert(f"✅ Force buy successful! Amount used: {amount or CONFIG.BUY_AMOUNT_SOL} SOL")
-                else:
-                    await send_telegram_alert("❌ Force buy failed")
+                # Use smart buy with stop-loss
+                result = await handle_forcebuy(mint, amount=amount)
                 
         elif text == "/wallet":
             summary = get_wallet_summary()
             await send_telegram_alert(f"👛 Wallet:\n{summary}")
             
+        elif text == "/stops":
+            # Show active stop-losses
+            if STOPS:
+                stops_msg = "🛑 ACTIVE STOP-LOSSES:\n"
+                for mint, stop_data in list(STOPS.items())[:10]:
+                    stops_msg += f"• {mint[:8]}... - State: {stop_data['state']}, Stop: ${stop_data['stop_price']:.6f}"
+                    if stop_data.get('stuck_reason'):
+                        stops_msg += f" ({stop_data['stuck_reason']})"
+                    stops_msg += "\n"
+                await send_telegram_alert(stops_msg)
+            else:
+                await send_telegram_alert("No active stop-losses")
+            
         elif text == "/launch":
             if is_bot_running():
-                await send_telegram_alert("🚀 Launching snipers...")
+                await send_telegram_alert("🚀 Launching snipers with stop-loss protection...")
                 asyncio.create_task(start_bot_tasks())
             else:
                 await send_telegram_alert("⛔ Bot paused. Use /start first")
@@ -370,12 +438,25 @@ async def telegram_webhook(request: Request):
         elif text == "/config":
             config_msg = f"""
 ⚙️ Configuration:
-Min Liquidity: ${os.getenv('MOMENTUM_MIN_LIQUIDITY', '500')}
+Min Liquidity: {CONFIG.MIN_LP_SOL} SOL
+Min LP (Momentum): ${os.getenv('MOMENTUM_MIN_LIQUIDITY', '500')}
 Min 1H Gain: {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}%
 Auto-buy Score: {os.getenv('MIN_SCORE_AUTO_BUY', '2')}+
 LP Threshold: {CONFIG.RUG_LP_THRESHOLD} SOL
 Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL
 Dynamic Sizing: {CONFIG.USE_DYNAMIC_SIZING}
+
+Pre-Trade Safety:
+• Require Auth Renounced: {CONFIG.REQUIRE_AUTH_RENOUNCED}
+• Max Tax: {CONFIG.MAX_TRADE_TAX_BPS/100:.1f}%
+
+Stop-Loss Engine:
+• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}%
+• Check Interval: {CONFIG.STOP_CHECK_INTERVAL_SEC}s
+• Max Slippage: {CONFIG.STOP_MAX_SLIPPAGE_BPS/100:.1f}%
+• Alert Every: {CONFIG.STOP_ALERT_EVERY_SEC}s
+• Route Timeout: {CONFIG.ROUTE_TIMEOUT_SEC}s
+
 Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s
 Force Jupiter Sell: {CONFIG.FORCE_JUPITER_SELL}
 Simulate Before Send: {CONFIG.SIMULATE_BEFORE_SEND}
@@ -398,11 +479,12 @@ Simulate Before Send: {CONFIG.SIMULATE_BEFORE_SEND}
         elif text == "/help":
             help_text = """
 📚 Commands:
-/start - Start bot
+/start - Start bot with stop-loss
 /stop - Stop bot
 /status - Get detailed status
 /wallet - Check wallet
-/forcebuy <MINT> [amount] - Buy token with explicit amount
+/forcebuy <MINT> [amount] - Buy with stop-loss
+/stops - View active stop-losses
 /launch - Launch all snipers
 /config - Show configuration
 /recent - Show recent trades
@@ -434,20 +516,22 @@ async def start_bot_tasks():
         pass
     
     await send_telegram_alert(
-        "💰 BOT STARTING (OPTIMIZED) 💰\n\n"
+        "💰 BOT STARTING WITH STOP-LOSS ENGINE 💰\n\n"
         f"Configuration:\n"
-        f"• Min Liquidity: ${os.getenv('MOMENTUM_MIN_LIQUIDITY', '500')}\n"
+        f"• Min Liquidity: {CONFIG.MIN_LP_SOL} SOL\n"
         f"• Min Gain: {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}%\n"
         f"• Auto-buy: Score {os.getenv('MIN_SCORE_AUTO_BUY', '2')}+\n"
-        f"• LP Threshold: {CONFIG.RUG_LP_THRESHOLD} SOL\n"
+        f"• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}%\n"
+        f"• Check Interval: {CONFIG.STOP_CHECK_INTERVAL_SEC}s\n"
         f"• Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL\n"
         f"• Pool Cache: {CONFIG.CACHE_TTL_SECONDS}s TTL\n\n"
         "Features:\n"
+        "✅ Pre-trade validation\n"
+        "✅ Automatic stop-loss on buy\n"
+        "✅ Structured alerts\n"
         "✅ Smart position sizing\n"
         "✅ Pool data caching\n"
-        "✅ Performance tracking\n"
-        "✅ Using utils.buy_token with explicit amounts\n"
-        "✅ No env mutations\n\n"
+        "✅ Performance tracking\n\n"
         "Initializing..."
     )
     
@@ -492,16 +576,50 @@ async def start_bot_tasks():
     # Cache cleanup
     tasks.append(asyncio.create_task(cache_cleanup()))
     
+    # Stop-loss monitor
+    tasks.append(asyncio.create_task(stop_loss_monitor()))
+    
     await send_telegram_alert(
-        f"🚀 BOT READY 🚀\n\n"
+        f"🚀 BOT READY WITH STOP-LOSS 🚀\n\n"
         f"Active Tasks: {len(tasks)}\n"
-        f"Buy Function: utils.buy_token with explicit amounts\n"
+        f"Pre-Trade Validation: ENABLED\n"
+        f"Stop-Loss Engine: ARMED\n"
         f"Position Sizing: {'Dynamic' if CONFIG.USE_DYNAMIC_SIZING else 'Simple'}\n"
         f"Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s\n\n"
-        f"Hunting for profits... 💰"
+        f"Hunting for profits with protection... 💰🛑"
     )
     
     await asyncio.gather(*tasks)
+
+async def stop_loss_monitor():
+    """Monitor all active stop-losses"""
+    while True:
+        try:
+            if STOPS:
+                stuck_stops = []
+                for mint, stop_data in STOPS.items():
+                    if stop_data["state"] == "TRIGGERED":
+                        if stop_data.get("first_no_route"):
+                            time_stuck = time.time() - stop_data["first_no_route"]
+                            if time_stuck > CONFIG.ROUTE_TIMEOUT_SEC * 2:
+                                stuck_stops.append((mint, time_stuck, stop_data.get("stuck_reason", "UNKNOWN")))
+                
+                if stuck_stops:
+                    alert_msg = "⚠️ STUCK STOP-LOSSES:\n"
+                    for mint, time_stuck, reason in stuck_stops[:5]:
+                        alert_msg += f"• {mint[:8]}... - {time_stuck:.0f}s ({reason})\n"
+                    
+                    logging.warning(alert_msg)
+                    # Only alert every CONFIG.STOP_ALERT_EVERY_SEC
+                    if not hasattr(stop_loss_monitor, "last_alert") or time.time() - stop_loss_monitor.last_alert > CONFIG.STOP_ALERT_EVERY_SEC:
+                        await send_telegram_alert(alert_msg)
+                        stop_loss_monitor.last_alert = time.time()
+            
+            await asyncio.sleep(30)  # Check every 30 seconds
+            
+        except Exception as e:
+            logging.error(f"Stop-loss monitor error: {e}")
+            await asyncio.sleep(60)
 
 async def performance_monitor():
     """Send hourly performance reports"""
@@ -529,11 +647,16 @@ Session Stats:
 Today's Stats:
 • Trades: {daily['trades']}
 • Wins: {daily['wins']}
+• Stops Hit: {daily['stops_hit']}
 • Profit: {daily['profit']:+.3f} SOL
+
+Stop-Loss Status:
+• Active Stops: {len(STOPS)}
+• Stop Level: {CONFIG.STOP_LOSS_PCT*100:.0f}%
+• Check Interval: {CONFIG.STOP_CHECK_INTERVAL_SEC}s
 
 Current Balance: {balance:.3f} SOL
 Cached Pools: {len(pool_cache.cache)}
-Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s
 Uptime: {(time.time() - tracker.start_time) / 3600:.1f}h
 
 Status: {"🟢 PROFITABLE" if session_pnl > 0 else "🔴 BUILDING"}
@@ -595,24 +718,30 @@ async def main():
     
     print(f"""
 ╔════════════════════════════════════════╗
-║   OPTIMIZED BOT v2.0 (WITH CONFIG)    ║
+║   OPTIMIZED BOT v3.0 (STOP-LOSS)      ║
 ║                                        ║
 ║  Features:                             ║
-║  • Uses utils.buy_token only           ║
-║  • Explicit amount parameters         ║
-║  • No env mutations                    ║
-║  • Config-based settings              ║
+║  • Pre-trade validation                ║
+║  • Automatic stop-loss on buy          ║
+║  • Reliable stop monitoring            ║
+║  • Structured alerts                   ║
 ║  • Smart position sizing               ║
 ║  • Pool data caching ({CONFIG.CACHE_TTL_SECONDS}s)     ║
 ║  • Performance tracking                ║
 ║  • Jupiter-only sells with validation  ║
 ║                                        ║
-║  Ready for profitable operation! 🚀    ║
+║  Stop-Loss Protection:                 ║
+║  • {CONFIG.STOP_LOSS_PCT*100:.0f}% stop-loss level           ║
+║  • {CONFIG.STOP_CHECK_INTERVAL_SEC}s check interval           ║
+║  • Automatic arming on buy             ║
+║  • Failure alerts with reasons         ║
+║                                        ║
+║  Ready for protected profits! 🚀🛑     ║
 ╚════════════════════════════════════════╝
     """)
     
     logging.info("=" * 50)
-    logging.info("STARTING OPTIMIZED BOT WITH CONFIG")
+    logging.info("STARTING BOT WITH STOP-LOSS ENGINE")
     logging.info("=" * 50)
     
     await run_bot()
@@ -641,12 +770,16 @@ async def cleanup():
                 balance = rpc.get_balance(keypair.pubkey()).value / 1e9
                 session_pnl = balance - tracker.start_balance
                 
+                daily = tracker.get_daily_summary()
+                
                 final_msg = (
                     f"📊 FINAL STATS\n"
                     f"Trades: {tracker.trades_executed}\n"
                     f"Win Rate: {tracker.get_win_rate():.1f}%\n"
+                    f"Stops Hit Today: {daily['stops_hit']}\n"
                     f"Session P&L: {session_pnl:+.3f} SOL\n"
-                    f"Final Balance: {balance:.3f} SOL"
+                    f"Final Balance: {balance:.3f} SOL\n"
+                    f"Active Stops Remaining: {len(STOPS)}"
                 )
                 await send_telegram_alert(final_msg)
             except:
