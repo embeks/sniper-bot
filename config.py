@@ -1,0 +1,96 @@
+# config.py
+import os
+from dataclasses import dataclass
+
+def _b(name, default):
+    v = os.getenv(name)
+    return (str(v).lower() in ("1","true","yes","y","on")) if v is not None else default
+
+def _f(name, default):
+    try: return float(os.getenv(name, default))
+    except: return default
+
+def _i(name, default):
+    try: return int(float(os.getenv(name, default)))
+    except: return default
+
+@dataclass(frozen=True)
+class Config:
+    BUY_AMOUNT_SOL: float
+    USE_DYNAMIC_SIZING: bool
+    FORCE_JUPITER_SELL: bool
+    SIMULATE_BEFORE_SEND: bool
+    CACHE_TTL_SECONDS: int
+    SELL_MULTIPLIERS: str
+    SELL_TIMEOUT_SEC: int
+    RUG_LP_THRESHOLD: float
+    TAKE_PROFIT_1: float
+    TAKE_PROFIT_2: float
+    TAKE_PROFIT_3: float
+    SELL_PERCENT_1: float
+    SELL_PERCENT_2: float
+    SELL_PERCENT_3: float
+    STOP_LOSS_PERCENT: float
+    TRAILING_STOP_PERCENT: float
+    MAX_HOLD_TIME_SEC: int
+    PRICE_CHECK_INTERVAL_SEC: int
+    PUMPFUN_USE_MOON_STRATEGY: bool
+    PUMPFUN_TAKE_PROFIT_1: float
+    PUMPFUN_TAKE_PROFIT_2: float
+    PUMPFUN_TAKE_PROFIT_3: float
+    PUMPFUN_SELL_PERCENT_1: float
+    PUMPFUN_SELL_PERCENT_2: float
+    PUMPFUN_MOON_BAG: float
+    NO_SELL_FIRST_MINUTES: int
+    TRAILING_STOP_ACTIVATION: float
+    TRENDING_USE_CUSTOM: bool
+    TRENDING_TAKE_PROFIT_1: float
+    TRENDING_TAKE_PROFIT_2: float
+    TRENDING_TAKE_PROFIT_3: float
+    OVERRIDE_DECIMALS_TO_9: bool
+    IGNORE_JUPITER_PRICE_FIELD: bool
+    LP_CHECK_TIMEOUT: int
+    SCALE_WITH_BALANCE: bool
+    MIGRATION_BOOST_MULTIPLIER: float
+    TRENDING_BOOST_MULTIPLIER: float
+
+def load() -> Config:
+    return Config(
+        BUY_AMOUNT_SOL=_f("BUY_AMOUNT_SOL", 0.1),
+        USE_DYNAMIC_SIZING=_b("USE_DYNAMIC_SIZING", True),
+        FORCE_JUPITER_SELL=_b("FORCE_JUPITER_SELL", True),
+        SIMULATE_BEFORE_SEND=_b("SIMULATE_BEFORE_SEND", True),
+        CACHE_TTL_SECONDS=_i("POOL_CACHE_TTL", 60),
+        SELL_MULTIPLIERS=os.getenv("SELL_MULTIPLIERS", "1.5,3,10"),
+        SELL_TIMEOUT_SEC=_i("SELL_TIMEOUT_SEC", 300),
+        RUG_LP_THRESHOLD=_f("RUG_LP_THRESHOLD", 1.0),
+        TAKE_PROFIT_1=_f("TAKE_PROFIT_1", 1.5),
+        TAKE_PROFIT_2=_f("TAKE_PROFIT_2", 3.0),
+        TAKE_PROFIT_3=_f("TAKE_PROFIT_3", 10.0),
+        SELL_PERCENT_1=_f("SELL_PERCENT_1", 50),
+        SELL_PERCENT_2=_f("SELL_PERCENT_2", 25),
+        SELL_PERCENT_3=_f("SELL_PERCENT_3", 25),
+        STOP_LOSS_PERCENT=_f("STOP_LOSS_PERCENT", 50),
+        TRAILING_STOP_PERCENT=_f("TRAILING_STOP_PERCENT", 20),
+        MAX_HOLD_TIME_SEC=_i("MAX_HOLD_TIME_SEC", 3600),
+        PRICE_CHECK_INTERVAL_SEC=_i("PRICE_CHECK_INTERVAL_SEC", 10),
+        PUMPFUN_USE_MOON_STRATEGY=_b("PUMPFUN_USE_MOON_STRATEGY", True),
+        PUMPFUN_TAKE_PROFIT_1=_f("PUMPFUN_TAKE_PROFIT_1", 10.0),
+        PUMPFUN_TAKE_PROFIT_2=_f("PUMPFUN_TAKE_PROFIT_2", 25.0),
+        PUMPFUN_TAKE_PROFIT_3=_f("PUMPFUN_TAKE_PROFIT_3", 50.0),
+        PUMPFUN_SELL_PERCENT_1=_f("PUMPFUN_SELL_PERCENT_1", 20),
+        PUMPFUN_SELL_PERCENT_2=_f("PUMPFUN_SELL_PERCENT_2", 30),
+        PUMPFUN_MOON_BAG=_f("PUMPFUN_MOON_BAG", 50),
+        NO_SELL_FIRST_MINUTES=_i("NO_SELL_FIRST_MINUTES", 30),
+        TRAILING_STOP_ACTIVATION=_f("TRAILING_STOP_ACTIVATION", 5.0),
+        TRENDING_USE_CUSTOM=_b("TRENDING_USE_CUSTOM", False),
+        TRENDING_TAKE_PROFIT_1=_f("TRENDING_TAKE_PROFIT_1", 3.0),
+        TRENDING_TAKE_PROFIT_2=_f("TRENDING_TAKE_PROFIT_2", 8.0),
+        TRENDING_TAKE_PROFIT_3=_f("TRENDING_TAKE_PROFIT_3", 15.0),
+        OVERRIDE_DECIMALS_TO_9=_b("OVERRIDE_DECIMALS_TO_9", False),
+        IGNORE_JUPITER_PRICE_FIELD=_b("IGNORE_JUPITER_PRICE_FIELD", False),
+        LP_CHECK_TIMEOUT=_i("LP_CHECK_TIMEOUT", 3),
+        SCALE_WITH_BALANCE=_b("SCALE_WITH_BALANCE", True),
+        MIGRATION_BOOST_MULTIPLIER=_f("MIGRATION_BOOST_MULTIPLIER", 2.0),
+        TRENDING_BOOST_MULTIPLIER=_f("TRENDING_BOOST_MULTIPLIER", 1.5),
+    )
