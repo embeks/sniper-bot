@@ -1591,6 +1591,10 @@ async def detect_pumpfun_migration(mint: str) -> bool:
     
     return False
 
+# Export backward compatibility values
+BUY_AMOUNT_SOL = CONFIG.BUY_AMOUNT_SOL
+USE_DYNAMIC_SIZING = CONFIG.USE_DYNAMIC_SIZING
+
 # Export for use in sniper_logic
 __all__ = [
     'is_valid_mint',
@@ -1606,6 +1610,7 @@ __all__ = [
     'start_bot',
     'stop_bot',
     'keypair',
+    'BUY_AMOUNT_SOL',  # Added for backward compatibility
     'BROKEN_TOKENS',
     'mark_broken_token',
     'daily_stats_reset_loop',
@@ -1631,6 +1636,7 @@ __all__ = [
     'wait_and_auto_sell_timer_based',
     'get_dynamic_position_size',
     'get_minimum_liquidity_required',
+    'USE_DYNAMIC_SIZING',  # Added for backward compatibility
     'evaluate_pumpfun_opportunity',
     'is_fresh_token',
     'verify_token_age_on_chain',
