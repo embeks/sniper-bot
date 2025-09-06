@@ -1,6 +1,7 @@
 """
 Elite Momentum Scanner - Finds pumping tokens with your exact criteria
 Implements the hybrid strategy for 70% win rate momentum plays
+Updated to use explicit amount parameter for buy_token
 """
 
 import asyncio
@@ -354,8 +355,8 @@ async def momentum_scanner():
                             f"Executing..."
                         )
                         
-                        # FIXED: Properly execute buy using utils.buy_token
-                        success = await buy_token(token_address, force_amount=position_size)
+                        # FIXED: Use explicit amount parameter instead of force_amount
+                        success = await buy_token(token_address, amount=position_size)
                         
                         if success:
                             # Track momentum purchase
@@ -365,7 +366,7 @@ async def momentum_scanner():
                             await send_telegram_alert(
                                 f"✅ MOMENTUM BUY SUCCESS\n"
                                 f"Token: {token_symbol}\n"
-                                f"Amount: {position_size} SOL\n"
+                                f"Amount: {position_size} SOL (explicit)\n"
                                 f"Strategy: Momentum Play\n\n"
                                 f"Monitoring with 1.5x/3x/10x targets..."
                             )
