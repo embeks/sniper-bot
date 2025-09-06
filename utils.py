@@ -1,5 +1,4 @@
-# utils.py - COMPLETE PRODUCTION READY VERSION WITH CONFIG AND GUARDS
-import os
+# utils.py - COMPLETE PRODUCTION READY VERSION WITH STOP-LOSS ENGINE
 import json
 import logging
 import httpx
@@ -11,7 +10,7 @@ from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 import base64
 from solders.transaction import VersionedTransaction
-import certifi  # For TLS verification
+import certifi
 
 # Solana imports
 from solders.keypair import Keypair
@@ -33,17 +32,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Load config once
 CONFIG = config.load()
-
-# Environment variables (read-only)
-RPC_URL = os.getenv("RPC_URL")
-SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-JUPITER_BASE_URL = os.getenv("JUPITER_BASE_URL", "https://quote-api.jup.ag")
-BLACKLISTED_TOKENS = os.getenv("BLACKLISTED_TOKENS", "").split(",") if os.getenv("BLACKLISTED_TOKENS") else []
-HELIUS_API = os.getenv("HELIUS_API")
 
 # Known AMM program IDs for validation
 KNOWN_AMM_PROGRAMS = {
@@ -70,20 +58,20 @@ PUMPFUN_MIN_LIQUIDITY = {
 }
 
 # Initialize clients
-rpc = Client(RPC_URL, commitment=Confirmed)
-raydium = RaydiumAggregatorClient(RPC_URL)
+rpc = Client(CONFIG.RPC_URL, commitment=Confirmed)
+raydium = RaydiumAggregatorClient(CONFIG.RPC_URL)
 
 # Load wallet
 import ast
 try:
-    if SOLANA_PRIVATE_KEY and SOLANA_PRIVATE_KEY.startswith("["):
-        private_key_array = ast.literal_eval(SOLANA_PRIVATE_KEY)
+    if CONFIG.SOLANA_PRIVATE_KEY and CONFIG.SOLANA_PRIVATE_KEY.startswith("["):
+        private_key_array = ast.literal_eval(CONFIG.SOLANA_PRIVATE_KEY)
         if len(private_key_array) == 64:
             keypair = Keypair.from_bytes(bytes(private_key_array))
         else:
             keypair = Keypair.from_seed(bytes(private_key_array[:32]))
     else:
-        keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
+        keypair = Keypair.from_base58_string(CONFIG.SOLANA_PRIVATE_KEY)
 except Exception as e:
     raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
 
@@ -91,8 +79,7 @@ wallet_pubkey = str(keypair.pubkey())
 print(f"ACTUAL WALLET BEING USED: {wallet_pubkey}")
 
 # Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID
-if not TELEGRAM_CHAT_ID and TELEGRAM_USER_ID:
-    TELEGRAM_CHAT_ID = TELEGRAM_USER_ID
+TELEGRAM_CHAT_ID = CONFIG.TELEGRAM_CHAT_ID or CONFIG.TELEGRAM_USER_ID
 
 # Global state
 OPEN_POSITIONS = {}
@@ -100,7 +87,10 @@ BROKEN_TOKENS = set()
 BOT_RUNNING = True
 BLACKLIST_FILE = "blacklist.json"
 TRADES_CSV_FILE = "trades.csv"
-BLACKLIST = set(BLACKLISTED_TOKENS) if BLACKLISTED_TOKENS else set()
+BLACKLIST = set(CONFIG.BLACKLISTED_TOKENS.split(",")) if CONFIG.BLACKLISTED_TOKENS else set()
+
+# Stop-loss tracking
+STOPS: Dict[str, Dict] = {}
 
 # Stats tracking
 daily_stats = {
@@ -161,13 +151,73 @@ KNOWN_TOKEN_DECIMALS = {
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
+# STOP-LOSS HELPER FUNCTIONS
+# ============================================
+
+def register_stop(mint: str, stop_data: Dict):
+    """Register a stop-loss order for a token"""
+    STOPS[mint] = stop_data
+    logging.info(f"[STOP] Registered for {mint[:8]}... - entry: {stop_data['entry_price']:.6f}, stop: {stop_data['stop_price']:.6f}")
+
+async def check_mint_authority(mint: str) -> tuple[bool, bool]:
+    """Check if mint and freeze authority are renounced"""
+    try:
+        mint_pubkey = Pubkey.from_string(mint)
+        mint_info = rpc.get_account_info(mint_pubkey)
+        
+        if mint_info and mint_info.value:
+            data = mint_info.value.data
+            if isinstance(data, list) and len(data) > 0:
+                import base64
+                if isinstance(data[0], str):
+                    decoded = base64.b64decode(data[0])
+                else:
+                    decoded = bytes(data[0])
+                
+                # Check mint authority (bytes 0-32) and freeze authority (bytes 36-68)
+                if len(decoded) > 68:
+                    mint_auth = decoded[0:32]
+                    freeze_auth = decoded[36:68]
+                    
+                    # Check if authorities are null (all zeros)
+                    mint_renounced = all(b == 0 for b in mint_auth)
+                    freeze_renounced = all(b == 0 for b in freeze_auth)
+                    
+                    return mint_renounced, freeze_renounced
+    except Exception as e:
+        logging.debug(f"Authority check error for {mint}: {e}")
+    
+    return False, False
+
+async def check_token_tax(mint: str) -> int:
+    """Detect transfer tax on token via DexScreener (returns basis points)"""
+    try:
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if "pairs" in data and len(data["pairs"]) > 0:
+                    # Check if any pair has buy/sell tax info
+                    for pair in data["pairs"]:
+                        buy_tax = pair.get("buyTax", 0)
+                        sell_tax = pair.get("sellTax", 0)
+                        if buy_tax > 0 or sell_tax > 0:
+                            max_tax = max(buy_tax, sell_tax)
+                            return int(max_tax * 100)  # Convert to basis points
+    except:
+        pass
+    
+    return 0  # Default to no tax if can't determine
+
+# ============================================
 # AGE CHECKING FUNCTIONS
 # ============================================
 async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
     """Check if token/pool was created within the specified time"""
     try:
         url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-        async with httpx.AsyncClient(timeout=5, verify=False) as client:
+        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
             response = await client.get(url)
             if response.status_code == 200:
                 data = response.json()
@@ -326,7 +376,7 @@ def is_valid_mint(mint: str) -> bool:
 # TELEGRAM FUNCTIONS
 # ============================================
 async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
-    """ANTI-SPAM VERSION - Only send important alerts with deduplication"""
+    """Send alert with deduplication"""
     global telegram_last_sent, ALERT_SUMMARY, LAST_SUMMARY_TIME, last_messages, last_listener_status_sent
     
     if "listener ACTIVE" in message or "listener active" in message.lower():
@@ -345,35 +395,7 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
             
             last_listener_status_sent[listener_name] = time.time()
     
-    SPAM_PATTERNS = [
-        "Skipping low LP",
-        "PumpFun snipe failed",
-        "No pool found",
-        "Failed to build",
-        "LP Check",
-        "QUALITY TOKEN DETECTED",
-        "ELITE BUY EXECUTING",
-        "PUMPFUN TOKEN DETECTED",
-        "Attempting snipe",
-        "Token detected:",
-        "Checking liquidity",
-        "mempool_listener",
-        "Listener already running"
-    ]
-    
-    is_spam = any(pattern in message for pattern in SPAM_PATTERNS)
-    
-    if is_spam:
-        ALERT_SUMMARY["skipped"] += 1
-        
-        if time.time() - LAST_SUMMARY_TIME > 3600:
-            summary_msg = f"📊 Hourly Summary:\nScanned: {ALERT_SUMMARY['detected']}\nSkipped: {ALERT_SUMMARY['skipped']}\nFailed: {ALERT_SUMMARY['failed']}\nSucceeded: {ALERT_SUMMARY['succeeded']}"
-            ALERT_SUMMARY = {"detected": 0, "skipped": 0, "failed": 0, "succeeded": 0}
-            LAST_SUMMARY_TIME = time.time()
-            message = summary_msg
-        else:
-            return True
-    
+    # Check for duplicate messages
     message_hash = hash(message[:100] if len(message) > 100 else message)
     if message_hash in last_messages:
         if time.time() - last_messages[message_hash] < MESSAGE_COOLDOWN:
@@ -382,6 +404,7 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
     
     last_messages[message_hash] = time.time()
     
+    # Clean up old messages
     if len(last_messages) > 100:
         current_time = time.time()
         last_messages = {k: v for k, v in last_messages.items() if current_time - v < MESSAGE_COOLDOWN * 2}
@@ -392,7 +415,7 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
         if time_since_last < telegram_min_interval:
             await asyncio.sleep(telegram_min_interval - time_since_last)
         
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": message[:4096],
@@ -474,7 +497,7 @@ def get_wallet_summary() -> str:
     """Get wallet balance summary"""
     try:
         balance = rpc.get_balance(keypair.pubkey()).value / 1e9
-        balance_usd = balance * 150
+        balance_usd = balance * CONFIG.SOL_PRICE_USD
         
         if CONFIG.USE_DYNAMIC_SIZING:
             test_position = 0.1
@@ -513,8 +536,9 @@ def get_bot_status_message() -> str:
   • Moonshot: {listener_status['Moonshot']} ({moonshot_elapsed}s)
   
 📈 Open Positions: {len(OPEN_POSITIONS)}
+🛑 Active Stops: {len(STOPS)}
 🚫 Broken Tokens: {len(BROKEN_TOKENS)}
-💰 Min LP Filter: {get_minimum_liquidity_required()} SOL
+💰 Min LP Filter: {CONFIG.MIN_LP_SOL} SOL
 🎯 Scaling: {'ON' if CONFIG.USE_DYNAMIC_SIZING else 'OFF'}
 """
 
@@ -550,7 +574,7 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
             
             logging.info(f"[LP Check] No Raydium pool, checking Jupiter...")
             try:
-                url = f"{JUPITER_BASE_URL}/v6/quote"
+                url = CONFIG.JUPITER_QUOTE_BASE_URL
                 params = {
                     "inputMint": sol_mint,
                     "outputMint": mint,
@@ -625,10 +649,13 @@ async def daily_stats_reset_loop():
             logging.error(f"Stats reset error: {e}")
             await asyncio.sleep(3600)
 
-async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 100):
+async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = None):
     """Get swap quote from Jupiter API"""
+    if slippage_bps is None:
+        slippage_bps = CONFIG.STOP_MAX_SLIPPAGE_BPS
+        
     try:
-        url = f"{JUPITER_BASE_URL}/v6/quote"
+        url = CONFIG.JUPITER_QUOTE_BASE_URL
         params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
@@ -656,10 +683,13 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
         logging.error(f"[Jupiter] Error getting quote: {e}")
         return None
 
-async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str):
+async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str, slippage_bps: int = None):
     """Get the swap transaction from Jupiter"""
+    if slippage_bps is None:
+        slippage_bps = CONFIG.STOP_MAX_SLIPPAGE_BPS
+        
     try:
-        url = f"{JUPITER_BASE_URL}/v6/swap"
+        url = CONFIG.JUPITER_SWAP_URL
         
         body = {
             "quoteResponse": quote,
@@ -667,7 +697,7 @@ async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str):
             "wrapAndUnwrapSol": True,
             "dynamicComputeUnitLimit": True,
             "prioritizationFeeLamports": 500000,
-            "slippageBps": 300
+            "slippageBps": slippage_bps
         }
         
         async with httpx.AsyncClient(timeout=15, verify=certifi.where()) as client:
@@ -684,7 +714,7 @@ async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str):
         return None
 
 async def simulate_transaction(tx: VersionedTransaction) -> bool:
-    """Simulate transaction and validate AMM program ownership"""
+    """Simulate transaction - treat successful simulation as valid"""
     try:
         result = rpc.simulate_transaction(tx, commitment=Confirmed)
         
@@ -696,25 +726,16 @@ async def simulate_transaction(tx: VersionedTransaction) -> bool:
             logging.warning(f"[Simulation] Error: {result.value.err}")
             return False
         
-        # Check account keys for AMM programs
+        # Check account keys for AMM programs (informational only)
         if hasattr(result.value, 'accounts') and result.value.accounts:
             for account in result.value.accounts:
                 if account and hasattr(account, 'owner'):
                     owner_str = str(account.owner)
                     if owner_str in KNOWN_AMM_PROGRAMS:
                         logging.info(f"[Simulation] Valid AMM program found: {owner_str[:8]}...")
-                        return True
         
-        # Alternative: check transaction message for AMM programs
-        if hasattr(tx.message, 'account_keys'):
-            for key in tx.message.account_keys:
-                key_str = str(key)
-                if key_str in KNOWN_AMM_PROGRAMS:
-                    logging.info(f"[Simulation] Valid AMM program in keys: {key_str[:8]}...")
-                    return True
-        
-        logging.warning("[Simulation] No known AMM programs found in transaction")
-        return False
+        # If no error, simulation is successful
+        return True
         
     except Exception as e:
         logging.error(f"[Simulation] Error: {e}")
@@ -798,18 +819,21 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         logging.error(f"[Jupiter] Swap execution error: {e}")
         return None
 
-async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
+async def execute_jupiter_sell(mint: str, amount: int, slippage_bps: int = None) -> Optional[str]:
     """Execute a sell using Jupiter with safety validation"""
+    if slippage_bps is None:
+        slippage_bps = CONFIG.STOP_MAX_SLIPPAGE_BPS
+        
     try:
         input_mint = mint
         output_mint = "So11111111111111111111111111111111111111112"
         
-        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}...")
-        quote = await get_jupiter_quote(input_mint, output_mint, amount)
+        logging.info(f"[Jupiter] Getting sell quote for {mint[:8]}... with {slippage_bps} bps slippage")
+        quote = await get_jupiter_quote(input_mint, output_mint, amount, slippage_bps)
         if not quote:
             return None
         
-        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey)
+        swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey, slippage_bps)
         if not swap_data:
             return None
         
@@ -820,7 +844,7 @@ async def execute_jupiter_sell(mint: str, amount: int) -> Optional[str]:
         if CONFIG.SIMULATE_BEFORE_SEND:
             logging.info("[Jupiter] Simulating sell transaction for safety...")
             if not await simulate_transaction(tx):
-                error_msg = f"❌ SELL BLOCKED for {mint[:8]}... (route validation failed)"
+                error_msg = f"❌ SELL BLOCKED for {mint[:8]}... (simulation failed)"
                 logging.error(error_msg)
                 await send_telegram_alert(error_msg)
                 return None
@@ -906,7 +930,7 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
-    """Execute buy with explicit amount parameter"""
+    """Execute buy with pre-trade validation and stop-loss registration - Jupiter only"""
     try:
         if mint in BROKEN_TOKENS:
             log_skipped_token(mint, "Broken token")
@@ -922,7 +946,9 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         
         logging.info(f"[Buy] Using amount: {amount:.3f} SOL for {mint[:8]}...")
         
-        # Check liquidity with timeout
+        # PRE-TRADE VALIDATION
+        
+        # Check liquidity
         logging.info(f"[Buy] Checking liquidity for {mint[:8]}...")
         lp_data = await get_liquidity_and_ownership(mint)
         
@@ -931,6 +957,38 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             return False
         
         pool_liquidity = lp_data.get("liquidity", 0)
+        
+        # Check minimum liquidity
+        if pool_liquidity < CONFIG.MIN_LP_SOL:
+            await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_LOW_LP] mint {mint[:8]}... LP={pool_liquidity:.1f} SOL (min {CONFIG.MIN_LP_SOL})")
+            log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
+            record_skip("low_lp")
+            return False
+        
+        # Check authority renouncement
+        if CONFIG.REQUIRE_AUTH_RENOUNCED:
+            mint_renounced, freeze_renounced = await check_mint_authority(mint)
+            if not (mint_renounced and freeze_renounced):
+                await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_AUTH_NOT_RENOUNCED] mint {mint[:8]}...")
+                log_skipped_token(mint, "Authority not renounced")
+                return False
+        
+        # Check for high tax
+        tax_bps = await check_token_tax(mint)
+        if tax_bps > CONFIG.MAX_TRADE_TAX_BPS:
+            await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_HIGH_TAX] mint {mint[:8]}... tax={tax_bps/100:.1f}% (max {CONFIG.MAX_TRADE_TAX_BPS/100:.1f}%)")
+            log_skipped_token(mint, f"High tax: {tax_bps/100:.1f}%")
+            return False
+        
+        # Check sell route availability before buying with realistic amount
+        # Estimate tokens we'd get based on pool liquidity (rough estimate)
+        estimated_tokens = int(amount * 1e9 * 100)  # Rough estimate: 100 tokens per SOL
+        sell_quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", estimated_tokens, 500)
+        if not sell_quote or int(sell_quote.get("outAmount", 0)) == 0:
+            await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_NO_SELL_ROUTE] mint {mint[:8]}...")
+            log_skipped_token(mint, "No sell route available")
+            record_skip("no_route")
+            return False
         
         # Check if PumpFun
         is_pumpfun = False
@@ -945,14 +1003,6 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 record_skip("low_lp")
                 return False
         
-        # Get minimum LP requirement
-        min_lp = get_minimum_liquidity_required() if not is_pumpfun else 0.5
-        
-        if pool_liquidity < min_lp:
-            log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
-            record_skip("low_lp")
-            return False
-
         # Handle special cases for position sizing
         is_migration = kwargs.get("is_migration", False)
         
@@ -977,90 +1027,70 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         amount_lamports = int(amount * 1e9)
         logging.info(f"[Buy] Final position size: {amount:.3f} SOL for {mint[:8]}...")
 
-        # Try Jupiter first
+        # Execute Jupiter swap
         logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
         jupiter_sig = await execute_jupiter_swap(mint, amount_lamports)
         
         if jupiter_sig:
             balance = rpc.get_balance(keypair.pubkey()).value / 1e9
-            balance_usd = balance * 150
+            balance_usd = balance * CONFIG.SOL_PRICE_USD
+            
+            # Get entry price for stop-loss
+            entry_price = await get_token_price_usd(mint)
+            if not entry_price:
+                entry_price = (amount * CONFIG.SOL_PRICE_USD) / estimated_tokens  # Estimate from quote
+            
+            # ARM THE STOP-LOSS
+            register_stop(mint, {
+                "entry_price": entry_price,
+                "size_tokens": estimated_tokens,
+                "stop_price": entry_price * (1 - CONFIG.STOP_LOSS_PCT),
+                "slippage_bps": CONFIG.STOP_MAX_SLIPPAGE_BPS,
+                "state": "ARMED",
+                "last_alert": 0,
+                "first_no_route": 0,
+                "stuck_reason": None
+            })
             
             await send_telegram_alert(
                 f"✅ Sniped {mint[:8]}... via Jupiter\n"
                 f"Amount: {amount:.3f} SOL\n"
                 f"LP: {pool_liquidity:.2f} SOL\n"
+                f"Entry: ${entry_price:.6f}\n"
+                f"Stop: ${entry_price * (1 - CONFIG.STOP_LOSS_PCT):.6f}\n"
                 f"{'🚀 MIGRATION!' if is_migration else ''}\n"
                 f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
             
             OPEN_POSITIONS[mint] = {
-                "expected_token_amount": 0,
+                "expected_token_amount": estimated_tokens,
                 "buy_amount_sol": amount,
                 "sold_stages": set(),
                 "buy_sig": jupiter_sig,
-                "is_migration": is_migration
+                "is_migration": is_migration,
+                "entry_price": entry_price
             }
             
             increment_stat("snipes_succeeded", 1)
             log_trade(mint, "BUY", amount, 0)
             return True
-        
-        # Fallback to Raydium
-        logging.info(f"[Buy] Jupiter failed, trying Raydium for {mint[:8]}...")
-        
-        input_mint = "So11111111111111111111111111111111111111112"
-        output_mint = mint
-        
-        pool = raydium.find_pool(input_mint, output_mint)
-        if not pool:
-            pool = raydium.find_pool(output_mint, input_mint)
-            if not pool:
-                log_skipped_token(mint, "No pool on Jupiter or Raydium")
-                record_skip("malformed")
-                return False
-
-        tx = raydium.build_swap_transaction(keypair, input_mint, output_mint, amount_lamports)
-        if not tx:
-            mark_broken_token(mint, 0)
+        else:
+            # Jupiter failed - no fallback to Raydium
+            log_skipped_token(mint, "Jupiter swap failed")
+            record_skip("buy_failed")
             return False
-
-        sig = raydium.send_transaction(tx, keypair)
-        if not sig:
-            mark_broken_token(mint, 0)
-            return False
-
-        balance = rpc.get_balance(keypair.pubkey()).value / 1e9
-        balance_usd = balance * 150
-        
-        await send_telegram_alert(
-            f"✅ Sniped {mint[:8]}... via Raydium\n"
-            f"Amount: {amount:.3f} SOL\n"
-            f"LP: {pool_liquidity:.2f} SOL\n"
-            f"{'🚀 MIGRATION!' if is_migration else ''}\n"
-            f"Balance: {balance:.2f} SOL (${balance_usd:.0f})\n"
-            f"TX: https://solscan.io/tx/{sig}"
-        )
-        
-        OPEN_POSITIONS[mint] = {
-            "expected_token_amount": 0,
-            "buy_amount_sol": amount,
-            "sold_stages": set(),
-            "buy_sig": sig,
-            "is_migration": is_migration
-        }
-        
-        increment_stat("snipes_succeeded", 1)
-        log_trade(mint, "BUY", amount, 0)
-        return True
 
     except Exception as e:
         logging.error(f"Buy failed for {mint[:8]}...: {e}")
         log_skipped_token(mint, f"Buy failed: {e}")
         return False
 
-async def sell_token(mint: str, amount_to_sell=None, percentage=100):
+async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bps=None):
     """Execute sell transaction - ALWAYS uses Jupiter with validation"""
+    if slippage_bps is None:
+        slippage_bps = CONFIG.STOP_MAX_SLIPPAGE_BPS
+        
     try:
         from spl.token.constants import TOKEN_PROGRAM_ID
         
@@ -1092,7 +1122,7 @@ async def sell_token(mint: str, amount_to_sell=None, percentage=100):
 
         # ALWAYS use Jupiter (forced by config)
         logging.info(f"[Sell] Using Jupiter for sell of {mint[:8]}...")
-        jupiter_sig = await execute_jupiter_sell(mint, amount)
+        jupiter_sig = await execute_jupiter_sell(mint, amount, slippage_bps)
         
         if jupiter_sig:
             await send_telegram_alert(
@@ -1149,7 +1179,7 @@ async def get_token_decimals(mint: str) -> int:
     return 9
 
 async def get_token_price_usd(mint: str) -> Optional[float]:
-    """Get current token price with FIXED decimal handling"""
+    """Get current token price - prefer DexScreener, then Birdeye, then Jupiter Price API, then compute"""
     try:
         STABLECOIN_MINTS = {
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
@@ -1163,6 +1193,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         actual_decimals = await get_token_decimals(mint)
         logging.info(f"[Price] Token {mint[:8]}... using {actual_decimals} decimals for calculations")
         
+        # 1. Try DexScreener first
         try:
             dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
             
@@ -1180,12 +1211,13 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             logging.debug(f"[Price] DexScreener error: {e}")
         
-        if BIRDEYE_API_KEY:
+        # 2. Try Birdeye if available
+        if CONFIG.BIRDEYE_API_KEY:
             try:
                 url = f"https://public-api.birdeye.so/defi/price?address={mint}"
                 
                 async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
-                    headers = {"X-API-KEY": BIRDEYE_API_KEY}
+                    headers = {"X-API-KEY": CONFIG.BIRDEYE_API_KEY}
                     response = await client.get(url, headers=headers)
                     
                     if response.status_code == 200:
@@ -1198,6 +1230,7 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             except Exception as e:
                 logging.debug(f"[Price] Birdeye error: {e}")
         
+        # 3. Try Jupiter Price API
         try:
             url = f"https://price.jup.ag/v4/price?ids={mint}"
             async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
@@ -1213,12 +1246,13 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         except Exception as e:
             logging.debug(f"[Price] Jupiter Price API error: {e}")
         
+        # 4. Last resort: compute from Jupiter quote
         try:
-            quote_url = f"{JUPITER_BASE_URL}/v6/quote"
+            quote_url = CONFIG.JUPITER_QUOTE_BASE_URL
             params = {
                 "inputMint": "So11111111111111111111111111111111111111112",
                 "outputMint": mint,
-                "amount": str(int(1 * 1e9)),
+                "amount": str(int(1 * 1e9)),  # 1 SOL
                 "slippageBps": "100"
             }
             
@@ -1233,42 +1267,10 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
                         return price
                     
                     if "outAmount" in quote and float(quote["outAmount"]) > 0:
-                        sol_price = 150.0
+                        tokens_received = float(quote["outAmount"]) / (10 ** actual_decimals)
+                        price = CONFIG.SOL_PRICE_USD / tokens_received
                         
-                        if CONFIG.OVERRIDE_DECIMALS_TO_9:
-                            tokens_received = float(quote["outAmount"]) / 1e9
-                            logging.warning(f"[Price] OVERRIDE active, using 9 decimals instead of {actual_decimals}")
-                        else:
-                            tokens_received = float(quote["outAmount"]) / (10 ** actual_decimals)
-                        
-                        sol_spent = 1.0
-                        price = (sol_spent * sol_price) / tokens_received
-                        
-                        if mint in STABLECOIN_MINTS and (price > 2.0 or price < 0.5):
-                            logging.error(f"[Price] Calculated ${price:.4f} for {STABLECOIN_MINTS[mint]} - decimal mismatch!")
-                            for test_decimals in [6, 8, 9]:
-                                test_tokens = float(quote["outAmount"]) / (10 ** test_decimals)
-                                test_price = (sol_spent * sol_price) / test_tokens
-                                if 0.5 < test_price < 2.0:
-                                    logging.info(f"[Price] Corrected to {test_decimals} decimals: ${test_price:.4f}")
-                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals
-                                    return test_price
-                            return 1.0
-                        
-                        if price > 1000000:
-                            logging.warning(f"[Price] Extreme price ${price:.2f} for {mint[:8]}... - trying different decimals")
-                            for test_decimals in [6, 8, 9]:
-                                test_tokens = float(quote["outAmount"]) / (10 ** test_decimals)
-                                test_price = (sol_spent * sol_price) / test_tokens
-                                if 0.0000001 < test_price < 10000:
-                                    logging.info(f"[Price] Using {test_decimals} decimals: ${test_price:.8f}")
-                                    TOKEN_DECIMALS_CACHE[mint] = test_decimals
-                                    return test_price
-                        
-                        if price < 0.0000001:
-                            logging.warning(f"[Price] Extremely low price ${price:.10f} for {mint[:8]}... - possible decimal issue")
-                        
-                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (calculated with {actual_decimals} decimals)")
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (computed from quote)")
                         return price
         except Exception as e:
             logging.debug(f"[Price] Jupiter quote error: {e}")
@@ -1280,9 +1282,9 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         logging.error(f"[Price] Unexpected error for {mint}: {e}")
         return None
 
-# Continue with wait_and_auto_sell and other functions...
+# STOP-LOSS MONITOR
 async def wait_and_auto_sell(mint: str):
-    """Monitor position and auto-sell with different strategies based on token type"""
+    """Monitor position with integrated stop-loss engine"""
     try:
         if mint not in OPEN_POSITIONS:
             logging.warning(f"No position found for {mint}")
@@ -1291,12 +1293,51 @@ async def wait_and_auto_sell(mint: str):
         position = OPEN_POSITIONS[mint]
         buy_amount_sol = position["buy_amount_sol"]
         
+        # Get stop data if exists
+        stop_data = STOPS.get(mint)
+        if not stop_data:
+            # Legacy path - no stop registered
+            entry_price = position.get("entry_price")
+            if not entry_price:
+                entry_price = await get_token_price_usd(mint)
+                if not entry_price:
+                    logging.warning(f"Could not get entry price for {mint}, using timer-based fallback")
+                    await wait_and_auto_sell_timer_based(mint)
+                    return
+            
+            # Register stop now
+            from spl.token.constants import TOKEN_PROGRAM_ID
+            owner = keypair.pubkey()
+            token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
+            
+            try:
+                response = rpc.get_token_account_balance(token_account)
+                if response and response.value:
+                    size_tokens = int(response.value.amount)
+                else:
+                    size_tokens = position.get("expected_token_amount", 0)
+            except:
+                size_tokens = position.get("expected_token_amount", 0)
+            
+            register_stop(mint, {
+                "entry_price": entry_price,
+                "size_tokens": size_tokens,
+                "stop_price": entry_price * (1 - CONFIG.STOP_LOSS_PCT),
+                "slippage_bps": CONFIG.STOP_MAX_SLIPPAGE_BPS,
+                "state": "ARMED",
+                "last_alert": 0,
+                "first_no_route": 0,
+                "stuck_reason": None,
+                "emergency_attempts": 0
+            })
+            stop_data = STOPS[mint]
+        
         # Determine token type and strategy
         is_pumpfun = mint in pumpfun_tokens
         is_trending = mint in trending_tokens
         is_migration = position.get("is_migration", False)
         
-        # Select appropriate targets - MOONBAG PRESERVED
+        # Select appropriate targets
         if is_migration:
             targets = [5.0, 15.0, 30.0]
             sell_percents = [30, 30, 40]
@@ -1318,18 +1359,9 @@ async def wait_and_auto_sell(mint: str):
             strategy_name = "STANDARD"
             min_hold_time = 0
         
-        await asyncio.sleep(10)
-        
-        # Get entry price
-        entry_price = await get_token_price_usd(mint)
-        if not entry_price:
-            logging.warning(f"Could not get entry price for {mint}, using timer-based fallback")
-            await wait_and_auto_sell_timer_based(mint)
-            return
-            
+        entry_price = stop_data["entry_price"]
         position["entry_price"] = entry_price
         position["highest_price"] = entry_price
-        position["token_amount"] = position.get("expected_token_amount", 0)
         
         await send_telegram_alert(
             f"📊 Monitoring {mint[:8]}... [{strategy_name}]\n"
@@ -1337,7 +1369,7 @@ async def wait_and_auto_sell(mint: str):
             f"Targets: {targets[0]}x/${entry_price*targets[0]:.6f}, "
             f"{targets[1]}x/${entry_price*targets[1]:.6f}, "
             f"{targets[2]}x/${entry_price*targets[2]:.6f}\n"
-            f"Stop Loss: -${entry_price*CONFIG.STOP_LOSS_PERCENT/100:.6f}"
+            f"Stop Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}% @ ${stop_data['stop_price']:.6f}"
         )
         
         # Monitor loop
@@ -1348,17 +1380,46 @@ async def wait_and_auto_sell(mint: str):
         
         while time.time() - start_time < CONFIG.MAX_HOLD_TIME_SEC:
             try:
-                if time.time() - last_price_check < CONFIG.PRICE_CHECK_INTERVAL_SEC:
-                    await asyncio.sleep(1)
+                # Check stop-loss more frequently
+                if time.time() - last_price_check < CONFIG.STOP_CHECK_INTERVAL_SEC:
+                    await asyncio.sleep(0.5)
                     continue
                     
                 last_price_check = time.time()
-                current_price = await get_token_price_usd(mint)
                 
-                if not current_price:
-                    logging.debug(f"Could not get price for {mint}, skipping this check")
-                    await asyncio.sleep(CONFIG.PRICE_CHECK_INTERVAL_SEC)
+                # Get current price via Jupiter quote for accuracy
+                if CONFIG.ROUTE_AMOUNT_MODE == "POSITION":
+                    quote_amount = stop_data["size_tokens"]
+                else:
+                    quote_amount = int(1e9)  # 1 token for price check
+                
+                quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", quote_amount)
+                
+                if not quote:
+                    # No route available
+                    if stop_data["state"] == "TRIGGERED":
+                        if not stop_data.get("first_no_route"):
+                            stop_data["first_no_route"] = time.time()
+                            stop_data["stuck_reason"] = "NO_ROUTE"
+                        
+                        time_stuck = time.time() - stop_data["first_no_route"]
+                        if time_stuck > CONFIG.ROUTE_TIMEOUT_SEC:
+                            if time.time() - stop_data.get("last_alert", 0) > CONFIG.STOP_ALERT_EVERY_SEC:
+                                await send_telegram_alert(f"🔴 STOP-LOSS BLOCKED [NO_ROUTE] mint {mint[:8]}... stuck={time_stuck:.0f}s")
+                                stop_data["last_alert"] = time.time()
+                    
+                    await asyncio.sleep(CONFIG.STOP_CHECK_INTERVAL_SEC)
                     continue
+                
+                # Calculate current price from quote
+                sol_out = int(quote.get("outAmount", 0)) / 1e9
+                if sol_out > 0 and quote_amount > 0:
+                    current_price = (sol_out * CONFIG.SOL_PRICE_USD) / (quote_amount / (10 ** await get_token_decimals(mint)))
+                else:
+                    current_price = await get_token_price_usd(mint)
+                    if not current_price:
+                        await asyncio.sleep(CONFIG.STOP_CHECK_INTERVAL_SEC)
+                        continue
                 
                 profit_multiplier = current_price / entry_price
                 profit_percent = (profit_multiplier - 1) * 100
@@ -1369,14 +1430,49 @@ async def wait_and_auto_sell(mint: str):
                     position["highest_price"] = current_price
                     logging.info(f"[{mint[:8]}] New high: ${current_price:.6f} ({profit_multiplier:.2f}x)")
                 
-                # Check minimum hold time
-                if is_pumpfun and time_held < min_hold_time:
+                # Check stop-loss FIRST
+                if current_price <= stop_data["stop_price"] and stop_data["state"] == "ARMED":
+                    stop_data["state"] = "TRIGGERED"
+                    logging.info(f"🛑 STOP TRIGGERED for {mint[:8]}... @ ${current_price:.6f}")
+                    await send_telegram_alert(f"🛑 STOP TRIGGERED mint {mint[:8]}... entry=${entry_price:.6f}, stop=${stop_data['stop_price']:.6f}, quote=${current_price:.6f}")
+                
+                if stop_data["state"] == "TRIGGERED" and sell_attempts["stop_loss"] < max_sell_attempts:
+                    sell_attempts["stop_loss"] += 1
+                    stop_data["state"] = "SUBMITTING"
+                    
+                    # Try standard slippage first
+                    if await sell_token(mint, percentage=100, slippage_bps=CONFIG.STOP_MAX_SLIPPAGE_BPS):
+                        stop_data["state"] = "FILLED"
+                        await send_telegram_alert(
+                            f"✅ STOP FILLED mint {mint[:8]}... avgPrice=${current_price:.6f}\n"
+                            f"Loss: {profit_percent:.1f}% from entry"
+                        )
+                        break
+                    else:
+                        # Try emergency slippage
+                        stop_data["emergency_attempts"] = stop_data.get("emergency_attempts", 0) + 1
+                        if stop_data["emergency_attempts"] == 1:
+                            await send_telegram_alert(f"⚠️ STOP FAILED with {CONFIG.STOP_MAX_SLIPPAGE_BPS} bps, trying emergency slippage {CONFIG.STOP_EMERGENCY_SLIPPAGE_BPS} bps")
+                            
+                            if await sell_token(mint, percentage=100, slippage_bps=CONFIG.STOP_EMERGENCY_SLIPPAGE_BPS):
+                                stop_data["state"] = "FILLED"
+                                await send_telegram_alert(f"✅ STOP FILLED mint {mint[:8]}... (emergency slippage)")
+                                break
+                        
+                        stop_data["state"] = "TRIGGERED"  # Reset to triggered to retry
+                        stop_data["stuck_reason"] = "SELL_FAILED"
+                        if time.time() - stop_data.get("last_alert", 0) > CONFIG.STOP_ALERT_EVERY_SEC:
+                            await send_telegram_alert(f"🔴 STOP-LOSS BLOCKED [SELL_FAILED] mint {mint[:8]}...")
+                            stop_data["last_alert"] = time.time()
+                
+                # Check minimum hold time (skip profit targets if stop is triggered)
+                if stop_data["state"] != "TRIGGERED" and is_pumpfun and time_held < min_hold_time:
                     logging.debug(f"[{mint[:8]}] Holding for {min_hold_time/60:.0f} mins minimum (PumpFun)")
-                    await asyncio.sleep(CONFIG.PRICE_CHECK_INTERVAL_SEC)
+                    await asyncio.sleep(CONFIG.STOP_CHECK_INTERVAL_SEC)
                     continue
                 
-                # Check trailing stop
-                if profit_multiplier >= CONFIG.TRAILING_STOP_ACTIVATION:
+                # Check trailing stop (only if stop not triggered)
+                if stop_data["state"] != "TRIGGERED" and profit_multiplier >= CONFIG.TRAILING_STOP_ACTIVATION:
                     drop_from_high = (position["highest_price"] - current_price) / position["highest_price"] * 100
                     if drop_from_high >= CONFIG.TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
                         logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
@@ -1388,72 +1484,64 @@ async def wait_and_auto_sell(mint: str):
                             )
                             break
                 
-                # Check stop loss
-                if profit_percent <= -CONFIG.STOP_LOSS_PERCENT and sell_attempts["stop_loss"] < max_sell_attempts:
-                    sell_attempts["stop_loss"] += 1
-                    logging.info(f"[{mint[:8]}] Stop loss triggered at {profit_percent:.1f}%")
-                    if await sell_token(mint, percentage=100):
-                        await send_telegram_alert(
-                            f"🛑 Stop loss triggered for {mint[:8]}!\n"
-                            f"Loss: {profit_percent:.1f}% (${current_price:.6f})\n"
-                            f"Sold all to minimize losses"
-                        )
-                        break
+                # Check profit targets (only if stop not triggered)
+                if stop_data["state"] != "TRIGGERED":
+                    if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
+                        sell_attempts["profit1"] += 1
+                        if await sell_token(mint, percentage=sell_percents[0]):
+                            position["sold_stages"].add("profit1")
+                            await send_telegram_alert(
+                                f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
+                                f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
+                                f"Sold {sell_percents[0]}% of position\n"
+                                f"Strategy: {strategy_name}"
+                            )
+                    
+                    if profit_multiplier >= targets[1] and "profit2" not in position["sold_stages"] and sell_attempts["profit2"] < max_sell_attempts:
+                        sell_attempts["profit2"] += 1
+                        if await sell_token(mint, percentage=sell_percents[1]):
+                            position["sold_stages"].add("profit2")
+                            await send_telegram_alert(
+                                f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
+                                f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
+                                f"Sold {sell_percents[1]}% of position\n"
+                                f"Strategy: {strategy_name}"
+                            )
+                    
+                    if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
+                        sell_attempts["profit3"] += 1
+                        if await sell_token(mint, percentage=sell_percents[2]):
+                            position["sold_stages"].add("profit3")
+                            await send_telegram_alert(
+                                f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
+                                f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
+                                f"Sold {sell_percents[2]}% - KEEPING MOONBAG!\n"
+                                f"Total profit: {(profit_multiplier-1)*100:.1f}%!\n"
+                                f"Strategy: {strategy_name} - Moonbag held for 100x+ 🚀"
+                            )
                 
-                # Check profit targets
-                if profit_multiplier >= targets[0] and "profit1" not in position["sold_stages"] and sell_attempts["profit1"] < max_sell_attempts:
-                    sell_attempts["profit1"] += 1
-                    if await sell_token(mint, percentage=sell_percents[0]):
-                        position["sold_stages"].add("profit1")
-                        await send_telegram_alert(
-                            f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
-                            f"Sold {sell_percents[0]}% of position\n"
-                            f"Strategy: {strategy_name}"
-                        )
-                
-                if profit_multiplier >= targets[1] and "profit2" not in position["sold_stages"] and sell_attempts["profit2"] < max_sell_attempts:
-                    sell_attempts["profit2"] += 1
-                    if await sell_token(mint, percentage=sell_percents[1]):
-                        position["sold_stages"].add("profit2")
-                        await send_telegram_alert(
-                            f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
-                            f"Sold {sell_percents[1]}% of position\n"
-                            f"Strategy: {strategy_name}"
-                        )
-                
-                if profit_multiplier >= targets[2] and "profit3" not in position["sold_stages"] and sell_attempts["profit3"] < max_sell_attempts:
-                    sell_attempts["profit3"] += 1
-                    if await sell_token(mint, percentage=sell_percents[2]):
-                        position["sold_stages"].add("profit3")
-                        await send_telegram_alert(
-                            f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
-                            f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
-                            f"Sold {sell_percents[2]}% - KEEPING MOONBAG!\n"
-                            f"Total profit: {(profit_multiplier-1)*100:.1f}%!\n"
-                            f"Strategy: {strategy_name} - Moonbag held for 100x+ 🚀"
-                        )
-                        # DON'T BREAK - keep monitoring the moonbag
-                
-                # Log status every minute
+                # Log status periodically
                 if int((time.time() - start_time) % 60) == 0:
+                    stop_status = f"Stop: {stop_data['state']}"
+                    if stop_data.get("stuck_reason"):
+                        stop_status += f" ({stop_data['stuck_reason']})"
+                    
                     logging.info(
                         f"[{mint[:8]}] [{strategy_name}] Price: ${current_price:.6f} ({profit_multiplier:.2f}x) | "
-                        f"High: ${position['highest_price']:.6f} | "
-                        f"Sold stages: {position['sold_stages']}"
+                        f"High: ${position['highest_price']:.6f} | {stop_status} | "
+                        f"Sold: {position['sold_stages']}"
                     )
                 
-                # Only exit if we sold everything (no moonbag scenarios)
+                # Only exit if we sold everything
                 if len(position["sold_stages"]) >= 3 and sell_percents[2] == 100:
                     logging.info(f"[{mint[:8]}] All profit targets hit, position fully closed")
                     break
                     
             except Exception as e:
                 logging.error(f"Error monitoring {mint}: {e}")
-                await asyncio.sleep(CONFIG.PRICE_CHECK_INTERVAL_SEC)
+                await asyncio.sleep(CONFIG.STOP_CHECK_INTERVAL_SEC)
         
-        # Time limit reached - but keep moonbag if we have one
+        # Time limit reached
         if time.time() - start_time >= CONFIG.MAX_HOLD_TIME_SEC:
             if len(position["sold_stages"]) >= 3:
                 logging.info(f"[{mint[:8]}] Max hold time reached, keeping moonbag")
@@ -1469,13 +1557,17 @@ async def wait_and_auto_sell(mint: str):
                         f"Strategy used: {strategy_name}"
                     )
         
-        # Clean up position ONLY if fully sold
+        # Clean up
+        if mint in STOPS:
+            del STOPS[mint]
         if mint in OPEN_POSITIONS and len(position.get("sold_stages", set())) >= 3 and sell_percents[2] == 100:
             del OPEN_POSITIONS[mint]
             
     except Exception as e:
         logging.error(f"Auto-sell error for {mint}: {e}")
         await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
+        if mint in STOPS:
+            del STOPS[mint]
         if mint in OPEN_POSITIONS:
             del OPEN_POSITIONS[mint]
 
@@ -1610,7 +1702,7 @@ __all__ = [
     'start_bot',
     'stop_bot',
     'keypair',
-    'BUY_AMOUNT_SOL',  # Added for backward compatibility
+    'BUY_AMOUNT_SOL',
     'BROKEN_TOKENS',
     'mark_broken_token',
     'daily_stats_reset_loop',
@@ -1636,10 +1728,12 @@ __all__ = [
     'wait_and_auto_sell_timer_based',
     'get_dynamic_position_size',
     'get_minimum_liquidity_required',
-    'USE_DYNAMIC_SIZING',  # Added for backward compatibility
+    'USE_DYNAMIC_SIZING',
     'evaluate_pumpfun_opportunity',
     'is_fresh_token',
     'verify_token_age_on_chain',
     'is_pumpfun_launch',
-    'CONFIG'  # Export CONFIG for use in other modules
+    'CONFIG',
+    'register_stop',
+    'STOPS'
 ]
