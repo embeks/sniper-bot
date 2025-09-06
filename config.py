@@ -53,6 +53,20 @@ class Config:
     SCALE_WITH_BALANCE: bool
     MIGRATION_BOOST_MULTIPLIER: float
     TRENDING_BOOST_MULTIPLIER: float
+    # Pre-trade safety
+    MIN_LP_SOL: float
+    REQUIRE_AUTH_RENOUNCED: bool
+    MAX_TRADE_TAX_BPS: int
+    # Stop-loss engine
+    STOP_LOSS_PCT: float
+    STOP_CHECK_INTERVAL_SEC: int
+    STOP_MAX_SLIPPAGE_BPS: int
+    STOP_MIN_OUT_BPS_FLOOR: int
+    STOP_ALERT_EVERY_SEC: int
+    ROUTE_AMOUNT_MODE: str
+    # Health checks
+    JUPITER_QUOTE_BASE_URL: str
+    ROUTE_TIMEOUT_SEC: int
 
 def load() -> Config:
     return Config(
@@ -93,4 +107,18 @@ def load() -> Config:
         SCALE_WITH_BALANCE=_b("SCALE_WITH_BALANCE", True),
         MIGRATION_BOOST_MULTIPLIER=_f("MIGRATION_BOOST_MULTIPLIER", 2.0),
         TRENDING_BOOST_MULTIPLIER=_f("TRENDING_BOOST_MULTIPLIER", 1.5),
+        # Pre-trade safety
+        MIN_LP_SOL=_f("MIN_LP_SOL", 1.0),
+        REQUIRE_AUTH_RENOUNCED=_b("REQUIRE_AUTH_RENOUNCED", True),
+        MAX_TRADE_TAX_BPS=_i("MAX_TRADE_TAX_BPS", 300),
+        # Stop-loss engine
+        STOP_LOSS_PCT=_f("STOP_LOSS_PCT", 0.30),
+        STOP_CHECK_INTERVAL_SEC=_i("STOP_CHECK_INTERVAL_SEC", 2),
+        STOP_MAX_SLIPPAGE_BPS=_i("STOP_MAX_SLIPPAGE_BPS", 200),
+        STOP_MIN_OUT_BPS_FLOOR=_i("STOP_MIN_OUT_BPS_FLOOR", 10),
+        STOP_ALERT_EVERY_SEC=_i("STOP_ALERT_EVERY_SEC", 30),
+        ROUTE_AMOUNT_MODE=os.getenv("ROUTE_AMOUNT_MODE", "POSITION"),
+        # Health checks
+        JUPITER_QUOTE_BASE_URL=os.getenv("JUPITER_QUOTE_BASE_URL", "https://quote-api.jup.ag/v6/quote"),
+        ROUTE_TIMEOUT_SEC=_i("ROUTE_TIMEOUT_SEC", 20),
     )
