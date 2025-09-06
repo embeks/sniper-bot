@@ -1,7 +1,7 @@
-# integrate_monster.py - MEDIUM VERSION WITH USEFUL FEATURES ONLY
+# integrate_monster.py - MEDIUM VERSION WITH CONFIG INTEGRATION
 """
-Optimized integration - Keeps useful features, removes broken/fake ones
-Uses only utils.buy_token, includes caching and position sizing
+Optimized integration - Uses config.py, no env mutations
+Uses only utils.buy_token with explicit amounts
 """
 
 import asyncio
@@ -16,6 +16,9 @@ import httpx
 import certifi
 from datetime import datetime, timedelta
 from collections import deque
+
+# Import config
+import config
 
 # Import core modules
 from sniper_logic import (
@@ -32,10 +35,13 @@ from utils import (
     is_bot_running, start_bot, stop_bot, 
     get_wallet_summary, get_bot_status_message,
     get_liquidity_and_ownership,
-    USE_DYNAMIC_SIZING, get_dynamic_position_size
+    get_dynamic_position_size
 )
 
 load_dotenv()
+
+# Load config once
+CONFIG = config.load()
 
 # ============================================
 # CONFIGURATION
@@ -47,10 +53,11 @@ def log_configuration():
         ("MOMENTUM_MIN_LIQUIDITY", os.getenv("MOMENTUM_MIN_LIQUIDITY", "500")),
         ("MOMENTUM_MIN_1H_GAIN", os.getenv("MOMENTUM_MIN_1H_GAIN", "30")),
         ("MIN_SCORE_AUTO_BUY", os.getenv("MIN_SCORE_AUTO_BUY", "2")),
-        ("RUG_LP_THRESHOLD", os.getenv("RUG_LP_THRESHOLD", "1.0")),
-        ("BUY_AMOUNT_SOL", os.getenv("BUY_AMOUNT_SOL", "0.03")),
-        ("USE_DYNAMIC_SIZING", os.getenv("USE_DYNAMIC_SIZING", "true")),
+        ("RUG_LP_THRESHOLD", str(CONFIG.RUG_LP_THRESHOLD)),
+        ("BUY_AMOUNT_SOL", str(CONFIG.BUY_AMOUNT_SOL)),
+        ("USE_DYNAMIC_SIZING", str(CONFIG.USE_DYNAMIC_SIZING)),
         ("POOL_SCAN_LIMIT", os.getenv("POOL_SCAN_LIMIT", "20")),
+        ("CACHE_TTL_SECONDS", str(CONFIG.CACHE_TTL_SECONDS)),
         ("HELIUS_API", "SET" if os.getenv("HELIUS_API") else "NOT SET")
     ]
     
@@ -110,7 +117,7 @@ class SimplePositionSizer:
         if force_amount:
             return force_amount
         
-        base_amount = float(os.getenv("BUY_AMOUNT_SOL", "0.03"))
+        base_amount = CONFIG.BUY_AMOUNT_SOL
         
         # Simple liquidity-based sizing
         if pool_liquidity_sol < 1:
@@ -185,10 +192,10 @@ class PerformanceTracker:
 # SMART BUY WRAPPER
 # ============================================
 
-async def smart_buy_token(mint: str, force_amount: Optional[float] = None) -> bool:
+async def smart_buy_token(mint: str, amount: Optional[float] = None) -> bool:
     """
     Wrapper around utils.buy_token that adds caching and position sizing
-    This is NOT a duplicate buy function - it calls utils.buy_token
+    This is NOT a duplicate buy function - it calls utils.buy_token with explicit amount
     """
     try:
         # Check cache first
@@ -200,37 +207,30 @@ async def smart_buy_token(mint: str, force_amount: Optional[float] = None) -> bo
             if pool_data:
                 pool_cache.set(mint, pool_data)
         
-        # Determine position size
-        if USE_DYNAMIC_SIZING and not force_amount:
-            # Use dynamic sizing from utils if enabled
-            pool_liquidity = pool_data.get("liquidity", 0) if pool_data else 0
-            amount = await get_dynamic_position_size(mint, pool_liquidity)
-        else:
-            # Use simple sizing
-            pool_liquidity = pool_data.get("liquidity", 0) if pool_data else 0
-            amount = position_sizer.get_size(pool_liquidity, force_amount)
+        pool_liquidity = pool_data.get("liquidity", 0) if pool_data else 0
         
-        # Log the attempt
-        logging.info(f"[BUY] Attempting {mint[:8]}... with {amount:.3f} SOL (LP: {pool_liquidity:.1f})")
+        # Determine position size if not provided
+        if amount is None:
+            if CONFIG.USE_DYNAMIC_SIZING:
+                # Use dynamic sizing from utils if enabled
+                amount = await get_dynamic_position_size(mint, pool_liquidity)
+            else:
+                # Use simple sizing
+                amount = position_sizer.get_size(pool_liquidity)
         
-        # Override environment variable temporarily
-        original_amount = os.environ.get("BUY_AMOUNT_SOL")
-        os.environ["BUY_AMOUNT_SOL"] = str(amount)
+        # Log the attempt with explicit amount
+        logging.info(f"[SMART BUY] Attempting {mint[:8]}... with explicit amount: {amount:.3f} SOL (LP: {pool_liquidity:.1f})")
         
-        # Call the actual buy function from utils
-        result = await buy_token(mint)
-        
-        # Restore original amount
-        if original_amount:
-            os.environ["BUY_AMOUNT_SOL"] = original_amount
+        # Call the actual buy function from utils with explicit amount
+        result = await buy_token(mint, amount=amount)
         
         # Track the trade
         if result:
             tracker.record_trade(mint, amount, 0)  # Profit tracked later
             await send_telegram_alert(
-                f"✅ BUY SUCCESS\n"
+                f"✅ BUY SUCCESS via smart_buy\n"
                 f"Token: {mint[:8]}...\n"
-                f"Amount: {amount:.3f} SOL\n"
+                f"Amount: {amount:.3f} SOL (explicit)\n"
                 f"Liquidity: {pool_liquidity:.1f} SOL"
             )
         
@@ -238,14 +238,15 @@ async def smart_buy_token(mint: str, force_amount: Optional[float] = None) -> bo
         
     except Exception as e:
         logging.error(f"[SMART BUY] Error: {e}")
-        # Fallback to direct buy_token
-        return await buy_token(mint)
+        # Fallback to direct buy_token with explicit amount
+        fallback_amount = amount if amount is not None else CONFIG.BUY_AMOUNT_SOL
+        return await buy_token(mint, amount=fallback_amount)
 
 # ============================================
 # INITIALIZE COMPONENTS
 # ============================================
 
-pool_cache = PoolCache(ttl_seconds=60)
+pool_cache = PoolCache(ttl_seconds=CONFIG.CACHE_TTL_SECONDS)
 position_sizer = SimplePositionSizer()
 tracker = PerformanceTracker()
 
@@ -267,7 +268,8 @@ async def health_check():
         "win_rate": f"{tracker.get_win_rate():.1f}%",
         "profit": f"{tracker.total_profit_sol:.3f} SOL",
         "uptime": f"{uptime_hours:.1f} hours",
-        "cached_pools": len(pool_cache.cache)
+        "cached_pools": len(pool_cache.cache),
+        "cache_ttl": CONFIG.CACHE_TTL_SECONDS
     }
 
 @app.get("/status")
@@ -283,8 +285,11 @@ async def status():
         "today_wins": daily["wins"],
         "today_profit": f"{daily['profit']:.3f} SOL",
         "cached_pools": len(pool_cache.cache),
+        "cache_ttl": CONFIG.CACHE_TTL_SECONDS,
         "pumpfun_tracking": len(pumpfun_tokens),
-        "migration_watch": len(migration_watch_list)
+        "migration_watch": len(migration_watch_list),
+        "buy_amount": CONFIG.BUY_AMOUNT_SOL,
+        "dynamic_sizing": CONFIG.USE_DYNAMIC_SIZING
     }
 
 @app.post("/webhook")
@@ -330,7 +335,7 @@ async def telegram_webhook(request: Request):
             perf_msg += f"• Win Rate: {tracker.get_win_rate():.1f}%\n"
             perf_msg += f"• Total Profit: {tracker.total_profit_sol:.3f} SOL\n"
             perf_msg += f"• Today: {daily['trades']} trades, {daily['wins']} wins\n"
-            perf_msg += f"• Cached Pools: {len(pool_cache.cache)}\n"
+            perf_msg += f"• Cached Pools: {len(pool_cache.cache)} (TTL: {CONFIG.CACHE_TTL_SECONDS}s)\n"
             perf_msg += f"• PumpFun Tracking: {len(pumpfun_tokens)}"
             
             await send_telegram_alert(f"{status_msg}{perf_msg}")
@@ -341,13 +346,13 @@ async def telegram_webhook(request: Request):
                 mint = parts[1].strip()
                 amount = float(parts[2]) if len(parts) >= 3 else None
                 
-                await send_telegram_alert(f"🚨 Force buying: {mint[:8]}...")
+                await send_telegram_alert(f"🚨 Force buying: {mint[:8]}... with amount: {amount or 'default'}")
                 
-                # Use smart buy with force amount
-                result = await smart_buy_token(mint, amount)
+                # Use smart buy with explicit amount
+                result = await smart_buy_token(mint, amount=amount)
                 
                 if result:
-                    await send_telegram_alert("✅ Force buy successful!")
+                    await send_telegram_alert(f"✅ Force buy successful! Amount used: {amount or CONFIG.BUY_AMOUNT_SOL} SOL")
                 else:
                     await send_telegram_alert("❌ Force buy failed")
                 
@@ -368,10 +373,12 @@ async def telegram_webhook(request: Request):
 Min Liquidity: ${os.getenv('MOMENTUM_MIN_LIQUIDITY', '500')}
 Min 1H Gain: {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}%
 Auto-buy Score: {os.getenv('MIN_SCORE_AUTO_BUY', '2')}+
-LP Threshold: {os.getenv('RUG_LP_THRESHOLD', '1.0')} SOL
-Buy Amount: {os.getenv('BUY_AMOUNT_SOL', '0.03')} SOL
-Dynamic Sizing: {USE_DYNAMIC_SIZING}
-Cache TTL: {pool_cache.ttl}s
+LP Threshold: {CONFIG.RUG_LP_THRESHOLD} SOL
+Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL
+Dynamic Sizing: {CONFIG.USE_DYNAMIC_SIZING}
+Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s
+Force Jupiter Sell: {CONFIG.FORCE_JUPITER_SELL}
+Simulate Before Send: {CONFIG.SIMULATE_BEFORE_SEND}
 """
             await send_telegram_alert(config_msg)
             
@@ -395,7 +402,7 @@ Cache TTL: {pool_cache.ttl}s
 /stop - Stop bot
 /status - Get detailed status
 /wallet - Check wallet
-/forcebuy <MINT> [amount] - Buy token
+/forcebuy <MINT> [amount] - Buy token with explicit amount
 /launch - Launch all snipers
 /config - Show configuration
 /recent - Show recent trades
@@ -432,13 +439,15 @@ async def start_bot_tasks():
         f"• Min Liquidity: ${os.getenv('MOMENTUM_MIN_LIQUIDITY', '500')}\n"
         f"• Min Gain: {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}%\n"
         f"• Auto-buy: Score {os.getenv('MIN_SCORE_AUTO_BUY', '2')}+\n"
-        f"• LP Threshold: {os.getenv('RUG_LP_THRESHOLD', '1.0')} SOL\n"
-        f"• Pool Cache: {pool_cache.ttl}s TTL\n\n"
+        f"• LP Threshold: {CONFIG.RUG_LP_THRESHOLD} SOL\n"
+        f"• Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL\n"
+        f"• Pool Cache: {CONFIG.CACHE_TTL_SECONDS}s TTL\n\n"
         "Features:\n"
         "✅ Smart position sizing\n"
         "✅ Pool data caching\n"
         "✅ Performance tracking\n"
-        "✅ Using utils.buy_token only\n\n"
+        "✅ Using utils.buy_token with explicit amounts\n"
+        "✅ No env mutations\n\n"
         "Initializing..."
     )
     
@@ -486,8 +495,9 @@ async def start_bot_tasks():
     await send_telegram_alert(
         f"🚀 BOT READY 🚀\n\n"
         f"Active Tasks: {len(tasks)}\n"
-        f"Buy Function: utils.buy_token\n"
-        f"Position Sizing: {'Dynamic' if USE_DYNAMIC_SIZING else 'Simple'}\n\n"
+        f"Buy Function: utils.buy_token with explicit amounts\n"
+        f"Position Sizing: {'Dynamic' if CONFIG.USE_DYNAMIC_SIZING else 'Simple'}\n"
+        f"Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s\n\n"
         f"Hunting for profits... 💰"
     )
     
@@ -523,6 +533,7 @@ Today's Stats:
 
 Current Balance: {balance:.3f} SOL
 Cached Pools: {len(pool_cache.cache)}
+Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s
 Uptime: {(time.time() - tracker.start_time) / 3600:.1f}h
 
 Status: {"🟢 PROFITABLE" if session_pnl > 0 else "🔴 BUILDING"}
@@ -560,13 +571,13 @@ async def run_bot():
             logging.error(f"Webhook setup failed: {e}")
     
     port = int(os.getenv("PORT", 10000))
-    config = uvicorn.Config(
+    config_obj = uvicorn.Config(
         app, 
         host="0.0.0.0", 
         port=port,
         log_level="warning"
     )
-    server = uvicorn.Server(config)
+    server = uvicorn.Server(config_obj)
     
     logging.info(f"Starting web server on port {port}")
     await server.serve()
@@ -582,24 +593,26 @@ async def main():
         print("ERROR: SOLANA_PRIVATE_KEY not set")
         return
     
-    print("""
+    print(f"""
 ╔════════════════════════════════════════╗
-║   OPTIMIZED BOT v2.0 (MEDIUM)         ║
+║   OPTIMIZED BOT v2.0 (WITH CONFIG)    ║
 ║                                        ║
 ║  Features:                             ║
 ║  • Uses utils.buy_token only           ║
+║  • Explicit amount parameters         ║
+║  • No env mutations                    ║
+║  • Config-based settings              ║
 ║  • Smart position sizing               ║
-║  • Pool data caching (60s)            ║
+║  • Pool data caching ({CONFIG.CACHE_TTL_SECONDS}s)     ║
 ║  • Performance tracking                ║
-║  • No blocking risk management         ║
-║  • Lower thresholds for more trades   ║
+║  • Jupiter-only sells with validation  ║
 ║                                        ║
 ║  Ready for profitable operation! 🚀    ║
 ╚════════════════════════════════════════╝
     """)
     
     logging.info("=" * 50)
-    logging.info("STARTING OPTIMIZED BOT")
+    logging.info("STARTING OPTIMIZED BOT WITH CONFIG")
     logging.info("=" * 50)
     
     await run_bot()
