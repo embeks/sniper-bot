@@ -82,6 +82,14 @@ class Config:
     STOP_ALERT_EVERY_SEC: int
     ROUTE_AMOUNT_MODE: str
     
+    # Alert switches
+    ALERT_ON_BUY: bool
+    ALERT_ON_SELL: bool
+    ALERT_ON_STOP_TRIGGER: bool
+    ALERT_ON_STOP_FILLED: bool
+    ALERT_ON_STOP_BLOCKED: bool
+    ALERT_ON_BLOCKED_BUY: bool
+    
     # API endpoints
     JUPITER_QUOTE_BASE_URL: str
     JUPITER_SWAP_URL: str
@@ -164,6 +172,14 @@ def load() -> Config:
         STOP_MIN_OUT_BPS_FLOOR=_i("STOP_MIN_OUT_BPS_FLOOR", 10),
         STOP_ALERT_EVERY_SEC=_i("STOP_ALERT_EVERY_SEC", 30),
         ROUTE_AMOUNT_MODE=os.getenv("ROUTE_AMOUNT_MODE", "POSITION"),
+        
+        # Alert switches
+        ALERT_ON_BUY=_b("ALERT_ON_BUY", True),
+        ALERT_ON_SELL=_b("ALERT_ON_SELL", True),
+        ALERT_ON_STOP_TRIGGER=_b("ALERT_ON_STOP_TRIGGER", True),
+        ALERT_ON_STOP_FILLED=_b("ALERT_ON_STOP_FILLED", True),
+        ALERT_ON_STOP_BLOCKED=_b("ALERT_ON_STOP_BLOCKED", True),
+        ALERT_ON_BLOCKED_BUY=_b("ALERT_ON_BLOCKED_BUY", False),
         
         # API endpoints
         JUPITER_QUOTE_BASE_URL=os.getenv("JUPITER_QUOTE_BASE_URL", "https://quote-api.jup.ag/v6/quote"),
