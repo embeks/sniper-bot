@@ -82,13 +82,8 @@ class Config:
     STOP_ALERT_EVERY_SEC: int
     ROUTE_AMOUNT_MODE: str
     
-    # Alert switches
-    ALERT_ON_BUY: bool
-    ALERT_ON_SELL: bool
-    ALERT_ON_STOP_TRIGGER: bool
-    ALERT_ON_STOP_FILLED: bool
-    ALERT_ON_STOP_BLOCKED: bool
-    ALERT_ON_BLOCKED_BUY: bool
+    # Alert switches - NEW CONSOLIDATED CONFIG
+    ALERTS_NOTIFY: dict
     
     # API endpoints
     JUPITER_QUOTE_BASE_URL: str
@@ -106,6 +101,20 @@ class Config:
     BLACKLISTED_TOKENS: str
 
 def load() -> Config:
+    # Parse alert config from env or use defaults
+    alerts_notify = {
+        "startup": _b("ALERT_STARTUP", True),
+        "buy": _b("ALERT_ON_BUY", True),
+        "sell": _b("ALERT_ON_SELL", True),
+        "stop_triggered": _b("ALERT_ON_STOP_TRIGGER", True),
+        "stop_filled": _b("ALERT_ON_STOP_FILLED", True),
+        "blocked": _b("ALERT_ON_BLOCKED", False),
+        "attempt": _b("ALERT_ON_ATTEMPT", False),
+        "skip": _b("ALERT_ON_SKIP", False),
+        "error": _b("ALERT_ON_ERROR", False),
+        "cooldown_secs": _i("ALERT_COOLDOWN_SECS", 60)
+    }
+    
     return Config(
         # Core settings
         BUY_AMOUNT_SOL=_f("BUY_AMOUNT_SOL", 0.1),
@@ -174,12 +183,7 @@ def load() -> Config:
         ROUTE_AMOUNT_MODE=os.getenv("ROUTE_AMOUNT_MODE", "POSITION"),
         
         # Alert switches
-        ALERT_ON_BUY=_b("ALERT_ON_BUY", True),
-        ALERT_ON_SELL=_b("ALERT_ON_SELL", True),
-        ALERT_ON_STOP_TRIGGER=_b("ALERT_ON_STOP_TRIGGER", True),
-        ALERT_ON_STOP_FILLED=_b("ALERT_ON_STOP_FILLED", True),
-        ALERT_ON_STOP_BLOCKED=_b("ALERT_ON_STOP_BLOCKED", True),
-        ALERT_ON_BLOCKED_BUY=_b("ALERT_ON_BLOCKED_BUY", False),
+        ALERTS_NOTIFY=alerts_notify,
         
         # API endpoints
         JUPITER_QUOTE_BASE_URL=os.getenv("JUPITER_QUOTE_BASE_URL", "https://quote-api.jup.ag/v6/quote"),
