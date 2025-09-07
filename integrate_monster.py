@@ -32,7 +32,8 @@ from sniper_logic import (
 from utils import (
     buy_token,  # THE ONLY BUY FUNCTION WE USE
     register_stop,  # ARM STOP-LOSS AFTER BUY
-    send_telegram_alert,
+    notify,  # NEW GATED NOTIFICATION FUNCTION
+    send_telegram_alert,  # For startup messages only
     keypair, rpc,
     is_bot_running, start_bot, stop_bot, 
     get_wallet_summary, get_bot_status_message,
@@ -65,7 +66,8 @@ def log_configuration():
         ("STOP_CHECK_INTERVAL", f"{CONFIG.STOP_CHECK_INTERVAL_SEC}s"),
         ("REQUIRE_AUTH_RENOUNCED", str(CONFIG.REQUIRE_AUTH_RENOUNCED)),
         ("MAX_TRADE_TAX_BPS", f"{CONFIG.MAX_TRADE_TAX_BPS/100:.1f}%"),
-        ("HELIUS_API", "SET" if os.getenv("HELIUS_API") else "NOT SET")
+        ("HELIUS_API", "SET" if os.getenv("HELIUS_API") else "NOT SET"),
+        ("ALERTS", f"Buy: {CONFIG.ALERTS_NOTIFY['buy']}, Sell: {CONFIG.ALERTS_NOTIFY['sell']}, Stop: {CONFIG.ALERTS_NOTIFY['stop_triggered']}/{CONFIG.ALERTS_NOTIFY['stop_filled']}")
     ]
     
     logging.info("=" * 60)
@@ -77,6 +79,7 @@ def log_configuration():
     
     logging.info("BUY FUNCTION: utils.buy_token with pre-trade validation")
     logging.info("STOP-LOSS: Armed immediately on buy")
+    logging.info("ALERTS: Using gated notify() with cooldowns")
     logging.info("=" * 60)
 
 # ============================================
@@ -239,19 +242,8 @@ async def smart_buy_token(mint: str, amount: Optional[float] = None) -> bool:
         if result:
             tracker.record_trade(mint, amount, 0)  # Profit tracked later
             
-            # Get entry price for logging
-            entry_price = await get_token_price_usd(mint)
-            stop_price = entry_price * (1 - CONFIG.STOP_LOSS_PCT) if entry_price else 0
-            
-            await send_telegram_alert(
-                f"✅ BUY SUCCESS via smart_buy\n"
-                f"Token: {mint[:8]}...\n"
-                f"Amount: {amount:.3f} SOL (explicit)\n"
-                f"Liquidity: {pool_liquidity:.1f} SOL\n"
-                f"Entry: ${entry_price:.6f if entry_price else 'Unknown'}\n"
-                f"Stop Armed: ${stop_price:.6f if stop_price else 'Pending'}\n"
-                f"Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}% protection active"
-            )
+            # Additional success notification if needed (buy_token already notifies)
+            logging.info(f"[SMART BUY] Success! Stop-loss armed for {mint[:8]}...")
         
         return result
         
@@ -272,24 +264,19 @@ async def handle_forcebuy(mint: str, amount: Optional[float] = None) -> bool:
         result = await smart_buy_token(mint, amount=amount)
         
         if result:
-            # Additional logging for forcebuy
+            # Check if stop was armed
             if mint in STOPS:
                 stop_data = STOPS[mint]
-                await send_telegram_alert(
-                    f"✅ Force buy successful!\n"
-                    f"Amount used: {amount or CONFIG.BUY_AMOUNT_SOL} SOL\n"
-                    f"Stop-loss armed @ ${stop_data['stop_price']:.6f}"
-                )
+                logging.info(f"Force buy successful with stop-loss @ ${stop_data['stop_price']:.6f}")
             else:
-                await send_telegram_alert(f"✅ Force buy successful! Amount: {amount or CONFIG.BUY_AMOUNT_SOL} SOL")
+                logging.info(f"Force buy successful! Amount: {amount or CONFIG.BUY_AMOUNT_SOL} SOL")
         else:
-            await send_telegram_alert("❌ Force buy failed")
+            logging.error("Force buy failed")
         
         return result
         
     except Exception as e:
         logging.error(f"Forcebuy error: {e}")
-        await send_telegram_alert(f"❌ Force buy error: {e}")
         return False
 
 # ============================================
@@ -347,7 +334,12 @@ async def status():
         "migration_watch": len(migration_watch_list),
         "buy_amount": CONFIG.BUY_AMOUNT_SOL,
         "min_lp_sol": CONFIG.MIN_LP_SOL,
-        "dynamic_sizing": CONFIG.USE_DYNAMIC_SIZING
+        "dynamic_sizing": CONFIG.USE_DYNAMIC_SIZING,
+        "alerts_enabled": {
+            "buy": CONFIG.ALERTS_NOTIFY.get("buy", False),
+            "sell": CONFIG.ALERTS_NOTIFY.get("sell", False),
+            "stop": CONFIG.ALERTS_NOTIFY.get("stop_triggered", False)
+        }
     }
 
 @app.post("/webhook")
@@ -406,10 +398,13 @@ async def telegram_webhook(request: Request):
                 mint = parts[1].strip()
                 amount = float(parts[2]) if len(parts) >= 3 else None
                 
-                await send_telegram_alert(f"🚨 Force buying: {mint[:8]}... with amount: {amount or 'default'}")
+                logging.info(f"Force buying: {mint[:8]}... with amount: {amount or 'default'}")
                 
                 # Use smart buy with stop-loss
                 result = await handle_forcebuy(mint, amount=amount)
+                
+                if not result:
+                    await send_telegram_alert("❌ Force buy failed")
                 
         elif text == "/wallet":
             summary = get_wallet_summary()
@@ -454,12 +449,17 @@ Stop-Loss Engine:
 • Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}%
 • Check Interval: {CONFIG.STOP_CHECK_INTERVAL_SEC}s
 • Max Slippage: {CONFIG.STOP_MAX_SLIPPAGE_BPS/100:.1f}%
-• Alert Every: {CONFIG.STOP_ALERT_EVERY_SEC}s
-• Route Timeout: {CONFIG.ROUTE_TIMEOUT_SEC}s
+• Emergency: {CONFIG.STOP_EMERGENCY_SLIPPAGE_BPS/100:.1f}%
+
+Alerts:
+• Buy: {CONFIG.ALERTS_NOTIFY.get('buy', False)}
+• Sell: {CONFIG.ALERTS_NOTIFY.get('sell', False)}
+• Stop Trigger: {CONFIG.ALERTS_NOTIFY.get('stop_triggered', False)}
+• Stop Fill: {CONFIG.ALERTS_NOTIFY.get('stop_filled', False)}
+• Cooldown: {CONFIG.ALERTS_NOTIFY.get('cooldown_secs', 60)}s
 
 Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s
-Force Jupiter Sell: {CONFIG.FORCE_JUPITER_SELL}
-Simulate Before Send: {CONFIG.SIMULATE_BEFORE_SEND}
+Force Jupiter: {CONFIG.FORCE_JUPITER_SELL}
 """
             await send_telegram_alert(config_msg)
             
@@ -515,25 +515,22 @@ async def start_bot_tasks():
     except:
         pass
     
-    await send_telegram_alert(
-        "💰 BOT STARTING WITH STOP-LOSS ENGINE 💰\n\n"
-        f"Configuration:\n"
-        f"• Min Liquidity: {CONFIG.MIN_LP_SOL} SOL\n"
-        f"• Min Gain: {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}%\n"
-        f"• Auto-buy: Score {os.getenv('MIN_SCORE_AUTO_BUY', '2')}+\n"
-        f"• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}%\n"
-        f"• Check Interval: {CONFIG.STOP_CHECK_INTERVAL_SEC}s\n"
-        f"• Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL\n"
-        f"• Pool Cache: {CONFIG.CACHE_TTL_SECONDS}s TTL\n\n"
-        "Features:\n"
-        "✅ Pre-trade validation\n"
-        "✅ Automatic stop-loss on buy\n"
-        "✅ Structured alerts\n"
-        "✅ Smart position sizing\n"
-        "✅ Pool data caching\n"
-        "✅ Performance tracking\n\n"
-        "Initializing..."
-    )
+    # Single startup message
+    if CONFIG.ALERTS_NOTIFY.get("startup", True):
+        await send_telegram_alert(
+            "💰 BOT STARTING WITH STOP-LOSS ENGINE 💰\n\n"
+            f"Configuration:\n"
+            f"• Min LP: {CONFIG.MIN_LP_SOL} SOL\n"
+            f"• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}%\n"
+            f"• Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL\n"
+            f"• Alerts: Buy={CONFIG.ALERTS_NOTIFY['buy']}, Sell={CONFIG.ALERTS_NOTIFY['sell']}, Stop={CONFIG.ALERTS_NOTIFY['stop_triggered']}\n\n"
+            "Features:\n"
+            "✅ Pre-trade validation\n"
+            "✅ Automatic stop-loss on buy\n"
+            "✅ Minimal alerts (cooldown: {CONFIG.ALERTS_NOTIFY.get('cooldown_secs', 60)}s)\n"
+            "✅ Smart position sizing\n\n"
+            "Initializing..."
+        )
     
     tasks = []
     
@@ -550,23 +547,20 @@ async def start_bot_tasks():
         from momentum_scanner import momentum_scanner
         if os.getenv("MOMENTUM_SCANNER", "true").lower() == "true":
             tasks.append(asyncio.create_task(momentum_scanner()))
-            await send_telegram_alert(
-                f"🔥 Momentum Scanner: ACTIVE\n"
-                f"Targeting {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}-300% gainers"
-            )
+            logging.info(f"Momentum Scanner: ACTIVE (targeting {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}-300% gainers)")
     except Exception as e:
         logging.warning(f"Momentum scanner not available: {e}")
     
     # PumpFun monitor
     if os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true":
         tasks.append(asyncio.create_task(pumpfun_migration_monitor()))
-        await send_telegram_alert("🎯 PumpFun Migration Monitor: ACTIVE")
+        logging.info("PumpFun Migration Monitor: ACTIVE")
     
     # DexScreener
     try:
         from dexscreener_monitor import start_dexscreener_monitor
         tasks.append(asyncio.create_task(start_dexscreener_monitor()))
-        await send_telegram_alert("📊 DexScreener Monitor: ACTIVE")
+        logging.info("DexScreener Monitor: ACTIVE")
     except:
         pass
     
@@ -579,15 +573,14 @@ async def start_bot_tasks():
     # Stop-loss monitor
     tasks.append(asyncio.create_task(stop_loss_monitor()))
     
-    await send_telegram_alert(
-        f"🚀 BOT READY WITH STOP-LOSS 🚀\n\n"
-        f"Active Tasks: {len(tasks)}\n"
-        f"Pre-Trade Validation: ENABLED\n"
-        f"Stop-Loss Engine: ARMED\n"
-        f"Position Sizing: {'Dynamic' if CONFIG.USE_DYNAMIC_SIZING else 'Simple'}\n"
-        f"Cache TTL: {CONFIG.CACHE_TTL_SECONDS}s\n\n"
-        f"Hunting for profits with protection... 💰🛑"
-    )
+    # Final ready message
+    if CONFIG.ALERTS_NOTIFY.get("startup", True):
+        await send_telegram_alert(
+            f"🚀 BOT READY 🚀\n\n"
+            f"Active Tasks: {len(tasks)}\n"
+            f"Stop-Loss: ARMED\n"
+            f"Hunting for profits with protection... 💰🛑"
+        )
     
     await asyncio.gather(*tasks)
 
@@ -605,15 +598,9 @@ async def stop_loss_monitor():
                                 stuck_stops.append((mint, time_stuck, stop_data.get("stuck_reason", "UNKNOWN")))
                 
                 if stuck_stops:
-                    alert_msg = "⚠️ STUCK STOP-LOSSES:\n"
+                    # Log internally but don't spam alerts
                     for mint, time_stuck, reason in stuck_stops[:5]:
-                        alert_msg += f"• {mint[:8]}... - {time_stuck:.0f}s ({reason})\n"
-                    
-                    logging.warning(alert_msg)
-                    # Only alert every CONFIG.STOP_ALERT_EVERY_SEC
-                    if not hasattr(stop_loss_monitor, "last_alert") or time.time() - stop_loss_monitor.last_alert > CONFIG.STOP_ALERT_EVERY_SEC:
-                        await send_telegram_alert(alert_msg)
-                        stop_loss_monitor.last_alert = time.time()
+                        logging.warning(f"Stuck stop-loss: {mint[:8]}... - {time_stuck:.0f}s ({reason})")
             
             await asyncio.sleep(30)  # Check every 30 seconds
             
@@ -635,7 +622,9 @@ async def performance_monitor():
             
             daily = tracker.get_daily_summary()
             
-            report = f"""
+            # Only send if there's activity
+            if tracker.trades_executed > 0:
+                report = f"""
 📊 HOURLY REPORT 📊
 
 Session Stats:
@@ -652,16 +641,12 @@ Today's Stats:
 
 Stop-Loss Status:
 • Active Stops: {len(STOPS)}
-• Stop Level: {CONFIG.STOP_LOSS_PCT*100:.0f}%
-• Check Interval: {CONFIG.STOP_CHECK_INTERVAL_SEC}s
 
 Current Balance: {balance:.3f} SOL
-Cached Pools: {len(pool_cache.cache)}
-Uptime: {(time.time() - tracker.start_time) / 3600:.1f}h
-
 Status: {"🟢 PROFITABLE" if session_pnl > 0 else "🔴 BUILDING"}
 """
-            await send_telegram_alert(report)
+                # Use regular send_telegram_alert for periodic reports
+                await send_telegram_alert(report)
             
         except Exception as e:
             logging.error(f"Performance monitor error: {e}")
@@ -718,13 +703,13 @@ async def main():
     
     print(f"""
 ╔════════════════════════════════════════╗
-║   OPTIMIZED BOT v3.0 (STOP-LOSS)      ║
+║   OPTIMIZED BOT v3.1 (QUIET MODE)     ║
 ║                                        ║
 ║  Features:                             ║
 ║  • Pre-trade validation                ║
 ║  • Automatic stop-loss on buy          ║
 ║  • Reliable stop monitoring            ║
-║  • Structured alerts                   ║
+║  • MINIMAL ALERTS (gated + cooldowns)  ║
 ║  • Smart position sizing               ║
 ║  • Pool data caching ({CONFIG.CACHE_TTL_SECONDS}s)     ║
 ║  • Performance tracking                ║
@@ -734,14 +719,19 @@ async def main():
 ║  • {CONFIG.STOP_LOSS_PCT*100:.0f}% stop-loss level           ║
 ║  • {CONFIG.STOP_CHECK_INTERVAL_SEC}s check interval           ║
 ║  • Automatic arming on buy             ║
-║  • Failure alerts with reasons         ║
+║                                        ║
+║  Alerts Active:                        ║
+║  • Buy: {str(CONFIG.ALERTS_NOTIFY.get('buy', False)):5}                      ║
+║  • Sell: {str(CONFIG.ALERTS_NOTIFY.get('sell', False)):5}                     ║
+║  • Stop: {str(CONFIG.ALERTS_NOTIFY.get('stop_triggered', False)):5}                    ║
+║  • Cooldown: {CONFIG.ALERTS_NOTIFY.get('cooldown_secs', 60)}s               ║
 ║                                        ║
 ║  Ready for protected profits! 🚀🛑     ║
 ╚════════════════════════════════════════╝
     """)
     
     logging.info("=" * 50)
-    logging.info("STARTING BOT WITH STOP-LOSS ENGINE")
+    logging.info("STARTING BOT WITH STOP-LOSS ENGINE (QUIET MODE)")
     logging.info("=" * 50)
     
     await run_bot()
@@ -781,6 +771,7 @@ async def cleanup():
                     f"Final Balance: {balance:.3f} SOL\n"
                     f"Active Stops Remaining: {len(STOPS)}"
                 )
+                # Use regular alert for final message
                 await send_telegram_alert(final_msg)
             except:
                 pass
