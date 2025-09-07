@@ -151,6 +151,25 @@ KNOWN_TOKEN_DECIMALS = {
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
+# NOTIFICATION HELPER
+# ============================================
+async def notify(event: str, text: str):
+    """Alert policy helper - routes alerts based on config switches"""
+    if event == "buy" and CONFIG.ALERT_ON_BUY:
+        return await send_telegram_alert(text)
+    if event == "sell" and CONFIG.ALERT_ON_SELL:
+        return await send_telegram_alert(text)
+    if event == "stop_trigger" and CONFIG.ALERT_ON_STOP_TRIGGER:
+        return await send_telegram_alert(text)
+    if event == "stop_filled" and CONFIG.ALERT_ON_STOP_FILLED:
+        return await send_telegram_alert(text)
+    if event == "stop_blocked" and CONFIG.ALERT_ON_STOP_BLOCKED:
+        return await send_telegram_alert(text)
+    if event == "blocked_buy" and CONFIG.ALERT_ON_BLOCKED_BUY:
+        return await send_telegram_alert(text)
+    return True  # silently succeed
+
+# ============================================
 # STOP-LOSS HELPER FUNCTIONS
 # ============================================
 
@@ -846,7 +865,7 @@ async def execute_jupiter_sell(mint: str, amount: int, slippage_bps: int = None)
             if not await simulate_transaction(tx):
                 error_msg = f"❌ SELL BLOCKED for {mint[:8]}... (simulation failed)"
                 logging.error(error_msg)
-                await send_telegram_alert(error_msg)
+                await notify("stop_blocked", error_msg)
                 return None
         
         signed_tx = VersionedTransaction(tx.message, [keypair])
@@ -960,7 +979,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         
         # Check minimum liquidity
         if pool_liquidity < CONFIG.MIN_LP_SOL:
-            await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_LOW_LP] mint {mint[:8]}... LP={pool_liquidity:.1f} SOL (min {CONFIG.MIN_LP_SOL})")
+            await notify("blocked_buy", f"⛔ BUY BLOCKED [BLOCKED_LOW_LP] mint {mint[:8]}... LP={pool_liquidity:.1f} SOL (min {CONFIG.MIN_LP_SOL})")
             log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
             record_skip("low_lp")
             return False
@@ -969,14 +988,14 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         if CONFIG.REQUIRE_AUTH_RENOUNCED:
             mint_renounced, freeze_renounced = await check_mint_authority(mint)
             if not (mint_renounced and freeze_renounced):
-                await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_AUTH_NOT_RENOUNCED] mint {mint[:8]}...")
+                await notify("blocked_buy", f"⛔ BUY BLOCKED [BLOCKED_AUTH_NOT_RENOUNCED] mint {mint[:8]}...")
                 log_skipped_token(mint, "Authority not renounced")
                 return False
         
         # Check for high tax
         tax_bps = await check_token_tax(mint)
         if tax_bps > CONFIG.MAX_TRADE_TAX_BPS:
-            await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_HIGH_TAX] mint {mint[:8]}... tax={tax_bps/100:.1f}% (max {CONFIG.MAX_TRADE_TAX_BPS/100:.1f}%)")
+            await notify("blocked_buy", f"⛔ BUY BLOCKED [BLOCKED_HIGH_TAX] mint {mint[:8]}... tax={tax_bps/100:.1f}% (max {CONFIG.MAX_TRADE_TAX_BPS/100:.1f}%)")
             log_skipped_token(mint, f"High tax: {tax_bps/100:.1f}%")
             return False
         
@@ -985,7 +1004,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         estimated_tokens = int(amount * 1e9 * 100)  # Rough estimate: 100 tokens per SOL
         sell_quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", estimated_tokens, 500)
         if not sell_quote or int(sell_quote.get("outAmount", 0)) == 0:
-            await send_telegram_alert(f"⛔ BUY BLOCKED [BLOCKED_NO_SELL_ROUTE] mint {mint[:8]}...")
+            await notify("blocked_buy", f"⛔ BUY BLOCKED [BLOCKED_NO_SELL_ROUTE] mint {mint[:8]}...")
             log_skipped_token(mint, "No sell route available")
             record_skip("no_route")
             return False
@@ -1035,15 +1054,37 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             balance = rpc.get_balance(keypair.pubkey()).value / 1e9
             balance_usd = balance * CONFIG.SOL_PRICE_USD
             
+            # Wait for ATA to be created and get real balance
+            from spl.token.constants import TOKEN_PROGRAM_ID
+            owner = keypair.pubkey()
+            token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
+            
+            real_tokens = 0
+            for retry in range(10):  # Try for ~3 seconds
+                try:
+                    response = rpc.get_token_account_balance(token_account)
+                    if response and response.value:
+                        real_tokens = int(response.value.amount)
+                        if real_tokens > 0:
+                            logging.info(f"[Buy] Got real token balance: {real_tokens}")
+                            break
+                except:
+                    pass
+                await asyncio.sleep(0.3)
+            
+            if real_tokens == 0:
+                real_tokens = estimated_tokens  # Fallback to estimate
+                logging.warning(f"[Buy] Could not get real balance, using estimate: {real_tokens}")
+            
             # Get entry price for stop-loss
             entry_price = await get_token_price_usd(mint)
             if not entry_price:
-                entry_price = (amount * CONFIG.SOL_PRICE_USD) / estimated_tokens  # Estimate from quote
+                entry_price = (amount * CONFIG.SOL_PRICE_USD) / (real_tokens / (10 ** await get_token_decimals(mint)))
             
-            # ARM THE STOP-LOSS
+            # ARM THE STOP-LOSS with real balance
             register_stop(mint, {
                 "entry_price": entry_price,
-                "size_tokens": estimated_tokens,
+                "size_tokens": real_tokens,
                 "stop_price": entry_price * (1 - CONFIG.STOP_LOSS_PCT),
                 "slippage_bps": CONFIG.STOP_MAX_SLIPPAGE_BPS,
                 "state": "ARMED",
@@ -1052,7 +1093,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 "stuck_reason": None
             })
             
-            await send_telegram_alert(
+            await notify("buy",
                 f"✅ Sniped {mint[:8]}... via Jupiter\n"
                 f"Amount: {amount:.3f} SOL\n"
                 f"LP: {pool_liquidity:.2f} SOL\n"
@@ -1064,7 +1105,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             )
             
             OPEN_POSITIONS[mint] = {
-                "expected_token_amount": estimated_tokens,
+                "expected_token_amount": real_tokens,
                 "buy_amount_sol": amount,
                 "sold_stages": set(),
                 "buy_sig": jupiter_sig,
@@ -1125,7 +1166,7 @@ async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bp
         jupiter_sig = await execute_jupiter_sell(mint, amount, slippage_bps)
         
         if jupiter_sig:
-            await send_telegram_alert(
+            await notify("sell",
                 f"✅ Sold {percentage}% of {mint[:8]}... via Jupiter\n"
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
@@ -1387,12 +1428,25 @@ async def wait_and_auto_sell(mint: str):
                     
                 last_price_check = time.time()
                 
-                # Get current price via Jupiter quote for accuracy
-                if CONFIG.ROUTE_AMOUNT_MODE == "POSITION":
-                    quote_amount = stop_data["size_tokens"]
-                else:
-                    quote_amount = int(1e9)  # 1 token for price check
+                # Get current token balance for accurate quote
+                owner = keypair.pubkey()
+                token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
                 
+                try:
+                    response = rpc.get_token_account_balance(token_account)
+                    if response and response.value:
+                        current_balance = int(response.value.amount)
+                        if current_balance > 0:
+                            # Use a safe fraction to avoid quote failures
+                            quote_amount = min(current_balance, int(current_balance * 0.1))
+                        else:
+                            quote_amount = stop_data["size_tokens"]
+                    else:
+                        quote_amount = stop_data["size_tokens"]
+                except:
+                    quote_amount = stop_data["size_tokens"]
+                
+                # Get quote for price check
                 quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", quote_amount)
                 
                 if not quote:
@@ -1405,7 +1459,7 @@ async def wait_and_auto_sell(mint: str):
                         time_stuck = time.time() - stop_data["first_no_route"]
                         if time_stuck > CONFIG.ROUTE_TIMEOUT_SEC:
                             if time.time() - stop_data.get("last_alert", 0) > CONFIG.STOP_ALERT_EVERY_SEC:
-                                await send_telegram_alert(f"🔴 STOP-LOSS BLOCKED [NO_ROUTE] mint {mint[:8]}... stuck={time_stuck:.0f}s")
+                                await notify("stop_blocked", f"🔴 STOP-LOSS BLOCKED [NO_ROUTE] mint {mint[:8]}... stuck={time_stuck:.0f}s")
                                 stop_data["last_alert"] = time.time()
                     
                     await asyncio.sleep(CONFIG.STOP_CHECK_INTERVAL_SEC)
@@ -1414,7 +1468,9 @@ async def wait_and_auto_sell(mint: str):
                 # Calculate current price from quote
                 sol_out = int(quote.get("outAmount", 0)) / 1e9
                 if sol_out > 0 and quote_amount > 0:
-                    current_price = (sol_out * CONFIG.SOL_PRICE_USD) / (quote_amount / (10 ** await get_token_decimals(mint)))
+                    # Scale up to full position value
+                    full_position_sol = sol_out * (current_balance / quote_amount) if current_balance > 0 else sol_out
+                    current_price = (full_position_sol * CONFIG.SOL_PRICE_USD) / (current_balance / (10 ** await get_token_decimals(mint)))
                 else:
                     current_price = await get_token_price_usd(mint)
                     if not current_price:
@@ -1434,7 +1490,7 @@ async def wait_and_auto_sell(mint: str):
                 if current_price <= stop_data["stop_price"] and stop_data["state"] == "ARMED":
                     stop_data["state"] = "TRIGGERED"
                     logging.info(f"🛑 STOP TRIGGERED for {mint[:8]}... @ ${current_price:.6f}")
-                    await send_telegram_alert(f"🛑 STOP TRIGGERED mint {mint[:8]}... entry=${entry_price:.6f}, stop=${stop_data['stop_price']:.6f}, quote=${current_price:.6f}")
+                    await notify("stop_trigger", f"🛑 STOP TRIGGERED mint {mint[:8]}... entry=${entry_price:.6f}, stop=${stop_data['stop_price']:.6f}, quote=${current_price:.6f}")
                 
                 if stop_data["state"] == "TRIGGERED" and sell_attempts["stop_loss"] < max_sell_attempts:
                     sell_attempts["stop_loss"] += 1
@@ -1443,7 +1499,7 @@ async def wait_and_auto_sell(mint: str):
                     # Try standard slippage first
                     if await sell_token(mint, percentage=100, slippage_bps=CONFIG.STOP_MAX_SLIPPAGE_BPS):
                         stop_data["state"] = "FILLED"
-                        await send_telegram_alert(
+                        await notify("stop_filled",
                             f"✅ STOP FILLED mint {mint[:8]}... avgPrice=${current_price:.6f}\n"
                             f"Loss: {profit_percent:.1f}% from entry"
                         )
@@ -1452,17 +1508,17 @@ async def wait_and_auto_sell(mint: str):
                         # Try emergency slippage
                         stop_data["emergency_attempts"] = stop_data.get("emergency_attempts", 0) + 1
                         if stop_data["emergency_attempts"] == 1:
-                            await send_telegram_alert(f"⚠️ STOP FAILED with {CONFIG.STOP_MAX_SLIPPAGE_BPS} bps, trying emergency slippage {CONFIG.STOP_EMERGENCY_SLIPPAGE_BPS} bps")
+                            await notify("stop_blocked", f"⚠️ STOP FAILED with {CONFIG.STOP_MAX_SLIPPAGE_BPS} bps, trying emergency slippage {CONFIG.STOP_EMERGENCY_SLIPPAGE_BPS} bps")
                             
                             if await sell_token(mint, percentage=100, slippage_bps=CONFIG.STOP_EMERGENCY_SLIPPAGE_BPS):
                                 stop_data["state"] = "FILLED"
-                                await send_telegram_alert(f"✅ STOP FILLED mint {mint[:8]}... (emergency slippage)")
+                                await notify("stop_filled", f"✅ STOP FILLED mint {mint[:8]}... (emergency slippage)")
                                 break
                         
                         stop_data["state"] = "TRIGGERED"  # Reset to triggered to retry
-                        stop_data["stuck_reason"] = "SELL_FAILED"
+                        stop_data["stuck_reason"] = "SELL_FAILED_RETRY_EMERGENCY"
                         if time.time() - stop_data.get("last_alert", 0) > CONFIG.STOP_ALERT_EVERY_SEC:
-                            await send_telegram_alert(f"🔴 STOP-LOSS BLOCKED [SELL_FAILED] mint {mint[:8]}...")
+                            await notify("stop_blocked", f"🔴 STOP-LOSS BLOCKED [SELL_FAILED_RETRY_EMERGENCY] mint {mint[:8]}...")
                             stop_data["last_alert"] = time.time()
                 
                 # Check minimum hold time (skip profit targets if stop is triggered)
@@ -1477,7 +1533,7 @@ async def wait_and_auto_sell(mint: str):
                     if drop_from_high >= CONFIG.TRAILING_STOP_PERCENT and len(position["sold_stages"]) > 0:
                         logging.info(f"[{mint[:8]}] Trailing stop triggered! Down {drop_from_high:.1f}% from peak")
                         if await sell_token(mint, percentage=100):
-                            await send_telegram_alert(
+                            await notify("sell",
                                 f"⛔ Trailing stop triggered for {mint[:8]}!\n"
                                 f"Price dropped {drop_from_high:.1f}% from peak ${position['highest_price']:.6f}\n"
                                 f"Sold remaining position at ${current_price:.6f} ({profit_multiplier:.1f}x)"
@@ -1490,7 +1546,7 @@ async def wait_and_auto_sell(mint: str):
                         sell_attempts["profit1"] += 1
                         if await sell_token(mint, percentage=sell_percents[0]):
                             position["sold_stages"].add("profit1")
-                            await send_telegram_alert(
+                            await notify("sell",
                                 f"💰 Hit {targets[0]}x profit for {mint[:8]}!\n"
                                 f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                                 f"Sold {sell_percents[0]}% of position\n"
@@ -1501,7 +1557,7 @@ async def wait_and_auto_sell(mint: str):
                         sell_attempts["profit2"] += 1
                         if await sell_token(mint, percentage=sell_percents[1]):
                             position["sold_stages"].add("profit2")
-                            await send_telegram_alert(
+                            await notify("sell",
                                 f"🚀 Hit {targets[1]}x profit for {mint[:8]}!\n"
                                 f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                                 f"Sold {sell_percents[1]}% of position\n"
@@ -1512,7 +1568,7 @@ async def wait_and_auto_sell(mint: str):
                         sell_attempts["profit3"] += 1
                         if await sell_token(mint, percentage=sell_percents[2]):
                             position["sold_stages"].add("profit3")
-                            await send_telegram_alert(
+                            await notify("sell",
                                 f"🌙 Hit {targets[2]}x profit for {mint[:8]}!\n"
                                 f"Price: ${current_price:.6f} ({profit_multiplier:.2f}x)\n"
                                 f"Sold {sell_percents[2]}% - KEEPING MOONBAG!\n"
@@ -1550,7 +1606,7 @@ async def wait_and_auto_sell(mint: str):
                 if await sell_token(mint, percentage=100):
                     current_price = await get_token_price_usd(mint) or entry_price
                     profit_percent = ((current_price / entry_price) - 1) * 100
-                    await send_telegram_alert(
+                    await notify("sell",
                         f"⏰ Max hold time reached for {mint[:8]}\n"
                         f"Force sold after {CONFIG.MAX_HOLD_TIME_SEC/60:.0f} minutes\n"
                         f"Final P&L: {profit_percent:+.1f}%\n"
@@ -1565,7 +1621,7 @@ async def wait_and_auto_sell(mint: str):
             
     except Exception as e:
         logging.error(f"Auto-sell error for {mint}: {e}")
-        await send_telegram_alert(f"⚠️ Auto-sell error for {mint}: {e}")
+        await notify("stop_blocked", f"⚠️ Auto-sell error for {mint}: {e}")
         if mint in STOPS:
             del STOPS[mint]
         if mint in OPEN_POSITIONS:
@@ -1592,7 +1648,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                     sell_attempts["2x"] += 1
                     if await sell_token(mint, percentage=AUTO_SELL_PERCENT_2X):
                         position["sold_stages"].add("2x")
-                        await send_telegram_alert(f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
+                        await notify("sell", f"📈 Sold {AUTO_SELL_PERCENT_2X}% at 30s timer for {mint[:8]}...")
                     elif sell_attempts["2x"] >= max_sell_attempts:
                         position["sold_stages"].add("2x")
                 
@@ -1600,7 +1656,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                     sell_attempts["5x"] += 1
                     if await sell_token(mint, percentage=AUTO_SELL_PERCENT_5X):
                         position["sold_stages"].add("5x")
-                        await send_telegram_alert(f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
+                        await notify("sell", f"🚀 Sold {AUTO_SELL_PERCENT_5X}% at 2min timer for {mint[:8]}...")
                     elif sell_attempts["5x"] >= max_sell_attempts:
                         position["sold_stages"].add("5x")
                 
@@ -1608,7 +1664,7 @@ async def wait_and_auto_sell_timer_based(mint: str):
                     sell_attempts["10x"] += 1
                     if await sell_token(mint, percentage=AUTO_SELL_PERCENT_10X):
                         position["sold_stages"].add("10x")
-                        await send_telegram_alert(f"🌙 KEEPING MOONBAG - Sold {AUTO_SELL_PERCENT_10X}% at 5min for {mint[:8]}...")
+                        await notify("sell", f"🌙 KEEPING MOONBAG - Sold {AUTO_SELL_PERCENT_10X}% at 5min for {mint[:8]}...")
                     elif sell_attempts["10x"] >= max_sell_attempts:
                         position["sold_stages"].add("10x")
                 
@@ -1735,5 +1791,6 @@ __all__ = [
     'is_pumpfun_launch',
     'CONFIG',
     'register_stop',
-    'STOPS'
+    'STOPS',
+    'notify'
 ]
