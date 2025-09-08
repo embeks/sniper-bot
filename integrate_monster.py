@@ -1,8 +1,9 @@
-# integrate_monster.py - COMPLETE WITH STOP-LOSS INTEGRATION
+# integrate_monster.py - COMPLETE FIXED VERSION WITH FEATURES DISABLED FOR WEEK 1
 """
 Optimized integration - Uses config.py, no env mutations
 Uses only utils.buy_token with explicit amounts
 Arms stop-loss immediately after successful buy
+MOMENTUM AND PUMPFUN MIGRATION DISABLED FOR WEEK 1
 """
 
 import asyncio
@@ -24,7 +25,8 @@ import config
 # Import core modules
 from sniper_logic import (
     mempool_listener, trending_scanner, 
-    pumpfun_migration_monitor, pumpfun_tokens, migration_watch_list,
+    # pumpfun_migration_monitor,  # COMMENTED OUT FOR WEEK 1
+    pumpfun_tokens, migration_watch_list,
     stop_all_tasks
 )
 
@@ -67,11 +69,13 @@ def log_configuration():
         ("REQUIRE_AUTH_RENOUNCED", str(CONFIG.REQUIRE_AUTH_RENOUNCED)),
         ("MAX_TRADE_TAX_BPS", f"{CONFIG.MAX_TRADE_TAX_BPS/100:.1f}%"),
         ("HELIUS_API", "SET" if os.getenv("HELIUS_API") else "NOT SET"),
-        ("ALERTS", f"Buy: {CONFIG.ALERTS_NOTIFY['buy']}, Sell: {CONFIG.ALERTS_NOTIFY['sell']}, Stop: {CONFIG.ALERTS_NOTIFY['stop_triggered']}/{CONFIG.ALERTS_NOTIFY['stop_filled']}")
+        ("ALERTS", f"Buy: {CONFIG.ALERTS_NOTIFY['buy']}, Sell: {CONFIG.ALERTS_NOTIFY['sell']}, Stop: {CONFIG.ALERTS_NOTIFY['stop_triggered']}/{CONFIG.ALERTS_NOTIFY['stop_filled']}"),
+        ("MOMENTUM_SCANNER", os.getenv("MOMENTUM_SCANNER", "false")),
+        ("ENABLE_PUMPFUN_MIGRATION", os.getenv("ENABLE_PUMPFUN_MIGRATION", "false"))
     ]
     
     logging.info("=" * 60)
-    logging.info("BOT CONFIGURATION (WITH STOP-LOSS ENGINE)")
+    logging.info("BOT CONFIGURATION (WITH STOP-LOSS ENGINE) - WEEK 1 MODE")
     logging.info("=" * 60)
     
     for key, value in config_items:
@@ -301,8 +305,12 @@ async def health_check():
     """Health check endpoint"""
     uptime_hours = (time.time() - tracker.start_time) / 3600
     daily = tracker.get_daily_summary()
+    
+    # Week 1 mode indicator
+    week1_status = "✅ WEEK 1 MODE (Fresh Tokens Only)" if os.getenv("MOMENTUM_SCANNER", "false").lower() == "false" else "Full Mode"
+    
     return {
-        "status": "✅ Bot Active with Stop-Loss Engine",
+        "status": f"✅ Bot Active with Stop-Loss Engine - {week1_status}",
         "trades": tracker.trades_executed,
         "win_rate": f"{tracker.get_win_rate():.1f}%",
         "profit": f"{tracker.total_profit_sol:.3f} SOL",
@@ -319,6 +327,7 @@ async def status():
     daily = tracker.get_daily_summary()
     return {
         "bot": "running" if is_bot_running() else "paused",
+        "mode": "WEEK 1 - Fresh Tokens" if os.getenv("MOMENTUM_SCANNER", "false").lower() == "false" else "Full",
         "total_trades": tracker.trades_executed,
         "win_rate": f"{tracker.get_win_rate():.1f}%",
         "total_profit": f"{tracker.total_profit_sol:.3f} SOL",
@@ -335,6 +344,8 @@ async def status():
         "buy_amount": CONFIG.BUY_AMOUNT_SOL,
         "min_lp_sol": CONFIG.MIN_LP_SOL,
         "dynamic_sizing": CONFIG.USE_DYNAMIC_SIZING,
+        "momentum_scanner": os.getenv("MOMENTUM_SCANNER", "false"),
+        "pumpfun_migration": os.getenv("ENABLE_PUMPFUN_MIGRATION", "false"),
         "alerts_enabled": {
             "buy": CONFIG.ALERTS_NOTIFY.get("buy", False),
             "sell": CONFIG.ALERTS_NOTIFY.get("sell", False),
@@ -380,7 +391,9 @@ async def telegram_webhook(request: Request):
             
             # Add performance metrics
             daily = tracker.get_daily_summary()
-            perf_msg = f"\n📊 PERFORMANCE:\n"
+            week1_mode = "WEEK 1 MODE" if os.getenv("MOMENTUM_SCANNER", "false").lower() == "false" else "FULL MODE"
+            
+            perf_msg = f"\n📊 PERFORMANCE ({week1_mode}):\n"
             perf_msg += f"• Total Trades: {tracker.trades_executed}\n"
             perf_msg += f"• Win Rate: {tracker.get_win_rate():.1f}%\n"
             perf_msg += f"• Total Profit: {tracker.total_profit_sol:.3f} SOL\n"
@@ -431,8 +444,9 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert("⛔ Bot paused. Use /start first")
             
         elif text == "/config":
+            week1_mode = "ENABLED" if os.getenv("MOMENTUM_SCANNER", "false").lower() == "false" else "DISABLED"
             config_msg = f"""
-⚙️ Configuration:
+⚙️ Configuration (Week 1 Mode: {week1_mode}):
 Min Liquidity: {CONFIG.MIN_LP_SOL} SOL
 Min LP (Momentum): ${os.getenv('MOMENTUM_MIN_LIQUIDITY', '500')}
 Min 1H Gain: {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}%
@@ -440,6 +454,10 @@ Auto-buy Score: {os.getenv('MIN_SCORE_AUTO_BUY', '2')}+
 LP Threshold: {CONFIG.RUG_LP_THRESHOLD} SOL
 Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL
 Dynamic Sizing: {CONFIG.USE_DYNAMIC_SIZING}
+
+Features:
+• Momentum Scanner: {os.getenv("MOMENTUM_SCANNER", "false")}
+• PumpFun Migration: {os.getenv("ENABLE_PUMPFUN_MIGRATION", "false")}
 
 Pre-Trade Safety:
 • Require Auth Renounced: {CONFIG.REQUIRE_AUTH_RENOUNCED}
@@ -515,26 +533,50 @@ async def start_bot_tasks():
     except:
         pass
     
+    # Determine mode
+    week1_mode = os.getenv("MOMENTUM_SCANNER", "false").lower() == "false"
+    mode_str = "WEEK 1 MODE (Fresh Tokens Only)" if week1_mode else "FULL MODE"
+    
     # Single startup message
     if CONFIG.ALERTS_NOTIFY.get("startup", True):
-        await send_telegram_alert(
-            "💰 BOT STARTING WITH STOP-LOSS ENGINE 💰\n\n"
-            f"Configuration:\n"
-            f"• Min LP: {CONFIG.MIN_LP_SOL} SOL\n"
-            f"• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}%\n"
-            f"• Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL\n"
-            f"• Alerts: Buy={CONFIG.ALERTS_NOTIFY['buy']}, Sell={CONFIG.ALERTS_NOTIFY['sell']}, Stop={CONFIG.ALERTS_NOTIFY['stop_triggered']}\n\n"
-            "Features:\n"
-            "✅ Pre-trade validation\n"
-            "✅ Automatic stop-loss on buy\n"
-            "✅ Minimal alerts (cooldown: {CONFIG.ALERTS_NOTIFY.get('cooldown_secs', 60)}s)\n"
-            "✅ Smart position sizing\n\n"
-            "Initializing..."
-        )
+        startup_msg = f"""
+💰 BOT STARTING - {mode_str} 💰
+
+Configuration:
+• Min LP: {CONFIG.MIN_LP_SOL} SOL
+• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}%
+• Buy Amount: {CONFIG.BUY_AMOUNT_SOL} SOL
+• Max Token Age: {os.getenv('MAX_TOKEN_AGE_SECONDS', '60')}s
+• Alerts: Buy={CONFIG.ALERTS_NOTIFY['buy']}, Sell={CONFIG.ALERTS_NOTIFY['sell']}, Stop={CONFIG.ALERTS_NOTIFY['stop_triggered']}
+
+Features:
+✅ Pre-trade validation
+✅ Automatic stop-loss on buy
+✅ Fresh token detection (<60s)
+✅ Minimal alerts (cooldown: {CONFIG.ALERTS_NOTIFY.get('cooldown_secs', 60)}s)
+✅ Smart position sizing
+"""
+        
+        if week1_mode:
+            startup_msg += """
+Week 1 Features DISABLED:
+❌ Momentum Scanner
+❌ PumpFun Migration Monitor
+
+Focusing on fresh tokens only for capital building..."""
+        else:
+            startup_msg += """
+Full Features ACTIVE:
+✅ Momentum Scanner
+✅ PumpFun Migration Monitor"""
+        
+        startup_msg += "\n\nInitializing..."
+        
+        await send_telegram_alert(startup_msg)
     
     tasks = []
     
-    # Core snipers
+    # Core snipers - ALWAYS ACTIVE
     tasks.extend([
         asyncio.create_task(mempool_listener("Raydium")),
         asyncio.create_task(mempool_listener("PumpFun")),
@@ -542,21 +584,37 @@ async def start_bot_tasks():
         asyncio.create_task(trending_scanner())
     ])
     
-    # Momentum Scanner
-    try:
-        from momentum_scanner import momentum_scanner
-        if os.getenv("MOMENTUM_SCANNER", "true").lower() == "true":
+    # ============================================
+    # WEEK 1 MODE - DISABLED FEATURES
+    # ============================================
+    
+    # Momentum Scanner - DISABLED FOR WEEK 1
+    if os.getenv("MOMENTUM_SCANNER", "false").lower() == "true":
+        try:
+            from momentum_scanner import momentum_scanner
             tasks.append(asyncio.create_task(momentum_scanner()))
             logging.info(f"Momentum Scanner: ACTIVE (targeting {os.getenv('MOMENTUM_MIN_1H_GAIN', '30')}-300% gainers)")
-    except Exception as e:
-        logging.warning(f"Momentum scanner not available: {e}")
+        except Exception as e:
+            logging.warning(f"Momentum scanner not available: {e}")
+    else:
+        logging.info("Momentum Scanner: DISABLED for Week 1")
     
-    # PumpFun monitor
-    if os.getenv("ENABLE_PUMPFUN_MIGRATION", "true").lower() == "true":
-        tasks.append(asyncio.create_task(pumpfun_migration_monitor()))
-        logging.info("PumpFun Migration Monitor: ACTIVE")
+    # PumpFun Migration Monitor - DISABLED FOR WEEK 1
+    if os.getenv("ENABLE_PUMPFUN_MIGRATION", "false").lower() == "true":
+        try:
+            from sniper_logic import pumpfun_migration_monitor
+            tasks.append(asyncio.create_task(pumpfun_migration_monitor()))
+            logging.info("PumpFun Migration Monitor: ACTIVE")
+        except Exception as e:
+            logging.warning(f"PumpFun migration monitor not available: {e}")
+    else:
+        logging.info("PumpFun Migration Monitor: DISABLED for Week 1")
     
-    # DexScreener
+    # ============================================
+    # END OF DISABLED FEATURES
+    # ============================================
+    
+    # DexScreener - ALWAYS ACTIVE
     try:
         from dexscreener_monitor import start_dexscreener_monitor
         tasks.append(asyncio.create_task(start_dexscreener_monitor()))
@@ -564,19 +622,19 @@ async def start_bot_tasks():
     except:
         pass
     
-    # Performance monitoring
+    # Performance monitoring - ALWAYS ACTIVE
     tasks.append(asyncio.create_task(performance_monitor()))
     
-    # Cache cleanup
+    # Cache cleanup - ALWAYS ACTIVE
     tasks.append(asyncio.create_task(cache_cleanup()))
     
-    # Stop-loss monitor
+    # Stop-loss monitor - ALWAYS ACTIVE
     tasks.append(asyncio.create_task(stop_loss_monitor()))
     
     # Final ready message
     if CONFIG.ALERTS_NOTIFY.get("startup", True):
         await send_telegram_alert(
-            f"🚀 BOT READY 🚀\n\n"
+            f"🚀 BOT READY - {mode_str} 🚀\n\n"
             f"Active Tasks: {len(tasks)}\n"
             f"Stop-Loss: ARMED\n"
             f"Hunting for profits with protection... 💰🛑"
@@ -624,8 +682,11 @@ async def performance_monitor():
             
             # Only send if there's activity
             if tracker.trades_executed > 0:
+                week1_mode = os.getenv("MOMENTUM_SCANNER", "false").lower() == "false"
+                mode_str = "WEEK 1" if week1_mode else "FULL"
+                
                 report = f"""
-📊 HOURLY REPORT 📊
+📊 HOURLY REPORT ({mode_str} MODE) 📊
 
 Session Stats:
 • Trades: {tracker.trades_executed}
@@ -701,23 +762,42 @@ async def main():
         print("ERROR: SOLANA_PRIVATE_KEY not set")
         return
     
+    week1_mode = os.getenv("MOMENTUM_SCANNER", "false").lower() == "false"
+    mode_str = "WEEK 1 MODE" if week1_mode else "FULL MODE"
+    
     print(f"""
 ╔════════════════════════════════════════╗
-║   OPTIMIZED BOT v3.1 (QUIET MODE)     ║
+║   OPTIMIZED BOT v3.1 - {mode_str:14} ║
 ║                                        ║
-║  Features:                             ║
+║  Core Features (ALWAYS ON):           ║
 ║  • Pre-trade validation                ║
 ║  • Automatic stop-loss on buy          ║
 ║  • Reliable stop monitoring            ║
 ║  • MINIMAL ALERTS (gated + cooldowns)  ║
 ║  • Smart position sizing               ║
-║  • Pool data caching ({CONFIG.CACHE_TTL_SECONDS}s)     ║
+║  • Pool data caching ({CONFIG.CACHE_TTL_SECONDS}s)           ║
 ║  • Performance tracking                ║
 ║  • Jupiter-only sells with validation  ║
-║                                        ║
-║  Stop-Loss Protection:                 ║
-║  • {CONFIG.STOP_LOSS_PCT*100:.0f}% stop-loss level           ║
-║  • {CONFIG.STOP_CHECK_INTERVAL_SEC}s check interval           ║
+║                                        ║""")
+    
+    if week1_mode:
+        print(f"""║  Week 1 Mode (Capital Building):      ║
+║  ✅ Fresh Token Detection (<60s)       ║
+║  ✅ Auto-Sell at Targets               ║
+║  ✅ Stop-Loss Protection               ║
+║  ❌ Momentum Scanner (DISABLED)        ║
+║  ❌ PumpFun Migration (DISABLED)       ║
+║                                        ║""")
+    else:
+        print(f"""║  Full Mode (All Features):            ║
+║  ✅ All Core Features                  ║
+║  ✅ Momentum Scanner                   ║
+║  ✅ PumpFun Migration Monitor          ║
+║                                        ║""")
+    
+    print(f"""║  Stop-Loss Protection:                 ║
+║  • {CONFIG.STOP_LOSS_PCT*100:.0f}% stop-loss level                 ║
+║  • {CONFIG.STOP_CHECK_INTERVAL_SEC}s check interval                 ║
 ║  • Automatic arming on buy             ║
 ║                                        ║
 ║  Alerts Active:                        ║
@@ -731,7 +811,7 @@ async def main():
     """)
     
     logging.info("=" * 50)
-    logging.info("STARTING BOT WITH STOP-LOSS ENGINE (QUIET MODE)")
+    logging.info(f"STARTING BOT WITH STOP-LOSS ENGINE - {mode_str}")
     logging.info("=" * 50)
     
     await run_bot()
