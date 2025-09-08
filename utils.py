@@ -1,4 +1,4 @@
-# utils.py - COMPLETE PRODUCTION READY VERSION WITH STOP-LOSS ENGINE
+# utils.py - FIXED VERSION WITH PROPER BALANCE TRACKING
 import json
 import logging
 import httpx
@@ -1248,9 +1248,9 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         logging.error(f"[Price] Unexpected error for {mint}: {e}")
         return None
 
-# STOP-LOSS MONITOR
+# STOP-LOSS MONITOR - FIXED WITH PROPER BALANCE TRACKING
 async def wait_and_auto_sell(mint: str):
-    """Monitor position with integrated stop-loss engine - FIXED"""
+    """Monitor position with integrated stop-loss engine - FIXED BALANCE TRACKING"""
     try:
         if mint not in OPEN_POSITIONS:
             logging.warning(f"No position found for {mint}")
@@ -1349,17 +1349,26 @@ async def wait_and_auto_sell(mint: str):
                     
                 last_price_check = time.time()
                 
-                # Get current token balance
+                # FIXED: Get current token balance with proper retries
                 owner = keypair.pubkey()
                 token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
                 
                 current_balance = 0
-                try:
-                    response = rpc.get_token_account_balance(token_account)
-                    if response and response.value:
-                        current_balance = int(response.value.amount)
-                except:
-                    current_balance = stop_data["size_tokens"]
+                max_balance_retries = 10
+                for retry in range(max_balance_retries):
+                    try:
+                        response = rpc.get_token_account_balance(token_account)
+                        if response and response.value:
+                            current_balance = int(response.value.amount)
+                            if current_balance > 0:
+                                # Update position with real balance
+                                position["expected_token_amount"] = current_balance
+                                if mint in STOPS:
+                                    STOPS[mint]["size_tokens"] = current_balance
+                                break
+                    except:
+                        pass
+                    await asyncio.sleep(0.3)
                 
                 if current_balance == 0:
                     logging.info(f"[{mint[:8]}] Position fully closed")
