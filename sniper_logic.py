@@ -456,8 +456,16 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
             if time_since_attempt < DUPLICATE_CHECK_WINDOW:
                 return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
         
-        if lp_amount < RUG_LP_THRESHOLD:
-            return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {RUG_LP_THRESHOLD})"
+        # Apply grace floor for ultra-fresh tokens (matching utils.py logic)
+        try:
+            ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
+        except Exception:
+            ultra_fresh = False
+        
+        effective_min_lp = min(RUG_LP_THRESHOLD, 0.1) if ultra_fresh else RUG_LP_THRESHOLD
+        
+        if lp_amount < effective_min_lp:
+            return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {effective_min_lp:.2f})"
         
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
@@ -482,14 +490,21 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         except:
             pass
         
-        if lp_amount >= RUG_LP_THRESHOLD:
+        if lp_amount >= effective_min_lp:
             return True, f"Good liquidity ({lp_amount:.1f} SOL), proceeding without data"
         
         return False, "Failed quality checks"
         
     except Exception as e:
         logging.error(f"Quality check error: {e}")
-        if lp_amount >= RUG_LP_THRESHOLD:
+        # Use grace floor even in error cases
+        try:
+            ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
+        except:
+            ultra_fresh = False
+        effective_min_lp = min(RUG_LP_THRESHOLD, 0.1) if ultra_fresh else RUG_LP_THRESHOLD
+        
+        if lp_amount >= effective_min_lp:
             return True, "Quality check error but good LP"
         return False, "Quality check error"
 
@@ -1105,8 +1120,16 @@ async def mempool_listener(name, program_id=None):
                                             logging.debug(f"[{name}] LP check error: {e}")
                                             lp_amount = 0.1
                                         
-                                        if lp_amount < 0.3:  # Lower threshold for fresh tokens
-                                            logging.info(f"[{name}] Very low liquidity ({lp_amount:.2f} SOL) but checking quality")
+                                        # PHASE 1 FIX: Apply grace floor for ultra-fresh tokens (same as utils.py)
+                                        try:
+                                            ultra_fresh = await is_fresh_token(token_mint, max_age_seconds=30)
+                                        except Exception:
+                                            ultra_fresh = False
+                                        
+                                        effective_min_lp = min(RUG_LP_THRESHOLD, 0.1) if ultra_fresh else RUG_LP_THRESHOLD
+                                        
+                                        if lp_amount < effective_min_lp:
+                                            logging.info(f"[{name}] Low liquidity ({lp_amount:.2f} SOL) vs min {effective_min_lp:.2f}")
                                         
                                         is_quality, reason = await is_quality_token(token_mint, lp_amount)
                                         
@@ -1118,7 +1141,7 @@ async def mempool_listener(name, program_id=None):
                                         if lp_amount >= RUG_LP_THRESHOLD * 2:
                                             risk_level = "SAFE"
                                             buy_amount = SAFE_BUY_AMOUNT
-                                        elif lp_amount >= RUG_LP_THRESHOLD:
+                                        elif lp_amount >= effective_min_lp:
                                             risk_level = "MEDIUM"
                                             buy_amount = RISKY_BUY_AMOUNT
                                         else:
@@ -1401,13 +1424,16 @@ async def rug_filter_passes(mint: str) -> bool:
     """Check if token passes basic rug filters"""
     try:
         data = await get_liquidity_and_ownership(mint)
-        min_lp = RUG_LP_THRESHOLD
+        
+        # Use cached ultra-fresh check with grace floor helper
+        ultra_fresh = await is_ultra_fresh(mint)
+        min_lp = grace_min_lp(RUG_LP_THRESHOLD, ultra_fresh)
         
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("migrated", False):
             min_lp = min_lp / 2
         
         if not data or data.get("liquidity", 0) < min_lp:
-            logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp})")
+            logging.info(f"[RUG CHECK] {mint[:8]}... has {data.get('liquidity', 0):.2f} SOL (min: {min_lp:.2f})")
             return False
         return True
     except Exception as e:
