@@ -580,7 +580,7 @@ def get_bot_status_message() -> str:
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get accurate liquidity with INCREASED timeout - FIXED"""
+    """Get accurate liquidity with INCREASED timeout - FIXED WITH WARM-UP POLLING"""
     try:
         # FIXED: Increased timeout for fresh tokens
         LP_CHECK_TIMEOUT = 5  # Increased from 1 second
@@ -611,7 +611,23 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
                         logging.info(f"[LP Check] {mint[:8]}... has {sol_balance:.2f} SOL liquidity (Raydium)")
                         return {"liquidity": sol_balance}
                     else:
-                        logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in Raydium pool")
+                        # PHASE 1 FIX A: Warm-up retry when Raydium pool shows 0
+                        logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in Raydium pool, starting warm-up")
+                        
+                        # Warm-up retry: vaults can show 0 immediately after pool creation
+                        max_retries, delay = 5, 0.2
+                        for i in range(max_retries):
+                            await asyncio.sleep(delay)
+                            try:
+                                retry_resp = rpc.get_balance(sol_vault)
+                                if retry_resp and hasattr(retry_resp, 'value'):
+                                    sol_balance = retry_resp.value / 1e9
+                                    if sol_balance > 0:
+                                        logging.info(f"[LP Check] {mint[:8]}... warm-up read: {sol_balance:.2f} SOL liquidity (Raydium, retry {i+1}/{max_retries})")
+                                        return {"liquidity": sol_balance}
+                            except Exception as e:
+                                logging.debug(f"[LP Check] Warm-up retry error for {mint[:8]}...: {e}")
+                        logging.warning(f"[LP Check] {mint[:8]}... still ZERO liquidity in Raydium pool after warm-up")
                         return {"liquidity": 0}
             
             # Fallback to Jupiter using HTTPManager
@@ -969,7 +985,7 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
-    """Execute buy with EXPLICIT AMOUNT - FIXED"""
+    """Execute buy with EXPLICIT AMOUNT - FIXED WITH GRACE LP FLOOR"""
     try:
         if mint in BROKEN_TOKENS:
             log_skipped_token(mint, "Broken token")
@@ -1039,9 +1055,18 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             else:
                 pool_liquidity = lp_data.get("liquidity", 0)
             
+            # PHASE 1 FIX B: Grace floor for ultra-fresh tokens
+            # Grace floor for ultra-fresh tokens
+            try:
+                ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
+            except Exception:
+                ultra_fresh = False
+            
+            effective_min_lp = min(CONFIG.MIN_LP_SOL, 0.1) if ultra_fresh else CONFIG.MIN_LP_SOL
+            
             # Check minimum liquidity for non-PumpFun
-            if pool_liquidity < CONFIG.MIN_LP_SOL:
-                log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
+            if pool_liquidity < effective_min_lp:
+                log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL (min: {effective_min_lp:.2f})")
                 record_skip("low_lp")
                 return False
             
@@ -1167,13 +1192,15 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 f"TX: https://solscan.io/tx/{jupiter_sig}"
             )
             
+            # PHASE 1 FIX C: Add is_pumpfun to OPEN_POSITIONS
             OPEN_POSITIONS[mint] = {
                 "expected_token_amount": real_tokens,
                 "buy_amount_sol": amount,
                 "sold_stages": set(),
                 "buy_sig": jupiter_sig,
                 "is_migration": is_migration,
-                "entry_price": entry_price
+                "entry_price": entry_price,
+                "is_pumpfun": is_pumpfun  # FIX: Persist PumpFun flag
             }
             
             increment_stat("snipes_succeeded", 1)
