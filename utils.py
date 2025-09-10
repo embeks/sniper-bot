@@ -274,34 +274,57 @@ async def check_token_tax(mint: str) -> int:
 async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
     """Check if token/pool was created within the specified time"""
     try:
+        # First try DexScreener
         url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
         response = await HTTPManager.request(url, timeout=5)
         
-        # FIX: Check if response exists before trying to access it
-        if not response:
-            logging.info(f"[AGE CHECK] No response for {mint[:8]}... - assuming old token")
-            return False
+        if response:
+            data = response.json()
+            if "pairs" in data and isinstance(data["pairs"], list) and len(data["pairs"]) > 0:
+                for pair in data["pairs"]:
+                    created_at = pair.get("pairCreatedAt")
+                    if created_at:
+                        age_ms = time.time() * 1000 - created_at
+                        age_seconds = age_ms / 1000
+                        
+                        if age_seconds <= max_age_seconds:
+                            logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - FRESH!")
+                            return True
+                        else:
+                            logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
+                            return False
+        
+        # If DexScreener has no data, check on-chain (token might be too new for DexScreener)
+        logging.info(f"[AGE CHECK] No DexScreener data for {mint[:8]}... - checking on-chain")
+        
+        # Check blockchain for token creation time
+        try:
+            mint_pubkey = Pubkey.from_string(mint)
+            signatures = rpc.get_signatures_for_address(
+                mint_pubkey,
+                limit=1,
+                commitment="confirmed"
+            )
             
-        data = response.json()
-        if "pairs" in data and isinstance(data["pairs"], list) and len(data["pairs"]) > 0:
-            for pair in data["pairs"]:
-                created_at = pair.get("pairCreatedAt")
-                if created_at:
-                    age_ms = time.time() * 1000 - created_at
-                    age_seconds = age_ms / 1000
-                    
+            if signatures and hasattr(signatures, 'value') and signatures.value:
+                creation_sig = signatures.value[-1]
+                block_time = creation_sig.block_time
+                
+                if block_time:
+                    age_seconds = time.time() - block_time
                     if age_seconds <= max_age_seconds:
-                        logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - FRESH!")
+                        logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old on-chain - FRESH!")
                         return True
                     else:
-                        logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
+                        logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old on-chain - TOO OLD")
                         return False
-            
-            logging.info(f"[AGE CHECK] No creation time for {mint[:8]}... - assuming old token")
-            return False
-        else:
-            logging.info(f"[AGE CHECK] No pairs data for {mint[:8]}... - assuming old token")
-            return False
+        except Exception as e:
+            logging.debug(f"[AGE CHECK] On-chain check failed: {e}")
+        
+        # For brand new tokens detected via mempool, assume they're fresh if we can't verify
+        # This is because they're detected in real-time but may not be fully on-chain yet
+        logging.info(f"[AGE CHECK] Cannot verify age for {mint[:8]}... - assuming FRESH (mempool detection)")
+        return True  # Changed from False to True for mempool-detected tokens
                 
     except Exception as e:
         logging.error(f"Age check error: {e}")
