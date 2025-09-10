@@ -1,4 +1,4 @@
-# utils.py - FIXED VERSION WITH PROPER BALANCE TRACKING
+# utils.py - FIXED VERSION WITH PROPER BALANCE TRACKING AND PUMPFUN SUPPORT
 import json
 import logging
 import httpx
@@ -904,38 +904,77 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         
         logging.info(f"[Buy] Using amount: {amount:.3f} SOL for {mint[:8]}...")
         
+        # ============================================
+        # CRITICAL FIX: DETECT PUMPFUN TOKENS EARLY
+        # ============================================
+        is_pumpfun = mint in pumpfun_tokens or kwargs.get("is_pumpfun", False)
+        is_migration = kwargs.get("is_migration", False)
+        
         # PRE-TRADE VALIDATION
         
-        # Check liquidity
-        logging.info(f"[Buy] Checking liquidity for {mint[:8]}...")
-        lp_data = await get_liquidity_and_ownership(mint)
-        
-        if lp_data is None:
-            logging.warning(f"[Buy] LP check timed out for {mint[:8]}..., requeuing")
-            return False
-        
-        pool_liquidity = lp_data.get("liquidity", 0)
-        
-        # Check minimum liquidity
-        if pool_liquidity < CONFIG.MIN_LP_SOL:
-            log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
-            record_skip("low_lp")
-            return False
-        
-        # Check authority renouncement
-        if CONFIG.REQUIRE_AUTH_RENOUNCED:
-            mint_renounced, freeze_renounced = await check_mint_authority(mint)
-            if not (mint_renounced and freeze_renounced):
-                log_skipped_token(mint, "Authority not renounced")
+        if is_pumpfun:
+            # SPECIAL HANDLING FOR PUMPFUN TOKENS
+            logging.info(f"[Buy] PumpFun token detected - using simplified checks")
+            
+            # For PumpFun, assume minimal liquidity and skip extensive checks
+            pool_liquidity = 0.1  # Default for fresh PumpFun
+            
+            # Try to get actual liquidity but don't fail if we can't
+            try:
+                # Quick Jupiter quote check to see if it's tradeable
+                test_quote = await get_jupiter_quote(
+                    "So11111111111111111111111111111111111111112",
+                    mint,
+                    int(0.001 * 1e9),
+                    500
+                )
+                if test_quote and int(test_quote.get("outAmount", 0)) > 0:
+                    # Token is tradeable on Jupiter
+                    price_impact = float(test_quote.get("priceImpactPct", 100))
+                    if price_impact < 10:
+                        pool_liquidity = 1.0  # Decent liquidity
+                    elif price_impact < 50:
+                        pool_liquidity = 0.5  # Low liquidity
+                    else:
+                        pool_liquidity = 0.1  # Very low liquidity
+                    logging.info(f"[Buy] PumpFun token has estimated {pool_liquidity:.2f} SOL liquidity")
+            except Exception as e:
+                logging.debug(f"[Buy] Quick liquidity check failed for PumpFun: {e}")
+                pool_liquidity = 0.1  # Assume minimal
+            
+            # Skip authority and tax checks for PumpFun (they handle this)
+            
+        else:
+            # REGULAR TOKEN HANDLING (Raydium, etc.)
+            logging.info(f"[Buy] Checking liquidity for regular token {mint[:8]}...")
+            lp_data = await get_liquidity_and_ownership(mint)
+            
+            if lp_data is None:
+                logging.warning(f"[Buy] LP check timed out for {mint[:8]}..., requeuing")
+                return False
+            
+            pool_liquidity = lp_data.get("liquidity", 0)
+            
+            # Check minimum liquidity for non-PumpFun
+            if pool_liquidity < CONFIG.MIN_LP_SOL:
+                log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
+                record_skip("low_lp")
+                return False
+            
+            # Check authority renouncement for non-PumpFun
+            if CONFIG.REQUIRE_AUTH_RENOUNCED:
+                mint_renounced, freeze_renounced = await check_mint_authority(mint)
+                if not (mint_renounced and freeze_renounced):
+                    log_skipped_token(mint, "Authority not renounced")
+                    return False
+            
+            # Check for high tax
+            tax_bps = await check_token_tax(mint)
+            if tax_bps > CONFIG.MAX_TRADE_TAX_BPS:
+                log_skipped_token(mint, f"High tax: {tax_bps/100:.1f}%")
                 return False
         
-        # Check for high tax
-        tax_bps = await check_token_tax(mint)
-        if tax_bps > CONFIG.MAX_TRADE_TAX_BPS:
-            log_skipped_token(mint, f"High tax: {tax_bps/100:.1f}%")
-            return False
-        
-        # Check sell route availability before buying
+        # Check sell route availability before buying (for all tokens)
         estimated_tokens = int(amount * 1e9 * 100)  # Rough estimate
         sell_quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", estimated_tokens, 500)
         if not sell_quote or int(sell_quote.get("outAmount", 0)) == 0:
@@ -943,21 +982,16 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             record_skip("no_route")
             return False
         
-        # Check if PumpFun
-        is_pumpfun = False
+        # Position sizing for PumpFun
         pumpfun_position = 0
         
-        if "pump" in str(mint).lower() or mint in pumpfun_tokens:
-            is_pumpfun = True
+        if is_pumpfun:
             can_buy, pumpfun_position = await evaluate_pumpfun_opportunity(mint, pool_liquidity)
             
-            if not can_buy:
+            if not can_buy and pool_liquidity < 0.05:
                 logging.info(f"[Buy] PumpFun token {mint[:8]}... with {pool_liquidity:.2f} SOL LP - TOO LOW")
                 record_skip("low_lp")
                 return False
-        
-        # Handle special cases for position sizing
-        is_migration = kwargs.get("is_migration", False)
         
         # Override amount for special cases if dynamic sizing is enabled
         if CONFIG.USE_DYNAMIC_SIZING and amount == CONFIG.BUY_AMOUNT_SOL:
@@ -1029,8 +1063,11 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 "emergency_attempts": 0
             })
             
+            token_type = "PumpFun" if is_pumpfun else "Regular"
+            
             await notify("buy",
                 f"✅ Sniped {mint[:8]}... via Jupiter\n"
+                f"Type: {token_type}\n"
                 f"Amount: {amount:.3f} SOL\n"
                 f"Tokens: {real_tokens}\n"
                 f"LP: {pool_liquidity:.2f} SOL\n"
