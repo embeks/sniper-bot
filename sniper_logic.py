@@ -1,4 +1,4 @@
-# sniper_logic.py - FIXED VERSION WITH STRICT AGE ENFORCEMENT AND PROPER TOKEN DETECTION
+# sniper_logic.py - COMPLETE FIXED VERSION WITH BUY FLOW INSTRUMENTATION
 
 import asyncio
 import json
@@ -23,7 +23,7 @@ from utils import (
     update_last_activity, increment_stat, record_skip,
     listener_status, last_seen_token,
     is_fresh_token, verify_token_age_on_chain, is_pumpfun_launch,
-    HTTPManager
+    HTTPManager, notify
 )
 from solders.pubkey import Pubkey
 from raydium_aggregator import RaydiumAggregatorClient
@@ -179,6 +179,20 @@ RAYDIUM_INIT_DISCRIMINATOR = bytes([175, 175, 109, 31, 13, 152, 155, 237])  # In
 MIN_LP_USD = float(os.getenv("MIN_LP_USD", 500))  # Lowered for fresh tokens
 MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 500))  # Lowered for fresh tokens
 seen_trending = set()
+
+# ============================================
+# HELPER FUNCTIONS FOR ULTRA-FRESH TOKENS
+# ============================================
+async def is_ultra_fresh(mint: str) -> bool:
+    """Check if token is ultra-fresh (≤30s old)"""
+    try:
+        return await is_fresh_token(mint, max_age_seconds=30)
+    except Exception:
+        return False
+
+def grace_min_lp(base_threshold: float, is_ultra_fresh: bool) -> float:
+    """Apply grace floor for ultra-fresh tokens"""
+    return min(base_threshold, 0.1) if is_ultra_fresh else base_threshold
 
 def should_send_telegram(key: str) -> bool:
     """Check if we should send a telegram message (anti-spam)"""
@@ -446,7 +460,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
         return []
 
 async def is_quality_token(mint: str, lp_amount: float) -> tuple:
-    """Enhanced quality check for tokens"""
+    """Enhanced quality check for tokens with ultra-fresh grace period"""
     try:
         if mint in already_bought:
             return False, "Already bought"
@@ -456,16 +470,16 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
             if time_since_attempt < DUPLICATE_CHECK_WINDOW:
                 return False, f"Recent buy attempt {time_since_attempt:.0f}s ago"
         
-        # Apply grace floor for ultra-fresh tokens (matching utils.py logic)
-        try:
-            ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
-        except Exception:
-            ultra_fresh = False
+        # FIX: Check if ultra-fresh with grace floor
+        ultra_fresh = await is_ultra_fresh(mint)
+        eff_min = grace_min_lp(RUG_LP_THRESHOLD, ultra_fresh)
         
-        effective_min_lp = min(RUG_LP_THRESHOLD, 0.1) if ultra_fresh else RUG_LP_THRESHOLD
+        # FIX: Allow ultra-fresh with LP=0 to pass (defer to buy path)
+        if ultra_fresh and lp_amount == 0:
+            return True, "Ultra-fresh; defer LP check to buy path"
         
-        if lp_amount < effective_min_lp:
-            return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {effective_min_lp:.2f})"
+        if lp_amount < eff_min:
+            return False, f"Low liquidity: {lp_amount:.2f} SOL (min: {eff_min:.2f})"
         
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
@@ -490,7 +504,7 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
         except:
             pass
         
-        if lp_amount >= effective_min_lp:
+        if lp_amount >= eff_min:
             return True, f"Good liquidity ({lp_amount:.1f} SOL), proceeding without data"
         
         return False, "Failed quality checks"
@@ -498,13 +512,10 @@ async def is_quality_token(mint: str, lp_amount: float) -> tuple:
     except Exception as e:
         logging.error(f"Quality check error: {e}")
         # Use grace floor even in error cases
-        try:
-            ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
-        except:
-            ultra_fresh = False
-        effective_min_lp = min(RUG_LP_THRESHOLD, 0.1) if ultra_fresh else RUG_LP_THRESHOLD
+        ultra_fresh = await is_ultra_fresh(mint)
+        eff_min = grace_min_lp(RUG_LP_THRESHOLD, ultra_fresh)
         
-        if lp_amount >= effective_min_lp:
+        if lp_amount >= eff_min:
             return True, "Quality check error but good LP"
         return False, "Quality check error"
 
@@ -1115,18 +1126,14 @@ async def mempool_listener(name, program_id=None):
                                                 lp_amount = lp_data.get("liquidity", 0)
                                         except asyncio.TimeoutError:
                                             logging.info(f"[{name}] LP check timeout, assuming minimal liquidity")
-                                            lp_amount = 0.1  # Assume minimal
+                                            lp_amount = 0.1  # FIXED: Assume minimal
                                         except Exception as e:
                                             logging.debug(f"[{name}] LP check error: {e}")
                                             lp_amount = 0.1
                                         
-                                        # PHASE 1 FIX: Apply grace floor for ultra-fresh tokens (same as utils.py)
-                                        try:
-                                            ultra_fresh = await is_fresh_token(token_mint, max_age_seconds=30)
-                                        except Exception:
-                                            ultra_fresh = False
-                                        
-                                        effective_min_lp = min(RUG_LP_THRESHOLD, 0.1) if ultra_fresh else RUG_LP_THRESHOLD
+                                        # FIX: Apply grace floor for ultra-fresh tokens (same as utils.py)
+                                        ultra_fresh = await is_ultra_fresh(token_mint)
+                                        effective_min_lp = grace_min_lp(RUG_LP_THRESHOLD, ultra_fresh)
                                         
                                         if lp_amount < effective_min_lp:
                                             logging.info(f"[{name}] Low liquidity ({lp_amount:.2f} SOL) vs min {effective_min_lp:.2f}")
