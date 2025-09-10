@@ -269,30 +269,39 @@ async def check_token_tax(mint: str) -> int:
     return 0  # Default to no tax if can't determine
 
 # ============================================
-# AGE CHECKING FUNCTIONS
+# AGE CHECKING FUNCTIONS - FIXED
 # ============================================
 async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
     """Check if token/pool was created within the specified time"""
     try:
         url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
         response = await HTTPManager.request(url, timeout=5)
-        if response:
-            data = response.json()
-            if "pairs" in data and len(data["pairs"]) > 0:
-                for pair in data["pairs"]:
-                    created_at = pair.get("pairCreatedAt")
-                    if created_at:
-                        age_ms = time.time() * 1000 - created_at
-                        age_seconds = age_ms / 1000
-                        
-                        if age_seconds <= max_age_seconds:
-                            return True
-                        else:
-                            logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
-                            return False
-                
-                logging.info(f"[AGE CHECK] No data for {mint[:8]}... - assuming old token")
-                return False
+        
+        # FIX: Check if response exists before trying to access it
+        if not response:
+            logging.info(f"[AGE CHECK] No response for {mint[:8]}... - assuming old token")
+            return False
+            
+        data = response.json()
+        if "pairs" in data and isinstance(data["pairs"], list) and len(data["pairs"]) > 0:
+            for pair in data["pairs"]:
+                created_at = pair.get("pairCreatedAt")
+                if created_at:
+                    age_ms = time.time() * 1000 - created_at
+                    age_seconds = age_ms / 1000
+                    
+                    if age_seconds <= max_age_seconds:
+                        logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - FRESH!")
+                        return True
+                    else:
+                        logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
+                        return False
+            
+            logging.info(f"[AGE CHECK] No creation time for {mint[:8]}... - assuming old token")
+            return False
+        else:
+            logging.info(f"[AGE CHECK] No pairs data for {mint[:8]}... - assuming old token")
+            return False
                 
     except Exception as e:
         logging.error(f"Age check error: {e}")
@@ -309,20 +318,25 @@ async def verify_token_age_on_chain(mint: str, max_age_seconds: int = 60) -> boo
             commitment="confirmed"
         )
         
-        if signatures and signatures.value:
-            creation_sig = signatures.value[-1]
-            block_time = creation_sig.block_time
+        # FIX: Better null checking
+        if not signatures or not hasattr(signatures, 'value') or not signatures.value:
+            logging.info(f"[CHAIN CHECK] No signatures found for {mint[:8]}... - assuming old")
+            return False
             
-            if block_time:
-                age_seconds = time.time() - block_time
-                if age_seconds <= max_age_seconds:
-                    logging.info(f"[CHAIN CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - FRESH!")
-                    return True
-                else:
-                    logging.info(f"[CHAIN CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - TOO OLD")
-                    return False
+        creation_sig = signatures.value[-1]
+        block_time = creation_sig.block_time
         
-        return False
+        if block_time:
+            age_seconds = time.time() - block_time
+            if age_seconds <= max_age_seconds:
+                logging.info(f"[CHAIN CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - FRESH!")
+                return True
+            else:
+                logging.info(f"[CHAIN CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old - TOO OLD")
+                return False
+        else:
+            logging.info(f"[CHAIN CHECK] No block time for {mint[:8]}... - assuming old")
+            return False
         
     except Exception as e:
         logging.error(f"Chain age check error: {e}")
