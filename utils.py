@@ -70,7 +70,7 @@ class HTTPManager:
                         await asyncio.sleep(1)
                         continue
                         
-            except httpx.TimeoutError:
+            except (httpx.TimeoutException, asyncio.TimeoutError):
                 if attempt < retries - 1:
                     await asyncio.sleep(1)
                     continue
