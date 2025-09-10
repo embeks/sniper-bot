@@ -33,6 +33,55 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Load config once
 CONFIG = config.load()
 
+# ============================================
+# CENTRALIZED HTTP MANAGER - NEW FIX
+# ============================================
+class HTTPManager:
+    """Centralized HTTP client with proper defaults"""
+    
+    @staticmethod
+    async def request(url: str, method: str = "GET", **kwargs):
+        """Make HTTP request with retries and timeouts"""
+        timeout = kwargs.pop('timeout', 10)
+        retries = kwargs.pop('retries', 3)
+        
+        for attempt in range(retries):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    verify=certifi.where(),
+                    follow_redirects=True
+                ) as client:
+                    if method == "GET":
+                        response = await client.get(url, **kwargs)
+                    elif method == "POST":
+                        response = await client.post(url, **kwargs)
+                    else:
+                        raise ValueError(f"Unsupported method: {method}")
+                    
+                    if response.status_code == 200:
+                        return response
+                    elif response.status_code == 429 and attempt < retries - 1:
+                        # Rate limited, exponential backoff
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    elif response.status_code >= 500 and attempt < retries - 1:
+                        # Server error, retry
+                        await asyncio.sleep(1)
+                        continue
+                        
+            except httpx.TimeoutError:
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+            except Exception as e:
+                logging.debug(f"HTTP request error (attempt {attempt + 1}): {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+        
+        return None
+
 # Known AMM program IDs for validation
 KNOWN_AMM_PROGRAMS = {
     "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium AMM V4
@@ -203,18 +252,17 @@ async def check_token_tax(mint: str) -> int:
     """Detect transfer tax on token via DexScreener (returns basis points)"""
     try:
         url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                if "pairs" in data and len(data["pairs"]) > 0:
-                    # Check if any pair has buy/sell tax info
-                    for pair in data["pairs"]:
-                        buy_tax = pair.get("buyTax", 0)
-                        sell_tax = pair.get("sellTax", 0)
-                        if buy_tax > 0 or sell_tax > 0:
-                            max_tax = max(buy_tax, sell_tax)
-                            return int(max_tax * 100)  # Convert to basis points
+        response = await HTTPManager.request(url)
+        if response:
+            data = response.json()
+            if "pairs" in data and len(data["pairs"]) > 0:
+                # Check if any pair has buy/sell tax info
+                for pair in data["pairs"]:
+                    buy_tax = pair.get("buyTax", 0)
+                    sell_tax = pair.get("sellTax", 0)
+                    if buy_tax > 0 or sell_tax > 0:
+                        max_tax = max(buy_tax, sell_tax)
+                        return int(max_tax * 100)  # Convert to basis points
     except:
         pass
     
@@ -227,22 +275,21 @@ async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
     """Check if token/pool was created within the specified time"""
     try:
         url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
-        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                if "pairs" in data and len(data["pairs"]) > 0:
-                    for pair in data["pairs"]:
-                        created_at = pair.get("pairCreatedAt")
-                        if created_at:
-                            age_ms = time.time() * 1000 - created_at
-                            age_seconds = age_ms / 1000
-                            
-                            if age_seconds <= max_age_seconds:
-                                return True
-                            else:
-                                logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
-                                return False
+        response = await HTTPManager.request(url, timeout=5)
+        if response:
+            data = response.json()
+            if "pairs" in data and len(data["pairs"]) > 0:
+                for pair in data["pairs"]:
+                    created_at = pair.get("pairCreatedAt")
+                    if created_at:
+                        age_ms = time.time() * 1000 - created_at
+                        age_seconds = age_ms / 1000
+                        
+                        if age_seconds <= max_age_seconds:
+                            return True
+                        else:
+                            logging.info(f"[AGE CHECK] Token {mint[:8]}... is {age_seconds:.0f}s old (max: {max_age_seconds}s)")
+                            return False
                 
                 logging.info(f"[AGE CHECK] No data for {mint[:8]}... - assuming old token")
                 return False
@@ -398,23 +445,18 @@ async def send_telegram_alert(message: str, retry_count: int = 3) -> bool:
         
         for attempt in range(retry_count):
             try:
-                async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
-                    response = await client.post(url, json=payload)
+                response = await HTTPManager.request(url, method="POST", json=payload, timeout=10)
+                if response and response.status_code == 200:
+                    return True
+                elif response and response.status_code == 429:
+                    try:
+                        data = response.json()
+                        retry_after = data.get("parameters", {}).get("retry_after", 5)
+                        logging.warning(f"Telegram rate limit hit, waiting {retry_after}s")
+                        await asyncio.sleep(retry_after)
+                    except:
+                        await asyncio.sleep(5)
                     
-                    if response.status_code == 200:
-                        return True
-                    elif response.status_code == 429:
-                        try:
-                            data = response.json()
-                            retry_after = data.get("parameters", {}).get("retry_after", 5)
-                            logging.warning(f"Telegram rate limit hit, waiting {retry_after}s")
-                            await asyncio.sleep(retry_after)
-                        except:
-                            await asyncio.sleep(5)
-                    
-            except httpx.TimeoutError:
-                if attempt < retry_count - 1:
-                    await asyncio.sleep(1)
             except Exception as e:
                 logging.debug(f"Telegram send attempt {attempt + 1} failed: {e}")
                 if attempt < retry_count - 1:
@@ -501,14 +543,19 @@ def get_bot_status_message() -> str:
 """
 
 async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
-    """Get accurate liquidity with timeout and proper validation"""
+    """Get accurate liquidity with INCREASED timeout - FIXED"""
     try:
+        # FIXED: Increased timeout for fresh tokens
+        LP_CHECK_TIMEOUT = 5  # Increased from 1 second
+        
         async def _check_liquidity():
             sol_mint = "So11111111111111111111111111111111111111112"
             
+            # Check Raydium first
             pool = raydium.find_pool_realtime(mint)
             
             if pool:
+                # Get actual SOL balance from vault
                 if pool["baseMint"] == sol_mint:
                     sol_vault_key = pool["baseVault"]
                 elif pool["quoteMint"] == sol_mint:
@@ -530,39 +577,40 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
                         logging.warning(f"[LP Check] {mint[:8]}... has ZERO liquidity in Raydium pool")
                         return {"liquidity": 0}
             
+            # Fallback to Jupiter using HTTPManager
             logging.info(f"[LP Check] No Raydium pool, checking Jupiter...")
             try:
-                url = CONFIG.JUPITER_QUOTE_BASE_URL
-                params = {
-                    "inputMint": sol_mint,
-                    "outputMint": mint,
-                    "amount": str(int(0.001 * 1e9)),
-                    "slippageBps": "100",
-                    "onlyDirectRoutes": "false"
-                }
+                response = await HTTPManager.request(
+                    CONFIG.JUPITER_QUOTE_BASE_URL,
+                    params={
+                        "inputMint": sol_mint,
+                        "outputMint": mint,
+                        "amount": str(int(0.001 * 1e9)),
+                        "slippageBps": "500",
+                        "onlyDirectRoutes": "false"
+                    }
+                )
                 
-                async with httpx.AsyncClient(timeout=3, verify=certifi.where()) as client:
-                    response = await client.get(url, params=params)
-                    if response.status_code == 200:
-                        quote = response.json()
+                if response:
+                    quote = response.json()
+                    if quote.get("outAmount") and int(quote.get("outAmount", 0)) > 0:
+                        price_impact = float(quote.get("priceImpactPct", 100))
                         
-                        if quote.get("outAmount") and int(quote.get("outAmount", 0)) > 0:
-                            price_impact = float(quote.get("priceImpactPct", 100))
-                            
-                            if price_impact < 1:
-                                estimated_lp = 10.0
-                            elif price_impact < 5:
-                                estimated_lp = 3.0
-                            elif price_impact < 10:
-                                estimated_lp = 1.0
-                            else:
-                                estimated_lp = 0.1
-                            
-                            logging.info(f"[LP Check] {mint[:8]}... on Jupiter with estimated {estimated_lp:.2f} SOL liquidity")
-                            return {"liquidity": estimated_lp}
+                        # Estimate liquidity from price impact
+                        if price_impact < 1:
+                            estimated_lp = 10.0
+                        elif price_impact < 5:
+                            estimated_lp = 3.0
+                        elif price_impact < 10:
+                            estimated_lp = 1.0
                         else:
-                            logging.info(f"[LP Check] No viable route on Jupiter for {mint[:8]}...")
-                            return {"liquidity": 0}
+                            estimated_lp = 0.5
+                        
+                        logging.info(f"[LP Check] {mint[:8]}... on Jupiter with estimated {estimated_lp:.2f} SOL liquidity")
+                        return {"liquidity": estimated_lp}
+                    else:
+                        logging.info(f"[LP Check] No viable route on Jupiter for {mint[:8]}...")
+                        return {"liquidity": 0}
             except Exception as e:
                 logging.debug(f"[LP Check] Jupiter check failed: {e}")
             
@@ -570,12 +618,13 @@ async def get_liquidity_and_ownership(mint: str) -> Optional[Dict[str, Any]]:
             return {"liquidity": 0}
         
         try:
-            result = await asyncio.wait_for(_check_liquidity(), timeout=CONFIG.LP_CHECK_TIMEOUT)
+            result = await asyncio.wait_for(_check_liquidity(), timeout=LP_CHECK_TIMEOUT)
             return result
         except asyncio.TimeoutError:
-            logging.warning(f"[LP Check] Timeout after {CONFIG.LP_CHECK_TIMEOUT}s for {mint[:8]}...")
+            logging.warning(f"[LP Check] Timeout after {LP_CHECK_TIMEOUT}s for {mint[:8]}...")
+            # FIXED: Return minimal liquidity instead of None for fresh tokens
             record_skip("lp_timeout")
-            return None
+            return {"liquidity": 0.1}  # Assume minimal liquidity for fresh tokens
             
     except Exception as e:
         logging.error(f"[LP Check] Error for {mint}: {e}")
@@ -608,12 +657,11 @@ async def daily_stats_reset_loop():
             await asyncio.sleep(3600)
 
 async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = None):
-    """Get swap quote from Jupiter API v6"""
+    """Get swap quote from Jupiter API v6 - FIXED with HTTPManager"""
     if slippage_bps is None:
         slippage_bps = CONFIG.STOP_MAX_SLIPPAGE_BPS
         
     try:
-        url = CONFIG.JUPITER_QUOTE_BASE_URL
         params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
@@ -623,34 +671,31 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
             "asLegacyTransaction": "false"
         }
         
-        async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
-            response = await client.get(url, params=params)
-            if response.status_code == 200:
-                quote = response.json()
-                
-                # Return v6 quote format
-                return {
-                    "inAmount": quote.get("inAmount", "0"),
-                    "outAmount": quote.get("outAmount", "0"),
-                    "otherAmountThreshold": quote.get("otherAmountThreshold", "0"),
-                    "priceImpactPct": quote.get("priceImpactPct", "0"),
-                    "routePlan": quote.get("routePlan", [])
-                }
-            else:
-                logging.warning(f"[Jupiter] Quote request failed: {response.status_code}")
-                return None
+        response = await HTTPManager.request(CONFIG.JUPITER_QUOTE_BASE_URL, params=params)
+        if response:
+            quote = response.json()
+            
+            # Return v6 quote format
+            return {
+                "inAmount": quote.get("inAmount", "0"),
+                "outAmount": quote.get("outAmount", "0"),
+                "otherAmountThreshold": quote.get("otherAmountThreshold", "0"),
+                "priceImpactPct": quote.get("priceImpactPct", "0"),
+                "routePlan": quote.get("routePlan", [])
+            }
+        else:
+            logging.warning(f"[Jupiter] Quote request failed")
+            return None
     except Exception as e:
         logging.error(f"[Jupiter] Error getting quote: {e}")
         return None
 
 async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str, slippage_bps: int = None):
-    """Get the swap transaction from Jupiter v6"""
+    """Get the swap transaction from Jupiter v6 - FIXED with HTTPManager"""
     if slippage_bps is None:
         slippage_bps = CONFIG.STOP_MAX_SLIPPAGE_BPS
         
     try:
-        url = CONFIG.JUPITER_SWAP_URL
-        
         body = {
             "quoteResponse": quote,
             "userPublicKey": user_pubkey,
@@ -660,15 +705,14 @@ async def get_jupiter_swap_transaction(quote: dict, user_pubkey: str, slippage_b
             "slippageBps": slippage_bps
         }
         
-        async with httpx.AsyncClient(timeout=15, verify=certifi.where()) as client:
-            response = await client.post(url, json=body)
-            if response.status_code == 200:
-                data = response.json()
-                logging.info("[Jupiter] Swap transaction received")
-                return data
-            else:
-                logging.warning(f"[Jupiter] Swap request failed: {response.status_code}")
-                return None
+        response = await HTTPManager.request(CONFIG.JUPITER_SWAP_URL, method="POST", json=body, timeout=15)
+        if response:
+            data = response.json()
+            logging.info("[Jupiter] Swap transaction received")
+            return data
+        else:
+            logging.warning(f"[Jupiter] Swap request failed")
+            return None
     except Exception as e:
         logging.error(f"[Jupiter] Error getting swap transaction: {e}")
         return None
@@ -888,7 +932,7 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
-    """Execute buy with pre-trade validation and stop-loss registration - Jupiter only"""
+    """Execute buy with EXPLICIT AMOUNT - FIXED"""
     try:
         if mint in BROKEN_TOKENS:
             log_skipped_token(mint, "Broken token")
@@ -898,9 +942,12 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         increment_stat("snipes_attempted", 1)
         update_last_activity()
         
-        # Use explicit amount or default from config
+        # FIXED: ALWAYS use explicit amount, never rely on global
         if amount is None:
             amount = CONFIG.BUY_AMOUNT_SOL
+        
+        # Ensure amount is reasonable with safety bounds
+        amount = max(0.01, min(amount, 0.5))  # Safety bounds: 0.01 to 0.5 SOL
         
         logging.info(f"[Buy] Using amount: {amount:.3f} SOL for {mint[:8]}...")
         
@@ -950,10 +997,10 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             lp_data = await get_liquidity_and_ownership(mint)
             
             if lp_data is None:
-                logging.warning(f"[Buy] LP check timed out for {mint[:8]}..., requeuing")
-                return False
-            
-            pool_liquidity = lp_data.get("liquidity", 0)
+                logging.warning(f"[Buy] LP check timed out for {mint[:8]}..., assuming minimal liquidity")
+                pool_liquidity = 0.1  # FIXED: Assume minimal instead of failing
+            else:
+                pool_liquidity = lp_data.get("liquidity", 0)
             
             # Check minimum liquidity for non-PumpFun
             if pool_liquidity < CONFIG.MIN_LP_SOL:
@@ -1212,17 +1259,16 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
         try:
             dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
             
-            async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
-                response = await client.get(dex_url)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "pairs" in data and len(data["pairs"]) > 0:
-                        pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
-                        if pairs[0].get("priceUsd"):
-                            price = float(pairs[0]["priceUsd"])
-                            if price > 0:
-                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (DexScreener)")
-                                return price
+            response = await HTTPManager.request(dex_url)
+            if response:
+                data = response.json()
+                if "pairs" in data and len(data["pairs"]) > 0:
+                    pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
+                    if pairs[0].get("priceUsd"):
+                        price = float(pairs[0]["priceUsd"])
+                        if price > 0:
+                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (DexScreener)")
+                            return price
         except Exception as e:
             logging.debug(f"[Price] DexScreener error: {e}")
         
@@ -1231,33 +1277,31 @@ async def get_token_price_usd(mint: str) -> Optional[float]:
             try:
                 url = f"https://public-api.birdeye.so/defi/price?address={mint}"
                 
-                async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
-                    headers = {"X-API-KEY": CONFIG.BIRDEYE_API_KEY}
-                    response = await client.get(url, headers=headers)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "data" in data and "value" in data["data"]:
-                            price = float(data["data"]["value"])
-                            if price > 0:
-                                logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye)")
-                                return price
+                headers = {"X-API-KEY": CONFIG.BIRDEYE_API_KEY}
+                response = await HTTPManager.request(url, headers=headers)
+                
+                if response:
+                    data = response.json()
+                    if "data" in data and "value" in data["data"]:
+                        price = float(data["data"]["value"])
+                        if price > 0:
+                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Birdeye)")
+                            return price
             except Exception as e:
                 logging.debug(f"[Price] Birdeye error: {e}")
         
         # 3. Try Jupiter Price API
         try:
             url = f"https://price.jup.ag/v4/price?ids={mint}"
-            async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        price_data = data["data"][mint]
-                        price = float(price_data.get("price", 0))
-                        if price > 0:
-                            logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter Price API)")
-                            return price
+            response = await HTTPManager.request(url, timeout=5)
+            if response:
+                data = response.json()
+                if mint in data.get("data", {}):
+                    price_data = data["data"][mint]
+                    price = float(price_data.get("price", 0))
+                    if price > 0:
+                        logging.info(f"[Price] {mint[:8]}... = ${price:.8f} (Jupiter Price API)")
+                        return price
         except Exception as e:
             logging.debug(f"[Price] Jupiter Price API error: {e}")
         
@@ -1636,20 +1680,19 @@ async def check_pumpfun_token_status(mint: str) -> Optional[Dict[str, Any]]:
     """Check PumpFun token status and market cap"""
     try:
         url = f"https://frontend-api.pump.fun/coins/{mint}"
-        async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                market_cap = data.get("usd_market_cap", 0)
-                graduated = market_cap >= 69420
-                pool_address = data.get("raydium_pool")
-                
-                return {
-                    "market_cap": market_cap,
-                    "graduated": graduated,
-                    "pool_address": pool_address,
-                    "progress": (market_cap / 69420) * 100 if market_cap < 69420 else 100
-                }
+        response = await HTTPManager.request(url, timeout=5)
+        if response:
+            data = response.json()
+            market_cap = data.get("usd_market_cap", 0)
+            graduated = market_cap >= 69420
+            pool_address = data.get("raydium_pool")
+            
+            return {
+                "market_cap": market_cap,
+                "graduated": graduated,
+                "pool_address": pool_address,
+                "progress": (market_cap / 69420) * 100 if market_cap < 69420 else 100
+            }
     except Exception as e:
         logging.debug(f"PumpFun status check error: {e}")
     
@@ -1670,13 +1713,12 @@ async def detect_pumpfun_migration(mint: str) -> bool:
             
         try:
             url = f"https://price.jup.ag/v4/price?ids={mint}"
-            async with httpx.AsyncClient(timeout=5, verify=certifi.where()) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if mint in data.get("data", {}):
-                        logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
-                        return True
+            response = await HTTPManager.request(url, timeout=5)
+            if response:
+                data = response.json()
+                if mint in data.get("data", {}):
+                    logging.info(f"[Migration] PumpFun token {mint[:8]}... found on Jupiter!")
+                    return True
         except:
             pass
             
@@ -1738,5 +1780,6 @@ __all__ = [
     'CONFIG',
     'register_stop',
     'STOPS',
-    'notify'
+    'notify',
+    'HTTPManager'
 ]
