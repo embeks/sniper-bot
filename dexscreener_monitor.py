@@ -1,4 +1,4 @@
-# Fixed dexscreener_monitor.py
+# Fixed dexscreener_monitor.py - PRODUCTION READY WITH EXPLICIT AMOUNTS
 """
 ELITE DEXSCREENER MONITOR - Fixed API and improved detection
 """
@@ -15,8 +15,8 @@ from dotenv import load_dotenv
 from utils import (
     buy_token, send_telegram_alert, is_bot_running,
     get_liquidity_and_ownership, wait_and_auto_sell,
-    BUY_AMOUNT_SOL, BROKEN_TOKENS, mark_broken_token,
-    increment_stat, update_last_activity
+    BROKEN_TOKENS, mark_broken_token,
+    increment_stat, update_last_activity, HTTPManager
 )
 
 load_dotenv()
@@ -33,6 +33,10 @@ MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", 15))  # Allow more impact
 ELITE_MODE = os.getenv("ELITE_MODE", "true").lower() == "true"
 PUMPFUN_PRIORITY = os.getenv("PUMPFUN_PRIORITY", "true").lower() == "true"
 AUTO_BUY = os.getenv("AUTO_BUY", "true").lower() == "true"
+
+# FIXED: Default buy amounts - never mutate ENV
+DEFAULT_BUY_AMOUNT = float(os.getenv("BUY_AMOUNT_SOL", 0.02))
+PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
 
 # Track seen pools to avoid duplicates
 seen_pools: Set[str] = set()
@@ -108,52 +112,42 @@ class DexScreenerMonitor:
             await asyncio.sleep(CHECK_INTERVAL)
     
     async def fetch_new_pools(self) -> List[Dict]:
-        """Fetch pools from DexScreener with fixed API call"""
+        """Fetch pools from DexScreener with fixed API call using HTTPManager"""
         try:
-            # Use the tokens endpoint instead of pairs
-            base_url = "https://api.dexscreener.com/latest/dex/tokens/solana"
-            
             # Try multiple approaches
             urls_to_try = [
                 "https://api.dexscreener.com/latest/dex/search?q=SOL",  # Search for SOL pairs
                 "https://api.dexscreener.com/latest/dex/pairs/solana",  # Original endpoint
-                base_url  # Token endpoint
+                "https://api.dexscreener.com/latest/dex/tokens/solana"  # Token endpoint
             ]
             
             for url in urls_to_try:
                 try:
-                    async with httpx.AsyncClient(timeout=10, verify=False) as client:
-                        headers = {
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                            "Accept": "application/json",
-                            "Accept-Language": "en-US,en;q=0.9",
-                            "Cache-Control": "no-cache",
-                            "Pragma": "no-cache",
-                            "Referer": "https://dexscreener.com/"
-                        }
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept": "application/json",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache",
+                        "Referer": "https://dexscreener.com/"
+                    }
+                    
+                    response = await HTTPManager.request(url, headers=headers, timeout=10)
+                    
+                    if response:
+                        data = response.json()
+                        pairs = data.get("pairs", [])
                         
-                        response = await client.get(url, headers=headers)
+                        if not pairs and "results" in data:
+                            # Handle search results format
+                            results = data.get("results", [])
+                            if results and isinstance(results, list) and len(results) > 0:
+                                pairs = results[0].get("pairs", []) if "pairs" in results[0] else []
                         
-                        if response.status_code == 200:
-                            data = response.json()
-                            pairs = data.get("pairs", [])
-                            
-                            if not pairs and "results" in data:
-                                # Handle search results format
-                                results = data.get("results", [])
-                                if results and isinstance(results, list) and len(results) > 0:
-                                    pairs = results[0].get("pairs", []) if "pairs" in results[0] else []
-                            
-                            if pairs:
-                                logging.info(f"[DexScreener] Got {len(pairs)} pairs from {url}")
-                                return self.filter_new_pools(pairs)
-                            
-                        elif response.status_code == 404:
-                            logging.debug(f"[DexScreener] 404 from {url}, trying next...")
-                            continue
-                        else:
-                            logging.warning(f"[DexScreener] Status {response.status_code} from {url}")
-                            
+                        if pairs:
+                            logging.info(f"[DexScreener] Got {len(pairs)} pairs from {url}")
+                            return self.filter_new_pools(pairs)
+                        
                 except Exception as e:
                     logging.debug(f"[DexScreener] Error with {url}: {e}")
                     continue
@@ -196,7 +190,7 @@ class DexScreenerMonitor:
         return new_pools
     
     async def process_pool(self, pool: Dict) -> bool:
-        """Process a pool and decide whether to buy"""
+        """Process a pool and decide whether to buy - FIXED with explicit amounts"""
         try:
             self.stats["pools_found"] += 1
             
@@ -256,19 +250,17 @@ class DexScreenerMonitor:
                 f"{'🚀 Attempting buy...' if AUTO_BUY else '⏸ Manual mode'}"
             )
             
-            # Auto-buy if enabled
+            # Auto-buy if enabled - FIXED: Use explicit amount
             if AUTO_BUY and token_address:
                 try:
-                    # Use higher amount for PumpFun graduates
-                    buy_amount = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1)) if is_pumpfun else BUY_AMOUNT_SOL
+                    # FIXED: Determine buy amount based on token type
+                    if is_pumpfun:
+                        buy_amount = PUMPFUN_MIGRATION_BUY
+                    else:
+                        buy_amount = DEFAULT_BUY_AMOUNT
                     
-                    original_amount = os.getenv("BUY_AMOUNT_SOL")
-                    os.environ["BUY_AMOUNT_SOL"] = str(buy_amount)
-                    
-                    success = await buy_token(token_address)
-                    
-                    if original_amount:
-                        os.environ["BUY_AMOUNT_SOL"] = original_amount
+                    # FIXED: Pass explicit amount to buy_token
+                    success = await buy_token(token_address, amount=buy_amount)
                     
                     if success:
                         self.stats["pools_bought"] += 1
