@@ -338,11 +338,11 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
             logging.debug(f"[TX FETCH] All encodings failed, trying fallback for {signature[:8]}...")
             return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
         
-    except asyncio.TimeoutError:
-        logging.error(f"[TX FETCH] Overall timeout for {signature[:8]}...")
-        return []
-    except Exception as e:
-        logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
+    except (asyncio.TimeoutError, Exception) as e:
+        if isinstance(e, asyncio.TimeoutError):
+            logging.error(f"[TX FETCH] Overall timeout for {signature[:8]}...")
+        else:
+            logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
         return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
 
 async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, retry_count: int = 0) -> list:
