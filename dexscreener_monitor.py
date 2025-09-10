@@ -1,4 +1,4 @@
-# Fixed dexscreener_monitor.py - PRODUCTION READY WITH EXPLICIT AMOUNTS
+# dexscreener_monitor.py - COMPLETE FIXED VERSION WITH EXPLICIT AMOUNTS
 """
 ELITE DEXSCREENER MONITOR - Fixed API and improved detection
 """
@@ -258,6 +258,8 @@ class DexScreenerMonitor:
                         buy_amount = PUMPFUN_MIGRATION_BUY
                     else:
                         buy_amount = DEFAULT_BUY_AMOUNT
+                    
+                    logging.info(f"[DexScreener] Attempting buy with {buy_amount} SOL")
                     
                     # FIXED: Pass explicit amount to buy_token
                     success = await buy_token(token_address, amount=buy_amount)
