@@ -1067,8 +1067,9 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 record_skip("no_route")
                 return False
         else:
-            # PumpFun tokens use bonding curve, skip sell route check
+            # PumpFun tokens use bonding curve, skip sell route check and wait for initialization
             logging.info(f"[Buy] Skipping sell route check for PumpFun token {mint[:8]}...")
+            await asyncio.sleep(3)  # Give bonding curve time to initialize
         
         # Position sizing for PumpFun
         pumpfun_position = 0
@@ -1190,7 +1191,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
         return False
 
 async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bps=None):
-    """Execute sell transaction - ALWAYS uses Jupiter with validation"""
+    """Execute sell transaction - uses PumpFun for bonding curve tokens, Jupiter for migrated"""
     if slippage_bps is None:
         slippage_bps = CONFIG.STOP_MAX_SLIPPAGE_BPS
         
@@ -1223,21 +1224,76 @@ async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bp
 
         logging.info(f"[Sell] Selling {percentage}% ({amount} tokens) of {mint[:8]}...")
 
-        # ALWAYS use Jupiter (forced by config)
-        logging.info(f"[Sell] Using Jupiter for sell of {mint[:8]}...")
-        jupiter_sig = await execute_jupiter_sell(mint, amount, slippage_bps)
+        # Check if this is a PumpFun token still on bonding curve
+        is_pumpfun_bonding = False
+        if mint in pumpfun_tokens:
+            # Check if it has migrated to Raydium
+            lp_data = await get_liquidity_and_ownership(mint)
+            if lp_data and lp_data.get("liquidity", 0) > 1.0:
+                logging.info(f"[Sell] PumpFun token {mint[:8]}... has migrated, using Jupiter")
+                is_pumpfun_bonding = False
+            else:
+                logging.info(f"[Sell] PumpFun token {mint[:8]}... still on bonding curve")
+                is_pumpfun_bonding = True
         
-        if jupiter_sig:
-            await notify("sell",
-                f"✅ Sold {percentage}% of {mint[:8]}... via Jupiter\n"
-                f"TX: https://solscan.io/tx/{jupiter_sig}"
-            )
-            log_trade(mint, f"SELL {percentage}%", 0, amount)
-            increment_stat("sells_executed", 1)
-            return True
-        else:
-            logging.error(f"[Sell] Jupiter sell failed for {mint[:8]}...")
+        # Check if token was bought as PumpFun (from position data)
+        if mint in OPEN_POSITIONS:
+            position = OPEN_POSITIONS[mint]
+            if position.get("is_pumpfun", False) and not is_pumpfun_bonding:
+                # Double check if still on bonding curve
+                lp_data = await get_liquidity_and_ownership(mint)
+                if not lp_data or lp_data.get("liquidity", 0) < 1.0:
+                    is_pumpfun_bonding = True
+
+        # Execute sell with migration-aware fallback (safer approach without direct PumpFun)
+        if is_pumpfun_bonding:
+            # Probe Jupiter in case a route exists early
+            logging.info(f"[Sell] PumpFun bonding curve for {mint[:8]}..., probing Jupiter")
+            jupiter_sig = await execute_jupiter_sell(mint, amount, slippage_bps)
+            if jupiter_sig:
+                await notify("sell", f"✅ Sold {percentage}% of {mint[:8]}... via Jupiter\nTX: https://solscan.io/tx/{jupiter_sig}")
+                log_trade(mint, f"SELL {percentage}%", 0, amount)
+                increment_stat("sells_executed", 1)
+                return True
+
+            # Wait briefly for graduation/migration, then retry
+            max_wait_sec, poll_every = 90, 5
+            waited = 0
+            logging.info(f"[Sell] No Jupiter route for {mint[:8]}... waiting up to {max_wait_sec}s for migration")
+            while waited < max_wait_sec:
+                try:
+                    if await detect_pumpfun_migration(mint):
+                        logging.info(f"[Sell] Migration detected for {mint[:8]}..., retrying Jupiter")
+                        jupiter_sig = await execute_jupiter_sell(mint, amount, slippage_bps)
+                        if jupiter_sig:
+                            await notify("sell", f"✅ Sold {percentage}% of {mint[:8]}... via Jupiter after migration\nTX: https://solscan.io/tx/{jupiter_sig}")
+                            log_trade(mint, f"SELL {percentage}%", 0, amount)
+                            increment_stat("sells_executed", 1)
+                            return True
+                except Exception as e:
+                    logging.debug(f"[Sell] Migration check error for {mint[:8]}...: {e}")
+                await asyncio.sleep(poll_every)
+                waited += poll_every
+
+            logging.error(f"[Sell] No sell route for {mint[:8]}... after waiting {max_wait_sec}s")
+            await send_telegram_alert(f"❌ Could not sell {mint[:8]}... — no route yet. Will retry on next monitor tick.")
             return False
+        else:
+            # Non-bonding (regular or already migrated) — use Jupiter directly
+            logging.info(f"[Sell] Using Jupiter for sell of {mint[:8]}...")
+            jupiter_sig = await execute_jupiter_sell(mint, amount, slippage_bps)
+            
+            if jupiter_sig:
+                await notify("sell",
+                    f"✅ Sold {percentage}% of {mint[:8]}... via Jupiter\n"
+                    f"TX: https://solscan.io/tx/{jupiter_sig}"
+                )
+                log_trade(mint, f"SELL {percentage}%", 0, amount)
+                increment_stat("sells_executed", 1)
+                return True
+            else:
+                logging.error(f"[Sell] Jupiter sell failed for {mint[:8]}...")
+                return False
         
     except Exception as e:
         logging.error(f"Sell failed for {mint[:8]}...: {e}")
@@ -1379,7 +1435,6 @@ async def wait_and_auto_sell(mint: str):
             return
             
         position = OPEN_POSITIONS[mint]
-        buy_amount_sol = position["buy_amount_sol"]
         
         # Get stop data if exists
         stop_data = STOPS.get(mint)
