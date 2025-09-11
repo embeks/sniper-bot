@@ -1047,6 +1047,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             # FIXED: ALWAYS use explicit amount, never rely on global
             if amount is None:
                 amount = CONFIG.BUY_AMOUNT_SOL
+                logging.info(f"[Buy] No amount specified, using default: {amount} SOL")
             
             # Ensure amount is reasonable with safety bounds
             amount = max(0.01, min(amount, 0.5))  # Safety bounds: 0.01 to 0.5 SOL
@@ -1065,7 +1066,8 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 # SPECIAL HANDLING FOR PUMPFUN TOKENS
                 logging.info(f"[Buy] PumpFun token detected - using simplified checks")
                 
-                # For PumpFun, assume minimal liquidity and skip extensive checks
+                # For PumpFun tokens with no LP, use small test amount
+                # CRITICAL FIX: Set amount here for PumpFun tokens with no LP
                 pool_liquidity = 0.1  # Default for fresh PumpFun
                 
                 # Try to get actual liquidity but don't fail if we can't
@@ -1090,6 +1092,11 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 except Exception as e:
                     logging.debug(f"[Buy] Quick liquidity check failed for PumpFun: {e}")
                     pool_liquidity = 0.1  # Assume minimal
+                
+                # CRITICAL FIX: Ensure amount is set for PumpFun tokens
+                if pool_liquidity == 0 or pool_liquidity < 0.1:
+                    logging.info(f"[Buy] PumpFun token with no/low LP yet, using small test amount")
+                    amount = min(CONFIG.BUY_AMOUNT_SOL, 0.01)  # Use small amount for PumpFun with no LP
                 
                 # Skip authority and tax checks for PumpFun (they handle this)
                 
