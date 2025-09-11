@@ -1044,15 +1044,11 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             increment_stat("snipes_attempted", 1)
             update_last_activity()
             
-            # FIXED: ALWAYS use explicit amount, never rely on global
-            if amount is None:
-                amount = CONFIG.BUY_AMOUNT_SOL
-                logging.info(f"[Buy] No amount specified, using default: {amount} SOL")
+            # FIX: Use buy_amt throughout to avoid Python scoping issues
+            buy_amt = CONFIG.BUY_AMOUNT_SOL if amount is None else amount
+            buy_amt = max(0.01, min(buy_amt, 0.5))  # Safety bounds: 0.01 to 0.5 SOL
             
-            # Ensure amount is reasonable with safety bounds
-            amount = max(0.01, min(amount, 0.5))  # Safety bounds: 0.01 to 0.5 SOL
-            
-            logging.info(f"[Buy] Starting buy process for {mint[:8]}... with {amount:.3f} SOL")
+            logging.info(f"[Buy] Starting buy process for {mint[:8]}... with {buy_amt:.3f} SOL")
             
             # ============================================
             # CRITICAL FIX: DETECT PUMPFUN TOKENS EARLY
@@ -1066,9 +1062,12 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 # SPECIAL HANDLING FOR PUMPFUN TOKENS
                 logging.info(f"[Buy] PumpFun token detected - using simplified checks")
                 
-                # For PumpFun tokens with no LP, use small test amount
-                # CRITICAL FIX: Set amount here for PumpFun tokens with no LP
-                pool_liquidity = 0.1  # Default for fresh PumpFun
+                # Start with small amount for PumpFun tokens
+                buy_amt = min(buy_amt, 0.01)
+                logging.info(f"[Buy] PumpFun token - starting with {buy_amt:.3f} SOL")
+                
+                # Default liquidity for fresh PumpFun
+                pool_liquidity = 0.1
                 
                 # Try to get actual liquidity but don't fail if we can't
                 try:
@@ -1084,19 +1083,19 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                         price_impact = float(test_quote.get("priceImpactPct", 100))
                         if price_impact < 10:
                             pool_liquidity = 1.0  # Decent liquidity
+                            # Can use slightly larger amount if good liquidity
+                            buy_amt = min(CONFIG.BUY_AMOUNT_SOL, 0.02)
                         elif price_impact < 50:
                             pool_liquidity = 0.5  # Low liquidity
+                            buy_amt = min(CONFIG.BUY_AMOUNT_SOL, 0.015)
                         else:
                             pool_liquidity = 0.1  # Very low liquidity
-                        logging.info(f"[Buy] PumpFun token has estimated {pool_liquidity:.2f} SOL liquidity")
+                            buy_amt = min(CONFIG.BUY_AMOUNT_SOL, 0.01)
+                        logging.info(f"[Buy] PumpFun token has estimated {pool_liquidity:.2f} SOL liquidity, adjusted amount to {buy_amt:.3f} SOL")
                 except Exception as e:
                     logging.debug(f"[Buy] Quick liquidity check failed for PumpFun: {e}")
                     pool_liquidity = 0.1  # Assume minimal
-                
-                # CRITICAL FIX: Ensure amount is set for PumpFun tokens
-                if pool_liquidity == 0 or pool_liquidity < 0.1:
-                    logging.info(f"[Buy] PumpFun token with no/low LP yet, using small test amount")
-                    amount = min(CONFIG.BUY_AMOUNT_SOL, 0.01)  # Use small amount for PumpFun with no LP
+                    # buy_amt already set above, no need to set again
                 
                 # Skip authority and tax checks for PumpFun (they handle this)
                 
@@ -1144,7 +1143,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             
             # Check sell route availability before buying (skip for PumpFun early entries)
             if not is_pumpfun:
-                estimated_tokens = int(amount * 1e9 * 100)  # Rough estimate
+                estimated_tokens = int(buy_amt * 1e9 * 100)  # Rough estimate
                 sell_quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", estimated_tokens, 500)
                 if not sell_quote or int(sell_quote.get("outAmount", 0)) == 0:
                     log_skipped_token(mint, "No sell route available")
@@ -1167,11 +1166,11 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                     return False
             
             # Override amount for special cases if dynamic sizing is enabled
-            if CONFIG.USE_DYNAMIC_SIZING and amount == CONFIG.BUY_AMOUNT_SOL:
+            if CONFIG.USE_DYNAMIC_SIZING and buy_amt == CONFIG.BUY_AMOUNT_SOL:
                 if is_pumpfun and pumpfun_position > 0:
-                    amount = pumpfun_position
+                    buy_amt = pumpfun_position
                 else:
-                    amount = await get_dynamic_position_size(mint, pool_liquidity, is_migration)
+                    buy_amt = await get_dynamic_position_size(mint, pool_liquidity, is_migration)
             
             # Final safety check with risk manager
             try:
@@ -1184,8 +1183,8 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             except Exception as e:
                 logging.debug(f"[Buy] Risk check error: {e}, continuing")
             
-            amount_lamports = int(amount * 1e9)
-            logging.info(f"[Buy] Final position size: {amount:.3f} SOL for {mint[:8]}...")
+            amount_lamports = int(buy_amt * 1e9)
+            logging.info(f"[Buy] Final position size: {buy_amt:.3f} SOL for {mint[:8]}...")
 
             # Execute Jupiter swap with instrumentation
             logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}...")
@@ -1215,14 +1214,14 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 
                 if real_tokens == 0:
                     # Fallback but log warning
-                    estimated_tokens = int(amount * 1e9 * 100)
+                    estimated_tokens = int(buy_amt * 1e9 * 100)
                     real_tokens = estimated_tokens
                     logging.warning(f"[Buy] Could not get real balance, using estimate: {real_tokens}")
                 
                 # Get entry price for stop-loss
                 entry_price = await get_token_price_usd(mint)
                 if not entry_price:
-                    entry_price = (amount * CONFIG.SOL_PRICE_USD) / (real_tokens / (10 ** await get_token_decimals(mint)))
+                    entry_price = (buy_amt * CONFIG.SOL_PRICE_USD) / (real_tokens / (10 ** await get_token_decimals(mint)))
                 
                 # ARM THE STOP-LOSS with REAL token balance
                 register_stop(mint, {
@@ -1242,7 +1241,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 await notify("buy",
                     f"✅ Sniped {mint[:8]}... via Jupiter\n"
                     f"Type: {token_type}\n"
-                    f"Amount: {amount:.3f} SOL\n"
+                    f"Amount: {buy_amt:.3f} SOL\n"
                     f"Tokens: {real_tokens}\n"
                     f"LP: {pool_liquidity:.2f} SOL\n"
                     f"Entry: ${entry_price:.6f}\n"
@@ -1255,7 +1254,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 # PHASE 1 FIX C: Add is_pumpfun to OPEN_POSITIONS
                 OPEN_POSITIONS[mint] = {
                     "expected_token_amount": real_tokens,
-                    "buy_amount_sol": amount,
+                    "buy_amount_sol": buy_amt,
                     "sold_stages": set(),
                     "buy_sig": jupiter_sig,
                     "is_migration": is_migration,
@@ -1264,7 +1263,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 }
                 
                 increment_stat("snipes_succeeded", 1)
-                log_trade(mint, "BUY", amount, real_tokens)
+                log_trade(mint, "BUY", buy_amt, real_tokens)
                 return True
             else:
                 # Jupiter failed
