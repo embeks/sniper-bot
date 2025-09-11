@@ -212,11 +212,10 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
         logging.warning(f"[TX FETCH] Max retries reached for {signature[:8]}...")
         return []
     
+    # FIX 1: Check cache but don't add yet
     if signature in processed_signatures_cache:
         logging.debug(f"[TX FETCH] Already processed {signature[:8]}...")
         return []
-    
-    processed_signatures_cache[signature] = time.time()
     
     current_time = time.time()
     if current_time - last_cache_cleanup > CACHE_CLEANUP_INTERVAL:
@@ -281,12 +280,14 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
                                                     for field in ["mint", "token", "account", "source", "destination"]:
                                                         if field in info:
                                                             val = info[field]
-                                                            if isinstance(val, str) and len(val) == 44:
+                                                            # FIX 2: Accept 43-44 length keys
+                                                            if isinstance(val, str) and 43 <= len(val) <= 44:
                                                                 account_keys.append(val)
                                                 
                                                 if "accounts" in inst:
                                                     for acc in inst["accounts"]:
-                                                        if isinstance(acc, str) and len(acc) == 44:
+                                                        # FIX 2: Accept 43-44 length keys
+                                                        if isinstance(acc, str) and 43 <= len(acc) <= 44:
                                                             account_keys.append(acc)
                             
                             if "meta" in result:
@@ -308,7 +309,8 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
                                                     for field in ["mint", "token", "account", "authority", "destination"]:
                                                         if field in info:
                                                             val = info[field]
-                                                            if isinstance(val, str) and len(val) == 44:
+                                                            # FIX 2: Accept 43-44 length keys
+                                                            if isinstance(val, str) and 43 <= len(val) <= 44:
                                                                 account_keys.append(val)
                                 
                                 if "postTokenBalances" in meta:
@@ -328,7 +330,8 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
                             seen = set()
                             unique_keys = []
                             for key in account_keys:
-                                if key and key not in seen and len(key) == 44 and key not in SYSTEM_PROGRAMS:
+                                # FIX 2: Accept 43-44 length keys
+                                if key and key not in seen and 43 <= len(key) <= 44 and key not in SYSTEM_PROGRAMS:
                                     try:
                                         Pubkey.from_string(key)
                                         seen.add(key)
@@ -338,11 +341,14 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
                             
                             if unique_keys:
                                 logging.info(f"[TX FETCH] Got {len(unique_keys)} accounts for {signature[:8]}...")
+                                # FIX 1: Only cache on success with non-empty results
+                                processed_signatures_cache[signature] = time.time()
                                 return unique_keys
                             
                             continue
                             
-                except asyncio.TimeoutError:
+                # FIX 3: Catch both timeout types
+                except (asyncio.TimeoutError, httpx.TimeoutException):
                     logging.warning(f"[TX FETCH] Timeout for {encoding} encoding")
                     continue
                 except Exception as e:
@@ -352,8 +358,9 @@ async def fetch_transaction_accounts(signature: str, rpc_url: str = None, retry_
             logging.debug(f"[TX FETCH] All encodings failed, trying fallback for {signature[:8]}...")
             return await fetch_pumpfun_token_from_logs(signature, rpc_url, retry_count + 1)
         
-    except (asyncio.TimeoutError, Exception) as e:
-        if isinstance(e, asyncio.TimeoutError):
+    # FIX 3: Catch both timeout types
+    except (asyncio.TimeoutError, httpx.TimeoutException, Exception) as e:
+        if isinstance(e, (asyncio.TimeoutError, httpx.TimeoutException)):
             logging.error(f"[TX FETCH] Overall timeout for {signature[:8]}...")
         else:
             logging.error(f"[TX FETCH] Error fetching transaction {signature[:8]}...: {e}")
@@ -365,6 +372,7 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
         logging.warning(f"[FALLBACK] Max retries reached for {signature[:8]}...")
         return []
     
+    # Check cache but don't add yet
     if signature in processed_signatures_cache:
         return []
     
@@ -417,7 +425,8 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
                                         key_bytes = bytes.fromhex(potential_hex)
                                         b58_key = b58encode(key_bytes).decode('utf-8')
                                         
-                                        if len(b58_key) >= 43 and len(b58_key) <= 44:
+                                        # FIX 2: Accept 43-44 length keys
+                                        if 43 <= len(b58_key) <= 44:
                                             try:
                                                 Pubkey.from_string(b58_key)
                                                 if b58_key not in SYSTEM_PROGRAMS:
@@ -436,7 +445,8 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
                             if any(keyword in log.lower() for keyword in ["mint", "token", "create", "initialize"]):
                                 matches = re.findall(r'[1-9A-HJ-NP-Za-km-z]{43,44}', log)
                                 for match in matches[:10]:
-                                    if match not in SYSTEM_PROGRAMS and len(match) == 44:
+                                    # FIX 2: Accept 43-44 length keys
+                                    if match not in SYSTEM_PROGRAMS and 43 <= len(match) <= 44:
                                         try:
                                             Pubkey.from_string(match)
                                             if match not in potential_mints:
@@ -448,11 +458,14 @@ async def fetch_pumpfun_token_from_logs(signature: str, rpc_url: str = None, ret
                     
                     if unique_mints:
                         logging.info(f"[FALLBACK] Found {len(unique_mints)} potential mints from logs/raw data")
+                        # FIX 1: Only cache on success with non-empty results
+                        processed_signatures_cache[signature] = time.time()
                         return unique_mints[:5]
         
         return []
         
-    except asyncio.TimeoutError:
+    # FIX 3: Catch both timeout types
+    except (asyncio.TimeoutError, httpx.TimeoutException):
         logging.error(f"[FALLBACK] Timeout for {signature[:8]}...")
         return []
     except Exception as e:
@@ -976,7 +989,8 @@ async def mempool_listener(name, program_id=None):
                                     if isinstance(key, dict):
                                         key = key.get("pubkey", "") or key.get("address", "")
                                     
-                                    if key and len(key) == 44 and key not in SYSTEM_PROGRAMS:
+                                    # FIX 2: Accept 43-44 length keys
+                                    if key and 43 <= len(key) <= 44 and key not in SYSTEM_PROGRAMS:
                                         # First non-system account is often the pool
                                         if pool_id is None:
                                             pool_id = key
@@ -990,7 +1004,8 @@ async def mempool_listener(name, program_id=None):
                                     if isinstance(key, dict):
                                         key = key.get("pubkey", "") or key.get("address", "")
                                     
-                                    if key and len(key) == 44 and key not in SYSTEM_PROGRAMS:
+                                    # FIX 2: Accept 43-44 length keys
+                                    if key and 43 <= len(key) <= 44 and key not in SYSTEM_PROGRAMS:
                                         if key != "So11111111111111111111111111111111111111112":
                                             token_mint = key
                                             break
