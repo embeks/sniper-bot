@@ -1,4 +1,4 @@
-# config.py
+# config.py - COMPLETE PRODUCTION VERSION WITH PHASE ONE PATCHES
 import os
 from dataclasses import dataclass
 
@@ -25,6 +25,13 @@ class Config:
     SELL_MULTIPLIERS: str
     SELL_TIMEOUT_SEC: int
     RUG_LP_THRESHOLD: float
+    
+    # Phase One: Buy-specific settings
+    BUY_SLIPPAGE_BPS: int
+    BUY_PRIORITY_FEE_LAMPORTS: int
+    BUY_RETRY_DELAY_1_MS: int
+    BUY_RETRY_DELAY_2_MS: int
+    NEWBORN_RAYDIUM_MIN_LP_SOL: float
     
     # Profit targets
     TAKE_PROFIT_1: float
@@ -125,6 +132,13 @@ def load() -> Config:
         SELL_MULTIPLIERS=os.getenv("SELL_MULTIPLIERS", "1.5,3,10"),
         SELL_TIMEOUT_SEC=_i("SELL_TIMEOUT_SEC", 300),
         RUG_LP_THRESHOLD=_f("RUG_LP_THRESHOLD", 1.0),
+        
+        # Phase One: Buy-specific settings
+        BUY_SLIPPAGE_BPS=_i("BUY_SLIPPAGE_BPS", 2000),
+        BUY_PRIORITY_FEE_LAMPORTS=_i("BUY_PRIORITY_FEE_LAMPORTS", 500000),
+        BUY_RETRY_DELAY_1_MS=_i("BUY_RETRY_DELAY_1_MS", 150),
+        BUY_RETRY_DELAY_2_MS=_i("BUY_RETRY_DELAY_2_MS", 350),
+        NEWBORN_RAYDIUM_MIN_LP_SOL=_f("NEWBORN_RAYDIUM_MIN_LP_SOL", 0.2),
         
         # Profit targets
         TAKE_PROFIT_1=_f("TAKE_PROFIT_1", 1.5),
