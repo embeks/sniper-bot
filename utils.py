@@ -65,8 +65,8 @@ class HTTPManager:
                         logging.debug(f"[HTTP] Success on attempt {attempt + 1}")
                         return response
                     elif response.status_code == 429 and attempt < retries - 1:
-                        # Rate limited, exponential backoff
-                        wait_time = 2 ** attempt
+                        # Rate limited, exponential backoff with jitter
+                        wait_time = (2 ** attempt) * (1 + 0.1 * (time.time() % 1))
                         logging.debug(f"[HTTP] Rate limited (429), waiting {wait_time}s")
                         await asyncio.sleep(wait_time)
                         continue
@@ -78,7 +78,7 @@ class HTTPManager:
                     else:
                         logging.debug(f"[HTTP] Failed with status {response.status_code}")
                         
-            except asyncio.TimeoutError:  # FIXED: Using asyncio.TimeoutError instead of httpx.TimeoutError
+            except (httpx.TimeoutException, asyncio.TimeoutError):  # FIXED: Catch both timeout types
                 logging.debug(f"[HTTP] Timeout on attempt {attempt + 1}")
                 if attempt < retries - 1:
                     await asyncio.sleep(1)
@@ -135,7 +135,7 @@ except Exception as e:
     raise ValueError(f"Failed to load wallet from SOLANA_PRIVATE_KEY: {e}")
 
 wallet_pubkey = str(keypair.pubkey())
-print(f"ACTUAL WALLET BEING USED: {wallet_pubkey}")
+logging.info(f"ACTUAL WALLET BEING USED: {wallet_pubkey}")
 
 # Use TELEGRAM_CHAT_ID but also support TELEGRAM_USER_ID
 TELEGRAM_CHAT_ID = CONFIG.TELEGRAM_CHAT_ID or CONFIG.TELEGRAM_USER_ID
@@ -202,14 +202,15 @@ TOKEN_DECIMALS_CACHE = {}
 # ============================================
 async def notify(kind: str, text: str):
     """Alert policy helper - routes alerts based on config switches with cooldown"""
-    if kind not in CONFIG.ALERTS_NOTIFY:
+    alerts = getattr(CONFIG, "ALERTS_NOTIFY", {}) or {}
+    if kind not in alerts:
         return True
     
-    if not CONFIG.ALERTS_NOTIFY.get(kind, False):
+    if not alerts.get(kind, False):
         return True
     
     # Check cooldown
-    cooldown = CONFIG.ALERTS_NOTIFY.get("cooldown_secs", 60)
+    cooldown = alerts.get("cooldown_secs", 60)
     now = time.time()
     last_time = last_alert_times.get(kind, 0)
     
@@ -229,7 +230,7 @@ def register_stop(mint: str, stop_data: Dict):
     logging.info(f"[STOP] Registered for {mint[:8]}... - entry: {stop_data['entry_price']:.6f}, stop: {stop_data['stop_price']:.6f}, tokens: {stop_data['size_tokens']}")
 
 async def check_mint_authority(mint: str) -> tuple[bool, bool]:
-    """Check if mint and freeze authority are renounced"""
+    """Check if mint and freeze authority are renounced - FIXED with SPL layout"""
     try:
         mint_pubkey = Pubkey.from_string(mint)
         mint_info = rpc.get_account_info(mint_pubkey)
@@ -243,14 +244,17 @@ async def check_mint_authority(mint: str) -> tuple[bool, bool]:
                 else:
                     decoded = bytes(data[0])
                 
-                # Check mint authority (bytes 0-32) and freeze authority (bytes 36-68)
-                if len(decoded) > 68:
-                    mint_auth = decoded[0:32]
-                    freeze_auth = decoded[36:68]
+                # FIXED: Use SPL option fields to detect renouncement
+                if len(decoded) >= 50:
+                    # SPL Token mint layout:
+                    # bytes [0:4] = mintAuthorityOption (u32 little-endian)
+                    # bytes [46:50] = freezeAuthorityOption (u32 little-endian)
+                    mint_auth_opt = int.from_bytes(decoded[0:4], "little")
+                    freeze_auth_opt = int.from_bytes(decoded[46:50], "little")
                     
-                    # Check if authorities are null (all zeros)
-                    mint_renounced = all(b == 0 for b in mint_auth)
-                    freeze_renounced = all(b == 0 for b in freeze_auth)
+                    # Option == 0 means None (renounced), Option == 1 means Some (has authority)
+                    mint_renounced = (mint_auth_opt == 0)
+                    freeze_renounced = (freeze_auth_opt == 0)
                     
                     return mint_renounced, freeze_renounced
     except Exception as e:
@@ -307,17 +311,17 @@ async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
         # If DexScreener has no data, check on-chain (token might be too new for DexScreener)
         logging.info(f"[AGE CHECK] No DexScreener data for {mint[:8]}... - checking on-chain")
         
-        # Check blockchain for token creation time
+        # Check blockchain for token creation time - FIXED with limit=20
         try:
             mint_pubkey = Pubkey.from_string(mint)
             signatures = rpc.get_signatures_for_address(
                 mint_pubkey,
-                limit=1,
+                limit=20,  # FIXED: Request 20 signatures
                 commitment="confirmed"
             )
             
             if signatures and hasattr(signatures, 'value') and signatures.value:
-                creation_sig = signatures.value[-1]
+                creation_sig = signatures.value[-1]  # FIXED: Pick earliest in page
                 block_time = creation_sig.block_time
                 
                 if block_time:
@@ -341,13 +345,13 @@ async def is_fresh_token(mint: str, max_age_seconds: int = 60) -> bool:
         return False
 
 async def verify_token_age_on_chain(mint: str, max_age_seconds: int = 60) -> bool:
-    """Verify token age by checking mint creation on chain"""
+    """Verify token age by checking mint creation on chain - FIXED"""
     try:
         mint_pubkey = Pubkey.from_string(mint)
         
         signatures = rpc.get_signatures_for_address(
             mint_pubkey,
-            limit=1,
+            limit=20,  # FIXED: Request 20 signatures
             commitment="confirmed"
         )
         
@@ -356,7 +360,7 @@ async def verify_token_age_on_chain(mint: str, max_age_seconds: int = 60) -> boo
             logging.info(f"[CHAIN CHECK] No signatures found for {mint[:8]}... - assuming old")
             return False
             
-        creation_sig = signatures.value[-1]
+        creation_sig = signatures.value[-1]  # FIXED: Pick earliest in page
         block_time = creation_sig.block_time
         
         if block_time:
@@ -861,7 +865,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int) -> Optional[str]
         # Stage 4: Optional simulation
         if CONFIG.SIMULATE_BEFORE_SEND:
             logging.info("[Jupiter] Stage 4: Simulating transaction...")
-            if not await simulate_transaction(tx):
+            if not await simulate_transaction(signed_tx):
                 logging.warning("[Jupiter] Stage 4 FAILED: Simulation failed")
                 return None
             logging.info("[Jupiter] Stage 4 SUCCESS: Simulation passed")
@@ -1608,6 +1612,7 @@ async def wait_and_auto_sell(mint: str):
         # Monitor loop
         start_time = time.time()
         last_price_check = 0
+        last_status_log = 0  # Track last status log time
         max_sell_attempts = 3
         sell_attempts = {"profit1": 0, "profit2": 0, "profit3": 0, "stop_loss": 0}
         
@@ -1756,12 +1761,13 @@ async def wait_and_auto_sell(mint: str):
                                 f"Sold {sell_percents[2]}% - MOONBAG!"
                             )
                 
-                # Log status periodically
-                if int((time.time() - start_time) % 60) == 0:
+                # Log status periodically (throttled to once per 60s)
+                if time.time() - last_status_log >= 60:
                     logging.info(
                         f"[{mint[:8]}] Price: ${current_price:.6f} ({profit_multiplier:.2f}x) | "
                         f"State: {stop_data['state']} | Sold: {position['sold_stages']}"
                     )
+                    last_status_log = time.time()
                 
                 # Only exit if we sold everything
                 if len(position["sold_stages"]) >= 3 and sell_percents[2] == 100:
