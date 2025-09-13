@@ -826,11 +826,11 @@ async def simulate_transaction(tx: VersionedTransaction) -> bool:
 async def execute_jupiter_swap(mint: str, amount_lamports: int, slippage_bps: int = None, priority_fee_lamports: int = None) -> Dict[str, Any]:
     """Execute a swap using Jupiter v6 with detailed instrumentation - PHASE 1 FIX: Return dict with reason"""
     try:
-        # PHASE 1 FIX: Use caller's slippage or default to buy slippage
+        # Use caller's slippage or default to buy slippage
         if slippage_bps is None:
             slippage_bps = getattr(CONFIG, 'BUY_SLIPPAGE_BPS', 2000)
         
-        # PHASE 1 FIX: Use caller's priority fee or default
+        # Use caller's priority fee or default
         if priority_fee_lamports is None:
             priority_fee_lamports = getattr(CONFIG, 'BUY_PRIORITY_FEE_LAMPORTS', 500000)
         
@@ -842,7 +842,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int, slippage_bps: in
         quote = await get_jupiter_quote(input_mint, output_mint, amount_lamports, slippage_bps)
         if not quote:
             logging.warning("[Jupiter] Stage 1 FAILED: No quote received")
-            return {"ok": False, "reason": "NO_QUOTE"}  # PHASE 1 FIX
+            return {"ok": False, "reason": "NO_QUOTE"}
         
         out_amount = int(quote.get("outAmount", 0))
         other_amount_threshold = int(quote.get("otherAmountThreshold", 0))
@@ -850,7 +850,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int, slippage_bps: in
         if out_amount == 0 or other_amount_threshold == 0:
             logging.warning(f"[Jupiter] Invalid quote - outAmount: {out_amount}, threshold: {other_amount_threshold}")
             record_skip("no_route")
-            return {"ok": False, "reason": "NO_QUOTE"}  # PHASE 1 FIX
+            return {"ok": False, "reason": "NO_QUOTE"}
         
         logging.info(f"[Jupiter] Stage 1 SUCCESS: Quote received, expecting {out_amount} tokens")
         
@@ -859,7 +859,7 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int, slippage_bps: in
         swap_data = await get_jupiter_swap_transaction(quote, wallet_pubkey, slippage_bps, priority_fee_lamports)
         if not swap_data:
             logging.warning("[Jupiter] Stage 2 FAILED: Could not build transaction")
-            return {"ok": False, "reason": "BUILD_FAILED"}  # PHASE 1 FIX
+            return {"ok": False, "reason": "BUILD_FAILED"}
         
         logging.info("[Jupiter] Stage 2 SUCCESS: Transaction built")
         
@@ -872,14 +872,14 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int, slippage_bps: in
             logging.info("[Jupiter] Stage 3 SUCCESS: Transaction signed")
         except Exception as e:
             logging.error(f"[Jupiter] Stage 3 FAILED: {e}")
-            return {"ok": False, "reason": "BUILD_FAILED"}  # PHASE 1 FIX
+            return {"ok": False, "reason": "BUILD_FAILED"}
         
         # Stage 4: Optional simulation
         if CONFIG.SIMULATE_BEFORE_SEND:
             logging.info("[Jupiter] Stage 4: Simulating transaction...")
             if not await simulate_transaction(signed_tx):
                 logging.warning("[Jupiter] Stage 4 FAILED: Simulation failed")
-                return {"ok": False, "reason": "SIM_FAIL"}  # PHASE 1 FIX
+                return {"ok": False, "reason": "SIM_FAIL"}
             logging.info("[Jupiter] Stage 4 SUCCESS: Simulation passed")
         
         # Stage 5: Send transaction
@@ -910,30 +910,30 @@ async def execute_jupiter_swap(mint: str, amount_lamports: int, slippage_bps: in
                     if status.value[0] is not None:
                         if status.value[0].confirmation_status:
                             logging.info(f"[Jupiter] Stage 6 SUCCESS: Transaction confirmed: {status.value[0].confirmation_status}")
-                            return {"ok": True, "sig": sig, "reason": "OK"}  # PHASE 1 FIX
+                            return {"ok": True, "sig": sig, "reason": "OK"}
                         elif status.value[0].err:
                             logging.error(f"[Jupiter] Stage 6 FAILED: Transaction error: {status.value[0].err}")
                             await cleanup_wsol_on_failure()
-                            return {"ok": False, "reason": "CONFIRM_TIMEOUT"}  # PHASE 1 FIX
+                            return {"ok": False, "reason": "CONFIRM_TIMEOUT"}
                     else:
                         logging.info("[Jupiter] Stage 6: Transaction pending, returning signature")
-                        return {"ok": True, "sig": sig, "reason": "OK"}  # PHASE 1 FIX
+                        return {"ok": True, "sig": sig, "reason": "OK"}
                 except Exception as e:
                     logging.debug(f"[Jupiter] Stage 6: Status check error: {e}, returning signature anyway")
-                    return {"ok": True, "sig": sig, "reason": "OK"}  # PHASE 1 FIX
+                    return {"ok": True, "sig": sig, "reason": "OK"}
             else:
                 logging.error(f"[Jupiter] Stage 5 FAILED: No signature returned")
                 await cleanup_wsol_on_failure()
-                return {"ok": False, "reason": "SEND_ERR"}  # PHASE 1 FIX
+                return {"ok": False, "reason": "SEND_ERR"}
                 
         except Exception as e:
             logging.error(f"[Jupiter] Stage 5 FAILED: Send error: {e}")
             await cleanup_wsol_on_failure()
-            return {"ok": False, "reason": "SEND_ERR"}  # PHASE 1 FIX
+            return {"ok": False, "reason": "SEND_ERR"}
             
     except Exception as e:
         logging.error(f"[Jupiter] Swap execution error: {e}")
-        return {"ok": False, "reason": "SEND_ERR"}  # PHASE 1 FIX
+        return {"ok": False, "reason": "SEND_ERR"}
 
 # CRITICAL FIX: This function now returns Dict[str, Any] instead of Optional[str]
 async def execute_jupiter_sell(mint: str, amount: int, slippage_bps: int = None) -> Dict[str, Any]:
@@ -1068,6 +1068,11 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             is_pumpfun = mint in pumpfun_tokens or kwargs.get("is_pumpfun", False)
             is_migration = kwargs.get("is_migration", False)
             
+            # Store PumpFun token if detected
+            if is_pumpfun and mint not in pumpfun_tokens:
+                pumpfun_tokens[mint] = {"discovered": time.time()}
+                logging.info(f"[Buy] Registered {mint[:8]}... as PumpFun token")
+            
             # PHASE 1 FIX: Check if ultra-fresh early
             try:
                 ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
@@ -1172,7 +1177,10 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             else:
                 # PumpFun tokens use bonding curve, skip sell route check and wait for initialization
                 logging.info(f"[Buy] Skipping sell route check for PumpFun token {mint[:8]}...")
-                await asyncio.sleep(3)  # Give bonding curve time to initialize
+                # Add warm-up delay for PumpFun tokens
+                warm_up_delay = CONFIG.BUY_RETRY_DELAY_1_MS / 1000.0  # Convert ms to seconds
+                logging.info(f"[Buy] PumpFun warm-up: waiting {warm_up_delay}s before first attempt")
+                await asyncio.sleep(warm_up_delay)
             
             # Position sizing for PumpFun
             pumpfun_position = 0
@@ -1206,97 +1214,208 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             amount_lamports = int(buy_amt * 1e9)
             logging.info(f"[Buy] Final position size: {buy_amt:.3f} SOL for {mint[:8]}...")
 
-            # PHASE 1 FIX 3: Use buy-specific slippage and priority fee
-            buy_slippage = getattr(CONFIG, 'BUY_SLIPPAGE_BPS', 2000)
-            buy_priority_fee = getattr(CONFIG, 'BUY_PRIORITY_FEE_LAMPORTS', 500000)
+            # ============================================
+            # EXECUTE BUY - PUMPFUN OR JUPITER
+            # ============================================
             
-            # PHASE 1 FIX 2: Warm-up retry for ultra-fresh tokens
-            n_attempts = 0
-            max_attempts = 3 if ultra_fresh else 1
-            backoff_delays = [0.15, 0.35]  # 150ms, 350ms
-            
-            swap_result = {"ok": False, "reason": "NO_QUOTE"}  # Initialize
-            
-            for attempt in range(max_attempts):
-                n_attempts += 1
+            if is_pumpfun and callable(execute_pumpfun_buy):
+                # === PumpFun direct buy on bonding curve ===
+                logging.info(f"[Buy] Using PumpFun direct buy for {mint[:8]}...")
                 
-                # Execute Jupiter swap with instrumentation
-                logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}... (attempt {n_attempts}/{max_attempts})")
+                pf_cu = getattr(CONFIG, "PUMPFUN_COMPUTE_UNIT_LIMIT", 1_000_000)
+                pf_fee = getattr(CONFIG, "PUMPFUN_PRIORITY_FEE_LAMPORTS", 1_000_000)
                 
-                # PHASE 1 FIX: Pass buy slippage and priority fee
-                swap_result = await execute_jupiter_swap(
-                    mint, 
-                    amount_lamports,
-                    slippage_bps=buy_slippage,
-                    priority_fee_lamports=buy_priority_fee
-                )
+                # Execute PumpFun buy with retries
+                n_attempts = 0
+                max_attempts = 3 if ultra_fresh else 2
                 
-                # PHASE 1 FIX 1: Handle dict response
-                if swap_result["ok"]:
-                    break  # Success!
-                else:
-                    reason = swap_result["reason"]
-                    logging.warning(f"[Buy] Swap failed with reason: {reason}")
+                swap_result = {"ok": False, "reason": "NO_QUOTE"}
+                
+                for attempt in range(max_attempts):
+                    n_attempts += 1
+                    logging.info(f"[Buy] Attempting PumpFun buy for {mint[:8]}... (attempt {n_attempts}/{max_attempts})")
                     
-                    # Only retry on NO_QUOTE for ultra-fresh tokens
-                    if reason == "NO_QUOTE" and ultra_fresh and attempt < max_attempts - 1:
-                        wait_time = backoff_delays[min(attempt, len(backoff_delays)-1)]
-                        logging.info(f"[Buy] Ultra-fresh token quote failed, waiting {wait_time}s before retry...")
-                        await asyncio.sleep(wait_time)
-                        continue
+                    swap_result = await execute_pumpfun_buy(
+                        mint,
+                        buy_amt,  # SOL amount
+                        cu_limit=pf_cu,
+                        priority_fee=pf_fee
+                    )
+                    
+                    if swap_result["ok"]:
+                        break  # Success!
                     else:
-                        # Send failure notification with reason
-                        await notify("buy_failed",
-                            f"❌ Snipe failed\n"
-                            f"Token: {mint[:8]}...\n"
-                            f"Reason: {reason}\n"
-                            f"Attempts: {n_attempts}"
-                        )
-                        log_skipped_token(mint, f"Jupiter swap failed: {reason}")
-                        record_skip("buy_failed")
-                        return False
+                        reason = swap_result["reason"]
+                        logging.warning(f"[Buy] PumpFun buy failed with reason: {reason}")
+                        
+                        # Retry on transient errors
+                        if reason in ["NO_QUOTE", "CONFIRM_TIMEOUT", "SEND_ERR"] and attempt < max_attempts - 1:
+                            wait_time = CONFIG.BUY_RETRY_DELAY_1_MS / 1000.0 if attempt == 0 else CONFIG.BUY_RETRY_DELAY_2_MS / 1000.0
+                            logging.info(f"[Buy] PumpFun {reason}, waiting {wait_time}s before retry...")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            # Don't mark as broken for transient errors
+                            if reason in ["BUILD_FAILED", "SIM_FAIL"]:
+                                # Only mark broken for persistent build/sign errors
+                                mark_broken_token(mint, 1)
+                            
+                            # Send failure notification with reason
+                            await notify("buy_failed",
+                                f"❌ PF buy failed\n"
+                                f"Token: {mint[:8]}...\n"
+                                f"Reason: {reason}\n"
+                                f"Attempts: {n_attempts}"
+                            )
+                            log_skipped_token(mint, f"PumpFun buy failed: {reason}")
+                            record_skip("buy_failed")
+                            return False
+                
+                # Check if we succeeded
+                if not swap_result["ok"]:
+                    reason = swap_result["reason"]
+                    
+                    # Only mark broken for fatal errors
+                    if reason in ["BUILD_FAILED", "SIM_FAIL"]:
+                        mark_broken_token(mint, 1)
+                    
+                    await notify("buy_failed",
+                        f"❌ PF buy failed\n"
+                        f"Token: {mint[:8]}...\n"
+                        f"Reason: {swap_result['reason']}\n"
+                        f"Attempts: {n_attempts}"
+                    )
+                    log_skipped_token(mint, f"All {n_attempts} PumpFun attempts failed: {swap_result['reason']}")
+                    record_skip("buy_failed")
+                    return False
+                
+                # Success - get the signature and token amount
+                jupiter_sig = swap_result.get("sig")
+                real_tokens = int(swap_result.get("tokens_received", 0))
+                
+                if real_tokens <= 0:
+                    await notify("buy_failed", 
+                        f"❌ PF buy returned 0 tokens\n"
+                        f"Token: {mint[:8]}...\n"
+                        f"TX: https://solscan.io/tx/{jupiter_sig}"
+                    )
+                    record_skip("buy_failed")
+                    return False
+                
+                logging.info(f"[Buy] PumpFun buy successful: {real_tokens} tokens received")
+                
+            else:
+                # === Jupiter swap path (non-PumpFun or PumpFun module not available) ===
+                # PHASE 1 FIX 3: Use buy-specific slippage and priority fee
+                buy_slippage = CONFIG.BUY_SLIPPAGE_BPS
+                buy_priority_fee = CONFIG.BUY_PRIORITY_FEE_LAMPORTS
+                
+                # PHASE 1 FIX 2: Warm-up retry for ultra-fresh tokens
+                n_attempts = 0
+                max_attempts = 3 if ultra_fresh else 1
+                
+                # Use config delays
+                delay_1 = CONFIG.BUY_RETRY_DELAY_1_MS / 1000.0  # Convert ms to seconds
+                delay_2 = CONFIG.BUY_RETRY_DELAY_2_MS / 1000.0
+                backoff_delays = [delay_1, delay_2]
+                
+                swap_result = {"ok": False, "reason": "NO_QUOTE"}  # Initialize
+                
+                for attempt in range(max_attempts):
+                    n_attempts += 1
+                    
+                    # Execute Jupiter swap with instrumentation
+                    logging.info(f"[Buy] Attempting Jupiter swap for {mint[:8]}... (attempt {n_attempts}/{max_attempts})")
+                    
+                    # PHASE 1 FIX: Pass buy slippage and priority fee
+                    swap_result = await execute_jupiter_swap(
+                        mint, 
+                        amount_lamports,
+                        slippage_bps=buy_slippage,
+                        priority_fee_lamports=buy_priority_fee
+                    )
+                    
+                    # PHASE 1 FIX 1: Handle dict response
+                    if swap_result["ok"]:
+                        break  # Success!
+                    else:
+                        reason = swap_result["reason"]
+                        logging.warning(f"[Buy] Swap failed with reason: {reason}")
+                        
+                        # Retry on NO_QUOTE or CONFIRM_TIMEOUT for ultra-fresh tokens
+                        if reason in ["NO_QUOTE", "CONFIRM_TIMEOUT"] and ultra_fresh and attempt < max_attempts - 1:
+                            wait_time = backoff_delays[min(attempt, len(backoff_delays)-1)]
+                            logging.info(f"[Buy] Ultra-fresh token {reason}, waiting {wait_time}s before retry...")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            # Don't mark as broken for transient errors on fresh tokens
+                            if reason in ["BUILD_FAILED", "SIM_FAIL", "SEND_ERR"]:
+                                # Only mark broken for persistent errors
+                                if not ultra_fresh:
+                                    mark_broken_token(mint, 1)
+                            
+                            # Send failure notification with reason
+                            await notify("buy_failed",
+                                f"❌ Snipe failed\n"
+                                f"Token: {mint[:8]}...\n"
+                                f"Reason: {reason}\n"
+                                f"Attempts: {n_attempts}"
+                            )
+                            log_skipped_token(mint, f"Jupiter swap failed: {reason}")
+                            record_skip("buy_failed")
+                            return False
+                
+                # Check if we succeeded
+                if not swap_result["ok"]:
+                    # All attempts failed
+                    reason = swap_result["reason"]
+                    
+                    # Don't mark as broken for NO_QUOTE on fresh tokens
+                    if reason in ["BUILD_FAILED", "SIM_FAIL", "SEND_ERR"]:
+                        if not ultra_fresh:
+                            mark_broken_token(mint, 1)
+                    
+                    await notify("buy_failed",
+                        f"❌ Snipe failed\n"
+                        f"Token: {mint[:8]}...\n"
+                        f"Reason: {swap_result['reason']}\n"
+                        f"Attempts: {n_attempts}"
+                    )
+                    log_skipped_token(mint, f"All {n_attempts} attempts failed: {swap_result['reason']}")
+                    record_skip("buy_failed")
+                    return False
+                
+                # Success - get the signature
+                jupiter_sig = swap_result["sig"]
+                
+                # Wait for ATA to be created and get REAL balance for Jupiter buys
+                from spl.token.constants import TOKEN_PROGRAM_ID
+                owner = keypair.pubkey()
+                token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
+                
+                real_tokens = 0
+                for retry in range(10):  # Try for ~3 seconds
+                    try:
+                        response = rpc.get_token_account_balance(token_account)
+                        if response and response.value:
+                            real_tokens = int(response.value.amount)
+                            if real_tokens > 0:
+                                logging.info(f"[Buy] Got real token balance: {real_tokens}")
+                                break
+                    except:
+                        pass
+                    await asyncio.sleep(0.3)
+                
+                if real_tokens == 0:
+                    # Fallback but log warning
+                    estimated_tokens = int(buy_amt * 1e9 * 100)
+                    real_tokens = estimated_tokens
+                    logging.warning(f"[Buy] Could not get real balance, using estimate: {real_tokens}")
             
-            # Check if we succeeded
-            if not swap_result["ok"]:
-                # All attempts failed
-                await notify("buy_failed",
-                    f"❌ Snipe failed\n"
-                    f"Token: {mint[:8]}...\n"
-                    f"Reason: {swap_result['reason']}\n"
-                    f"Attempts: {n_attempts}"
-                )
-                log_skipped_token(mint, f"All {n_attempts} attempts failed: {swap_result['reason']}")
-                record_skip("buy_failed")
-                return False
-            
-            # Success path continues...
-            jupiter_sig = swap_result["sig"]
+            # Common success path for both PumpFun and Jupiter
             balance = rpc.get_balance(keypair.pubkey()).value / 1e9
             balance_usd = balance * CONFIG.SOL_PRICE_USD
-            
-            # Wait for ATA to be created and get REAL balance
-            from spl.token.constants import TOKEN_PROGRAM_ID
-            owner = keypair.pubkey()
-            token_account = get_associated_token_address(owner, Pubkey.from_string(mint))
-            
-            real_tokens = 0
-            for retry in range(10):  # Try for ~3 seconds
-                try:
-                    response = rpc.get_token_account_balance(token_account)
-                    if response and response.value:
-                        real_tokens = int(response.value.amount)
-                        if real_tokens > 0:
-                            logging.info(f"[Buy] Got real token balance: {real_tokens}")
-                            break
-                except:
-                    pass
-                await asyncio.sleep(0.3)
-            
-            if real_tokens == 0:
-                # Fallback but log warning
-                estimated_tokens = int(buy_amt * 1e9 * 100)
-                real_tokens = estimated_tokens
-                logging.warning(f"[Buy] Could not get real balance, using estimate: {real_tokens}")
             
             # Get entry price for stop-loss
             entry_price = await get_token_price_usd(mint)
@@ -1405,14 +1524,15 @@ async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bp
                 logging.info(f"[Sell] PumpFun token {mint[:8]}... still on bonding curve")
                 is_pumpfun_bonding = True
         
-        # PHASE 1 FIX 5: Fix the bug in checking position data
+        # PHASE 1 FIX 5: Fix the bug - check position properly
         if mint in OPEN_POSITIONS:
             position = OPEN_POSITIONS[mint]
-            if position.get("is_pumpfun", False) and not is_pumpfun_bonding:
+            if position.get("is_pumpfun", False):
                 # Double check if still on bonding curve
-                lp_data = await get_liquidity_and_ownership(mint)
-                if not lp_data or lp_data.get("liquidity", 0) < 1.0:
-                    is_pumpfun_bonding = True
+                if not is_pumpfun_bonding:
+                    lp_data = await get_liquidity_and_ownership(mint)
+                    if not lp_data or lp_data.get("liquidity", 0) < 1.0:
+                        is_pumpfun_bonding = True
 
         # Execute sell with migration-aware fallback (safer approach without direct PumpFun)
         if is_pumpfun_bonding:
