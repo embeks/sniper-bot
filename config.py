@@ -1,4 +1,4 @@
-# config.py - COMPLETE PRODUCTION VERSION WITH PHASE ONE PATCHES
+# config.py - COMPLETE PRODUCTION VERSION WITH PHASE ONE PATCHES AND PUMPFUN SUPPORT
 import os
 from dataclasses import dataclass
 
@@ -32,6 +32,12 @@ class Config:
     BUY_RETRY_DELAY_1_MS: int
     BUY_RETRY_DELAY_2_MS: int
     NEWBORN_RAYDIUM_MIN_LP_SOL: float
+    
+    # PumpFun Direct Buy settings
+    PUMPFUN_PROGRAM_ID: str
+    PUMPFUN_COMPUTE_UNIT_LIMIT: int
+    PUMPFUN_PRIORITY_FEE_LAMPORTS: int
+    PUMPFUN_REFERRER: str
     
     # Profit targets
     TAKE_PROFIT_1: float
@@ -115,6 +121,8 @@ def load() -> Config:
         "sell": _b("ALERT_ON_SELL", True),
         "stop_triggered": _b("ALERT_ON_STOP_TRIGGER", True),
         "stop_filled": _b("ALERT_ON_STOP_FILLED", True),
+        "buy_failed": _b("ALERT_ON_BUY_FAILED", False),
+        "sell_failed": _b("ALERT_ON_SELL_FAILED", False),
         "blocked": _b("ALERT_ON_BLOCKED", False),
         "attempt": _b("ALERT_ON_ATTEMPT", False),
         "skip": _b("ALERT_ON_SKIP", False),
@@ -134,11 +142,17 @@ def load() -> Config:
         RUG_LP_THRESHOLD=_f("RUG_LP_THRESHOLD", 1.0),
         
         # Phase One: Buy-specific settings
-        BUY_SLIPPAGE_BPS=_i("BUY_SLIPPAGE_BPS", 2000),
-        BUY_PRIORITY_FEE_LAMPORTS=_i("BUY_PRIORITY_FEE_LAMPORTS", 500000),
-        BUY_RETRY_DELAY_1_MS=_i("BUY_RETRY_DELAY_1_MS", 150),
-        BUY_RETRY_DELAY_2_MS=_i("BUY_RETRY_DELAY_2_MS", 350),
+        BUY_SLIPPAGE_BPS=_i("BUY_SLIPPAGE_BPS", 2500),
+        BUY_PRIORITY_FEE_LAMPORTS=_i("BUY_PRIORITY_FEE_LAMPORTS", 1000000),
+        BUY_RETRY_DELAY_1_MS=_i("BUY_RETRY_DELAY_1_MS", 200),
+        BUY_RETRY_DELAY_2_MS=_i("BUY_RETRY_DELAY_2_MS", 400),
         NEWBORN_RAYDIUM_MIN_LP_SOL=_f("NEWBORN_RAYDIUM_MIN_LP_SOL", 0.2),
+        
+        # PumpFun Direct Buy settings
+        PUMPFUN_PROGRAM_ID=os.getenv("PUMPFUN_PROGRAM_ID", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwusU"),
+        PUMPFUN_COMPUTE_UNIT_LIMIT=_i("PUMPFUN_COMPUTE_UNIT_LIMIT", 1000000),
+        PUMPFUN_PRIORITY_FEE_LAMPORTS=_i("PUMPFUN_PRIORITY_FEE_LAMPORTS", 1000000),
+        PUMPFUN_REFERRER=os.getenv("PUMPFUN_REFERRER", ""),
         
         # Profit targets
         TAKE_PROFIT_1=_f("TAKE_PROFIT_1", 1.5),
