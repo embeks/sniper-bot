@@ -22,6 +22,7 @@ from spl.token.instructions import get_associated_token_address, close_account, 
 
 # Import Raydium client
 from raydium_aggregator import RaydiumAggregatorClient
+from pumpfun_buy import execute_pumpfun_buy
 
 # Import config
 import config
@@ -1066,6 +1067,102 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             # CRITICAL FIX: DETECT PUMPFUN TOKENS EARLY
             # ============================================
             is_pumpfun = mint in pumpfun_tokens or kwargs.get("is_pumpfun", False)
+            
+            # ==== PumpFun Direct path (short-circuit, no Jupiter) ====
+            if is_pumpfun and not kwargs.get("_pf_direct_done", False):
+                logging.info(f"[Buy] PumpFun token detected — using PumpFun Direct")
+
+                # conservative starter size
+                buy_amt = min(buy_amt, 0.02)
+
+                # optional warm-up (safe if missing in CONFIG)
+                try:
+                    await asyncio.sleep(getattr(CONFIG, "BUY_RETRY_DELAY_1_MS", 500) / 1000.0)
+                except Exception:
+                    pass
+
+                try:
+                    # Expected response: {"ok": bool, "sig": str|None, "tokens_received": int, "reason": str|None}
+                    pf_res = await execute_pumpfun_buy(
+                        mint=mint,
+                        sol_amount=buy_amt,
+                        slippage_bps=getattr(CONFIG, "BUY_SLIPPAGE_BPS", 2000),
+                        priority_fee_lamports=getattr(CONFIG, "BUY_PRIORITY_FEE_LAMPORTS", 500000),
+                    )
+                except Exception as e:
+                    logging.error(f"[Buy][PumpFun] Exception: {e}")
+                    await notify("buy_failed", f"❌ PumpFun buy error\nToken: {mint[:8]}...\nError: {str(e)[:160]}")
+                    record_skip("buy_failed")
+                    return False
+
+                if not pf_res or not pf_res.get("ok"):
+                    reason = (pf_res or {}).get("reason", "UNKNOWN")
+                    logging.warning(f"[Buy][PumpFun] Failed: {reason}")
+                    await notify("buy_failed", f"❌ PumpFun buy failed\nToken: {mint[:8]}...\nReason: {reason}")
+                    record_skip("buy_failed")
+                    return False
+
+                pf_sig = pf_res.get("sig")
+                real_tokens = int(pf_res.get("tokens_received") or 0)
+                if real_tokens <= 0:
+                    await notify("buy_failed", f"❌ PumpFun buy anomaly (0 tokens)\nToken: {mint[:8]}...")
+                    record_skip("buy_failed")
+                    return False
+
+                balance = rpc.get_balance(keypair.pubkey()).value / 1e9
+                balance_usd = balance * CONFIG.SOL_PRICE_USD
+
+                entry_price = await get_token_price_usd(mint)
+                if not entry_price:
+                    dec = await get_token_decimals(mint)
+                    entry_price = (buy_amt * CONFIG.SOL_PRICE_USD) / (real_tokens / (10 ** dec))
+
+                register_stop(mint, {
+                    "entry_price": entry_price,
+                    "size_tokens": real_tokens,
+                    "stop_price": entry_price * (1 - CONFIG.STOP_LOSS_PCT),
+                    "slippage_bps": CONFIG.STOP_MAX_SLIPPAGE_BPS,
+                    "state": "ARMED",
+                    "last_alert": 0,
+                    "first_no_route": 0,
+                    "stuck_reason": None,
+                    "emergency_attempts": 0,
+                })
+
+                await notify("buy",
+                    "✅ Sniped {mint} via PumpFun Direct\n"
+                    "Amount: {amt:.3f} SOL\n"
+                    "Tokens: {toks}\n"
+                    "Entry: ${entry:.6f}\n"
+                    "Stop: ${stop:.6f}\n"
+                    "Balance: {bal:.2f} SOL (${usd:.0f}){tx}".format(
+                        mint=mint[:8] + "...",
+                        amt=buy_amt,
+                        toks=real_tokens,
+                        entry=entry_price,
+                        stop=entry_price * (1 - CONFIG.STOP_LOSS_PCT),
+                        bal=balance,
+                        usd=balance_usd,
+                        tx=f"\nTX: https://solscan.io/tx/{pf_sig}" if pf_sig else ""
+                    )
+                )
+
+                OPEN_POSITIONS[mint] = {
+                    "expected_token_amount": real_tokens,
+                    "buy_amount_sol": buy_amt,
+                    "sold_stages": set(),
+                    "buy_sig": pf_sig,
+                    "is_migration": False,
+                    "entry_price": entry_price,
+                    "is_pumpfun": True,
+                }
+
+                increment_stat("snipes_succeeded", 1)
+                log_trade(mint, "BUY", buy_amt, real_tokens)
+                # If the monitor isn't started elsewhere, you may spawn it here:
+                # asyncio.create_task(wait_and_auto_sell(mint))
+                return True
+            
             is_migration = kwargs.get("is_migration", False)
             
             # Store PumpFun token if detected
