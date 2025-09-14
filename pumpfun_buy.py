@@ -93,6 +93,9 @@ async def execute_pumpfun_buy(
         - tokens_received: int - amount of tokens received
         - reason: str - error reason if failed
     """
+    # Lazy import to avoid circular dependency
+    from utils import keypair, rpc, cleanup_wsol_on_failure
+    
     try:
         logging.info(f"[PumpFun] Starting buy for {mint[:8]}... with {sol_amount:.4f} SOL")
         
