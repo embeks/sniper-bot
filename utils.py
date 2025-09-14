@@ -1253,6 +1253,9 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                     
                     # Check minimum liquidity for non-PumpFun
                     if pool_liquidity < effective_min_lp:
+                        if ultra_fresh:
+                            logging.info(f"[Buy] Ultra-fresh & no pool — switching to PumpFun Direct for {mint[:8]}...")
+                            return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=is_migration)
                         log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL (min: {effective_min_lp:.2f})")
                         record_skip("low_lp")
                         return False
