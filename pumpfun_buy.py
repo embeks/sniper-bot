@@ -24,9 +24,8 @@ from spl.token.instructions import (
 )
 from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_TOKEN_PROGRAM_ID
 
-# Import config and utils
+# Import config
 import config
-from utils import keypair, rpc, cleanup_wsol_on_failure
 
 # Load config
 CONFIG = config.load()
@@ -73,8 +72,9 @@ async def derive_pumpfun_pdas(mint: Pubkey) -> Dict[str, Pubkey]:
 async def execute_pumpfun_buy(
     mint: str,
     sol_amount: float,
-    cu_limit: int = 1_000_000,
-    priority_fee: int = 1_000_000
+    slippage_bps: int = 2000,
+    priority_fee_lamports: int = 500000,
+    cu_limit: int = 1_000_000
 ) -> Dict[str, Any]:
     """
     Execute a buy on PumpFun bonding curve
@@ -82,8 +82,9 @@ async def execute_pumpfun_buy(
     Args:
         mint: Token mint address
         sol_amount: Amount of SOL to spend
+        slippage_bps: Slippage in basis points (not used currently)
+        priority_fee_lamports: Priority fee in lamports
         cu_limit: Compute unit limit
-        priority_fee: Priority fee in lamports per compute unit
         
     Returns:
         Dict with:
@@ -92,6 +93,9 @@ async def execute_pumpfun_buy(
         - tokens_received: int - amount of tokens received
         - reason: str - error reason if failed
     """
+    # Lazy import to avoid circular dependency
+    from utils import keypair, rpc, cleanup_wsol_on_failure
+    
     try:
         logging.info(f"[PumpFun] Starting buy for {mint[:8]}... with {sol_amount:.4f} SOL")
         
@@ -117,7 +121,9 @@ async def execute_pumpfun_buy(
         
         # Add compute budget instructions
         instructions.append(set_compute_unit_limit(cu_limit))
-        instructions.append(set_compute_unit_price(priority_fee))
+        # Convert priority_fee_lamports to micro-lamports per CU
+        priority_fee_per_cu = priority_fee_lamports // 1000  # Rough conversion
+        instructions.append(set_compute_unit_price(priority_fee_per_cu))
         
         # Create ATA if needed
         if not ata_exists:
@@ -133,7 +139,7 @@ async def execute_pumpfun_buy(
         # Convert SOL amount to lamports
         amount_lamports = int(sol_amount * 1e9)
         
-        # Calculate minimum tokens out (with 5% slippage tolerance)
+        # Calculate minimum tokens out (with slippage tolerance)
         # This is a simplified calculation - ideally fetch from bonding curve state
         min_tokens_out = 0  # Accept any amount for now
         
