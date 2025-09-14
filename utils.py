@@ -1076,44 +1076,11 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             # ============================================
             # PUMPFUN DIRECT BUY INTEGRATION
             # ============================================
+            # This section has been moved into the PumpFun branch above
             skip_jupiter = False
             jupiter_sig = None
             real_tokens = 0
             pool_liquidity = 0.1  # Default value
-            
-            # Try PumpFun direct buy first for bonding curve tokens
-            if is_pumpfun:
-                # Check if still on bonding curve (not migrated)
-                pool = raydium.find_pool_realtime(mint)
-                if not pool:  # No Raydium pool means still on bonding curve
-                    logging.info(f"[Buy] PumpFun token on bonding curve, attempting direct buy")
-                    try:
-                        from pumpfun_buy import execute_pumpfun_buy
-                        pf_result = await execute_pumpfun_buy(
-                            mint,
-                            buy_amt,
-                            cu_limit=getattr(CONFIG, 'PUMPFUN_COMPUTE_UNIT_LIMIT', 200000),
-                            priority_fee=getattr(CONFIG, 'PUMPFUN_PRIORITY_FEE_LAMPORTS', 100000)
-                        )
-                        
-                        if pf_result["ok"]:
-                            # Success - use the direct buy result
-                            real_tokens = pf_result["tokens_received"]
-                            jupiter_sig = pf_result["sig"]
-                            skip_jupiter = True
-                            logging.info(f"[Buy] PumpFun direct buy SUCCESS! Tokens: {real_tokens}, TX: {jupiter_sig}")
-                        else:
-                            logging.info(f"[Buy] PumpFun direct buy failed: {pf_result['reason']}, falling back to Jupiter")
-                            skip_jupiter = False
-                    except ImportError:
-                        logging.warning(f"[Buy] PumpFun buy module not available, using Jupiter")
-                        skip_jupiter = False
-                    except Exception as e:
-                        logging.error(f"[Buy] PumpFun direct buy error: {e}, falling back to Jupiter")
-                        skip_jupiter = False
-                else:
-                    logging.info(f"[Buy] PumpFun token has migrated to Raydium, using Jupiter")
-                    skip_jupiter = False
             
             # PHASE 1 FIX: Check if ultra-fresh early
             try:
