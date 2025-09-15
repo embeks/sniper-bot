@@ -473,7 +473,7 @@ def stop_bot():
     BOT_RUNNING = False
 
 def mark_broken_token(mint: str, error_code: int):
-    # Don't mark ultra-fresh PumpFun tokens as broken
+    # Don't mark ultra-fresh PumpFun tokens as broken (within 3 minutes of discovery)
     if mint in pumpfun_tokens:
         token_data = pumpfun_tokens[mint]
         age_seconds = time.time() - token_data.get("discovered", 0)
