@@ -102,8 +102,7 @@ async def execute_pumpfun_buy(
         mint_owner = str(mint_acc.value.owner)
         token_prog = TOKEN_2022_PROGRAM_ID if mint_owner == str(TOKEN_2022_PROGRAM_ID) else TOKEN_PROGRAM_ID
 
-        # Sysvar Instructions (many programs require this in accounts)
-        SYSVAR_INSTRUCTIONS = Pubkey.from_string("Sysvar1nstructions1111111111111111111111111")
+        # Sysvar Clock
         SYSVAR_CLOCK = Pubkey.from_string("SysvarC1ock11111111111111111111111111111111")
 
         buyer_ata = get_associated_token_address(keypair.pubkey(), mint_pubkey)
