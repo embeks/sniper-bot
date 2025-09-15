@@ -6,7 +6,7 @@ import asyncio
 import time
 import csv
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 from dotenv import load_dotenv
 import base64
 from solders.transaction import VersionedTransaction
@@ -22,7 +22,6 @@ from spl.token.instructions import get_associated_token_address, close_account, 
 
 # Import Raydium client
 from raydium_aggregator import RaydiumAggregatorClient
-from pumpfun_buy import execute_pumpfun_buy
 
 # Import config
 import config
@@ -33,6 +32,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Load config once
 CONFIG = config.load()
+
+# PumpFun buy function (lazy loaded to avoid circular imports)
+PUMPFUN_BUY_FN: Optional[Callable[..., Any]] = None
 
 # ============================================
 # CENTRALIZED HTTP MANAGER - FIXED WITH RETRY LOGIC
@@ -1068,6 +1070,11 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             # ============================================
             is_pumpfun = mint in pumpfun_tokens or kwargs.get("is_pumpfun", False)
             
+            # Skip known program IDs that shouldn't be traded
+            if mint in KNOWN_AMM_PROGRAMS:
+                logging.warning(f"[Buy] Skipping known AMM program {mint[:8]}...")
+                return False
+            
             # ============================================
             # PUMPFUN DIRECT BUY (lazy import, NO Jupiter fallback on PF errors)
             # ============================================
@@ -1086,7 +1093,8 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                         logging.info("[Buy][PumpFun] Direct buy function loaded")
                     except Exception as e:
                         logging.error(f"[Buy][PumpFun] Import error: {e}")
-                        await notify("buy_failed", f"❌ PumpFun buy import failed\nToken: {mint[:8]}...")
+                        # REDUCED NOISE: Just log instead of notify
+                        logging.error(f"❌ PumpFun buy import failed\nToken: {mint[:8]}...")
                         record_skip("buy_failed")
                         return False  # **DO NOT** fall back to Jupiter
 
@@ -1100,14 +1108,16 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                     )
                 except Exception as e:
                     logging.error(f"[Buy][PumpFun] Exception during direct buy: {e}")
-                    await notify("buy_failed", f"❌ PumpFun buy error\nToken: {mint[:8]}...")
+                    # REDUCED NOISE: Just log instead of notify
+                    logging.error(f"❌ PumpFun buy error\nToken: {mint[:8]}...")
                     record_skip("buy_failed")
                     return False  # **DO NOT** fall back to Jupiter
 
                 if not pf_res or not pf_res.get("ok"):
                     reason = (pf_res or {}).get("reason", "UNKNOWN")
                     logging.warning(f"[Buy][PumpFun] Direct buy failed: {reason}")
-                    await notify("buy_failed", f"❌ PumpFun buy failed ({reason})\nToken: {mint[:8]}...")
+                    # REDUCED NOISE: Just log instead of notify
+                    logging.error(f"❌ PumpFun buy failed ({reason})\nToken: {mint[:8]}...")
                     record_skip("buy_failed")
                     return False  # **DO NOT** fall back to Jupiter
 
@@ -1380,8 +1390,8 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                                 if not ultra_fresh:
                                     mark_broken_token(mint, 1)
                             
-                            # Send failure notification with reason
-                            await notify("buy_failed",
+                            # REDUCED NOISE: Just log instead of notify
+                            logging.error(
                                 f"❌ Snipe failed\n"
                                 f"Token: {mint[:8]}...\n"
                                 f"Reason: {reason}\n"
@@ -1401,7 +1411,8 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                         if not ultra_fresh:
                             mark_broken_token(mint, 1)
                     
-                    await notify("buy_failed",
+                    # REDUCED NOISE: Just log instead of notify
+                    logging.error(
                         f"❌ Snipe failed\n"
                         f"Token: {mint[:8]}...\n"
                         f"Reason: {swap_result['reason']}\n"
@@ -1594,8 +1605,8 @@ async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bp
                 await asyncio.sleep(poll_every)
                 waited += poll_every
 
+            # REDUCED NOISE: Just log instead of sending Telegram alert
             logging.error(f"[Sell] No sell route for {mint[:8]}... after waiting {max_wait_sec}s")
-            await send_telegram_alert(f"❌ Could not sell {mint[:8]}... — no route yet. Will retry on next monitor tick.")
             return False
         else:
             # Non-bonding (regular or already migrated) — use Jupiter directly
@@ -1614,7 +1625,8 @@ async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bp
             else:
                 reason = sell_res.get("reason", "UNKNOWN")
                 logging.error(f"[Sell] Jupiter sell failed for {mint[:8]}... ({reason})")
-                await notify("sell_failed",
+                # REDUCED NOISE: Just log instead of notify
+                logging.error(
                     f"❌ Sell failed\n"
                     f"Token: {mint[:8]}...\n"
                     f"Reason: {reason}\n"
