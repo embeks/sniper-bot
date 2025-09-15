@@ -1212,9 +1212,9 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             real_tokens = 0
             pool_liquidity = 0.1  # Default value
             
-            # PHASE 1 FIX: Check if ultra-fresh early
+            # PHASE 1 FIX: Check if ultra-fresh early  
             try:
-                ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
+                ultra_fresh = await is_fresh_token(mint, max_age_seconds=45)
             except Exception:
                 ultra_fresh = False
             
