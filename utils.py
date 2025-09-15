@@ -473,6 +473,14 @@ def stop_bot():
     BOT_RUNNING = False
 
 def mark_broken_token(mint: str, error_code: int):
+    # Don't mark ultra-fresh PumpFun tokens as broken
+    if mint in pumpfun_tokens:
+        token_data = pumpfun_tokens[mint]
+        age_seconds = time.time() - token_data.get("discovered", 0)
+        if age_seconds < 180:  # Less than 3 minutes old
+            logging.info(f"[SKIP] Not marking ultra-fresh PumpFun token {mint[:8]}... as broken (age: {age_seconds:.0f}s)")
+            return
+    
     BROKEN_TOKENS.add(mint)
     log_skipped_token(mint, f"Marked as broken (error {error_code})")
 
