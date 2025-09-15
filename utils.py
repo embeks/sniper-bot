@@ -1116,7 +1116,17 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 if not pf_res or not pf_res.get("ok"):
                     reason = (pf_res or {}).get("reason", "UNKNOWN")
                     logging.warning(f"[Buy][PumpFun] Direct buy failed: {reason}")
-                    # REDUCED NOISE: Just log instead of notify
+                    
+                    # Do NOT mark as broken for transient PumpFun launch races
+                    transient_pf = {"ProgramAccountNotFound", "SIM_FAIL", "NO_QUOTE", "CONFIRM_TIMEOUT", "BUILD_FAILED"}
+                    if reason in transient_pf:
+                        logging.info(f"[Buy][PumpFun] Transient failure ({reason}), not marking broken")
+                        # REDUCED NOISE: Just log instead of notify
+                        logging.error(f"❌ PumpFun buy failed ({reason})\nToken: {mint[:8]}...")
+                        record_skip("buy_failed")
+                        return False
+                    
+                    # Non-transient error - could mark as broken but being conservative
                     logging.error(f"❌ PumpFun buy failed ({reason})\nToken: {mint[:8]}...")
                     record_skip("buy_failed")
                     return False  # **DO NOT** fall back to Jupiter
