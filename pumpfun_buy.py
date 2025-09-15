@@ -22,7 +22,7 @@ from spl.token.instructions import (
     close_account,
     CloseAccountParams
 )
-from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_TOKEN_PROGRAM_ID
+from spl.token.constants import TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_TOKEN_PROGRAM_ID
 
 # Import config
 import config
@@ -77,97 +77,92 @@ async def execute_pumpfun_buy(
     cu_limit: int = 1_000_000
 ) -> Dict[str, Any]:
     """
-    Execute a buy on PumpFun bonding curve
-    
-    Args:
-        mint: Token mint address
-        sol_amount: Amount of SOL to spend
-        slippage_bps: Slippage in basis points (not used currently)
-        priority_fee_lamports: Priority fee in lamports
-        cu_limit: Compute unit limit
-        
-    Returns:
-        Dict with:
-        - ok: bool - success flag
-        - sig: str - transaction signature (if successful)
-        - tokens_received: int - amount of tokens received
-        - reason: str - error reason if failed
+    Execute a buy on PumpFun bonding curve with proper token program detection and account setup
     """
-    # Lazy import to avoid circular dependency
-    from utils import keypair, rpc, cleanup_wsol_on_failure
-    
+    from utils import keypair, rpc, cleanup_wsol_on_failure  # lazy import
+    from spl.token.constants import TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID
+
     try:
         logging.info(f"[PumpFun] Starting buy for {mint[:8]}... with {sol_amount:.4f} SOL")
-        
-        # Convert mint string to Pubkey
+
         mint_pubkey = Pubkey.from_string(mint)
-        
-        # Derive PDAs
         pdas = await derive_pumpfun_pdas(mint_pubkey)
-        
-        # Get buyer's associated token account
+
+        # Detect which token program owns the mint (SPL vs Token-2022)
+        mint_acc = rpc.get_account_info(mint_pubkey)
+        if not (mint_acc and mint_acc.value):
+            logging.error("[PumpFun] Mint account not found")
+            return {"ok": False, "reason": "MINT_NOT_FOUND", "sig": None, "tokens_received": 0}
+        mint_owner = str(mint_acc.value.owner)
+        token_prog = TOKEN_2022_PROGRAM_ID if mint_owner == str(TOKEN_2022_PROGRAM_ID) else TOKEN_PROGRAM_ID
+
+        # Sysvar Instructions (many programs require this in accounts)
+        SYSVAR_INSTRUCTIONS = Pubkey.from_string("Sysvar1nstructions1111111111111111111111111")
+        SYSVAR_CLOCK = Pubkey.from_string("SysvarC1ock11111111111111111111111111111111")
+
         buyer_ata = get_associated_token_address(keypair.pubkey(), mint_pubkey)
-        
-        # Check if buyer ATA exists, create if not
-        ata_exists = False
+
+        instructions = []
+
+        # Compute budget: set CU limit + micro-lamports per CU
+        cu_limit = max(cu_limit, 1_000_000)
+        instructions.append(set_compute_unit_limit(cu_limit))
+        micro_lamports_per_cu = max(1, int(priority_fee_lamports / cu_limit))
+        instructions.append(set_compute_unit_price(micro_lamports_per_cu))
+
+        # Ensure buyer ATA exists
         try:
             ata_info = rpc.get_account_info(buyer_ata)
-            if ata_info and ata_info.value:
-                ata_exists = True
-        except:
-            pass
-        
-        instructions = []
-        
-        # Add compute budget instructions
-        instructions.append(set_compute_unit_limit(cu_limit))
-        # Convert priority_fee_lamports to micro-lamports per CU
-        priority_fee_per_cu = priority_fee_lamports // 1000  # Rough conversion
-        instructions.append(set_compute_unit_price(priority_fee_per_cu))
-        
-        # Create ATA if needed
-        if not ata_exists:
-            logging.info(f"[PumpFun] Creating buyer token account...")
-            instructions.append(
-                create_associated_token_account(
+            if not (ata_info and ata_info.value):
+                logging.info("[PumpFun] Creating buyer token account...")
+                instructions.append(create_associated_token_account(
                     payer=keypair.pubkey(),
                     owner=keypair.pubkey(),
                     mint=mint_pubkey
-                )
-            )
-        
-        # Convert SOL amount to lamports
+                ))
+        except Exception as e:
+            logging.debug(f"[PumpFun] Buyer ATA precheck error: {e}")
+
+        # Ensure bonding-curve ATA exists (owner = bonding_curve PDA)
+        try:
+            bc_ata_info = rpc.get_account_info(pdas["bonding_curve_ata"])
+            if not (bc_ata_info and bc_ata_info.value):
+                logging.info("[PumpFun] Creating bonding curve ATA...")
+                instructions.append(create_associated_token_account(
+                    payer=keypair.pubkey(),
+                    owner=pdas["bonding_curve"],
+                    mint=mint_pubkey
+                ))
+        except Exception as e:
+            logging.debug(f"[PumpFun] BC ATA precheck error: {e}")
+
         amount_lamports = int(sol_amount * 1e9)
-        
-        # Calculate minimum tokens out (with slippage tolerance)
-        # This is a simplified calculation - ideally fetch from bonding curve state
-        min_tokens_out = 0  # Accept any amount for now
-        
-        # Build buy instruction data
-        # Layout: [discriminator(8)] + [amount(8)] + [min_tokens_out(8)]
+        min_tokens_out = 0  # accept any for now (you can refine later)
+
+        # buy(mint, amount, min_out) layout: discriminator + u64 + u64
         instruction_data = (
             BUY_DISCRIMINATOR +
-            amount_lamports.to_bytes(8, 'little') +
-            min_tokens_out.to_bytes(8, 'little')
+            amount_lamports.to_bytes(8, "little") +
+            min_tokens_out.to_bytes(8, "little")
         )
-        
-        # Build buy instruction accounts
+
         accounts = [
-            AccountMeta(pdas["global_state"], False, False),  # Global state
-            AccountMeta(PUMPFUN_FEE_RECIPIENT, False, True),   # Fee recipient
-            AccountMeta(mint_pubkey, False, False),            # Mint
-            AccountMeta(pdas["bonding_curve"], False, True),   # Bonding curve
-            AccountMeta(pdas["bonding_curve_ata"], False, True),  # Bonding curve ATA
-            AccountMeta(buyer_ata, False, True),               # Buyer ATA
-            AccountMeta(keypair.pubkey(), True, True),         # Buyer (signer + writable)
-            AccountMeta(SYSTEM_PROGRAM_ID, False, False),      # System program
-            AccountMeta(TOKEN_PROGRAM_ID, False, False),       # Token program
-            AccountMeta(RENT, False, False),                   # Rent sysvar
-            AccountMeta(Pubkey.from_string("SysvarC1ock11111111111111111111111111111111"), False, False),  # Clock
-            AccountMeta(ASSOCIATED_TOKEN_PROGRAM_ID, False, False),  # Associated token program
+            AccountMeta(pdas["global_state"], False, False),
+            AccountMeta(PUMPFUN_FEE_RECIPIENT, False, True),
+            AccountMeta(mint_pubkey, False, True),
+            AccountMeta(pdas["bonding_curve"], False, True),
+            AccountMeta(pdas["bonding_curve_ata"], False, True),
+            AccountMeta(buyer_ata, False, True),
+            AccountMeta(keypair.pubkey(), True, True),
+            AccountMeta(SYSTEM_PROGRAM_ID, False, False),
+            AccountMeta(token_prog, False, False),   # << correct program (SPL or Token-2022)
+            AccountMeta(RENT, False, False),
+            AccountMeta(SYSVAR_CLOCK, False, False),
+            AccountMeta(ASSOCIATED_TOKEN_PROGRAM_ID, False, False),
+            AccountMeta(SYSVAR_INSTRUCTIONS, False, False),  # << required by many programs
         ]
-        
-        # Add referrer if configured
+
+        # Optional referrer
         referrer = getattr(CONFIG, "PUMPFUN_REFERRER", "")
         if referrer:
             try:
@@ -176,17 +171,11 @@ async def execute_pumpfun_buy(
                 logging.info(f"[PumpFun] Using referrer: {referrer[:8]}...")
             except:
                 logging.debug("[PumpFun] Invalid referrer address, skipping")
-        
-        # Create buy instruction
-        buy_instruction = Instruction(
-            program_id=PUMPFUN_PROGRAM_ID,
-            data=instruction_data,
-            accounts=accounts
-        )
-        
-        instructions.append(buy_instruction)
-        
-        # Build and sign transaction
+
+        buy_ix = Instruction(program_id=PUMPFUN_PROGRAM_ID, data=instruction_data, accounts=accounts)
+        instructions.append(buy_ix)
+
+        # Build & (optionally) simulate
         recent_blockhash = rpc.get_latest_blockhash().value.blockhash
         msg = MessageV0.try_compile(
             payer=keypair.pubkey(),
@@ -194,83 +183,66 @@ async def execute_pumpfun_buy(
             address_lookup_table_accounts=[],
             recent_blockhash=recent_blockhash,
         )
-        
         tx = VersionedTransaction(msg, [keypair])
-        
-        # Simulate if configured
+
         if CONFIG.SIMULATE_BEFORE_SEND:
             logging.info("[PumpFun] Simulating transaction...")
             sim_result = rpc.simulate_transaction(tx, commitment=Confirmed)
             if sim_result.value and sim_result.value.err:
+                # Check logs for specific error
+                logs = []
+                try:
+                    logs = list(sim_result.value.logs or [])
+                except Exception:
+                    pass
+                joined = "\n".join(logs)
+                if "ProgramAccountNotFound" in joined:
+                    logging.error("[PumpFun] Simulation failed: ProgramAccountNotFound")
+                    return {"ok": False, "reason": "ProgramAccountNotFound", "sig": None, "tokens_received": 0}
                 logging.error(f"[PumpFun] Simulation failed: {sim_result.value.err}")
                 return {"ok": False, "reason": "SIM_FAIL", "sig": None, "tokens_received": 0}
             logging.info("[PumpFun] Simulation passed")
-        
-        # Send transaction
+
+        # Send
         logging.info("[PumpFun] Sending transaction...")
         result = rpc.send_transaction(
             tx,
-            opts=TxOpts(
-                skip_preflight=True,
-                preflight_commitment=Confirmed,
-                max_retries=3
-            )
+            opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed, max_retries=3)
         )
-        
         if not result.value:
             logging.error("[PumpFun] Failed to send transaction")
             return {"ok": False, "reason": "SEND_ERR", "sig": None, "tokens_received": 0}
-        
+
         sig = str(result.value)
         logging.info(f"[PumpFun] Transaction sent: {sig}")
-        
-        # Wait for confirmation and get token balance
+
+        # Quick balance probe (non-blocking)
         await asyncio.sleep(2)
-        
-        # Poll for token balance
         tokens_received = 0
-        for retry in range(10):  # Try for ~3 seconds
+        for _ in range(10):  # ~3s
             try:
-                response = rpc.get_token_account_balance(buyer_ata)
-                if response and response.value:
-                    tokens_received = int(response.value.amount)
+                bal = rpc.get_token_account_balance(buyer_ata)
+                if bal and bal.value:
+                    tokens_received = int(bal.value.amount)
                     if tokens_received > 0:
                         logging.info(f"[PumpFun] Received {tokens_received} tokens")
                         break
             except:
                 pass
             await asyncio.sleep(0.3)
-        
-        if tokens_received == 0:
-            logging.warning("[PumpFun] No tokens received after 3 seconds")
-            # Transaction might still be pending, return success with sig
-            return {"ok": True, "sig": sig, "tokens_received": 0, "reason": "OK"}
-        
-        return {
-            "ok": True,
-            "sig": sig,
-            "tokens_received": tokens_received,
-            "reason": "OK"
-        }
-        
+
+        return {"ok": True, "sig": sig, "tokens_received": tokens_received, "reason": "OK"}
+
     except Exception as e:
         logging.error(f"[PumpFun] Buy execution error: {e}")
-        
-        # Clean up any stranded WSOL
         await cleanup_wsol_on_failure()
-        
-        # Determine error reason
-        error_str = str(e)
-        if "insufficient" in error_str.lower() or "balance" in error_str.lower():
+
+        es = str(e).lower()
+        if "insufficient" in es or "balance" in es:
             reason = "INSUFFICIENT_BALANCE"
-        elif "slippage" in error_str.lower():
+        elif "slippage" in es:
             reason = "SLIPPAGE"
         else:
             reason = "BUILD_FAILED"
-        
-        return {
-            "ok": False,
-            "reason": reason,
-            "sig": None,
-            "tokens_received": 0
-        }
+
+        return {"ok": False, "reason": reason, "sig": None, "tokens_received": 0}
