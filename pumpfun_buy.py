@@ -164,15 +164,16 @@ async def execute_pumpfun_buy(
             AccountMeta(SYSVAR_INSTRUCTIONS, False, False),  # << required by many programs
         ]
 
-        # Optional referrer
-        referrer = getattr(CONFIG, "PUMPFUN_REFERRER", "")
+        # Optional referrer (use safe_pubkey to handle invalid values)
+        referrer = getattr(CONFIG, "PUMPFUN_REFERRER", "") if CONFIG else ""
         if referrer:
             try:
-                referrer_pubkey = Pubkey.from_string(referrer)
-                accounts.append(AccountMeta(referrer_pubkey, False, True))
-                logging.info(f"[PumpFun] Using referrer: {referrer[:8]}...")
+                referrer_pubkey = _safe_pubkey(referrer, "")
+                if referrer_pubkey and str(referrer_pubkey) != "11111111111111111111111111111111":  # Not default/invalid
+                    accounts.append(AccountMeta(referrer_pubkey, False, True))
+                    logging.info(f"[PumpFun] Using referrer: {str(referrer_pubkey)[:8]}...")
             except:
-                logging.debug("[PumpFun] Invalid referrer address, skipping")
+                logging.debug("[PumpFun] Invalid or empty referrer address, skipping")
 
         buy_ix = Instruction(program_id=PUMPFUN_PROGRAM_ID, data=instruction_data, accounts=accounts)
         instructions.append(buy_ix)
