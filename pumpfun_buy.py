@@ -22,7 +22,13 @@ from spl.token.instructions import (
     close_account,
     CloseAccountParams
 )
-from spl.token.constants import TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_TOKEN_PROGRAM_ID
+from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_TOKEN_PROGRAM_ID
+
+# Try to import TOKEN_2022_PROGRAM_ID, define it manually if not available
+try:
+    from spl.token.constants import TOKEN_2022_PROGRAM_ID
+except ImportError:
+    TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhqTBzKfTwRoFqbakB5uVBBBKgiV")
 
 # Import config
 import config
