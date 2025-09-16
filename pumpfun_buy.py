@@ -1,4 +1,4 @@
-# pumpfun_buy.py - FIXED VERSION WITH MULTIPLE FALLBACKS
+# pumpfun_buy.py - SIMPLIFIED FIXED VERSION
 import logging
 import asyncio
 import base64
@@ -24,74 +24,45 @@ from spl.token.instructions import (
 )
 from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_TOKEN_PROGRAM_ID
 
-# Try to import TOKEN_2022_PROGRAM_ID, define it manually if not available
-try:
-    from spl.token.constants import TOKEN_2022_PROGRAM_ID
-except ImportError:
-    TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhqTBzKfTwRoFqbakB5uVBBBKgiV")
-
 # Import config for other settings
 import config
 CONFIG = config.load()
 
-# FIXED: Multiple fallback methods for PumpFun Program ID
-PUMPFUN_PROGRAM_ID = None
+# SIMPLIFIED FIX: Just bypass the Pubkey.from_string entirely
+# Use the raw bytes directly without any string parsing
+PUMPFUN_PROGRAM_BYTES = bytes([
+    4, 201, 250, 204, 21, 7, 37, 239, 29, 80, 150, 66, 55, 186, 105, 86,
+    214, 211, 181, 41, 122, 10, 172, 83, 32, 226, 85, 243, 236, 243, 160, 50
+])
+PUMPFUN_PROGRAM_ID = Pubkey(PUMPFUN_PROGRAM_BYTES)
 
-# Method 1: Try from raw bytes (most reliable)
-try:
-    PUMPFUN_PROGRAM_BYTES = [
-        6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172,
-        28, 180, 133, 237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169
-    ]
-    PUMPFUN_PROGRAM_ID = Pubkey(bytes(PUMPFUN_PROGRAM_BYTES))
-    logging.info(f"[PumpFun] Program ID loaded from bytes: {str(PUMPFUN_PROGRAM_ID)[:8]}...")
-except Exception as e:
-    logging.warning(f"[PumpFun] Failed to load from bytes: {e}")
+# Token-2022 program ID (also use bytes to avoid issues)
+TOKEN_2022_BYTES = bytes([
+    6, 221, 246, 225, 238, 130, 239, 90, 197, 106, 157, 11, 157, 44, 215,
+    179, 46, 56, 215, 164, 84, 142, 134, 84, 136, 175, 87, 31, 100, 62, 33, 125
+])
+TOKEN_2022_PROGRAM_ID = Pubkey(TOKEN_2022_BYTES)
 
-# Method 2: Try from base58 decode if bytes failed
-if PUMPFUN_PROGRAM_ID is None:
-    try:
-        import base58
-        decoded = base58.b58decode("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-        PUMPFUN_PROGRAM_ID = Pubkey(decoded)
-        logging.info(f"[PumpFun] Program ID loaded from base58: {str(PUMPFUN_PROGRAM_ID)[:8]}...")
-    except Exception as e:
-        logging.warning(f"[PumpFun] Failed to load from base58: {e}")
-
-# Method 3: Try from string with cleanup
-if PUMPFUN_PROGRAM_ID is None:
-    try:
-        # Clean the string of any potential issues
-        program_id_str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-        # Remove any whitespace, newlines, or invisible characters
-        program_id_str = ''.join(c for c in program_id_str if c.isalnum())
-        PUMPFUN_PROGRAM_ID = Pubkey.from_string(program_id_str)
-        logging.info(f"[PumpFun] Program ID loaded from string: {str(PUMPFUN_PROGRAM_ID)[:8]}...")
-    except Exception as e:
-        logging.error(f"[PumpFun] All methods failed to load program ID: {e}")
-        # Last resort: use a placeholder that will fail gracefully
-        PUMPFUN_PROGRAM_ID = None
-
-# Verify we have a valid program ID
-if PUMPFUN_PROGRAM_ID is None:
-    logging.error("[PumpFun] CRITICAL: No valid program ID loaded!")
-else:
-    logging.info(f"[PumpFun] Program ID ready: {str(PUMPFUN_PROGRAM_ID)}")
+# Fee recipient (also use bytes)
+FEE_RECIPIENT_BYTES = bytes([
+    176, 145, 213, 251, 85, 199, 158, 51, 162, 114, 178, 63, 240, 78,
+    146, 103, 128, 235, 69, 179, 186, 107, 225, 168, 41, 46, 171,
+    158, 116, 132, 37, 82
+])
+PUMPFUN_FEE_RECIPIENT = Pubkey(FEE_RECIPIENT_BYTES)
 
 # PumpFun Program Constants
 PUMPFUN_GLOBAL_STATE_SEED = b"global"
 PUMPFUN_BONDING_CURVE_SEED = b"bonding-curve"
-PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzAhmCgAdBx")  # PumpFun fee account
 
 # Buy instruction discriminator (from PumpFun IDL)
-BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])  # buy instruction
+BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])
+
+logging.info(f"[PumpFun] Module loaded - Program ID: {str(PUMPFUN_PROGRAM_ID)}")
 
 async def derive_pumpfun_pdas(mint: Pubkey) -> Dict[str, Pubkey]:
     """Derive PumpFun PDAs for the given mint"""
     try:
-        if PUMPFUN_PROGRAM_ID is None:
-            raise Exception("PumpFun program ID not loaded")
-            
         # Derive global state PDA
         global_state, _ = Pubkey.find_program_address(
             [PUMPFUN_GLOBAL_STATE_SEED],
@@ -132,11 +103,6 @@ async def execute_pumpfun_buy(
     from utils import keypair, rpc, cleanup_wsol_on_failure  # lazy import
 
     try:
-        # Check if program ID is loaded
-        if PUMPFUN_PROGRAM_ID is None:
-            logging.error("[PumpFun] Program ID not loaded, cannot execute buy")
-            return {"ok": False, "reason": "PROGRAM_ID_ERROR", "sig": None, "tokens_received": 0}
-            
         logging.info(f"[PumpFun] Starting buy for {mint[:8]}... with {sol_amount:.4f} SOL")
 
         # Validate mint address format before proceeding
@@ -153,6 +119,7 @@ async def execute_pumpfun_buy(
         if not (mint_acc and mint_acc.value):
             logging.error("[PumpFun] Mint account not found")
             return {"ok": False, "reason": "MINT_NOT_FOUND", "sig": None, "tokens_received": 0}
+        
         mint_owner = str(mint_acc.value.owner)
         token_prog = TOKEN_2022_PROGRAM_ID if mint_owner == str(TOKEN_2022_PROGRAM_ID) else TOKEN_PROGRAM_ID
 
@@ -161,8 +128,8 @@ async def execute_pumpfun_buy(
         instructions = []
 
         # Compute budget: use hardcoded values or config defaults
-        cu_limit = cu_limit or 1000000  # Hardcoded default
-        priority_fee_lamports = priority_fee_lamports or 1000000  # Hardcoded default
+        cu_limit = cu_limit or 1000000
+        priority_fee_lamports = priority_fee_lamports or 1000000
         
         instructions.append(set_compute_unit_limit(cu_limit))
         micro_lamports_per_cu = max(1, int(priority_fee_lamports / cu_limit))
@@ -195,7 +162,7 @@ async def execute_pumpfun_buy(
             logging.debug(f"[PumpFun] BC ATA precheck error: {e}")
 
         amount_lamports = int(sol_amount * 1e9)
-        min_tokens_out = 0  # accept any for now (you can refine later)
+        min_tokens_out = 0  # accept any for now
 
         # buy(mint, amount, min_out) layout: discriminator + u64 + u64
         instruction_data = (
@@ -213,14 +180,12 @@ async def execute_pumpfun_buy(
             AccountMeta(buyer_ata, False, True),
             AccountMeta(keypair.pubkey(), True, True),
             AccountMeta(SYSTEM_PROGRAM_ID, False, False),
-            AccountMeta(token_prog, False, False),   # << correct program (SPL or Token-2022)
+            AccountMeta(token_prog, False, False),
             AccountMeta(RENT, False, False),
             AccountMeta(SYSVAR_CLOCK, False, False),
             AccountMeta(ASSOCIATED_TOKEN_PROGRAM_ID, False, False),
             AccountMeta(SYSVAR_INSTRUCTIONS, False, False),
         ]
-
-        # Skip referrer for now - can add later if needed
 
         buy_ix = Instruction(program_id=PUMPFUN_PROGRAM_ID, data=instruction_data, accounts=accounts)
         instructions.append(buy_ix)
