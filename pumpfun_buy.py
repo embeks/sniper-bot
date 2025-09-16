@@ -45,19 +45,7 @@ PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzA
 # Buy instruction discriminator (from PumpFun IDL)
 BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])  # buy instruction
 
-def _safe_pubkey(value: str, default: str) -> Optional[Pubkey]:
-    """Safely parse a pubkey string"""
-    try:
-        if value and len(value) > 30:
-            return Pubkey.from_string(value)
-    except:
-        pass
-    if default:
-        try:
-            return Pubkey.from_string(default)
-        except:
-            pass
-    return None
+
 
 async def derive_pumpfun_pdas(mint: Pubkey) -> Dict[str, Pubkey]:
     """Derive PumpFun PDAs for the given mint"""
@@ -179,16 +167,18 @@ async def execute_pumpfun_buy(
             AccountMeta(SYSVAR_INSTRUCTIONS, False, False),
         ]
 
-        # Optional referrer (use safe_pubkey to handle invalid values)
+        # Optional referrer (handle invalid values)
         referrer = getattr(CONFIG, "PUMPFUN_REFERRER", "") if CONFIG else ""
         if referrer:
             try:
-                referrer_pubkey = _safe_pubkey(referrer, "")
-                if referrer_pubkey and str(referrer_pubkey) != "11111111111111111111111111111111":  # Not default/invalid
-                    accounts.append(AccountMeta(referrer_pubkey, False, True))
-                    logging.info(f"[PumpFun] Using referrer: {str(referrer_pubkey)[:8]}...")
-            except:
-                logging.debug("[PumpFun] Invalid or empty referrer address, skipping")
+                # Validate referrer is proper base58 format and length
+                if referrer and len(referrer) >= 32 and len(referrer) <= 44:
+                    referrer_pubkey = Pubkey.from_string(referrer)
+                    if str(referrer_pubkey) != "11111111111111111111111111111111":  # Not default/invalid
+                        accounts.append(AccountMeta(referrer_pubkey, False, True))
+                        logging.info(f"[PumpFun] Using referrer: {str(referrer_pubkey)[:8]}...")
+            except Exception as e:
+                logging.debug(f"[PumpFun] Invalid or empty referrer address: {e}")
 
         buy_ix = Instruction(program_id=PUMPFUN_PROGRAM_ID, data=instruction_data, accounts=accounts)
         instructions.append(buy_ix)
