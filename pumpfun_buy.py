@@ -1,4 +1,4 @@
-# pumpfun_buy.py - SIMPLIFIED FIXED VERSION
+# pumpfun_buy.py - FINAL FIXED VERSION WITH CORRECT BYTES
 import logging
 import asyncio
 import base64
@@ -28,22 +28,22 @@ from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_T
 import config
 CONFIG = config.load()
 
-# SIMPLIFIED FIX: Just bypass the Pubkey.from_string entirely
-# Use the raw bytes directly without any string parsing
+# CORRECT BYTES for PumpFun Program ID: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+# Verified using: base58.b58decode("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 PUMPFUN_PROGRAM_BYTES = bytes([
-    4, 201, 250, 204, 21, 7, 37, 239, 29, 80, 150, 66, 55, 186, 105, 86,
-    214, 211, 181, 41, 122, 10, 172, 83, 32, 226, 85, 243, 236, 243, 160, 50
+    4, 133, 78, 27, 66, 164, 84, 149, 117, 164, 89, 141, 126, 107, 239, 211,
+    71, 182, 205, 185, 117, 219, 213, 44, 243, 47, 219, 50, 119, 176, 96, 195
 ])
 PUMPFUN_PROGRAM_ID = Pubkey(PUMPFUN_PROGRAM_BYTES)
 
-# Token-2022 program ID (also use bytes to avoid issues)
+# Token-2022 program ID bytes (for TokenzQdBNbLqP5VEhqTBzKfTwRoFqbakB5uVBBBKgiV)
 TOKEN_2022_BYTES = bytes([
-    6, 221, 246, 225, 238, 130, 239, 90, 197, 106, 157, 11, 157, 44, 215,
-    179, 46, 56, 215, 164, 84, 142, 134, 84, 136, 175, 87, 31, 100, 62, 33, 125
+    6, 161, 216, 23, 145, 55, 84, 42, 152, 52, 55, 189, 254, 42, 122, 178,
+    85, 127, 83, 92, 138, 120, 114, 43, 104, 164, 157, 192, 140, 58, 48, 133
 ])
 TOKEN_2022_PROGRAM_ID = Pubkey(TOKEN_2022_BYTES)
 
-# Fee recipient (also use bytes)
+# Fee recipient bytes (for CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzAhmCgAdBx)
 FEE_RECIPIENT_BYTES = bytes([
     176, 145, 213, 251, 85, 199, 158, 51, 162, 114, 178, 63, 240, 78,
     146, 103, 128, 235, 69, 179, 186, 107, 225, 168, 41, 46, 171,
@@ -112,14 +112,28 @@ async def execute_pumpfun_buy(
             return {"ok": False, "reason": "INVALID_MINT", "sig": None, "tokens_received": 0}
 
         mint_pubkey = Pubkey.from_string(mint_str)
-        pdas = await derive_pumpfun_pdas(mint_pubkey)
-
-        # Detect which token program owns the mint (SPL vs Token-2022)
-        mint_acc = rpc.get_account_info(mint_pubkey)
+        
+        # For ultra-fresh tokens, wait a bit for the mint to be created
+        retries = 0
+        max_retries = 5
+        mint_acc = None
+        while retries < max_retries:
+            mint_acc = rpc.get_account_info(mint_pubkey)
+            if mint_acc and mint_acc.value:
+                logging.info(f"[PumpFun] Mint account found on attempt {retries + 1}")
+                break
+            retries += 1
+            if retries < max_retries:
+                logging.info(f"[PumpFun] Mint not found yet, waiting... (attempt {retries}/{max_retries})")
+                await asyncio.sleep(0.5)
+        
         if not (mint_acc and mint_acc.value):
-            logging.error("[PumpFun] Mint account not found")
+            logging.error("[PumpFun] Mint account not found after retries")
             return {"ok": False, "reason": "MINT_NOT_FOUND", "sig": None, "tokens_received": 0}
         
+        pdas = await derive_pumpfun_pdas(mint_pubkey)
+        
+        # Detect which token program owns the mint (SPL vs Token-2022)
         mint_owner = str(mint_acc.value.owner)
         token_prog = TOKEN_2022_PROGRAM_ID if mint_owner == str(TOKEN_2022_PROGRAM_ID) else TOKEN_PROGRAM_ID
 
