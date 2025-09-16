@@ -1,4 +1,4 @@
-# pumpfun_buy.py - PumpFun Direct Buy on Bonding Curve
+# pumpfun_buy.py - PumpFun Direct Buy on Bonding Curve - FIXED VERSION
 import logging
 import asyncio
 import base64
@@ -36,24 +36,16 @@ import config
 # Load config
 CONFIG = config.load()
 
-# PumpFun Program Constants - FIXED with correct program ID
-# Note: The actual PumpFun program ID is 44 chars, not 43
-PUMPFUN_PROGRAM_ID_STR = getattr(CONFIG, "PUMPFUN_PROGRAM_ID", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-try:
-    PUMPFUN_PROGRAM_ID = Pubkey.from_string(PUMPFUN_PROGRAM_ID_STR)
-except Exception as e:
-    # Fallback to known working program ID if config has bad value
-    logging.warning(f"[PumpFun] Invalid program ID in config: {e}, using default")
-    PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-
+# PumpFun Program Constants - CRITICAL FIX: Use full 44-character program ID
+# The actual PumpFun program ID is 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P (44 chars)
+# NOT 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwusU (43 chars - truncated/invalid)
+PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 PUMPFUN_GLOBAL_STATE_SEED = b"global"
 PUMPFUN_BONDING_CURVE_SEED = b"bonding-curve"
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzAhmCgAdBx")  # PumpFun fee account
 
 # Buy instruction discriminator (from PumpFun IDL)
 BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])  # buy instruction
-
-
 
 async def derive_pumpfun_pdas(mint: Pubkey) -> Dict[str, Pubkey]:
     """Derive PumpFun PDAs for the given mint"""
