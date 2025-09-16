@@ -1,4 +1,4 @@
-# config.py - COMPLETE PRODUCTION VERSION WITH PHASE ONE PATCHES AND PUMPFUN SUPPORT
+# config.py - FIXED VERSION WITH PROPER VALIDATION
 import os
 import re
 from dataclasses import dataclass
@@ -6,8 +6,10 @@ from dataclasses import dataclass
 def _valid_pubkey(s: str) -> bool:
     if not s or not isinstance(s, str):
         return False
-    # Base58-ish length range for Solana pubkeys is 32–44 chars
-    return 32 <= len(s) <= 44 and re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]+', s) is not None
+    # Strip whitespace/newlines that might be in .env file
+    s = s.strip()
+    # Solana pubkeys are exactly 43-44 chars in base58
+    return 43 <= len(s) <= 44 and re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]+', s) is not None
 
 def _b(name, default):
     v = os.getenv(name)
@@ -135,15 +137,10 @@ def load() -> Config:
         "cooldown_secs": _i("ALERT_COOLDOWN_SECS", 60)
     }
     
-    # PumpFun Direct Buy settings
-    PUMPFUN_PROGRAM_ID = (
-        os.getenv("PUMPFUN_PROGRAM_ID", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-    )
-    PUMPFUN_PROGRAM_ID = (
-        PUMPFUN_PROGRAM_ID
-        if _valid_pubkey(PUMPFUN_PROGRAM_ID)
-        else "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-    )
+    # PumpFun Direct Buy settings - FIXED with proper validation
+    PUMPFUN_PROGRAM_ID = os.getenv("PUMPFUN_PROGRAM_ID", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").strip()
+    if not _valid_pubkey(PUMPFUN_PROGRAM_ID):
+        PUMPFUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
     
     return Config(
         # Core settings
@@ -167,7 +164,7 @@ def load() -> Config:
         PUMPFUN_PROGRAM_ID=PUMPFUN_PROGRAM_ID,
         PUMPFUN_COMPUTE_UNIT_LIMIT=_i("PUMPFUN_COMPUTE_UNIT_LIMIT", 1000000),
         PUMPFUN_PRIORITY_FEE_LAMPORTS=_i("PUMPFUN_PRIORITY_FEE_LAMPORTS", 1000000),
-        PUMPFUN_REFERRER=os.getenv("PUMPFUN_REFERRER", ""),
+        PUMPFUN_REFERRER=os.getenv("PUMPFUN_REFERRER", "").strip(),  # Also strip referrer
         
         # Profit targets
         TAKE_PROFIT_1=_f("TAKE_PROFIT_1", 1.5),
@@ -231,13 +228,13 @@ def load() -> Config:
         JUPITER_SWAP_URL=os.getenv("JUPITER_SWAP_URL", "https://quote-api.jup.ag/v6/swap"),
         ROUTE_TIMEOUT_SEC=_i("ROUTE_TIMEOUT_SEC", 20),
         
-        # Connection settings
-        RPC_URL=os.getenv("RPC_URL", ""),
-        TELEGRAM_BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        TELEGRAM_CHAT_ID=os.getenv("TELEGRAM_CHAT_ID", ""),
-        TELEGRAM_USER_ID=os.getenv("TELEGRAM_USER_ID", ""),
-        BIRDEYE_API_KEY=os.getenv("BIRDEYE_API_KEY", ""),
-        HELIUS_API=os.getenv("HELIUS_API", ""),
-        SOLANA_PRIVATE_KEY=os.getenv("SOLANA_PRIVATE_KEY", ""),
-        BLACKLISTED_TOKENS=os.getenv("BLACKLISTED_TOKENS", ""),
+        # Connection settings - also strip these for safety
+        RPC_URL=os.getenv("RPC_URL", "").strip(),
+        TELEGRAM_BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        TELEGRAM_CHAT_ID=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+        TELEGRAM_USER_ID=os.getenv("TELEGRAM_USER_ID", "").strip(),
+        BIRDEYE_API_KEY=os.getenv("BIRDEYE_API_KEY", "").strip(),
+        HELIUS_API=os.getenv("HELIUS_API", "").strip(),
+        SOLANA_PRIVATE_KEY=os.getenv("SOLANA_PRIVATE_KEY", "").strip(),
+        BLACKLISTED_TOKENS=os.getenv("BLACKLISTED_TOKENS", "").strip(),
     )
