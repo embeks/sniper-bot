@@ -1,4 +1,4 @@
-# pumpfun_buy.py - HARDCODED VERSION FOR RENDER
+# pumpfun_buy.py - FIXED VERSION WITH MULTIPLE FALLBACKS
 import logging
 import asyncio
 import base64
@@ -34,9 +34,49 @@ except ImportError:
 import config
 CONFIG = config.load()
 
-# HARDCODED FOR RENDER - SKIP ENV VARIABLE COMPLETELY
-PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-logging.info(f"[PumpFun] Using HARDCODED program ID: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+# FIXED: Multiple fallback methods for PumpFun Program ID
+PUMPFUN_PROGRAM_ID = None
+
+# Method 1: Try from raw bytes (most reliable)
+try:
+    PUMPFUN_PROGRAM_BYTES = [
+        6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172,
+        28, 180, 133, 237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169
+    ]
+    PUMPFUN_PROGRAM_ID = Pubkey(bytes(PUMPFUN_PROGRAM_BYTES))
+    logging.info(f"[PumpFun] Program ID loaded from bytes: {str(PUMPFUN_PROGRAM_ID)[:8]}...")
+except Exception as e:
+    logging.warning(f"[PumpFun] Failed to load from bytes: {e}")
+
+# Method 2: Try from base58 decode if bytes failed
+if PUMPFUN_PROGRAM_ID is None:
+    try:
+        import base58
+        decoded = base58.b58decode("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+        PUMPFUN_PROGRAM_ID = Pubkey(decoded)
+        logging.info(f"[PumpFun] Program ID loaded from base58: {str(PUMPFUN_PROGRAM_ID)[:8]}...")
+    except Exception as e:
+        logging.warning(f"[PumpFun] Failed to load from base58: {e}")
+
+# Method 3: Try from string with cleanup
+if PUMPFUN_PROGRAM_ID is None:
+    try:
+        # Clean the string of any potential issues
+        program_id_str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        # Remove any whitespace, newlines, or invisible characters
+        program_id_str = ''.join(c for c in program_id_str if c.isalnum())
+        PUMPFUN_PROGRAM_ID = Pubkey.from_string(program_id_str)
+        logging.info(f"[PumpFun] Program ID loaded from string: {str(PUMPFUN_PROGRAM_ID)[:8]}...")
+    except Exception as e:
+        logging.error(f"[PumpFun] All methods failed to load program ID: {e}")
+        # Last resort: use a placeholder that will fail gracefully
+        PUMPFUN_PROGRAM_ID = None
+
+# Verify we have a valid program ID
+if PUMPFUN_PROGRAM_ID is None:
+    logging.error("[PumpFun] CRITICAL: No valid program ID loaded!")
+else:
+    logging.info(f"[PumpFun] Program ID ready: {str(PUMPFUN_PROGRAM_ID)}")
 
 # PumpFun Program Constants
 PUMPFUN_GLOBAL_STATE_SEED = b"global"
@@ -49,6 +89,9 @@ BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])  # buy instruction
 async def derive_pumpfun_pdas(mint: Pubkey) -> Dict[str, Pubkey]:
     """Derive PumpFun PDAs for the given mint"""
     try:
+        if PUMPFUN_PROGRAM_ID is None:
+            raise Exception("PumpFun program ID not loaded")
+            
         # Derive global state PDA
         global_state, _ = Pubkey.find_program_address(
             [PUMPFUN_GLOBAL_STATE_SEED],
@@ -89,11 +132,16 @@ async def execute_pumpfun_buy(
     from utils import keypair, rpc, cleanup_wsol_on_failure  # lazy import
 
     try:
+        # Check if program ID is loaded
+        if PUMPFUN_PROGRAM_ID is None:
+            logging.error("[PumpFun] Program ID not loaded, cannot execute buy")
+            return {"ok": False, "reason": "PROGRAM_ID_ERROR", "sig": None, "tokens_received": 0}
+            
         logging.info(f"[PumpFun] Starting buy for {mint[:8]}... with {sol_amount:.4f} SOL")
 
         # Validate mint address format before proceeding
         mint_str = str(mint).strip()
-        if len(mint_str) != 44:
+        if len(mint_str) < 43 or len(mint_str) > 44:
             logging.error(f"[PumpFun] Invalid mint address length: {len(mint_str)}")
             return {"ok": False, "reason": "INVALID_MINT", "sig": None, "tokens_received": 0}
 
