@@ -1,4 +1,4 @@
-# pumpfun_buy.py - FIXED VERSION WITH PROPER VALIDATION
+# pumpfun_buy.py - HARDCODED VERSION FOR RENDER
 import logging
 import asyncio
 import base64
@@ -30,24 +30,13 @@ try:
 except ImportError:
     TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhqTBzKfTwRoFqbakB5uVBBBKgiV")
 
-# Import config
+# Import config for other settings
 import config
-
-# Load config
 CONFIG = config.load()
 
-# FIXED: Proper validation and parsing of PUMPFUN_PROGRAM_ID
-DEFAULT_PUMPFUN_PROGRAM_ID_STR = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-try:
-    # Strip and validate before parsing
-    program_id_str = str(CONFIG.PUMPFUN_PROGRAM_ID).strip()
-    if len(program_id_str) != 44 or not all(c in "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" for c in program_id_str):
-        raise ValueError(f"Invalid format: got '{program_id_str}' (len={len(program_id_str)})")
-    PUMPFUN_PROGRAM_ID = Pubkey.from_string(program_id_str)
-    logging.info(f"[PumpFun] Using program ID: {program_id_str}")
-except Exception as e:
-    logging.warning(f"[PumpFun] Using default program ID due to: {e}")
-    PUMPFUN_PROGRAM_ID = Pubkey.from_string(DEFAULT_PUMPFUN_PROGRAM_ID_STR)
+# HARDCODED FOR RENDER - SKIP ENV VARIABLE COMPLETELY
+PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+logging.info(f"[PumpFun] Using HARDCODED program ID: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 
 # PumpFun Program Constants
 PUMPFUN_GLOBAL_STATE_SEED = b"global"
@@ -123,9 +112,9 @@ async def execute_pumpfun_buy(
 
         instructions = []
 
-        # Compute budget: use config defaults or overrides
-        cu_limit = max(cu_limit or CONFIG.PUMPFUN_COMPUTE_UNIT_LIMIT, CONFIG.PUMPFUN_COMPUTE_UNIT_LIMIT)
-        priority_fee_lamports = priority_fee_lamports or CONFIG.PUMPFUN_PRIORITY_FEE_LAMPORTS
+        # Compute budget: use hardcoded values or config defaults
+        cu_limit = cu_limit or 1000000  # Hardcoded default
+        priority_fee_lamports = priority_fee_lamports or 1000000  # Hardcoded default
         
         instructions.append(set_compute_unit_limit(cu_limit))
         micro_lamports_per_cu = max(1, int(priority_fee_lamports / cu_limit))
@@ -183,17 +172,7 @@ async def execute_pumpfun_buy(
             AccountMeta(SYSVAR_INSTRUCTIONS, False, False),
         ]
 
-        # Optional referrer (handle invalid values) - FIXED with proper validation
-        referrer = CONFIG.PUMPFUN_REFERRER
-        if referrer and len(referrer) >= 43 and len(referrer) <= 44:
-            try:
-                # Validate it's a proper base58 pubkey
-                referrer_pubkey = Pubkey.from_string(referrer)
-                if str(referrer_pubkey) != "11111111111111111111111111111111":  # Not default/invalid
-                    accounts.append(AccountMeta(referrer_pubkey, False, True))
-                    logging.info(f"[PumpFun] Using referrer: {str(referrer_pubkey)[:8]}...")
-            except Exception as e:
-                logging.debug(f"[PumpFun] Invalid referrer address: {e}")
+        # Skip referrer for now - can add later if needed
 
         buy_ix = Instruction(program_id=PUMPFUN_PROGRAM_ID, data=instruction_data, accounts=accounts)
         instructions.append(buy_ix)
@@ -208,7 +187,9 @@ async def execute_pumpfun_buy(
         )
         tx = VersionedTransaction(msg, [keypair])
 
-        if CONFIG.SIMULATE_BEFORE_SEND:
+        # Skip simulation for speed in hardcoded version
+        simulate = getattr(CONFIG, 'SIMULATE_BEFORE_SEND', False)
+        if simulate:
             logging.info("[PumpFun] Simulating transaction...")
             sim_result = rpc.simulate_transaction(tx, commitment=Confirmed)
             if sim_result.value and sim_result.value.err:
@@ -265,10 +246,6 @@ async def execute_pumpfun_buy(
             reason = "INSUFFICIENT_BALANCE"
         elif "slippage" in es:
             reason = "SLIPPAGE"
-        elif "string is the wrong size" in es:
-            # This means there's still a validation issue
-            logging.error(f"[PumpFun] String validation error - check your .env file for trailing spaces/newlines")
-            reason = "INVALID_CONFIG"
         else:
             reason = "BUILD_FAILED"
 
