@@ -36,8 +36,16 @@ import config
 # Load config
 CONFIG = config.load()
 
-# PHASE 1 PATCH: Use validated config instead of hardcoded program id
-PUMPFUN_PROGRAM_ID = Pubkey.from_string(CONFIG.PUMPFUN_PROGRAM_ID)
+# PHASE 1 PATCH: Use validated config with safe fallback so import never crashes
+DEFAULT_PUMPFUN_PROGRAM_ID_STR = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+try:
+    PUMPFUN_PROGRAM_ID = Pubkey.from_string(CONFIG.PUMPFUN_PROGRAM_ID)
+except Exception as e:
+    logging.warning(
+        f"[PumpFun] Invalid PUMPFUN_PROGRAM_ID in env ('{CONFIG.PUMPFUN_PROGRAM_ID}'): {e} "
+        f"— falling back to default {DEFAULT_PUMPFUN_PROGRAM_ID_STR[:8]}..."
+    )
+    PUMPFUN_PROGRAM_ID = Pubkey.from_string(DEFAULT_PUMPFUN_PROGRAM_ID_STR)
 
 # PumpFun Program Constants
 PUMPFUN_GLOBAL_STATE_SEED = b"global"
