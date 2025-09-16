@@ -1,13 +1,22 @@
-# Requirements.txt
+# requirements.txt - FIXED VERSION
+# Core Solana libraries
 solana==0.32.0
-solders==0.21.0
-anchorpy==0.19.1
+solders==0.20.0
+
+# Web and async
 websockets==10.4
 httpx==0.23.3
-python-dotenv==1.0.0
+aiohttp==3.9.1
+certifi  # SSL certificates for HTTPS connections
+
+# API framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+
+# Utilities
+python-dotenv==1.0.0
 base58==2.1.1
 psutil==5.9.6
-aiohttp==3.9.1
-spl-token==0.3.3
+
+# Note: anchorpy removed as it's not used and can conflict with solders
+# Note: base64 is built-in to Python, no need to install
