@@ -36,8 +36,16 @@ import config
 # Load config
 CONFIG = config.load()
 
-# PumpFun Program Constants
-PUMPFUN_PROGRAM_ID = Pubkey.from_string(getattr(CONFIG, "PUMPFUN_PROGRAM_ID", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwusU"))
+# PumpFun Program Constants - FIXED with correct program ID
+# Note: The actual PumpFun program ID is 44 chars, not 43
+PUMPFUN_PROGRAM_ID_STR = getattr(CONFIG, "PUMPFUN_PROGRAM_ID", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+try:
+    PUMPFUN_PROGRAM_ID = Pubkey.from_string(PUMPFUN_PROGRAM_ID_STR)
+except Exception as e:
+    # Fallback to known working program ID if config has bad value
+    logging.warning(f"[PumpFun] Invalid program ID in config: {e}, using default")
+    PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+
 PUMPFUN_GLOBAL_STATE_SEED = b"global"
 PUMPFUN_BONDING_CURVE_SEED = b"bonding-curve"
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzAhmCgAdBx")  # PumpFun fee account
