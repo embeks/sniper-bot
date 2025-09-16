@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import ID as SYSTEM_PROGRAM_ID
-from solders.sysvar import RENT
+from solders.sysvar import RENT, INSTRUCTIONS as SYSVAR_INSTRUCTIONS, CLOCK as SYSVAR_CLOCK
 from solders.instruction import Instruction, AccountMeta
 from solders.message import MessageV0
 from solders.transaction import VersionedTransaction
@@ -45,6 +45,20 @@ PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzA
 # Buy instruction discriminator (from PumpFun IDL)
 BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])  # buy instruction
 
+def _safe_pubkey(value: str, default: str) -> Optional[Pubkey]:
+    """Safely parse a pubkey string"""
+    try:
+        if value and len(value) > 30:
+            return Pubkey.from_string(value)
+    except:
+        pass
+    if default:
+        try:
+            return Pubkey.from_string(default)
+        except:
+            pass
+    return None
+
 async def derive_pumpfun_pdas(mint: Pubkey) -> Dict[str, Pubkey]:
     """Derive PumpFun PDAs for the given mint"""
     try:
@@ -79,14 +93,13 @@ async def execute_pumpfun_buy(
     mint: str,
     sol_amount: float,
     slippage_bps: int = 2000,
-    priority_fee_lamports: int = 500000,
-    cu_limit: int = 1_000_000
+    priority_fee_lamports: int = None,
+    cu_limit: int = None
 ) -> Dict[str, Any]:
     """
     Execute a buy on PumpFun bonding curve with proper token program detection and account setup
     """
     from utils import keypair, rpc, cleanup_wsol_on_failure  # lazy import
-    from spl.token.constants import TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID
 
     try:
         logging.info(f"[PumpFun] Starting buy for {mint[:8]}... with {sol_amount:.4f} SOL")
@@ -106,8 +119,10 @@ async def execute_pumpfun_buy(
 
         instructions = []
 
-        # Compute budget: set CU limit + micro-lamports per CU
-        cu_limit = max(cu_limit, 1_000_000)
+        # Compute budget: use config defaults or overrides
+        cu_limit = max(cu_limit or CONFIG.PUMPFUN_COMPUTE_UNIT_LIMIT, CONFIG.PUMPFUN_COMPUTE_UNIT_LIMIT)
+        priority_fee_lamports = priority_fee_lamports or CONFIG.PUMPFUN_PRIORITY_FEE_LAMPORTS
+        
         instructions.append(set_compute_unit_limit(cu_limit))
         micro_lamports_per_cu = max(1, int(priority_fee_lamports / cu_limit))
         instructions.append(set_compute_unit_price(micro_lamports_per_cu))
@@ -161,7 +176,7 @@ async def execute_pumpfun_buy(
             AccountMeta(RENT, False, False),
             AccountMeta(SYSVAR_CLOCK, False, False),
             AccountMeta(ASSOCIATED_TOKEN_PROGRAM_ID, False, False),
-            AccountMeta(SYSVAR_INSTRUCTIONS, False, False),  # << required by many programs
+            AccountMeta(SYSVAR_INSTRUCTIONS, False, False),
         ]
 
         # Optional referrer (use safe_pubkey to handle invalid values)
