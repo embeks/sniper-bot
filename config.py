@@ -48,10 +48,8 @@ class Config:
     SELL_PERCENT_3: float
     
     # Risk management
-    STOP_LOSS_PERCENT: float
     TRAILING_STOP_PERCENT: float
     MAX_HOLD_TIME_SEC: int
-    PRICE_CHECK_INTERVAL_SEC: int
     
     # PumpFun strategy
     PUMPFUN_USE_MOON_STRATEGY: bool
@@ -163,10 +161,8 @@ def load() -> Config:
         SELL_PERCENT_3=_f("SELL_PERCENT_3", 25),
         
         # Risk management
-        STOP_LOSS_PERCENT=_f("STOP_LOSS_PERCENT", 50),
         TRAILING_STOP_PERCENT=_f("TRAILING_STOP_PERCENT", 20),
         MAX_HOLD_TIME_SEC=_i("MAX_HOLD_TIME_SEC", 3600),
-        PRICE_CHECK_INTERVAL_SEC=_i("PRICE_CHECK_INTERVAL_SEC", 10),
         
         # PumpFun strategy
         PUMPFUN_USE_MOON_STRATEGY=_b("PUMPFUN_USE_MOON_STRATEGY", True),
