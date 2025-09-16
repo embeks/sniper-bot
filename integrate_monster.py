@@ -50,6 +50,17 @@ load_dotenv()
 # Load config once
 CONFIG = config.load()
 
+# Startup sanity check for PumpFun program id (log-only)
+try:
+    from solders.pubkey import Pubkey
+    _pf = Pubkey.from_string(CONFIG.PUMPFUN_PROGRAM_ID)
+    logging.info(f"PUMPFUN_PROGRAM_ID OK: {str(_pf)[:8]}...")
+except Exception as e:
+    logging.warning(
+        f"PUMPFUN_PROGRAM_ID INVALID ('{CONFIG.PUMPFUN_PROGRAM_ID}') — {e}. "
+        "pumpfun_buy.py will fall back to the default program id."
+    )
+
 # ============================================
 # CONFIGURATION
 # ============================================
