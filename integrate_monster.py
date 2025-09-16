@@ -296,9 +296,15 @@ risk_manager = None  # Placeholder for risk manager if needed
 # WEB SERVER
 # ============================================
 
+def _safe_int(val, default=0):
+    try:
+        return int(str(val).strip())
+    except Exception:
+        return default
+
 app = FastAPI()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CHAT_ID", 0))
+AUTHORIZED_USER_ID = _safe_int(os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CHAT_ID"), 0)
 
 @app.get("/")
 async def health_check():
@@ -409,7 +415,13 @@ async def telegram_webhook(request: Request):
             parts = text.split(" ")
             if len(parts) >= 2:
                 mint = parts[1].strip()
-                amount = float(parts[2]) if len(parts) >= 3 else None
+                amount = None
+                if len(parts) >= 3:
+                    try:
+                        amount = float(parts[2])
+                    except ValueError:
+                        await send_telegram_alert("❌ Invalid amount. Use: /forcebuy <MINT> [amount]")
+                        return {"ok": True}
                 
                 logging.info(f"Force buying: {mint[:8]}... with amount: {amount or 'default'}")
                 
