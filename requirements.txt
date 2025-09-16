@@ -1,5 +1,5 @@
 # Requirements.txt
-solana==0.34.0
+solana==0.32.0
 solders==0.21.0
 anchorpy==0.19.1
 websockets==10.4
@@ -10,4 +10,4 @@ uvicorn[standard]==0.24.0
 base58==2.1.1
 psutil==5.9.6
 aiohttp==3.9.1
-spl-token==0.7.0
+spl-token==0.3.3
