@@ -28,28 +28,45 @@ from spl.token.constants import TOKEN_PROGRAM_ID, WRAPPED_SOL_MINT, ASSOCIATED_T
 import config
 CONFIG = config.load()
 
-# CORRECT BYTES for PumpFun Program ID: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
-# Verified using: base58.b58decode("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-PUMPFUN_PROGRAM_BYTES = bytes([
-    4, 133, 78, 27, 66, 164, 84, 149, 117, 164, 89, 141, 126, 107, 239, 211,
-    71, 182, 205, 185, 117, 219, 213, 44, 243, 47, 219, 50, 119, 176, 96, 195
-])
-PUMPFUN_PROGRAM_ID = Pubkey(PUMPFUN_PROGRAM_BYTES)
+# Import necessary for base58 decoding
+import base58
 
-# Token-2022 program ID bytes (for TokenzQdBNbLqP5VEhqTBzKfTwRoFqbakB5uVBBBKgiV)
-TOKEN_2022_BYTES = bytes([
-    6, 161, 216, 23, 145, 55, 84, 42, 152, 52, 55, 189, 254, 42, 122, 178,
-    85, 127, 83, 92, 138, 120, 114, 43, 104, 164, 157, 192, 140, 58, 48, 133
-])
-TOKEN_2022_PROGRAM_ID = Pubkey(TOKEN_2022_BYTES)
+# FINAL FIX: Use base58 decode directly
+# The correct PumpFun program ID is: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+try:
+    PUMPFUN_PROGRAM_ID = Pubkey(base58.b58decode("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"))
+    logging.info(f"[PumpFun] Program ID loaded via base58: {str(PUMPFUN_PROGRAM_ID)}")
+except Exception as e:
+    logging.error(f"[PumpFun] Failed to load program ID: {e}")
+    # Fallback to known working bytes (last resort)
+    PUMPFUN_PROGRAM_BYTES = bytes([
+        5, 104, 95, 33, 184, 97, 209, 81, 151, 177, 236, 199, 25, 179, 45, 184,
+        222, 135, 24, 159, 202, 254, 36, 95, 226, 181, 180, 203, 127, 181, 195, 87
+    ])
+    PUMPFUN_PROGRAM_ID = Pubkey(PUMPFUN_PROGRAM_BYTES)
 
-# Fee recipient bytes (for CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzAhmCgAdBx)
-FEE_RECIPIENT_BYTES = bytes([
-    176, 145, 213, 251, 85, 199, 158, 51, 162, 114, 178, 63, 240, 78,
-    146, 103, 128, 235, 69, 179, 186, 107, 225, 168, 41, 46, 171,
-    158, 116, 132, 37, 82
-])
-PUMPFUN_FEE_RECIPIENT = Pubkey(FEE_RECIPIENT_BYTES)
+# Token-2022 program ID
+try:
+    TOKEN_2022_PROGRAM_ID = Pubkey(base58.b58decode("TokenzQdBNbLqP5VEhqTBzKfTwRoFqbakB5uVBBBKgiV"))
+except Exception:
+    # Fallback bytes for Token-2022
+    TOKEN_2022_BYTES = bytes([
+        6, 161, 216, 23, 145, 55, 84, 42, 152, 52, 55, 189, 254, 42, 122, 178,
+        85, 127, 83, 92, 138, 120, 114, 43, 104, 164, 157, 192, 140, 58, 48, 133
+    ])
+    TOKEN_2022_PROGRAM_ID = Pubkey(TOKEN_2022_BYTES)
+
+# Fee recipient
+try:
+    PUMPFUN_FEE_RECIPIENT = Pubkey(base58.b58decode("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbdZzAhmCgAdBx"))
+except Exception:
+    # Fallback bytes for fee recipient
+    FEE_RECIPIENT_BYTES = bytes([
+        176, 145, 213, 251, 85, 199, 158, 51, 162, 114, 178, 63, 240, 78,
+        146, 103, 128, 235, 69, 179, 186, 107, 225, 168, 41, 46, 171,
+        158, 116, 132, 37, 82
+    ])
+    PUMPFUN_FEE_RECIPIENT = Pubkey(FEE_RECIPIENT_BYTES)
 
 # PumpFun Program Constants
 PUMPFUN_GLOBAL_STATE_SEED = b"global"
@@ -58,7 +75,13 @@ PUMPFUN_BONDING_CURVE_SEED = b"bonding-curve"
 # Buy instruction discriminator (from PumpFun IDL)
 BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])
 
-logging.info(f"[PumpFun] Module loaded - Program ID: {str(PUMPFUN_PROGRAM_ID)}")
+# Log the loaded program ID to verify it's correct
+expected_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+actual_id = str(PUMPFUN_PROGRAM_ID)
+if actual_id != expected_id:
+    logging.error(f"[PumpFun] PROGRAM ID MISMATCH! Expected: {expected_id}, Got: {actual_id}")
+else:
+    logging.info(f"[PumpFun] Module loaded - Program ID CORRECT: {actual_id}")
 
 async def derive_pumpfun_pdas(mint: Pubkey) -> Dict[str, Pubkey]:
     """Derive PumpFun PDAs for the given mint"""
