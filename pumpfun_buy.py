@@ -1,4 +1,4 @@
-# pumpfun_buy.py - PumpFun Direct Buy on Bonding Curve - FIXED VERSION
+# pumpfun_buy.py - FIXED VERSION WITH PROPER VALIDATION
 import logging
 import asyncio
 import base64
@@ -36,15 +36,17 @@ import config
 # Load config
 CONFIG = config.load()
 
-# PHASE 1 PATCH: Use validated config with safe fallback so import never crashes
+# FIXED: Proper validation and parsing of PUMPFUN_PROGRAM_ID
 DEFAULT_PUMPFUN_PROGRAM_ID_STR = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 try:
-    PUMPFUN_PROGRAM_ID = Pubkey.from_string(CONFIG.PUMPFUN_PROGRAM_ID)
+    # Strip and validate before parsing
+    program_id_str = str(CONFIG.PUMPFUN_PROGRAM_ID).strip()
+    if len(program_id_str) != 44 or not all(c in "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" for c in program_id_str):
+        raise ValueError(f"Invalid format: got '{program_id_str}' (len={len(program_id_str)})")
+    PUMPFUN_PROGRAM_ID = Pubkey.from_string(program_id_str)
+    logging.info(f"[PumpFun] Using program ID: {program_id_str}")
 except Exception as e:
-    logging.warning(
-        f"[PumpFun] Invalid PUMPFUN_PROGRAM_ID in env ('{CONFIG.PUMPFUN_PROGRAM_ID}'): {e} "
-        f"— falling back to default {DEFAULT_PUMPFUN_PROGRAM_ID_STR[:8]}..."
-    )
+    logging.warning(f"[PumpFun] Using default program ID due to: {e}")
     PUMPFUN_PROGRAM_ID = Pubkey.from_string(DEFAULT_PUMPFUN_PROGRAM_ID_STR)
 
 # PumpFun Program Constants
@@ -100,7 +102,13 @@ async def execute_pumpfun_buy(
     try:
         logging.info(f"[PumpFun] Starting buy for {mint[:8]}... with {sol_amount:.4f} SOL")
 
-        mint_pubkey = Pubkey.from_string(mint)
+        # Validate mint address format before proceeding
+        mint_str = str(mint).strip()
+        if len(mint_str) != 44:
+            logging.error(f"[PumpFun] Invalid mint address length: {len(mint_str)}")
+            return {"ok": False, "reason": "INVALID_MINT", "sig": None, "tokens_received": 0}
+
+        mint_pubkey = Pubkey.from_string(mint_str)
         pdas = await derive_pumpfun_pdas(mint_pubkey)
 
         # Detect which token program owns the mint (SPL vs Token-2022)
@@ -175,18 +183,17 @@ async def execute_pumpfun_buy(
             AccountMeta(SYSVAR_INSTRUCTIONS, False, False),
         ]
 
-        # Optional referrer (handle invalid values)
-        referrer = getattr(CONFIG, "PUMPFUN_REFERRER", "") if CONFIG else ""
-        if referrer:
+        # Optional referrer (handle invalid values) - FIXED with proper validation
+        referrer = CONFIG.PUMPFUN_REFERRER
+        if referrer and len(referrer) >= 43 and len(referrer) <= 44:
             try:
-                # Validate referrer is proper base58 format and length
-                if referrer and len(referrer) >= 32 and len(referrer) <= 44:
-                    referrer_pubkey = Pubkey.from_string(referrer)
-                    if str(referrer_pubkey) != "11111111111111111111111111111111":  # Not default/invalid
-                        accounts.append(AccountMeta(referrer_pubkey, False, True))
-                        logging.info(f"[PumpFun] Using referrer: {str(referrer_pubkey)[:8]}...")
+                # Validate it's a proper base58 pubkey
+                referrer_pubkey = Pubkey.from_string(referrer)
+                if str(referrer_pubkey) != "11111111111111111111111111111111":  # Not default/invalid
+                    accounts.append(AccountMeta(referrer_pubkey, False, True))
+                    logging.info(f"[PumpFun] Using referrer: {str(referrer_pubkey)[:8]}...")
             except Exception as e:
-                logging.debug(f"[PumpFun] Invalid or empty referrer address: {e}")
+                logging.debug(f"[PumpFun] Invalid referrer address: {e}")
 
         buy_ix = Instruction(program_id=PUMPFUN_PROGRAM_ID, data=instruction_data, accounts=accounts)
         instructions.append(buy_ix)
@@ -258,6 +265,10 @@ async def execute_pumpfun_buy(
             reason = "INSUFFICIENT_BALANCE"
         elif "slippage" in es:
             reason = "SLIPPAGE"
+        elif "string is the wrong size" in es:
+            # This means there's still a validation issue
+            logging.error(f"[PumpFun] String validation error - check your .env file for trailing spaces/newlines")
+            reason = "INVALID_CONFIG"
         else:
             reason = "BUILD_FAILED"
 
