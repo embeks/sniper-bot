@@ -1,4 +1,3 @@
-
 """
 ELITE ANTI-BOT WARFARE MODULE
 Compete with other bots and win
@@ -12,7 +11,6 @@ from typing import Optional, List, Dict
 import httpx
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solders.instruction import Instruction
 from solders.compute_budget import set_compute_unit_price
 
 class EliteMEVProtection:
@@ -45,16 +43,16 @@ class EliteMEVProtection:
             logging.error(f"Competition estimation error: {e}")
             return "medium_competition"
     
-    def create_competitive_bundle(self, txs: List[VersionedTransaction], mint: str) -> Dict:
+    async def create_competitive_bundle(self, txs: List[VersionedTransaction], mint: str) -> Dict:
         """
-        Create a competitive bundle with dynamic tips
+        Create a competitive bundle with dynamic tips WITHOUT blocking the running event loop.
         """
-        competition = asyncio.run(self.estimate_competition_level(mint))
-        tip = self.jito_tips[competition]
-        
-        # Add random noise to tip to avoid collisions
+        competition = await self.estimate_competition_level(mint)
+        tip = self.jito_tips.get(competition, self.jito_tips["medium_competition"])
+
+        # Add small random noise
         tip += random.uniform(0.00001, 0.00005)
-        
+
         return {
             "transactions": txs,
             "tip": int(tip * 1e9),
@@ -190,4 +188,3 @@ class CompetitorAnalysis:
                 "use_multiple_rpcs": False,
                 "aggressive_mode": False
             }
-
