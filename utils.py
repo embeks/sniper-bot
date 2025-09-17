@@ -1,4 +1,4 @@
-# utils.py - FIXED VERSION WITH PROPER BALANCE TRACKING AND PUMPFUN SUPPORT
+# utils.py - FIXED VERSION WITH ZERO LP HANDLING AND PUMPFUN VERIFICATION
 import json
 import logging
 import httpx
@@ -172,7 +172,9 @@ daily_stats = {
         "no_route": 0,
         "lp_timeout": 0,
         "old_token": 0,
-        "quality_check": 0
+        "quality_check": 0,
+        "invalid_pumpfun": 0,
+        "zero_lp_raydium": 0
     }
 }
 
@@ -204,56 +206,72 @@ KNOWN_TOKEN_DECIMALS = {
 TOKEN_DECIMALS_CACHE = {}
 
 # ============================================
-# PHASE 1 FIX: PUMPFUN VERIFICATION
+# PHASE 1 FIX: ENHANCED PUMPFUN VERIFICATION
 # ============================================
 async def is_pumpfun_token(mint: str) -> bool:
-    """Verify if a token is actually a PumpFun token"""
+    """Verify if a token is actually a PumpFun token with tradeable bonding curve"""
     try:
-        # Method 1: Check if tracked as PumpFun
-        if mint in pumpfun_tokens:
+        # Method 1: Check if tracked as PumpFun with verified flag
+        if mint in pumpfun_tokens and pumpfun_tokens[mint].get("verified", False):
             return True
         
-        # Method 2: Check if mint authority is PumpFun program
+        # Method 2: Check bonding curve on-chain (MOST RELIABLE)
         try:
             mint_pubkey = Pubkey.from_string(mint)
-            mint_info = rpc.get_account_info(mint_pubkey)
             
-            if mint_info and mint_info.value:
-                data = mint_info.value.data
-                if isinstance(data, list) and len(data) > 0:
-                    import base64
-                    if isinstance(data[0], str):
-                        decoded = base64.b64decode(data[0])
-                    else:
-                        decoded = bytes(data[0])
-                    
-                    # Check mint authority (bytes 4:36)
-                    if len(decoded) >= 36:
-                        mint_auth_option = int.from_bytes(decoded[0:4], "little")
-                        if mint_auth_option == 1:  # Has authority
-                            mint_authority = decoded[4:36]
-                            mint_auth_pubkey = Pubkey(mint_authority)
-                            if str(mint_auth_pubkey) == PUMPFUN_PROGRAM_ID:
-                                logging.info(f"[Verify] {mint[:8]}... has PumpFun mint authority")
-                                return True
+            # Check if bonding curve exists
+            bonding_curve_seed = b"bonding-curve"
+            pumpfun_program = Pubkey.from_string(PUMPFUN_PROGRAM_ID)
+            bonding_curve, _ = Pubkey.find_program_address(
+                [bonding_curve_seed, bytes(mint_pubkey)],
+                pumpfun_program
+            )
+            
+            bc_info = rpc.get_account_info(bonding_curve)
+            if bc_info and bc_info.value:
+                # Check if bonding curve has SOL (tradeable)
+                lamports = bc_info.value.lamports
+                min_lamports = 1000000  # 0.001 SOL minimum
+                
+                if lamports >= min_lamports:
+                    logging.info(f"[Verify] {mint[:8]}... has active bonding curve with {lamports/1e9:.4f} SOL")
+                    # Add to tracking as verified
+                    if mint not in pumpfun_tokens:
+                        pumpfun_tokens[mint] = {
+                            "discovered": time.time(),
+                            "verified": True,
+                            "migrated": False
+                        }
+                    return True
+                else:
+                    logging.debug(f"[Verify] {mint[:8]}... has bonding curve but insufficient SOL ({lamports/1e9:.6f})")
+                    return False
+            else:
+                logging.debug(f"[Verify] {mint[:8]}... NO bonding curve found")
+                
         except Exception as e:
-            logging.debug(f"[Verify] Mint authority check error: {e}")
+            logging.debug(f"[Verify] Bonding curve check error: {e}")
         
-        # Method 3: Check if bonding curve exists via API
+        # Method 3: Check via PumpFun API as fallback
         try:
             url = f"https://frontend-api.pump.fun/coins/{mint}"
             response = await HTTPManager.request(url, timeout=3)
             if response:
                 data = response.json()
                 if data.get("mint") == mint:
-                    logging.info(f"[Verify] {mint[:8]}... found on PumpFun API")
-                    # Add to tracking
-                    if mint not in pumpfun_tokens:
-                        pumpfun_tokens[mint] = {
-                            "discovered": time.time(),
-                            "migrated": False
-                        }
-                    return True
+                    # Check if it has reasonable liquidity
+                    market_cap = data.get("usd_market_cap", 0)
+                    if market_cap > 100:  # At least $100 market cap
+                        logging.info(f"[Verify] {mint[:8]}... found on PumpFun API with ${market_cap:.0f} MC")
+                        # Add to tracking
+                        if mint not in pumpfun_tokens:
+                            pumpfun_tokens[mint] = {
+                                "discovered": time.time(),
+                                "verified": True,
+                                "migrated": False,
+                                "market_cap": market_cap
+                            }
+                        return True
         except Exception as e:
             logging.debug(f"[Verify] PumpFun API check error: {e}")
         
@@ -1118,7 +1136,7 @@ async def cleanup_wsol_on_failure():
         logging.debug(f"[WSOL Cleanup] Error: {e}")
 
 async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
-    """Execute buy with PHASE 1 FIXES: warm-up retry, instrumented failures, configurable slippage/priority"""
+    """Execute buy with ZERO LP HANDLING and enhanced PumpFun verification"""
     overall_timeout = 15  # Overall timeout for buy operation
     
     try:
@@ -1139,9 +1157,15 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             logging.info(f"[Buy] Starting buy process for {mint[:8]}... with {buy_amt:.3f} SOL")
             
             # ============================================
-            # CRITICAL FIX: DETECT PUMPFUN TOKENS EARLY
+            # CRITICAL FIX: DETECT PUMPFUN TOKENS EARLY WITH VERIFICATION
             # ============================================
-            is_pumpfun = mint in pumpfun_tokens or kwargs.get("is_pumpfun", False)
+            is_pumpfun = kwargs.get("is_pumpfun", False)
+            
+            # If not explicitly marked as PumpFun, check if it actually is
+            if not is_pumpfun:
+                is_pumpfun = await is_pumpfun_token(mint)
+                if is_pumpfun:
+                    logging.info(f"[Buy] Verified as PumpFun token via bonding curve check")
             
             # Skip known program IDs that shouldn't be traded
             if mint in KNOWN_AMM_PROGRAMS:
@@ -1155,7 +1179,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 logging.info(f"[Buy] PumpFun token detected — using Direct path (no Jupiter fallback)")
 
                 # Conservative starting size for PF
-                buy_amt = min(buy_amt, 0.01)
+                buy_amt = min(buy_amt, 0.02)  # Increased from 0.01 for better fills
 
                 # Lazy import (breaks circular import) — cache function once
                 global PUMPFUN_BUY_FN
@@ -1263,13 +1287,12 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             
             # Store PumpFun token if detected
             if is_pumpfun and mint not in pumpfun_tokens:
-                pumpfun_tokens[mint] = {"discovered": time.time()}
-                logging.info(f"[Buy] Registered {mint[:8]}... as PumpFun token")
+                pumpfun_tokens[mint] = {"discovered": time.time(), "verified": True}
+                logging.info(f"[Buy] Registered {mint[:8]}... as verified PumpFun token")
             
             # ============================================
-            # PUMPFUN DIRECT BUY INTEGRATION
+            # JUPITER PATH FOR NON-PUMPFUN TOKENS
             # ============================================
-            # This section has been moved into the PumpFun branch above
             skip_jupiter = False
             jupiter_sig = None
             real_tokens = 0
@@ -1281,47 +1304,12 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             except Exception:
                 ultra_fresh = False
             
-            # PRE-TRADE VALIDATION (skip if we already did PumpFun direct buy)
+            # PRE-TRADE VALIDATION
             if not skip_jupiter:
                 if is_pumpfun:
-                    # SPECIAL HANDLING FOR PUMPFUN TOKENS
-                    logging.info(f"[Buy] PumpFun token detected - using simplified checks")
-                    
-                    # Start with small amount for PumpFun tokens
-                    buy_amt = min(buy_amt, 0.01)
-                    logging.info(f"[Buy] PumpFun token - starting with {buy_amt:.3f} SOL")
-                    
-                    # Default liquidity for fresh PumpFun
+                    # This shouldn't happen anymore but keep as safety
+                    logging.warning(f"[Buy] PumpFun token in Jupiter path - this shouldn't happen")
                     pool_liquidity = 0.1
-                    
-                    # Try to get actual liquidity but don't fail if we can't
-                    try:
-                        # Quick Jupiter quote check to see if it's tradeable
-                        test_quote = await get_jupiter_quote(
-                            "So11111111111111111111111111111111111111112",
-                            mint,
-                            int(0.001 * 1e9),
-                            500
-                        )
-                        if test_quote and int(test_quote.get("outAmount", 0)) > 0:
-                            # Token is tradeable on Jupiter
-                            price_impact = float(test_quote.get("priceImpactPct", 100))
-                            if price_impact < 10:
-                                pool_liquidity = 1.0  # Decent liquidity
-                                # Can use slightly larger amount if good liquidity
-                                buy_amt = min(CONFIG.BUY_AMOUNT_SOL, 0.02)
-                            elif price_impact < 50:
-                                pool_liquidity = 0.5  # Low liquidity
-                                buy_amt = min(CONFIG.BUY_AMOUNT_SOL, 0.015)
-                            else:
-                                pool_liquidity = 0.1  # Very low liquidity
-                                buy_amt = min(CONFIG.BUY_AMOUNT_SOL, 0.01)
-                            logging.info(f"[Buy] PumpFun token has estimated {pool_liquidity:.2f} SOL liquidity, adjusted amount to {buy_amt:.3f} SOL")
-                    except Exception as e:
-                        logging.debug(f"[Buy] Quick liquidity check failed for PumpFun: {e}")
-                        pool_liquidity = 0.1  # Assume minimal
-                    
-                    # Skip authority and tax checks for PumpFun (they handle this)
                     
                 else:
                     # REGULAR TOKEN HANDLING (Raydium, etc.)
@@ -1334,6 +1322,24 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                     else:
                         pool_liquidity = lp_data.get("liquidity", 0)
                     
+                    # ============================================
+                    # CRITICAL FIX: HANDLE ZERO LIQUIDITY RAYDIUM TOKENS
+                    # ============================================
+                    if pool_liquidity == 0:
+                        # Check if it's actually a PumpFun token that was misdetected
+                        is_verified_pumpfun = await is_pumpfun_token(mint)
+                        
+                        if is_verified_pumpfun and ultra_fresh:
+                            # It's actually a PumpFun token, redirect to PumpFun buy
+                            logging.info(f"[Buy] Zero LP token is verified PumpFun - redirecting to PumpFun Direct")
+                            return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=is_migration)
+                        else:
+                            # It's a Raydium token with zero liquidity - SKIP IT
+                            logging.warning(f"[Buy] Skipping {mint[:8]}... - Raydium token with ZERO liquidity cannot be traded")
+                            log_skipped_token(mint, "Zero liquidity Raydium token")
+                            record_skip("zero_lp_raydium")
+                            return False
+                    
                     # PHASE 1 FIX 4: Raise LP floor for ultra-fresh Raydium tokens
                     effective_min_lp = CONFIG.MIN_LP_SOL
                     if ultra_fresh and not is_pumpfun:
@@ -1344,21 +1350,15 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                             effective_min_lp = max(CONFIG.MIN_LP_SOL, newborn_min_lp)
                             logging.info(f"[Buy] Ultra-fresh Raydium token - using raised LP floor: {effective_min_lp:.2f} SOL")
                     
-                    # PHASE 1 FIX: Updated low liquidity check with PumpFun verification
+                    # Low liquidity check
                     if pool_liquidity < effective_min_lp:
-                        # Check if it's actually a PumpFun token before using PumpFun buy
-                        is_verified_pumpfun = await is_pumpfun_token(mint)
-                        if is_verified_pumpfun and ultra_fresh:
-                            logging.info(f"[Buy] Verified PumpFun token - using PumpFun Direct")
-                            return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=is_migration)
-                        elif ultra_fresh:
-                            # CRITICAL FIX: Ultra-fresh tokens with low LP should still be attempted
-                            # This could be a just-created Raydium pool that hasn't initialized yet
+                        if ultra_fresh:
+                            # Ultra-fresh tokens might still be initializing
                             logging.warning(f"[Buy] Ultra-fresh token with low LP ({pool_liquidity:.2f} SOL), proceeding with caution")
-                            # Continue with the buy attempt instead of skipping
+                            # Continue with the buy attempt
                         else:
-                            logging.info(f"[Buy] Not fresh enough or verified PumpFun, skipping")
-                            log_skipped_token(mint, f"Low liquidity and not fresh PumpFun: {pool_liquidity:.2f} SOL")
+                            logging.info(f"[Buy] Token not fresh enough with low LP ({pool_liquidity:.2f} SOL < {effective_min_lp:.2f} SOL)")
+                            log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL")
                             record_skip("low_lp")
                             return False
                     
@@ -1379,42 +1379,21 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                         log_skipped_token(mint, f"High tax: {tax_bps/100:.1f}%")
                         return False
                 
-                # Check sell route availability before buying (skip for PumpFun early entries and ultra-fresh tokens)
-                if not is_pumpfun and not ultra_fresh:
+                # Check sell route availability before buying (skip for ultra-fresh tokens)
+                if not ultra_fresh:
                     estimated_tokens = int(buy_amt * 1e9 * 100)  # Rough estimate
                     sell_quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", estimated_tokens, 500)
                     if not sell_quote or int(sell_quote.get("outAmount", 0)) == 0:
                         log_skipped_token(mint, "No sell route available")
                         record_skip("no_route")
                         return False
-                elif ultra_fresh and not is_pumpfun:
-                    # Skip sell route check for ultra-fresh Raydium tokens - they often don't have routes initially
-                    logging.info(f"[Buy] Skipping sell route check for ultra-fresh token {mint[:8]}...")
                 else:
-                    # PumpFun tokens use bonding curve, skip sell route check and wait for initialization
-                    logging.info(f"[Buy] Skipping sell route check for PumpFun token {mint[:8]}...")
-                    # Add warm-up delay for PumpFun tokens
-                    warm_up_delay = CONFIG.BUY_RETRY_DELAY_1_MS / 1000.0  # Convert ms to seconds
-                    logging.info(f"[Buy] PumpFun warm-up: waiting {warm_up_delay}s before first attempt")
-                    await asyncio.sleep(warm_up_delay)
-                
-                # Position sizing for PumpFun
-                pumpfun_position = 0
-                
-                if is_pumpfun:
-                    can_buy, pumpfun_position = await evaluate_pumpfun_opportunity(mint, pool_liquidity)
-                    
-                    if not can_buy and pool_liquidity < 0.05:
-                        logging.info(f"[Buy] PumpFun token {mint[:8]}... with {pool_liquidity:.2f} SOL LP - TOO LOW")
-                        record_skip("low_lp")
-                        return False
+                    # Skip sell route check for ultra-fresh tokens
+                    logging.info(f"[Buy] Skipping sell route check for ultra-fresh token {mint[:8]}...")
                 
                 # Override amount for special cases if dynamic sizing is enabled
                 if CONFIG.USE_DYNAMIC_SIZING and buy_amt == CONFIG.BUY_AMOUNT_SOL:
-                    if is_pumpfun and pumpfun_position > 0:
-                        buy_amt = pumpfun_position
-                    else:
-                        buy_amt = await get_dynamic_position_size(mint, pool_liquidity, is_migration)
+                    buy_amt = await get_dynamic_position_size(mint, pool_liquidity, is_migration)
                 
                 # Final safety check with risk manager
                 try:
@@ -1431,7 +1410,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 logging.info(f"[Buy] Final position size: {buy_amt:.3f} SOL for {mint[:8]}...")
 
                 # ============================================
-                # EXECUTE BUY - JUPITER PATH (non-PumpFun or fallback)
+                # EXECUTE BUY - JUPITER PATH
                 # ============================================
                 
                 # PHASE 1 FIX 3: Use buy-specific slippage and priority fee
@@ -1565,7 +1544,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             })
             
             token_type = "PumpFun" if is_pumpfun else "Regular"
-            buy_method = "PumpFun Direct" if skip_jupiter else "Jupiter"
+            buy_method = "PumpFun Direct" if is_pumpfun else "Jupiter"
             
             await notify("buy",
                 f"✅ Sniped {mint[:8]}... via {buy_method}\n"
@@ -1595,19 +1574,6 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             log_trade(mint, "BUY", buy_amt, real_tokens)
             return True
         
-        # Apply overall timeout
-        return await asyncio.wait_for(_buy_with_timeout(), timeout=overall_timeout)
-
-    except asyncio.TimeoutError:
-        logging.error(f"[Buy] TIMEOUT after {overall_timeout}s for {mint[:8]}...")
-        log_skipped_token(mint, f"Buy timeout after {overall_timeout}s")
-        record_skip("buy_failed")
-        return False
-    except Exception as e:
-        logging.error(f"Buy failed for {mint[:8]}...: {e}")
-        log_skipped_token(mint, f"Buy failed: {e}")
-        return False
-
 async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bps=None):
     """Execute sell transaction - uses PumpFun for bonding curve tokens, Jupiter for migrated"""
     if slippage_bps is None:
