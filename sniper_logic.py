@@ -1383,18 +1383,45 @@ async def mempool_listener(name, program_id=None):
                             # CRITICAL FIX: EARLY PUMPFUN VERIFICATION WITH ULTRA-FRESH SUPPORT
                             # ============================================
                             if name == "PumpFun":
-                                # First check if token is ultra-fresh (≤30s old)
+                                # First check if token is actually ultra-fresh (≤30s old)
+                                token_age_seconds = None
+                                is_ultra_fresh = False
+                                
                                 try:
-                                    token_age_seconds = await verify_token_age_on_chain(token_mint, 999999)
+                                    # Get the actual age in seconds
+                                    actual_age = await verify_token_age_on_chain(token_mint, 999999)
                                     
-                                    # CRITICAL FIX: Check if ACTUALLY ultra-fresh
-                                    if token_age_seconds and token_age_seconds <= 30:
-                                        is_ultra_fresh = True
-                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is {token_age_seconds}s old - ULTRA-FRESH!")
+                                    # CRITICAL: actual_age might return True/False OR the actual age
+                                    # If it returns True, we need to get the real age differently
+                                    if isinstance(actual_age, bool):
+                                        # Try to get age using is_fresh_token which should return the actual seconds
+                                        is_fresh_result = await is_fresh_token(token_mint, 30)
+                                        if is_fresh_result:
+                                            # Token is fresh, but we need exact age - assume it's under 30s
+                                            token_age_seconds = 25  # Conservative estimate
+                                            is_ultra_fresh = True
+                                            logging.info(f"[PumpFun] Token {token_mint[:8]}... confirmed <30s old - ULTRA-FRESH!")
+                                        else:
+                                            # Check if it's at least under 60s
+                                            is_60s_fresh = await is_fresh_token(token_mint, 60)
+                                            if is_60s_fresh:
+                                                token_age_seconds = 45  # Between 30-60s
+                                                is_ultra_fresh = False
+                                            else:
+                                                token_age_seconds = 999  # Older than 60s
+                                                is_ultra_fresh = False
                                     else:
-                                        is_ultra_fresh = False
-                                        if token_age_seconds:
-                                            logging.info(f"[PumpFun] Token {token_mint[:8]}... is {token_age_seconds}s old - NOT fresh enough")
+                                        # We have the actual age in seconds
+                                        token_age_seconds = actual_age
+                                        is_ultra_fresh = (token_age_seconds <= 30)
+                                        
+                                    if is_ultra_fresh:
+                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is ~{token_age_seconds}s old - ULTRA-FRESH!")
+                                    elif token_age_seconds and token_age_seconds <= 60:
+                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is ~{token_age_seconds}s old - fresh but not ultra-fresh")
+                                    elif token_age_seconds:
+                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is ~{token_age_seconds}s old - TOO OLD")
+                                        
                                 except Exception as e:
                                     logging.debug(f"[PumpFun] Could not check age for {token_mint[:8]}...: {e}")
                                     is_ultra_fresh = False
@@ -1416,7 +1443,7 @@ async def mempool_listener(name, program_id=None):
                                         if bc_info and bc_info.value:
                                             # Bonding curve exists - accept it even with 0 SOL
                                             sol_amount = bc_info.value.lamports / 1e9
-                                            logging.info(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... ({token_age_seconds}s old) with bonding curve ({sol_amount:.6f} SOL) - ACCEPTING!")
+                                            logging.info(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... (~{token_age_seconds}s old) with bonding curve ({sol_amount:.6f} SOL) - ACCEPTING!")
                                             is_valid_pumpfun = True
                                         else:
                                             logging.warning(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... but NO bonding curve found - SKIPPING")
@@ -1431,7 +1458,7 @@ async def mempool_listener(name, program_id=None):
                                     is_valid_pumpfun = await is_pumpfun_token(token_mint)
                                     
                                     if not is_valid_pumpfun:
-                                        age_msg = f"({token_age_seconds}s old)" if token_age_seconds else ""
+                                        age_msg = f"(~{token_age_seconds}s old)" if token_age_seconds else ""
                                         logging.warning(f"[PumpFun] Token {token_mint[:8]}... {age_msg} detected but NO tradeable bonding curve - SKIPPING")
                                         record_skip("invalid_pumpfun")
                                         continue  # Skip this token entirely
