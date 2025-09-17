@@ -1351,9 +1351,14 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                         if is_verified_pumpfun and ultra_fresh:
                             logging.info(f"[Buy] Verified PumpFun token - using PumpFun Direct")
                             return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=is_migration)
+                        elif ultra_fresh:
+                            # CRITICAL FIX: Ultra-fresh tokens with low LP should still be attempted
+                            # This could be a just-created Raydium pool that hasn't initialized yet
+                            logging.warning(f"[Buy] Ultra-fresh token with low LP ({pool_liquidity:.2f} SOL), proceeding with caution")
+                            # Continue with the buy attempt instead of skipping
                         else:
-                            logging.info(f"[Buy] Not a PumpFun token or not fresh enough, skipping")
-                            log_skipped_token(mint, f"Low liquidity and not PumpFun: {pool_liquidity:.2f} SOL")
+                            logging.info(f"[Buy] Not fresh enough or verified PumpFun, skipping")
+                            log_skipped_token(mint, f"Low liquidity and not fresh PumpFun: {pool_liquidity:.2f} SOL")
                             record_skip("low_lp")
                             return False
                     
