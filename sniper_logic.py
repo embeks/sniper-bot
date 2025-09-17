@@ -183,21 +183,13 @@ seen_trending = set()
 async def is_pumpfun_token(mint: str) -> bool:
     """Verify if a token is actually created by PumpFun with an active and tradeable bonding curve
     
-    FIXED: For ultra-fresh tokens (≤30s old), accept ANY bonding curve even with 0 SOL
-    since they may not have liquidity yet but are still tradeable.
+    CRITICAL FIX: For ultra-fresh tokens (≤30s old), accept ANY bonding curve even with 0 SOL
+    since PumpFun tokens start with 0 SOL and get funded through initial transactions.
     """
     try:
         mint_pubkey = Pubkey.from_string(mint)
         
-        # Method 1: Check if mint authority is PumpFun program
-        mint_info = rpc.get_account_info(mint_pubkey)
-        if mint_info and mint_info.value:
-            mint_authority = mint_info.value.owner
-            if str(mint_authority) == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P":
-                logging.debug(f"[PumpFun Verify] {mint[:8]}... has PumpFun mint authority")
-                return True
-        
-        # Method 2: Check if bonding curve exists (MOST RELIABLE)
+        # Check if bonding curve exists (MOST RELIABLE METHOD)
         bonding_curve_seed = b"bonding-curve"
         pumpfun_program = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
         bonding_curve, _ = Pubkey.find_program_address(
@@ -207,23 +199,23 @@ async def is_pumpfun_token(mint: str) -> bool:
         
         bc_info = rpc.get_account_info(bonding_curve)
         if bc_info and bc_info.value:
-            lamports = bc_info.value.lamports
-            
-            # CRITICAL FIX: Check token age to determine if we should be lenient
+            # CRITICAL FIX: Check token age FIRST before checking SOL amount
             try:
                 is_ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
             except Exception as e:
                 logging.debug(f"[PumpFun Verify] Could not check freshness: {e}")
                 is_ultra_fresh = False
             
+            lamports = bc_info.value.lamports
+            
             if is_ultra_fresh:
                 # ULTRA-FRESH TOKENS: Accept ANY bonding curve, even with 0 SOL
-                # These are brand new tokens that may not have initial liquidity yet
+                # Brand new PumpFun tokens start with 0 SOL and get funded through first transactions
                 logging.info(f"[PumpFun Verify] {mint[:8]}... ULTRA-FRESH (<30s) with bonding curve ({lamports/1e9:.6f} SOL) - ACCEPTING!")
                 return True
             else:
-                # OLDER TOKENS: Require minimum SOL to ensure it's tradeable
-                min_lamports = 1000000  # Minimum 0.001 SOL for older tokens
+                # OLDER TOKENS: Require minimum SOL to ensure it's actually tradeable
+                min_lamports = 1000000  # Minimum 0.001 SOL for non-fresh tokens
                 
                 if lamports >= min_lamports:
                     logging.info(f"[PumpFun Verify] {mint[:8]}... has active bonding curve with {lamports/1e9:.4f} SOL!")
@@ -234,12 +226,22 @@ async def is_pumpfun_token(mint: str) -> bool:
         else:
             logging.debug(f"[PumpFun Verify] {mint[:8]}... NO bonding curve found")
             
+        # Method 2: Check if mint authority is PumpFun program (fallback)
+        mint_info = rpc.get_account_info(mint_pubkey)
+        if mint_info and mint_info.value:
+            mint_authority = mint_info.value.owner
+            if str(mint_authority) == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P":
+                logging.debug(f"[PumpFun Verify] {mint[:8]}... has PumpFun mint authority")
+                # Double-check bonding curve exists for fresh tokens
+                if await is_fresh_token(mint, max_age_seconds=60):
+                    return True
+        
         # Method 3: Check if token was tracked as PumpFun (fallback)
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("verified", False):
             # Re-verify it still has bonding curve
             bc_info = rpc.get_account_info(bonding_curve)
             if bc_info and bc_info.value:
-                # For tracked tokens, be more lenient with SOL requirements
+                # For tracked tokens, be lenient with SOL requirements if fresh
                 if bc_info.value.lamports > 0 or await is_fresh_token(mint, max_age_seconds=60):
                     return True
             # Remove from verified if no longer tradeable
