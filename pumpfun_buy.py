@@ -1,4 +1,4 @@
-# pumpfun_buy.py - FINAL FIXED VERSION WITH CORRECT BYTES
+# pumpfun_buy.py - FINAL FIXED VERSION WITH CORRECT BYTES AND VERIFICATION
 import logging
 import asyncio
 import base64
@@ -135,6 +135,23 @@ async def execute_pumpfun_buy(
             return {"ok": False, "reason": "INVALID_MINT", "sig": None, "tokens_received": 0}
 
         mint_pubkey = Pubkey.from_string(mint_str)
+        
+        # ============================================
+        # PHASE 1 FIX: VERIFY BONDING CURVE EXISTS
+        # ============================================
+        # Verify bonding curve exists (proves it's a PumpFun token)
+        bonding_curve_seed = b"bonding-curve"
+        bonding_curve, _ = Pubkey.find_program_address(
+            [bonding_curve_seed, bytes(mint_pubkey)],
+            PUMPFUN_PROGRAM_ID
+        )
+        
+        bc_info = rpc.get_account_info(bonding_curve)
+        if not (bc_info and bc_info.value):
+            logging.error("[PumpFun] No bonding curve found - not a PumpFun token!")
+            return {"ok": False, "reason": "NOT_PUMPFUN", "sig": None, "tokens_received": 0}
+        
+        logging.info(f"[PumpFun] Verified bonding curve exists for {mint[:8]}...")
         
         # For ultra-fresh tokens, wait a bit for the mint to be created
         retries = 0
