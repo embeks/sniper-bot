@@ -1383,13 +1383,47 @@ async def mempool_listener(name, program_id=None):
                             # CRITICAL FIX: EARLY PUMPFUN VERIFICATION WITH ULTRA-FRESH SUPPORT
                             # ============================================
                             if name == "PumpFun":
-                                # Verify it's actually a PumpFun token with bonding curve BEFORE proceeding
-                                is_valid_pumpfun = await is_pumpfun_token(token_mint)
+                                # First check if token is ultra-fresh (≤30s old)
+                                try:
+                                    token_age_seconds = await verify_token_age_on_chain(token_mint, 999999)
+                                    is_ultra_fresh = token_age_seconds and token_age_seconds <= 30
+                                except Exception as e:
+                                    logging.debug(f"[PumpFun] Could not check age for {token_mint[:8]}...: {e}")
+                                    is_ultra_fresh = False
                                 
-                                if not is_valid_pumpfun:
-                                    logging.warning(f"[PumpFun] Token {token_mint[:8]}... detected but NO tradeable bonding curve - SKIPPING")
-                                    record_skip("invalid_pumpfun")
-                                    continue  # Skip this token entirely
+                                # For ultra-fresh tokens, check bonding curve existence but accept 0 SOL
+                                if is_ultra_fresh:
+                                    # Check if bonding curve EXISTS (even with 0 SOL)
+                                    try:
+                                        mint_pubkey = Pubkey.from_string(token_mint)
+                                        bonding_curve_seed = b"bonding-curve"
+                                        pumpfun_program = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+                                        bonding_curve, _ = Pubkey.find_program_address(
+                                            [bonding_curve_seed, bytes(mint_pubkey)],
+                                            pumpfun_program
+                                        )
+                                        
+                                        bc_info = rpc.get_account_info(bonding_curve)
+                                        if bc_info and bc_info.value:
+                                            # Bonding curve exists - accept it even with 0 SOL
+                                            logging.info(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... ({token_age_seconds}s old) with bonding curve - ACCEPTING!")
+                                            is_valid_pumpfun = True
+                                        else:
+                                            logging.warning(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... but NO bonding curve found - SKIPPING")
+                                            record_skip("no_bonding_curve")
+                                            continue
+                                    except Exception as e:
+                                        logging.error(f"[PumpFun] Error checking bonding curve: {e}")
+                                        record_skip("bonding_curve_error")
+                                        continue
+                                else:
+                                    # Not ultra-fresh - use standard verification
+                                    is_valid_pumpfun = await is_pumpfun_token(token_mint)
+                                    
+                                    if not is_valid_pumpfun:
+                                        logging.warning(f"[PumpFun] Token {token_mint[:8]}... detected but NO tradeable bonding curve - SKIPPING")
+                                        record_skip("invalid_pumpfun")
+                                        continue  # Skip this token entirely
                                 
                                 # Only track verified PumpFun tokens
                                 if token_mint not in pumpfun_tokens:
@@ -1397,7 +1431,8 @@ async def mempool_listener(name, program_id=None):
                                         "discovered": time.time(),
                                         "migrated": False,
                                         "verified": True,  # Add verification flag
-                                        "tradeable": True  # Confirmed tradeable (may have 0 SOL if ultra-fresh)
+                                        "tradeable": True,  # Confirmed tradeable (may have 0 SOL if ultra-fresh)
+                                        "ultra_fresh": is_ultra_fresh if 'is_ultra_fresh' in locals() else False
                                     }
                                     logging.info(f"[PumpFun] VERIFIED tradeable token with bonding curve: {token_mint[:8]}...")
                             
