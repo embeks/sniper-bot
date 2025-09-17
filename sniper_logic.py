@@ -96,7 +96,7 @@ MIN_LP_FOR_PUMPFUN = float(os.getenv("MIN_LP_FOR_PUMPFUN", 0.2))
 
 # Delays for pool initialization
 MEMPOOL_DELAY_MS = float(os.getenv("MEMPOOL_DELAY_MS", 100))
-PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 0.5))
+PUMPFUN_INIT_DELAY = float(os.getenv("PUMPFUN_INIT_DELAY", 1.0))  # Increased to give tokens more time to initialize
 
 # ============================================
 # AGE CHECKING CONFIGURATION - USING ENV VARS
@@ -181,7 +181,7 @@ seen_trending = set()
 # PHASE 1 FIX: PUMPFUN TOKEN VERIFICATION
 # ============================================
 async def is_pumpfun_token(mint: str) -> bool:
-    """Verify if a token is actually created by PumpFun with an active bonding curve"""
+    """Verify if a token is actually created by PumpFun with an active and tradeable bonding curve"""
     try:
         mint_pubkey = Pubkey.from_string(mint)
         
@@ -193,7 +193,7 @@ async def is_pumpfun_token(mint: str) -> bool:
                 logging.debug(f"[PumpFun Verify] {mint[:8]}... has PumpFun mint authority")
                 return True
         
-        # Method 2: Check if bonding curve exists (MOST RELIABLE)
+        # Method 2: Check if bonding curve exists AND has SOL (MOST RELIABLE)
         bonding_curve_seed = b"bonding-curve"
         pumpfun_program = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
         bonding_curve, _ = Pubkey.find_program_address(
@@ -203,14 +203,30 @@ async def is_pumpfun_token(mint: str) -> bool:
         
         bc_info = rpc.get_account_info(bonding_curve)
         if bc_info and bc_info.value:
-            logging.info(f"[PumpFun Verify] {mint[:8]}... has active bonding curve!")
-            return True
+            # Check if bonding curve has SOL balance (tradeable)
+            lamports = bc_info.value.lamports
+            min_lamports = 1000000  # Minimum 0.001 SOL for it to be considered tradeable
+            
+            if lamports >= min_lamports:
+                logging.info(f"[PumpFun Verify] {mint[:8]}... has active bonding curve with {lamports/1e9:.4f} SOL!")
+                return True
+            else:
+                logging.warning(f"[PumpFun Verify] {mint[:8]}... has bonding curve but insufficient SOL ({lamports/1e9:.6f} SOL)")
+                return False
         else:
             logging.debug(f"[PumpFun Verify] {mint[:8]}... NO bonding curve found")
             
         # Method 3: Check if token was tracked as PumpFun (fallback)
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("verified", False):
-            return True
+            # Re-verify it still has liquidity
+            bc_info = rpc.get_account_info(bonding_curve)
+            if bc_info and bc_info.value and bc_info.value.lamports >= 1000000:
+                return True
+            else:
+                # Remove from verified if no longer tradeable
+                if mint in pumpfun_tokens:
+                    pumpfun_tokens[mint]["verified"] = False
+                return False
             
     except Exception as e:
         logging.debug(f"PumpFun verification error for {mint[:8]}...: {e}")
@@ -1094,18 +1110,19 @@ async def mempool_listener(name, program_id=None):
                                 is_valid_pumpfun = await is_pumpfun_token(token_mint)
                                 
                                 if not is_valid_pumpfun:
-                                    logging.warning(f"[PumpFun] Token {token_mint[:8]}... detected but NO bonding curve - SKIPPING")
+                                    logging.warning(f"[PumpFun] Token {token_mint[:8]}... detected but NO tradeable bonding curve - SKIPPING")
                                     record_skip("invalid_pumpfun")
                                     continue  # Skip this token entirely
                                 
-                                # Only track verified PumpFun tokens
+                                # Only track verified PumpFun tokens with liquidity
                                 if token_mint not in pumpfun_tokens:
                                     pumpfun_tokens[token_mint] = {
                                         "discovered": time.time(),
                                         "migrated": False,
-                                        "verified": True  # Add verification flag
+                                        "verified": True,  # Add verification flag
+                                        "tradeable": True  # Confirmed tradeable with SOL in bonding curve
                                     }
-                                    logging.info(f"[PumpFun] VERIFIED token with bonding curve: {token_mint[:8]}...")
+                                    logging.info(f"[PumpFun] VERIFIED tradeable token with bonding curve: {token_mint[:8]}...")
                             
                             if name == "Raydium" and pool_id and token_mint:
                                 detected_pools[token_mint] = pool_id
@@ -1139,13 +1156,20 @@ async def mempool_listener(name, program_id=None):
                                     
                                     # Continue with buying logic for FRESH tokens only
                                     if name == "PumpFun":
-                                        # Double-check bonding curve still exists before buy attempt
+                                        # Double-check bonding curve still exists and is tradeable before buy attempt
                                         if not await is_pumpfun_token(token_mint):
-                                            logging.error(f"[PumpFun] Token {token_mint[:8]}... lost bonding curve - ABORT")
+                                            logging.error(f"[PumpFun] Token {token_mint[:8]}... lost bonding curve or became untradeable - ABORT")
                                             mark_broken_token(token_mint, 0)
                                             continue
                                         
+                                        # Increased delay to ensure token is fully initialized
                                         await asyncio.sleep(PUMPFUN_INIT_DELAY)
+                                        
+                                        # Triple-check after delay
+                                        if not await is_pumpfun_token(token_mint):
+                                            logging.error(f"[PumpFun] Token {token_mint[:8]}... not tradeable after init delay - ABORT")
+                                            mark_broken_token(token_mint, 0)
+                                            continue
                                         
                                         graduated = await check_pumpfun_graduation(token_mint)
                                         if graduated and token_mint in pumpfun_tokens:
