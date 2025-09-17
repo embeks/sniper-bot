@@ -1,4 +1,4 @@
-# sniper_logic.py - COMPLETE FIXED VERSION WITH BUY FLOW INSTRUMENTATION
+# sniper_logic.py - COMPLETE FIXED VERSION WITH BUY FLOW INSTRUMENTATION AND PUMPFUN VERIFICATION
 
 import asyncio
 import json
@@ -23,7 +23,7 @@ from utils import (
     update_last_activity, increment_stat, record_skip,
     listener_status, last_seen_token,
     is_fresh_token, verify_token_age_on_chain, is_pumpfun_launch,
-    HTTPManager, notify, raydium  # Import shared raydium instance
+    HTTPManager, notify, raydium, rpc  # Import shared raydium and rpc instances
 )
 from solders.pubkey import Pubkey
 
@@ -176,6 +176,42 @@ RAYDIUM_INIT_DISCRIMINATOR = bytes([175, 175, 109, 31, 13, 152, 155, 237])  # In
 MIN_LP_USD = float(os.getenv("MIN_LP_USD", 500))  # Lowered for fresh tokens
 MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 500))  # Lowered for fresh tokens
 seen_trending = set()
+
+# ============================================
+# PHASE 1 FIX: PUMPFUN TOKEN VERIFICATION
+# ============================================
+async def is_pumpfun_token(mint: str) -> bool:
+    """Verify if a token is actually created by PumpFun"""
+    try:
+        mint_pubkey = Pubkey.from_string(mint)
+        
+        # Method 1: Check if mint authority is PumpFun program
+        mint_info = rpc.get_account_info(mint_pubkey)
+        if mint_info and mint_info.value:
+            mint_authority = mint_info.value.owner
+            if str(mint_authority) == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P":
+                return True
+        
+        # Method 2: Check if bonding curve exists
+        bonding_curve_seed = b"bonding-curve"
+        pumpfun_program = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+        bonding_curve, _ = Pubkey.find_program_address(
+            [bonding_curve_seed, bytes(mint_pubkey)],
+            pumpfun_program
+        )
+        
+        bc_info = rpc.get_account_info(bonding_curve)
+        if bc_info and bc_info.value:
+            return True
+            
+        # Method 3: Check if token was tracked as PumpFun
+        if mint in pumpfun_tokens:
+            return True
+            
+    except Exception as e:
+        logging.debug(f"PumpFun check error: {e}")
+    
+    return False
 
 # ============================================
 # HELPER FUNCTIONS FOR FRESHNESS TIERS
@@ -1045,12 +1081,14 @@ async def mempool_listener(name, program_id=None):
                             
                             seen_tokens.add(token_mint)
                             
-                            if name == "PumpFun" and token_mint not in pumpfun_tokens:
-                                pumpfun_tokens[token_mint] = {
-                                    "discovered": time.time(),
-                                    "migrated": False
-                                }
-                                logging.info(f"[PumpFun] Tracking new token: {token_mint[:8]}...")
+                            # PHASE 1 FIX: Only track tokens from actual PumpFun create transactions
+                            if name == "PumpFun" and instruction_data == PUMPFUN_CREATE_DISCRIMINATOR:
+                                if token_mint not in pumpfun_tokens:
+                                    pumpfun_tokens[token_mint] = {
+                                        "discovered": time.time(),
+                                        "migrated": False
+                                    }
+                                    logging.info(f"[PumpFun] Verified PumpFun token: {token_mint[:8]}...")
                             
                             if name == "Raydium" and pool_id and token_mint:
                                 detected_pools[token_mint] = pool_id
@@ -1171,7 +1209,24 @@ async def mempool_listener(name, program_id=None):
                                         effective_min_lp = min_lp_for_tier(RUG_LP_THRESHOLD, tier)
                                         
                                         if lp_amount < effective_min_lp:
-                                            logging.info(f"[{name}] Low liquidity ({lp_amount:.2f} SOL) vs min {effective_min_lp:.2f} for {tier} tier")
+                                            # PHASE 1 FIX: Check if it's actually a PumpFun token before using PumpFun buy
+                                            is_pumpfun = await is_pumpfun_token(token_mint)
+                                            is_migration = False  # Fix: Define is_migration
+                                            ultra_fresh = await is_ultra_fresh(token_mint)
+                                            if is_pumpfun and ultra_fresh:
+                                                logging.info(f"[{name}] Verified PumpFun token - using PumpFun Direct")
+                                                success = await buy_token(token_mint, amount=buy_amount, is_pumpfun=True, is_migration=is_migration)
+                                                if success:
+                                                    already_bought.add(token_mint)
+                                                    if BLACKLIST_AFTER_BUY:
+                                                        BLACKLIST.add(token_mint)
+                                                    asyncio.create_task(wait_and_auto_sell(token_mint))
+                                                continue
+                                            else:
+                                                logging.info(f"[{name}] Not a PumpFun token or not fresh enough, skipping")
+                                                log_skipped_token(token_mint, f"Low liquidity and not PumpFun: {lp_amount:.2f} SOL")
+                                                record_skip("low_lp")
+                                                continue
                                         
                                         is_quality, reason = await is_quality_token(token_mint, lp_amount)
                                         
