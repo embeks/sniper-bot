@@ -106,6 +106,9 @@ KNOWN_AMM_PROGRAMS = {
     "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Whirlpool
 }
 
+# PumpFun Program ID
+PUMPFUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+
 # Parse sell percentages
 AUTO_SELL_PERCENT_2X = 50
 AUTO_SELL_PERCENT_5X = 25
@@ -199,6 +202,66 @@ KNOWN_TOKEN_DECIMALS = {
 
 # Cache for token decimals
 TOKEN_DECIMALS_CACHE = {}
+
+# ============================================
+# PHASE 1 FIX: PUMPFUN VERIFICATION
+# ============================================
+async def is_pumpfun_token(mint: str) -> bool:
+    """Verify if a token is actually a PumpFun token"""
+    try:
+        # Method 1: Check if tracked as PumpFun
+        if mint in pumpfun_tokens:
+            return True
+        
+        # Method 2: Check if mint authority is PumpFun program
+        try:
+            mint_pubkey = Pubkey.from_string(mint)
+            mint_info = rpc.get_account_info(mint_pubkey)
+            
+            if mint_info and mint_info.value:
+                data = mint_info.value.data
+                if isinstance(data, list) and len(data) > 0:
+                    import base64
+                    if isinstance(data[0], str):
+                        decoded = base64.b64decode(data[0])
+                    else:
+                        decoded = bytes(data[0])
+                    
+                    # Check mint authority (bytes 4:36)
+                    if len(decoded) >= 36:
+                        mint_auth_option = int.from_bytes(decoded[0:4], "little")
+                        if mint_auth_option == 1:  # Has authority
+                            mint_authority = decoded[4:36]
+                            mint_auth_pubkey = Pubkey(mint_authority)
+                            if str(mint_auth_pubkey) == PUMPFUN_PROGRAM_ID:
+                                logging.info(f"[Verify] {mint[:8]}... has PumpFun mint authority")
+                                return True
+        except Exception as e:
+            logging.debug(f"[Verify] Mint authority check error: {e}")
+        
+        # Method 3: Check if bonding curve exists via API
+        try:
+            url = f"https://frontend-api.pump.fun/coins/{mint}"
+            response = await HTTPManager.request(url, timeout=3)
+            if response:
+                data = response.json()
+                if data.get("mint") == mint:
+                    logging.info(f"[Verify] {mint[:8]}... found on PumpFun API")
+                    # Add to tracking
+                    if mint not in pumpfun_tokens:
+                        pumpfun_tokens[mint] = {
+                            "discovered": time.time(),
+                            "migrated": False
+                        }
+                    return True
+        except Exception as e:
+            logging.debug(f"[Verify] PumpFun API check error: {e}")
+        
+        return False
+        
+    except Exception as e:
+        logging.error(f"[Verify] Error checking if {mint} is PumpFun: {e}")
+        return False
 
 # ============================================
 # NOTIFICATION HELPER
@@ -1281,16 +1344,18 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                             effective_min_lp = max(CONFIG.MIN_LP_SOL, newborn_min_lp)
                             logging.info(f"[Buy] Ultra-fresh Raydium token - using raised LP floor: {effective_min_lp:.2f} SOL")
                     
-                    # Check minimum liquidity for non-PumpFun
+                    # PHASE 1 FIX: Updated low liquidity check with PumpFun verification
                     if pool_liquidity < effective_min_lp:
-                        if ultra_fresh:
-                            logging.info(f"[Buy] Ultra-fresh & no pool — switching to PumpFun Direct for {mint[:8]}...")
+                        # Check if it's actually a PumpFun token before using PumpFun buy
+                        is_verified_pumpfun = await is_pumpfun_token(mint)
+                        if is_verified_pumpfun and ultra_fresh:
+                            logging.info(f"[Buy] Verified PumpFun token - using PumpFun Direct")
                             return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=is_migration)
                         else:
-                            logging.info(f"[Buy] Token {mint[:8]}... not ultra-fresh ({ultra_fresh}), skipping")
-                        log_skipped_token(mint, f"Low liquidity: {pool_liquidity:.2f} SOL (min: {effective_min_lp:.2f})")
-                        record_skip("low_lp")
-                        return False
+                            logging.info(f"[Buy] Not a PumpFun token or not fresh enough, skipping")
+                            log_skipped_token(mint, f"Low liquidity and not PumpFun: {pool_liquidity:.2f} SOL")
+                            record_skip("low_lp")
+                            return False
                     
                     # Check authority renouncement for non-PumpFun
                     if CONFIG.REQUIRE_AUTH_RENOUNCED:
@@ -2234,6 +2299,7 @@ __all__ = [
     'is_fresh_token',
     'verify_token_age_on_chain',
     'is_pumpfun_launch',
+    'is_pumpfun_token',  # PHASE 1 FIX: Export the new verification function
     'CONFIG',
     'register_stop',
     'STOPS',
