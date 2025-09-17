@@ -172,10 +172,266 @@ SYSTEM_PROGRAMS = [
 # ============================================
 PUMPFUN_CREATE_DISCRIMINATOR = bytes([181, 157, 89, 67, 207, 21, 162, 103])  # Actual create instruction
 RAYDIUM_INIT_DISCRIMINATOR = bytes([175, 175, 109, 31, 13, 152, 155, 237])  # Initialize pool V4
+PUMPFUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
 MIN_LP_USD = float(os.getenv("MIN_LP_USD", 500))  # Lowered for fresh tokens
 MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 500))  # Lowered for fresh tokens
 seen_trending = set()
+
+# ============================================
+# SNIPERBOT CLASS WITH TRANSACTION PROCESSING
+# ============================================
+class SniperBot:
+    """Enhanced Solana sniper bot with PumpFun support"""
+    
+    def __init__(self):
+        self.rpc = rpc  # Use shared RPC client
+        self.processed_signatures = set()
+        self.http_manager = HTTPManager
+    
+    async def get_signatures_for_program(self, program_id: str, limit: int = 100):
+        """Get recent signatures for a program"""
+        try:
+            response = self.rpc.get_signatures_for_address(
+                Pubkey.from_string(program_id),
+                limit=limit
+            )
+            return response.value if response else []
+        except Exception as e:
+            logging.error(f"Error getting signatures: {e}")
+            return []
+    
+    async def get_transaction(self, signature: str):
+        """Get transaction details"""
+        try:
+            response = self.rpc.get_transaction(
+                signature,
+                encoding="jsonParsed",
+                max_supported_transaction_version=0
+            )
+            if response and response.value:
+                return response.value.transaction
+            return None
+        except Exception as e:
+            logging.debug(f"Error getting transaction: {e}")
+            return None
+    
+    async def get_token_age(self, token_address: str) -> int:
+        """Get token age in seconds"""
+        try:
+            # This is a simplified version - you'd need to implement actual token age checking
+            # by looking at the token creation transaction timestamp
+            return await verify_token_age_on_chain(token_address, 999999)
+        except Exception as e:
+            logging.error(f"Error getting token age: {e}")
+            return None
+    
+    def _is_pumpfun_creation(self, tx) -> bool:
+        """Check if transaction is a PumpFun token creation"""
+        try:
+            # Check logs for PumpFun creation indicators
+            if 'meta' in tx and 'logMessages' in tx['meta']:
+                logs = tx['meta']['logMessages']
+                pumpfun_indicators = 0
+                
+                for log in logs:
+                    log_lower = log.lower()
+                    if "create" in log_lower and ("token" in log_lower or "coin" in log_lower):
+                        pumpfun_indicators += 3
+                    if "launch" in log_lower:
+                        pumpfun_indicators += 3
+                    if "bonding" in log_lower and ("init" in log_lower or "create" in log_lower):
+                        pumpfun_indicators += 4
+                
+                if pumpfun_indicators >= PUMPFUN_MIN_INDICATORS:
+                    logging.info(f"[PUMPFUN] Token creation detected via logs (score: {pumpfun_indicators})")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error checking PumpFun creation: {e}")
+            return False
+    
+    def _extract_pumpfun_token(self, tx) -> str:
+        """Extract token address from PumpFun transaction"""
+        try:
+            # Get accounts from transaction
+            accounts = []
+            if 'message' in tx:
+                msg = tx['message']
+                if 'accountKeys' in msg:
+                    accounts = msg['accountKeys']
+            
+            # Find the token mint (usually first non-system account)
+            for account in accounts:
+                if isinstance(account, dict):
+                    account = account.get('pubkey', '')
+                
+                if account and len(account) >= 43 and account not in SYSTEM_PROGRAMS:
+                    if account != "So11111111111111111111111111111111111111112":
+                        return account
+            
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error extracting PumpFun token: {e}")
+            return None
+    
+    def _get_bonding_curve(self, token_address: str):
+        """Get bonding curve account for a PumpFun token"""
+        try:
+            mint_pubkey = Pubkey.from_string(token_address)
+            bonding_curve_seed = b"bonding-curve"
+            pumpfun_program = Pubkey.from_string(PUMPFUN_PROGRAM_ID)
+            
+            bonding_curve, _ = Pubkey.find_program_address(
+                [bonding_curve_seed, bytes(mint_pubkey)],
+                pumpfun_program
+            )
+            
+            bc_info = self.rpc.get_account_info(bonding_curve)
+            if bc_info and bc_info.value:
+                # Return bonding curve data
+                return {
+                    'address': str(bonding_curve),
+                    'virtualSolReserves': bc_info.value.lamports  # lamports are already the SOL reserves
+                }
+            
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error getting bonding curve: {e}")
+            return None
+    
+    async def should_buy_token(self, token_address: str) -> bool:
+        """Check if token meets buy criteria"""
+        try:
+            # Check if already bought
+            if token_address in already_bought:
+                return False
+            
+            # Check freshness
+            is_fresh = await is_fresh_token(token_address, MAX_TOKEN_AGE_SECONDS)
+            if not is_fresh:
+                return False
+            
+            # Additional checks can go here
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error checking buy criteria: {e}")
+            return False
+    
+    async def process_pumpfun_transactions(self, max_signatures=1000):
+        """Process PumpFun transactions to detect new token creations"""
+        try:
+            logging.info("[PumpFun] Starting transaction scan...")
+            
+            # Get recent signatures for PumpFun program
+            signatures = await self.get_signatures_for_program(
+                PUMPFUN_PROGRAM_ID, 
+                limit=max_signatures
+            )
+            
+            if not signatures:
+                logging.warning("[PumpFun] No signatures found")
+                return []
+            
+            logging.info(f"[PumpFun] Processing {len(signatures)} transactions...")
+            created_tokens = []
+            processed_count = 0
+            
+            # Process in batches for efficiency
+            batch_size = 50
+            for i in range(0, len(signatures), batch_size):
+                batch = signatures[i:i+batch_size]
+                
+                for sig_info in batch:
+                    processed_count += 1
+                    
+                    # Log progress periodically
+                    if processed_count % 100 == 0:
+                        logging.info(f"[PumpFun] Processed {processed_count} txs, found {len(created_tokens)} pool creations")
+                    
+                    try:
+                        signature = sig_info.get('signature')
+                        if not signature:
+                            continue
+                        
+                        # Check if we've already processed this transaction
+                        if signature in self.processed_signatures:
+                            continue
+                        
+                        # Get transaction details
+                        tx = await self.get_transaction(signature)
+                        if not tx or 'meta' not in tx or tx['meta'].get('err'):
+                            continue
+                        
+                        # Look for PumpFun pool creation in logs
+                        if not self._is_pumpfun_creation(tx):
+                            continue
+                        
+                        logging.info(f"[PumpFun] POOL/TOKEN CREATION DETECTED! Total found: {len(created_tokens) + 1}")
+                        logging.info(f"[PumpFun] Fetching full transaction...")
+                        
+                        # Extract token address from accounts
+                        token_address = self._extract_pumpfun_token(tx)
+                        if not token_address:
+                            continue
+                        
+                        # Check if bonding curve has been created
+                        bonding_curve = self._get_bonding_curve(token_address)
+                        if not bonding_curve:
+                            logging.warning(f"[PumpFun] Token {token_address} detected but NO bonding curve found - SKIPPING")
+                            continue
+                        
+                        # For ultra-fresh tokens, accept any bonding curve
+                        # Check token age first
+                        token_age = await self.get_token_age(token_address)
+                        sol_amount = bonding_curve.get('virtualSolReserves', 0) / 1e9
+                        
+                        if token_age and token_age <= 30:
+                            # Ultra-fresh token - accept ANY bonding curve
+                            logging.info(f"[PumpFun] Ultra-fresh token {token_address} ({token_age}s old) - accepting bonding curve with {sol_amount:.6f} SOL")
+                        elif sol_amount < 0.001:
+                            # Older token needs SOL in bonding curve
+                            logging.warning(f"[PumpFun] Token {token_address} detected but insufficient SOL in bonding curve ({sol_amount:.6f} SOL) - SKIPPING")
+                            continue
+                        
+                        # Mark as processed
+                        self.processed_signatures.add(signature)
+                        
+                        # Get token details
+                        token_info = {
+                            'address': token_address,
+                            'source': 'pumpfun',
+                            'timestamp': sig_info.get('blockTime', time.time()),
+                            'signature': signature,
+                            'bonding_curve': bonding_curve
+                        }
+                        
+                        created_tokens.append(token_info)
+                        logging.info(f"[PumpFun] Found new token: {token_address}")
+                        
+                        # Check buy conditions immediately
+                        if await self.should_buy_token(token_address):
+                            logging.info(f"[PumpFun] Token {token_address} meets buy criteria!")
+                            # The main loop will handle the actual buy
+                            
+                    except Exception as e:
+                        logging.error(f"[PumpFun] Error processing tx {signature}: {e}")
+                        continue
+            
+            logging.info(f"[PumpFun] Processed {processed_count} txs, found {len(created_tokens)} pool creations")
+            return created_tokens
+            
+        except Exception as e:
+            logging.error(f"[PumpFun] Error in transaction processing: {e}")
+            return []
+
+# Create global instance
+sniper_bot = SniperBot()
 
 # ============================================
 # CRITICAL FIX: ULTRA-FRESH PUMPFUN TOKEN VERIFICATION
