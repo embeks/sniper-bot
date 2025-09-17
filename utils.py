@@ -1574,6 +1574,18 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             log_trade(mint, "BUY", buy_amt, real_tokens)
             return True
         
+        # Execute with timeout
+        try:
+            return await asyncio.wait_for(_buy_with_timeout(), timeout=overall_timeout)
+        except asyncio.TimeoutError:
+            logging.error(f"[Buy] Overall timeout ({overall_timeout}s) for {mint[:8]}...")
+            record_skip("buy_failed")
+            return False
+            
+    except Exception as e:
+        logging.error(f"[Buy] Unexpected error: {e}")
+        return False
+
 async def sell_token(mint: str, amount_to_sell=None, percentage=100, slippage_bps=None):
     """Execute sell transaction - uses PumpFun for bonding curve tokens, Jupiter for migrated"""
     if slippage_bps is None:
