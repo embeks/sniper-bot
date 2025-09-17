@@ -1386,10 +1386,19 @@ async def mempool_listener(name, program_id=None):
                                 # First check if token is ultra-fresh (≤30s old)
                                 try:
                                     token_age_seconds = await verify_token_age_on_chain(token_mint, 999999)
-                                    is_ultra_fresh = token_age_seconds and token_age_seconds <= 30
+                                    
+                                    # CRITICAL FIX: Check if ACTUALLY ultra-fresh
+                                    if token_age_seconds and token_age_seconds <= 30:
+                                        is_ultra_fresh = True
+                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is {token_age_seconds}s old - ULTRA-FRESH!")
+                                    else:
+                                        is_ultra_fresh = False
+                                        if token_age_seconds:
+                                            logging.info(f"[PumpFun] Token {token_mint[:8]}... is {token_age_seconds}s old - NOT fresh enough")
                                 except Exception as e:
                                     logging.debug(f"[PumpFun] Could not check age for {token_mint[:8]}...: {e}")
                                     is_ultra_fresh = False
+                                    token_age_seconds = None
                                 
                                 # For ultra-fresh tokens, check bonding curve existence but accept 0 SOL
                                 if is_ultra_fresh:
@@ -1406,7 +1415,8 @@ async def mempool_listener(name, program_id=None):
                                         bc_info = rpc.get_account_info(bonding_curve)
                                         if bc_info and bc_info.value:
                                             # Bonding curve exists - accept it even with 0 SOL
-                                            logging.info(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... ({token_age_seconds}s old) with bonding curve - ACCEPTING!")
+                                            sol_amount = bc_info.value.lamports / 1e9
+                                            logging.info(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... ({token_age_seconds}s old) with bonding curve ({sol_amount:.6f} SOL) - ACCEPTING!")
                                             is_valid_pumpfun = True
                                         else:
                                             logging.warning(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... but NO bonding curve found - SKIPPING")
@@ -1417,11 +1427,12 @@ async def mempool_listener(name, program_id=None):
                                         record_skip("bonding_curve_error")
                                         continue
                                 else:
-                                    # Not ultra-fresh - use standard verification
+                                    # Not ultra-fresh - use standard verification which requires SOL
                                     is_valid_pumpfun = await is_pumpfun_token(token_mint)
                                     
                                     if not is_valid_pumpfun:
-                                        logging.warning(f"[PumpFun] Token {token_mint[:8]}... detected but NO tradeable bonding curve - SKIPPING")
+                                        age_msg = f"({token_age_seconds}s old)" if token_age_seconds else ""
+                                        logging.warning(f"[PumpFun] Token {token_mint[:8]}... {age_msg} detected but NO tradeable bonding curve - SKIPPING")
                                         record_skip("invalid_pumpfun")
                                         continue  # Skip this token entirely
                                 
