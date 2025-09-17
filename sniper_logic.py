@@ -1388,46 +1388,38 @@ async def mempool_listener(name, program_id=None):
                                 is_ultra_fresh = False
                                 
                                 try:
-                                    # Get the actual age in seconds
-                                    actual_age = await verify_token_age_on_chain(token_mint, 999999)
+                                    # Use is_fresh_token to check if under 30 seconds
+                                    is_under_30 = await is_fresh_token(token_mint, 30)
                                     
-                                    # CRITICAL: actual_age might return True/False OR the actual age
-                                    # If it returns True, we need to get the real age differently
-                                    if isinstance(actual_age, bool):
-                                        # Try to get age using is_fresh_token which should return the actual seconds
-                                        is_fresh_result = await is_fresh_token(token_mint, 30)
-                                        if is_fresh_result:
-                                            # Token is fresh, but we need exact age - assume it's under 30s
-                                            token_age_seconds = 25  # Conservative estimate
-                                            is_ultra_fresh = True
-                                            logging.info(f"[PumpFun] Token {token_mint[:8]}... confirmed <30s old - ULTRA-FRESH!")
-                                        else:
-                                            # Check if it's at least under 60s
-                                            is_60s_fresh = await is_fresh_token(token_mint, 60)
-                                            if is_60s_fresh:
-                                                token_age_seconds = 45  # Between 30-60s
-                                                is_ultra_fresh = False
-                                            else:
-                                                token_age_seconds = 999  # Older than 60s
-                                                is_ultra_fresh = False
+                                    if is_under_30:
+                                        # Token is definitely under 30s - ultra-fresh!
+                                        is_ultra_fresh = True
+                                        token_age_seconds = 15  # Estimate for logging
+                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... confirmed <30s old - ULTRA-FRESH!")
                                     else:
-                                        # We have the actual age in seconds
-                                        token_age_seconds = actual_age
-                                        is_ultra_fresh = (token_age_seconds <= 30)
-                                        
-                                    if is_ultra_fresh:
-                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is ~{token_age_seconds}s old - ULTRA-FRESH!")
-                                    elif token_age_seconds and token_age_seconds <= 60:
-                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is ~{token_age_seconds}s old - fresh but not ultra-fresh")
-                                    elif token_age_seconds:
-                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... is ~{token_age_seconds}s old - TOO OLD")
-                                        
+                                        # Not ultra-fresh, check if at least under 60s
+                                        is_under_60 = await is_fresh_token(token_mint, 60)
+                                        if is_under_60:
+                                            # Between 30-60 seconds
+                                            is_ultra_fresh = False
+                                            token_age_seconds = 45  # Estimate
+                                            logging.info(f"[PumpFun] Token {token_mint[:8]}... is 30-60s old - fresh but not ultra")
+                                        else:
+                                            # Older than 60s - definitely too old
+                                            is_ultra_fresh = False
+                                            # Don't even bother processing old tokens
+                                            logging.info(f"[PumpFun] Token {token_mint[:8]}... is >60s old - TOO OLD, skipping")
+                                            record_skip("old_token")
+                                            continue  # SKIP OLD TOKENS IMMEDIATELY
+                                            
                                 except Exception as e:
                                     logging.debug(f"[PumpFun] Could not check age for {token_mint[:8]}...: {e}")
-                                    is_ultra_fresh = False
-                                    token_age_seconds = None
+                                    # If we can't verify age, assume it's old and skip
+                                    logging.warning(f"[PumpFun] Cannot verify age for {token_mint[:8]}... - SKIPPING")
+                                    record_skip("age_check_failed")
+                                    continue
                                 
-                                # For ultra-fresh tokens, check bonding curve existence but accept 0 SOL
+                                # Only process ultra-fresh tokens (under 30s)
                                 if is_ultra_fresh:
                                     # Check if bonding curve EXISTS (even with 0 SOL)
                                     try:
@@ -1443,7 +1435,7 @@ async def mempool_listener(name, program_id=None):
                                         if bc_info and bc_info.value:
                                             # Bonding curve exists - accept it even with 0 SOL
                                             sol_amount = bc_info.value.lamports / 1e9
-                                            logging.info(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... (~{token_age_seconds}s old) with bonding curve ({sol_amount:.6f} SOL) - ACCEPTING!")
+                                            logging.info(f"[PumpFun] ✅ ULTRA-FRESH token {token_mint[:8]}... (<30s) with bonding curve ({sol_amount:.6f} SOL) - ACCEPTING!")
                                             is_valid_pumpfun = True
                                         else:
                                             logging.warning(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... but NO bonding curve found - SKIPPING")
@@ -1454,14 +1446,13 @@ async def mempool_listener(name, program_id=None):
                                         record_skip("bonding_curve_error")
                                         continue
                                 else:
-                                    # Not ultra-fresh - use standard verification which requires SOL
+                                    # For tokens 30-60s old, use standard verification (requires SOL)
                                     is_valid_pumpfun = await is_pumpfun_token(token_mint)
                                     
                                     if not is_valid_pumpfun:
-                                        age_msg = f"(~{token_age_seconds}s old)" if token_age_seconds else ""
-                                        logging.warning(f"[PumpFun] Token {token_mint[:8]}... {age_msg} detected but NO tradeable bonding curve - SKIPPING")
-                                        record_skip("invalid_pumpfun")
-                                        continue  # Skip this token entirely
+                                        logging.warning(f"[PumpFun] Token {token_mint[:8]}... (30-60s old) requires SOL in bonding curve - SKIPPING")
+                                        record_skip("no_tradeable_bc")
+                                        continue  # Skip this token
                                 
                                 # Only track verified PumpFun tokens
                                 if token_mint not in pumpfun_tokens:
