@@ -1,4 +1,4 @@
-# sniper_logic.py - COMPLETE FIXED VERSION WITH EARLY PUMPFUN VERIFICATION
+# sniper_logic.py - COMPLETE FIXED VERSION WITH ULTRA-FRESH PUMPFUN SUPPORT
 
 import asyncio
 import json
@@ -178,10 +178,14 @@ MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 500))  # Lowered for fresh to
 seen_trending = set()
 
 # ============================================
-# PHASE 1 FIX: PUMPFUN TOKEN VERIFICATION
+# CRITICAL FIX: ULTRA-FRESH PUMPFUN TOKEN VERIFICATION
 # ============================================
 async def is_pumpfun_token(mint: str) -> bool:
-    """Verify if a token is actually created by PumpFun with an active and tradeable bonding curve"""
+    """Verify if a token is actually created by PumpFun with an active and tradeable bonding curve
+    
+    FIXED: For ultra-fresh tokens (≤30s old), accept ANY bonding curve even with 0 SOL
+    since they may not have liquidity yet but are still tradeable.
+    """
     try:
         mint_pubkey = Pubkey.from_string(mint)
         
@@ -193,7 +197,7 @@ async def is_pumpfun_token(mint: str) -> bool:
                 logging.debug(f"[PumpFun Verify] {mint[:8]}... has PumpFun mint authority")
                 return True
         
-        # Method 2: Check if bonding curve exists AND has SOL (MOST RELIABLE)
+        # Method 2: Check if bonding curve exists (MOST RELIABLE)
         bonding_curve_seed = b"bonding-curve"
         pumpfun_program = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
         bonding_curve, _ = Pubkey.find_program_address(
@@ -203,30 +207,45 @@ async def is_pumpfun_token(mint: str) -> bool:
         
         bc_info = rpc.get_account_info(bonding_curve)
         if bc_info and bc_info.value:
-            # Check if bonding curve has SOL balance (tradeable)
             lamports = bc_info.value.lamports
-            min_lamports = 1000000  # Minimum 0.001 SOL for it to be considered tradeable
             
-            if lamports >= min_lamports:
-                logging.info(f"[PumpFun Verify] {mint[:8]}... has active bonding curve with {lamports/1e9:.4f} SOL!")
+            # CRITICAL FIX: Check token age to determine if we should be lenient
+            try:
+                is_ultra_fresh = await is_fresh_token(mint, max_age_seconds=30)
+            except Exception as e:
+                logging.debug(f"[PumpFun Verify] Could not check freshness: {e}")
+                is_ultra_fresh = False
+            
+            if is_ultra_fresh:
+                # ULTRA-FRESH TOKENS: Accept ANY bonding curve, even with 0 SOL
+                # These are brand new tokens that may not have initial liquidity yet
+                logging.info(f"[PumpFun Verify] {mint[:8]}... ULTRA-FRESH (<30s) with bonding curve ({lamports/1e9:.6f} SOL) - ACCEPTING!")
                 return True
             else:
-                logging.warning(f"[PumpFun Verify] {mint[:8]}... has bonding curve but insufficient SOL ({lamports/1e9:.6f} SOL)")
-                return False
+                # OLDER TOKENS: Require minimum SOL to ensure it's tradeable
+                min_lamports = 1000000  # Minimum 0.001 SOL for older tokens
+                
+                if lamports >= min_lamports:
+                    logging.info(f"[PumpFun Verify] {mint[:8]}... has active bonding curve with {lamports/1e9:.4f} SOL!")
+                    return True
+                else:
+                    logging.warning(f"[PumpFun Verify] {mint[:8]}... has bonding curve but insufficient SOL ({lamports/1e9:.6f} SOL) for non-fresh token")
+                    return False
         else:
             logging.debug(f"[PumpFun Verify] {mint[:8]}... NO bonding curve found")
             
         # Method 3: Check if token was tracked as PumpFun (fallback)
         if mint in pumpfun_tokens and pumpfun_tokens[mint].get("verified", False):
-            # Re-verify it still has liquidity
+            # Re-verify it still has bonding curve
             bc_info = rpc.get_account_info(bonding_curve)
-            if bc_info and bc_info.value and bc_info.value.lamports >= 1000000:
-                return True
-            else:
-                # Remove from verified if no longer tradeable
-                if mint in pumpfun_tokens:
-                    pumpfun_tokens[mint]["verified"] = False
-                return False
+            if bc_info and bc_info.value:
+                # For tracked tokens, be more lenient with SOL requirements
+                if bc_info.value.lamports > 0 or await is_fresh_token(mint, max_age_seconds=60):
+                    return True
+            # Remove from verified if no longer tradeable
+            if mint in pumpfun_tokens:
+                pumpfun_tokens[mint]["verified"] = False
+            return False
             
     except Exception as e:
         logging.debug(f"PumpFun verification error for {mint[:8]}...: {e}")
@@ -1103,7 +1122,7 @@ async def mempool_listener(name, program_id=None):
                             seen_tokens.add(token_mint)
                             
                             # ============================================
-                            # PHASE 1 FIX: EARLY PUMPFUN VERIFICATION
+                            # CRITICAL FIX: EARLY PUMPFUN VERIFICATION WITH ULTRA-FRESH SUPPORT
                             # ============================================
                             if name == "PumpFun":
                                 # Verify it's actually a PumpFun token with bonding curve BEFORE proceeding
@@ -1114,13 +1133,13 @@ async def mempool_listener(name, program_id=None):
                                     record_skip("invalid_pumpfun")
                                     continue  # Skip this token entirely
                                 
-                                # Only track verified PumpFun tokens with liquidity
+                                # Only track verified PumpFun tokens
                                 if token_mint not in pumpfun_tokens:
                                     pumpfun_tokens[token_mint] = {
                                         "discovered": time.time(),
                                         "migrated": False,
                                         "verified": True,  # Add verification flag
-                                        "tradeable": True  # Confirmed tradeable with SOL in bonding curve
+                                        "tradeable": True  # Confirmed tradeable (may have 0 SOL if ultra-fresh)
                                     }
                                     logging.info(f"[PumpFun] VERIFIED tradeable token with bonding curve: {token_mint[:8]}...")
                             
@@ -1922,7 +1941,7 @@ async def start_sniper():
     from utils import CONFIG
     default_buy_amount = CONFIG.BUY_AMOUNT_SOL
     
-    if should_send_telegram("sniper_start"):
+    if should_send_telegram(f"sniper_start"):
         await send_telegram_alert(
             f"💰 SNIPER LAUNCHING 💰\n\n"
             f"Mode: {mode_text}\n"
