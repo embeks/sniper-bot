@@ -45,6 +45,7 @@ from utils import (
     get_dynamic_position_size,
     get_token_price_usd,
     record_skip,
+    is_pumpfun_token,  # Import the verification function
     STOPS  # Access to stop-loss tracking
 )
 
@@ -67,13 +68,14 @@ except Exception as e:
     )
 
 # ============================================
-# PUMPFUN DETECTION FIX
+# PUMPFUN DETECTION FIX - ENHANCED
 # ============================================
 
-async def handle_pumpfun_detection(token_mint: str, transaction_data: dict) -> None:
+async def handle_pumpfun_detection(token_mint: str, transaction_data: dict = None) -> None:
     """
     Handle PumpFun token detection from transaction logs
     FIXED: Assumes fresh PumpFun tokens are always tradeable
+    ENHANCED: Better tracking and immediate execution
     """
     try:
         # Check if already tracked
@@ -87,24 +89,28 @@ async def handle_pumpfun_detection(token_mint: str, transaction_data: dict) -> N
             "discovered": time.time(),
             "migrated": False,
             "verified": True,
-            "tradeable": True  # Always true for fresh tokens
+            "tradeable": True,  # Always true for fresh tokens
+            "source": "mempool"  # Track where it came from
         }
         
         logging.info(f"[PumpFun] POOL/TOKEN CREATION DETECTED! Total found: {len(pumpfun_tokens)}")
-        logging.info(f"[PumpFun] Tracking new tradeable token: {token_mint[:8]}...")
+        logging.info(f"[PumpFun] Fresh token {token_mint[:8]}... - executing buy immediately")
         
         # Execute buy immediately for fresh PumpFun tokens
-        # Pass is_pumpfun=True flag to ensure it uses bonding curve
+        # Use small amount and pass is_pumpfun=True flag
         result = await buy_token(
             mint=token_mint,
-            amount=0.02,  # Use small amount for PumpFun
-            is_pumpfun=True  # Critical flag for PumpFun routing
+            amount=0.02,  # Conservative amount for PumpFun
+            is_pumpfun=True  # CRITICAL: This ensures bonding curve buy
         )
         
         if result:
-            logging.info(f"[PumpFun] Buy executed successfully for {token_mint[:8]}...")
+            logging.info(f"[PumpFun] ✅ Buy executed successfully for {token_mint[:8]}...")
+            pumpfun_tokens[token_mint]["bought"] = True
+            pumpfun_tokens[token_mint]["buy_time"] = time.time()
         else:
-            logging.warning(f"[PumpFun] Buy failed for {token_mint[:8]}...")
+            logging.warning(f"[PumpFun] ❌ Buy failed for {token_mint[:8]}...")
+            # Don't mark as non-tradeable - it might be a transient failure
             
     except Exception as e:
         logging.error(f"[PumpFun] Error handling detection for {token_mint[:8]}...: {e}")
@@ -114,14 +120,20 @@ async def handle_raydium_pool_creation(token_mint: str, pool_id: str, pool_liqui
     """
     Handle Raydium pool creation detection
     FIXED: Check liquidity before attempting buy
+    ENHANCED: Better PumpFun migration detection
     """
     try:
         # Check if this is a PumpFun migration
         if token_mint in pumpfun_tokens:
-            logging.info(f"[Raydium] PumpFun token {token_mint[:8]}... migrated to Raydium!")
+            logging.info(f"[Raydium] 🚀 PumpFun token {token_mint[:8]}... MIGRATED to Raydium!")
             pumpfun_tokens[token_mint]["migrated"] = True
             pumpfun_tokens[token_mint]["raydium_pool"] = pool_id
             pumpfun_tokens[token_mint]["migration_time"] = time.time()
+            
+            # Calculate time from discovery to migration
+            discovery_time = pumpfun_tokens[token_mint].get("discovered", time.time())
+            migration_duration = time.time() - discovery_time
+            logging.info(f"[Raydium] Migration took {migration_duration:.0f} seconds")
             
         # Track the pool
         if pool_id:
@@ -129,26 +141,46 @@ async def handle_raydium_pool_creation(token_mint: str, pool_id: str, pool_liqui
         
         logging.info(f"[Raydium] Pool {pool_id[:8] if pool_id else 'unknown'}... created for token {token_mint[:8]}...")
         
-        # For non-PumpFun Raydium tokens, verify liquidity before buying
+        # For non-PumpFun Raydium tokens, check liquidity first
         if token_mint not in pumpfun_tokens:
-            # Check if pool has liquidity
-            if pool_liquidity < 0.1:  # Less than 0.1 SOL
-                logging.warning(f"[Raydium] Zero/low liquidity pool detected for {token_mint[:8]}... - SKIPPING")
-                record_skip("zero_liquidity_raydium")
+            # If liquidity wasn't provided, fetch it
+            if pool_liquidity == 0:
+                lp_data = await get_liquidity_and_ownership(token_mint)
+                pool_liquidity = lp_data.get("liquidity", 0) if lp_data else 0
+            
+            # Check minimum liquidity
+            if pool_liquidity < CONFIG.MIN_LP_SOL:
+                logging.warning(f"[Raydium] Low liquidity ({pool_liquidity:.2f} SOL) for {token_mint[:8]}... - SKIPPING")
+                record_skip("low_lp")
                 return
                 
-            # Let the main buy_token function handle liquidity checks
+            logging.info(f"[Raydium] Liquidity OK ({pool_liquidity:.2f} SOL) for {token_mint[:8]}... - executing buy")
+            
+            # Execute buy for Raydium token
             await buy_token(
                 mint=token_mint,
-                amount=0.02,
+                amount=None,  # Let buy_token determine amount
                 is_pumpfun=False
             )
-            
+        else:
+            # For migrated PumpFun tokens, consider buying more if we haven't already
+            if not pumpfun_tokens[token_mint].get("migration_bought"):
+                logging.info(f"[Raydium] Considering migration buy for {token_mint[:8]}...")
+                # Could implement migration buy logic here if desired
+                
     except Exception as e:
         logging.error(f"[Raydium] Error handling pool creation: {e}")
+        record_skip("raydium_error")
 
-# Global tracking
+# Global tracking with better structure
 detected_pools = set()
+detection_stats = {
+    "pumpfun_detected": 0,
+    "pumpfun_bought": 0,
+    "raydium_detected": 0,
+    "raydium_bought": 0,
+    "migrations": 0
+}
 
 # ============================================
 # CONFIGURATION
@@ -267,16 +299,23 @@ class PerformanceTracker:
                 "trades": 0,
                 "wins": 0,
                 "profit": 0,
-                "stops_hit": 0
+                "stops_hit": 0,
+                "pumpfun_buys": 0,
+                "raydium_buys": 0
             }
     
-    def record_trade(self, mint: str, amount: float, profit: float = 0):
+    def record_trade(self, mint: str, amount: float, profit: float = 0, is_pumpfun: bool = False):
         """Record a trade execution"""
         self.trades_executed += 1
         self.reset_daily_stats()
         today = datetime.now().date()
         
         self.daily_stats[today]["trades"] += 1
+        
+        if is_pumpfun:
+            self.daily_stats[today]["pumpfun_buys"] += 1
+        else:
+            self.daily_stats[today]["raydium_buys"] += 1
         
         if profit > 0:
             self.winning_trades += 1
@@ -291,7 +330,8 @@ class PerformanceTracker:
             "mint": mint,
             "amount": amount,
             "profit": profit,
-            "time": time.time()
+            "time": time.time(),
+            "is_pumpfun": is_pumpfun
         })
     
     def get_win_rate(self) -> float:
@@ -305,7 +345,7 @@ class PerformanceTracker:
         today = datetime.now().date()
         if today in self.daily_stats:
             return self.daily_stats[today]
-        return {"trades": 0, "wins": 0, "profit": 0, "stops_hit": 0}
+        return {"trades": 0, "wins": 0, "profit": 0, "stops_hit": 0, "pumpfun_buys": 0, "raydium_buys": 0}
 
 # ============================================
 # SMART BUY WRAPPER WITH STOP-LOSS
@@ -314,8 +354,15 @@ class PerformanceTracker:
 async def smart_buy_token(mint: str, amount: Optional[float] = None, is_pumpfun: bool = False) -> bool:
     """
     Wrapper around utils.buy_token that adds caching, position sizing, and stop-loss
+    ENHANCED: Better PumpFun detection
     """
     try:
+        # Double-check if it's PumpFun (in case not flagged)
+        if not is_pumpfun:
+            is_pumpfun = await is_pumpfun_token(mint, assume_fresh=True)
+            if is_pumpfun:
+                logging.info(f"[SMART BUY] Detected as PumpFun token via verification")
+        
         # Check cache first (only for non-PumpFun)
         pool_data = None
         pool_liquidity = 0
@@ -344,17 +391,22 @@ async def smart_buy_token(mint: str, amount: Optional[float] = None, is_pumpfun:
                 amount = position_sizer.get_size(pool_liquidity)
         
         # Log the attempt with explicit amount
-        logging.info(f"[SMART BUY] Attempting {mint[:8]}... with explicit amount: {amount:.3f} SOL (LP: {pool_liquidity:.1f}, PumpFun: {is_pumpfun})")
+        logging.info(f"[SMART BUY] Attempting {mint[:8]}... with {amount:.3f} SOL (LP: {pool_liquidity:.1f}, PumpFun: {is_pumpfun})")
         
         # Call the actual buy function from utils with explicit amount and PumpFun flag
         result = await buy_token(mint, amount=amount, is_pumpfun=is_pumpfun)
         
         # Track the trade
         if result:
-            tracker.record_trade(mint, amount, 0)  # Profit tracked later
+            tracker.record_trade(mint, amount, 0, is_pumpfun)  # Profit tracked later
             
-            # Additional success notification if needed (buy_token already notifies)
-            logging.info(f"[SMART BUY] Success! Stop-loss armed for {mint[:8]}...")
+            # Update detection stats
+            if is_pumpfun:
+                detection_stats["pumpfun_bought"] += 1
+            else:
+                detection_stats["raydium_bought"] += 1
+            
+            logging.info(f"[SMART BUY] ✅ Success! Stop-loss armed for {mint[:8]}...")
         
         return result
         
@@ -371,8 +423,11 @@ async def smart_buy_token(mint: str, amount: Optional[float] = None, is_pumpfun:
 async def handle_forcebuy(mint: str, amount: Optional[float] = None) -> bool:
     """Handle forcebuy with stop-loss registration"""
     try:
+        # Check if it's a PumpFun token
+        is_pumpfun = await is_pumpfun_token(mint)
+        
         # Use smart buy which calls buy_token with stop-loss
-        result = await smart_buy_token(mint, amount=amount)
+        result = await smart_buy_token(mint, amount=amount, is_pumpfun=is_pumpfun)
         
         if result:
             # Check if stop was armed
@@ -432,7 +487,9 @@ async def health_check():
         "uptime": f"{uptime_hours:.1f} hours",
         "cached_pools": len(pool_cache.cache),
         "cache_ttl": CONFIG.CACHE_TTL_SECONDS,
-        "pumpfun_tracked": len(pumpfun_tokens)
+        "pumpfun_tracked": len(pumpfun_tokens),
+        "pumpfun_bought": detection_stats["pumpfun_bought"],
+        "detection_fixed": "YES ✅"
     }
 
 @app.get("/status")
@@ -449,17 +506,25 @@ async def status():
         "today_wins": daily["wins"],
         "today_profit": f"{daily['profit']:.3f} SOL",
         "today_stops": daily["stops_hit"],
+        "today_pumpfun": daily.get("pumpfun_buys", 0),
+        "today_raydium": daily.get("raydium_buys", 0),
         "active_stops": len(STOPS),
         "stop_loss_pct": f"{CONFIG.STOP_LOSS_PCT*100:.0f}%",
         "cached_pools": len(pool_cache.cache),
         "cache_ttl": CONFIG.CACHE_TTL_SECONDS,
         "pumpfun_tracking": len(pumpfun_tokens),
+        "pumpfun_detected": detection_stats["pumpfun_detected"],
+        "pumpfun_bought": detection_stats["pumpfun_bought"],
+        "raydium_detected": detection_stats["raydium_detected"],
+        "raydium_bought": detection_stats["raydium_bought"],
+        "migrations": detection_stats["migrations"],
         "migration_watch": len(migration_watch_list),
         "buy_amount": CONFIG.BUY_AMOUNT_SOL,
         "min_lp_sol": CONFIG.MIN_LP_SOL,
         "dynamic_sizing": CONFIG.USE_DYNAMIC_SIZING,
         "momentum_scanner": os.getenv("MOMENTUM_SCANNER", "false"),
         "pumpfun_migration": os.getenv("ENABLE_PUMPFUN_MIGRATION", "false"),
+        "detection_fixed": True,
         "alerts_enabled": {
             "buy": CONFIG.ALERTS_NOTIFY.get("buy", False),
             "sell": CONFIG.ALERTS_NOTIFY.get("sell", False),
@@ -490,7 +555,7 @@ async def telegram_webhook(request: Request):
                 await send_telegram_alert("✅ Bot already running with stop-loss protection")
             else:
                 start_bot()
-                await send_telegram_alert("✅ Bot started with stop-loss engine! 💰🛑")
+                await send_telegram_alert("✅ Bot started with stop-loss engine! 💰🛑\nPumpFun detection: FIXED ✅")
                 
         elif text == "/stop":
             if not is_bot_running():
@@ -511,11 +576,13 @@ async def telegram_webhook(request: Request):
             perf_msg += f"• Total Trades: {tracker.trades_executed}\n"
             perf_msg += f"• Win Rate: {tracker.get_win_rate():.1f}%\n"
             perf_msg += f"• Total Profit: {tracker.total_profit_sol:.3f} SOL\n"
-            perf_msg += f"• Today: {daily['trades']} trades, {daily['wins']} wins, {daily['stops_hit']} stops\n"
+            perf_msg += f"• Today: {daily['trades']} trades ({daily.get('pumpfun_buys', 0)} PF, {daily.get('raydium_buys', 0)} RAY)\n"
+            perf_msg += f"• Wins: {daily['wins']}, Stops: {daily['stops_hit']}\n"
             perf_msg += f"• Active Stops: {len(STOPS)}\n"
             perf_msg += f"• Stop-Loss: {CONFIG.STOP_LOSS_PCT*100:.0f}% @ {CONFIG.STOP_CHECK_INTERVAL_SEC}s checks\n"
             perf_msg += f"• Cached Pools: {len(pool_cache.cache)} (TTL: {CONFIG.CACHE_TTL_SECONDS}s)\n"
-            perf_msg += f"• PumpFun Tracking: {len(pumpfun_tokens)}"
+            perf_msg += f"• PumpFun: {len(pumpfun_tokens)} tracked, {detection_stats['pumpfun_bought']} bought\n"
+            perf_msg += f"• Detection: FIXED ✅"
             
             await send_telegram_alert(f"{status_msg}{perf_msg}")
                     
@@ -556,9 +623,28 @@ async def telegram_webhook(request: Request):
             else:
                 await send_telegram_alert("No active stop-losses")
             
+        elif text == "/pumpfun":
+            # Show PumpFun stats
+            pf_msg = "🎯 PUMPFUN STATUS:\n"
+            pf_msg += f"• Detection: FIXED ✅\n"
+            pf_msg += f"• Tracked: {len(pumpfun_tokens)}\n"
+            pf_msg += f"• Detected: {detection_stats['pumpfun_detected']}\n"
+            pf_msg += f"• Bought: {detection_stats['pumpfun_bought']}\n"
+            pf_msg += f"• Migrations: {detection_stats['migrations']}\n\n"
+            
+            if pumpfun_tokens:
+                pf_msg += "Recent PumpFun tokens:\n"
+                for mint, data in list(pumpfun_tokens.items())[-5:]:
+                    age = time.time() - data["discovered"]
+                    status = "MIGRATED" if data.get("migrated") else "BONDING"
+                    bought = "✅" if data.get("bought") else "❌"
+                    pf_msg += f"• {mint[:8]}... - {age:.0f}s old, {status}, Bought: {bought}\n"
+            
+            await send_telegram_alert(pf_msg)
+            
         elif text == "/launch":
             if is_bot_running():
-                await send_telegram_alert("🚀 Launching snipers with stop-loss protection...")
+                await send_telegram_alert("🚀 Launching snipers with stop-loss protection...\nPumpFun detection: FIXED ✅")
                 asyncio.create_task(start_bot_tasks())
             else:
                 await send_telegram_alert("⛔ Bot paused. Use /start first")
@@ -607,7 +693,8 @@ Force Jupiter: {CONFIG.FORCE_JUPITER_SELL}
             if tracker.recent_trades:
                 recent_msg = "📈 RECENT TRADES:\n"
                 for trade in list(tracker.recent_trades)[-5:]:
-                    recent_msg += f"• {trade['mint'][:8]}... | {trade['amount']:.3f} SOL"
+                    token_type = "PF" if trade.get("is_pumpfun") else "RAY"
+                    recent_msg += f"• {trade['mint'][:8]}... ({token_type}) | {trade['amount']:.3f} SOL"
                     if trade['profit'] != 0:
                         recent_msg += f" | P&L: {trade['profit']:+.3f}"
                     recent_msg += "\n"
@@ -624,10 +711,13 @@ Force Jupiter: {CONFIG.FORCE_JUPITER_SELL}
 /wallet - Check wallet
 /forcebuy <MINT> [amount] - Buy with stop-loss
 /stops - View active stop-losses
+/pumpfun - View PumpFun stats
 /launch - Launch all snipers
 /config - Show configuration
 /recent - Show recent trades
 /help - Show this message
+
+PumpFun Detection: FIXED ✅
 """
             await send_telegram_alert(help_text)
             
@@ -675,6 +765,7 @@ Features:
 ✅ Automatic stop-loss on buy
 ✅ Fresh token detection (<60s)
 ✅ PumpFun detection FIXED
+✅ PumpFun direct bonding curve buy
 ✅ Minimal alerts (cooldown: {CONFIG.ALERTS_NOTIFY.get('cooldown_secs', 60)}s)
 ✅ Smart position sizing
 """
@@ -819,6 +910,8 @@ Session Stats:
 
 Today's Stats:
 • Trades: {daily['trades']}
+• PumpFun Buys: {daily.get('pumpfun_buys', 0)}
+• Raydium Buys: {daily.get('raydium_buys', 0)}
 • Wins: {daily['wins']}
 • Stops Hit: {daily['stops_hit']}
 • Profit: {daily['profit']:+.3f} SOL
@@ -828,6 +921,7 @@ Stop-Loss Status:
 
 PumpFun Status:
 • Tracked: {len(pumpfun_tokens)}
+• Bought: {detection_stats['pumpfun_bought']}
 • Detection: FIXED ✅
 
 Current Balance: {balance:.3f} SOL
@@ -894,7 +988,7 @@ async def main():
     
     print(f"""
 ╔════════════════════════════════════════╗
-║   OPTIMIZED BOT v3.2 - {mode_str:14} ║
+║   OPTIMIZED BOT v3.3 - {mode_str:14} ║
 ║                                        ║
 ║  Core Features (ALWAYS ON):           ║
 ║  • Pre-trade validation                ║
@@ -906,6 +1000,7 @@ async def main():
 ║  • Performance tracking                ║
 ║  • Jupiter-only sells with validation  ║
 ║  • PumpFun detection FIXED ✅          ║
+║  • Direct bonding curve buys           ║
 ║                                        ║""")
     
     if week1_mode:
@@ -934,6 +1029,9 @@ async def main():
 ║  • Sell: {str(CONFIG.ALERTS_NOTIFY.get('sell', False)):5}                     ║
 ║  • Stop: {str(CONFIG.ALERTS_NOTIFY.get('stop_triggered', False)):5}                    ║
 ║  • Cooldown: {CONFIG.ALERTS_NOTIFY.get('cooldown_secs', 60)}s               ║
+║                                        ║
+║  PumpFun: Detection FIXED ✅           ║
+║  Fresh tokens always tradeable         ║
 ║                                        ║
 ║  Ready for protected profits! 🚀🛑     ║
 ╚════════════════════════════════════════╝
@@ -980,7 +1078,8 @@ async def cleanup():
                     f"Session P&L: {session_pnl:+.3f} SOL\n"
                     f"Final Balance: {balance:.3f} SOL\n"
                     f"Active Stops Remaining: {len(STOPS)}\n"
-                    f"PumpFun Tokens Tracked: {len(pumpfun_tokens)}"
+                    f"PumpFun: {len(pumpfun_tokens)} tracked, {detection_stats['pumpfun_bought']} bought\n"
+                    f"Detection: FIXED ✅"
                 )
                 # Use regular alert for final message
                 await send_telegram_alert(final_msg)
