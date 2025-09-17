@@ -1379,14 +1379,17 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                         log_skipped_token(mint, f"High tax: {tax_bps/100:.1f}%")
                         return False
                 
-                # Check sell route availability before buying (skip for PumpFun early entries)
-                if not is_pumpfun:
+                # Check sell route availability before buying (skip for PumpFun early entries and ultra-fresh tokens)
+                if not is_pumpfun and not ultra_fresh:
                     estimated_tokens = int(buy_amt * 1e9 * 100)  # Rough estimate
                     sell_quote = await get_jupiter_quote(mint, "So11111111111111111111111111111111111111112", estimated_tokens, 500)
                     if not sell_quote or int(sell_quote.get("outAmount", 0)) == 0:
                         log_skipped_token(mint, "No sell route available")
                         record_skip("no_route")
                         return False
+                elif ultra_fresh and not is_pumpfun:
+                    # Skip sell route check for ultra-fresh Raydium tokens - they often don't have routes initially
+                    logging.info(f"[Buy] Skipping sell route check for ultra-fresh token {mint[:8]}...")
                 else:
                     # PumpFun tokens use bonding curve, skip sell route check and wait for initialization
                     logging.info(f"[Buy] Skipping sell route check for PumpFun token {mint[:8]}...")
