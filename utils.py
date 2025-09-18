@@ -191,9 +191,8 @@ last_seen_token = {"Raydium": time.time(), "Jupiter": time.time(), "PumpFun": ti
 # Alert tracking for cooldowns
 last_alert_times = {}
 
-# Track PumpFun and trending tokens
-pumpfun_tokens = {}
-trending_tokens = set()
+# Import shared state to avoid circular imports
+from shared_state import pumpfun_tokens, trending_tokens
 
 # Known token decimals
 KNOWN_TOKEN_DECIMALS = {
