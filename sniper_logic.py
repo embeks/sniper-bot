@@ -324,7 +324,7 @@ class SniperBot:
             return False
     
     async def process_pumpfun_transactions(self, max_signatures=1000):
-        """Process PumpFun transactions to detect new token creations"""
+        """Process PumpFun transactions to detect new token creations - FIXED VERSION"""
         try:
             logging.info("[PumpFun] Starting transaction scan...")
             
@@ -414,10 +414,68 @@ class SniperBot:
                         created_tokens.append(token_info)
                         logging.info(f"[PumpFun] Found new token: {token_address}")
                         
-                        # Check buy conditions immediately
+                        # CRITICAL FIX: Actually buy the token here instead of deferring
                         if await self.should_buy_token(token_address):
-                            logging.info(f"[PumpFun] Token {token_address} meets buy criteria!")
-                            # The main loop will handle the actual buy
+                            logging.info(f"[PumpFun] Token {token_address} meets buy criteria - BUYING NOW!")
+                            
+                            # Check if it's already bought to avoid duplicates
+                            if token_address in already_bought:
+                                logging.info(f"[PumpFun] Token {token_address} already bought, skipping")
+                                continue
+                            
+                            # Determine buy amount based on token state
+                            graduated = await check_pumpfun_graduation(token_address)
+                            buy_amount = PUMPFUN_MIGRATION_BUY if graduated else PUMPFUN_EARLY_BUY
+                            buy_reason = "PumpFun Graduate" if graduated else "Fresh PumpFun"
+                            
+                            # Mark as attempting buy
+                            recent_buy_attempts[token_address] = time.time()
+                            
+                            # Send alert
+                            if should_send_telegram(f"pumpfun_detect_{token_address}"):
+                                await send_telegram_alert(
+                                    f"🎯 VERIFIED PUMPFUN TOKEN\n\n"
+                                    f"Token: `{token_address}`\n"
+                                    f"Status: {buy_reason}\n"
+                                    f"Age: {token_age}s\n"
+                                    f"Bonding Curve: {sol_amount:.6f} SOL\n"
+                                    f"Buy Amount: {buy_amount} SOL\n\n"
+                                    f"Attempting snipe..."
+                                )
+                            
+                            # CRITICAL: Execute the buy with is_pumpfun=True
+                            try:
+                                success = await buy_token(
+                                    token_address, 
+                                    amount=buy_amount, 
+                                    is_pumpfun=True,  # THIS IS CRITICAL!
+                                    is_migration=graduated
+                                )
+                                
+                                if success:
+                                    already_bought.add(token_address)
+                                    if BLACKLIST_AFTER_BUY:
+                                        BLACKLIST.add(token_address)
+                                    
+                                    if should_send_telegram(f"pumpfun_success_{token_address}"):
+                                        await send_telegram_alert(
+                                            f"✅ PUMPFUN SNIPE SUCCESS!\n"
+                                            f"Token: {token_address[:16]}...\n"
+                                            f"Amount: {buy_amount} SOL\n"
+                                            f"Type: {buy_reason}"
+                                        )
+                                    asyncio.create_task(wait_and_auto_sell(token_address))
+                                else:
+                                    if should_send_telegram(f"pumpfun_fail_{token_address}"):
+                                        await send_telegram_alert(
+                                            f"❌ PumpFun snipe failed\n"
+                                            f"Token: {token_address[:16]}..."
+                                        )
+                                    mark_broken_token(token_address, 0)
+                            except Exception as e:
+                                logging.error(f"[PUMPFUN] Buy error: {e}")
+                                if should_send_telegram(f"pumpfun_error_{token_address}"):
+                                    await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
                             
                     except Exception as e:
                         logging.error(f"[PumpFun] Error processing tx {signature}: {e}")
@@ -432,6 +490,32 @@ class SniperBot:
 
 # Create global instance
 sniper_bot = SniperBot()
+
+# ============================================
+# NEW: Background PumpFun transaction scanner task
+# ============================================
+async def pumpfun_tx_scanner_task():
+    """Background task to continuously scan PumpFun transactions"""
+    logging.info("[PumpFun Scanner] Starting background transaction scanner...")
+    
+    if should_send_telegram("pumpfun_scanner_start"):
+        await send_telegram_alert("🔍 PumpFun Transaction Scanner ACTIVE - Scanning every 5 seconds")
+    
+    while True:
+        try:
+            if not is_bot_running():
+                await asyncio.sleep(5)
+                continue
+            
+            # Process recent transactions
+            await sniper_bot.process_pumpfun_transactions(max_signatures=100)
+            
+            # Wait before next scan
+            await asyncio.sleep(5)
+            
+        except Exception as e:
+            logging.error(f"[PumpFun Scanner] Error in scanner loop: {e}")
+            await asyncio.sleep(10)
 
 # ============================================
 # CRITICAL FIX: ULTRA-FRESH PUMPFUN TOKEN VERIFICATION
@@ -2298,6 +2382,9 @@ async def start_sniper():
     for listener in listeners:
         task = asyncio.create_task(mempool_listener(listener))
         TASKS.append(task)
+    
+    # CRITICAL FIX: Add the PumpFun transaction scanner task
+    TASKS.append(asyncio.create_task(pumpfun_tx_scanner_task()))
     
     # Only start enabled scanners
     if not SKIP_TRENDING_SCANNER:
