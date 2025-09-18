@@ -1,6 +1,6 @@
-# dexscreener_monitor.py - COMPLETE FIXED VERSION WITH EXPLICIT AMOUNTS
+# dexscreener_monitor.py - FIXED VERSION WITH PUMPFUN DETECTION
 """
-ELITE DEXSCREENER MONITOR - Fixed API and improved detection
+ELITE DEXSCREENER MONITOR - Fixed to not interfere with ultra-fresh tokens
 """
 
 import asyncio
@@ -16,7 +16,8 @@ from utils import (
     buy_token, send_telegram_alert, is_bot_running,
     get_liquidity_and_ownership, wait_and_auto_sell,
     BROKEN_TOKENS, mark_broken_token,
-    increment_stat, update_last_activity, HTTPManager
+    increment_stat, update_last_activity, HTTPManager,
+    is_pumpfun_token  # Import PumpFun detection
 )
 
 load_dotenv()
@@ -29,6 +30,9 @@ MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 500))  # Lower threshold
 MIN_BUYS = int(os.getenv("MIN_BUYS", 5))  # Less strict
 MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", 15))  # Allow more impact
 
+# CRITICAL: Skip ultra-fresh tokens to let mempool handle them
+MIN_AGE_MINUTES = float(os.getenv("DEXSCREENER_MIN_AGE_MINUTES", 1.5))  # Don't process tokens < 1.5 minutes old
+
 # Elite settings
 ELITE_MODE = os.getenv("ELITE_MODE", "true").lower() == "true"
 PUMPFUN_PRIORITY = os.getenv("PUMPFUN_PRIORITY", "true").lower() == "true"
@@ -37,13 +41,14 @@ AUTO_BUY = os.getenv("AUTO_BUY", "true").lower() == "true"
 # FIXED: Default buy amounts - never mutate ENV
 DEFAULT_BUY_AMOUNT = float(os.getenv("BUY_AMOUNT_SOL", 0.02))
 PUMPFUN_MIGRATION_BUY = float(os.getenv("PUMPFUN_MIGRATION_BUY", 0.1))
+PUMPFUN_EARLY_BUY = float(os.getenv("PUMPFUN_EARLY_AMOUNT", 0.02))
 
 # Track seen pools to avoid duplicates
 seen_pools: Set[str] = set()
 pool_creation_times: Dict[str, datetime] = {}
 
 class DexScreenerMonitor:
-    """Fixed DexScreener monitor with proper API handling"""
+    """Fixed DexScreener monitor that doesn't interfere with mempool detection"""
     
     def __init__(self):
         self.session = None
@@ -52,6 +57,7 @@ class DexScreenerMonitor:
             "pools_found": 0,
             "pools_bought": 0,
             "pools_skipped": 0,
+            "ultra_fresh_skipped": 0,
             "last_check": None,
             "api_failures": 0
         }
@@ -62,10 +68,11 @@ class DexScreenerMonitor:
         await send_telegram_alert(
             "🎯 DexScreener Monitor ACTIVE\n\n"
             f"Check interval: {CHECK_INTERVAL}s\n"
+            f"Min age: {MIN_AGE_MINUTES:.1f} minutes\n"
             f"Min liquidity: ${MIN_LIQUIDITY_USD:,.0f}\n"
             f"Min volume: ${MIN_VOLUME_USD:,.0f}\n"
             f"Auto-buy: {'ON' if AUTO_BUY else 'OFF'}\n\n"
-            "Hunting for opportunities..."
+            "Monitoring established pools..."
         )
         
         await self.monitor_loop()
@@ -161,7 +168,7 @@ class DexScreenerMonitor:
             return []
     
     def filter_new_pools(self, pairs: List[Dict]) -> List[Dict]:
-        """Filter for genuinely new pools"""
+        """Filter for genuinely new pools - SKIP ULTRA-FRESH"""
         new_pools = []
         current_time = datetime.now()
         
@@ -178,6 +185,12 @@ class DexScreenerMonitor:
                     pool_age_ms = current_time.timestamp() * 1000 - created_at
                     pool_age_minutes = pool_age_ms / (1000 * 60)
                     
+                    # CRITICAL FIX: Skip ultra-fresh pools
+                    if pool_age_minutes < MIN_AGE_MINUTES:
+                        logging.debug(f"[DexScreener] Skipping ultra-fresh pool (age: {pool_age_minutes:.2f} min)")
+                        self.stats["ultra_fresh_skipped"] += 1
+                        continue
+                    
                     if pool_age_minutes <= MAX_AGE_MINUTES:
                         pair["age_minutes"] = pool_age_minutes
                         new_pools.append(pair)
@@ -190,7 +203,7 @@ class DexScreenerMonitor:
         return new_pools
     
     async def process_pool(self, pool: Dict) -> bool:
-        """Process a pool and decide whether to buy - FIXED with explicit amounts"""
+        """Process a pool and decide whether to buy - WITH PUMPFUN DETECTION"""
         try:
             self.stats["pools_found"] += 1
             
@@ -218,11 +231,30 @@ class DexScreenerMonitor:
             buys_h1 = txns.get("h1", {}).get("buys", 0)
             sells_h1 = txns.get("h1", {}).get("sells", 0)
             
-            # Check if PumpFun graduate
-            is_pumpfun = "pump" in token_name.lower() or market_cap == 69420
+            # CRITICAL FIX: Double-check age to prevent ultra-fresh processing
+            if age_minutes < MIN_AGE_MINUTES:
+                logging.info(f"[DexScreener] Skipping {token_symbol} - too fresh ({age_minutes:.1f} min < {MIN_AGE_MINUTES} min)")
+                self.stats["ultra_fresh_skipped"] += 1
+                return False
+            
+            # ENHANCED: Properly detect PumpFun tokens
+            is_pumpfun = False
+            try:
+                # Check if it's actually a PumpFun token
+                is_pumpfun = await is_pumpfun_token(token_address, assume_fresh=False)
+                if not is_pumpfun:
+                    # Secondary check: name/market cap indicators
+                    is_pumpfun = ("pump" in token_name.lower() or 
+                                 market_cap == 69420 or 
+                                 "graduated" in token_name.lower())
+            except Exception as e:
+                logging.debug(f"[DexScreener] PumpFun check error: {e}")
+                # Fallback to name detection
+                is_pumpfun = "pump" in token_name.lower() or market_cap == 69420
             
             logging.info(
                 f"[DexScreener] Analyzing: {token_symbol}\n"
+                f"  Type: {'PumpFun' if is_pumpfun else 'Regular'}\n"
                 f"  Age: {age_minutes:.1f} mins\n"
                 f"  Liquidity: ${liquidity_usd:,.0f}\n"
                 f"  Volume: ${volume_h1:,.0f}\n"
@@ -242,6 +274,7 @@ class DexScreenerMonitor:
                 f"{alert_emoji} {priority} FOUND!\n\n"
                 f"Token: {token_symbol}\n"
                 f"Address: `{token_address}`\n"
+                f"Type: {'PumpFun' if is_pumpfun else 'Regular'}\n"
                 f"Age: {age_minutes:.1f} minutes\n"
                 f"Liquidity: ${liquidity_usd:,.0f}\n"
                 f"Volume (1h): ${volume_h1:,.0f}\n"
@@ -250,26 +283,36 @@ class DexScreenerMonitor:
                 f"{'🚀 Attempting buy...' if AUTO_BUY else '⏸ Manual mode'}"
             )
             
-            # Auto-buy if enabled - FIXED: Use explicit amount
+            # Auto-buy if enabled - WITH PUMPFUN FLAG
             if AUTO_BUY and token_address:
                 try:
-                    # FIXED: Determine buy amount based on token type
+                    # Determine buy amount based on token type
                     if is_pumpfun:
-                        buy_amount = PUMPFUN_MIGRATION_BUY
+                        # Check if it's a migration or early
+                        if liquidity_usd > 10000:  # Likely graduated
+                            buy_amount = PUMPFUN_MIGRATION_BUY
+                        else:
+                            buy_amount = PUMPFUN_EARLY_BUY
                     else:
                         buy_amount = DEFAULT_BUY_AMOUNT
                     
-                    logging.info(f"[DexScreener] Attempting buy with {buy_amount} SOL")
+                    logging.info(f"[DexScreener] Attempting buy with {buy_amount} SOL (PumpFun: {is_pumpfun})")
                     
-                    # FIXED: Pass explicit amount to buy_token
-                    success = await buy_token(token_address, amount=buy_amount)
+                    # CRITICAL FIX: Pass is_pumpfun flag to buy_token
+                    success = await buy_token(
+                        token_address, 
+                        amount=buy_amount,
+                        is_pumpfun=is_pumpfun  # Pass the flag!
+                    )
                     
                     if success:
                         self.stats["pools_bought"] += 1
                         asyncio.create_task(wait_and_auto_sell(token_address))
                         return True
                     else:
-                        mark_broken_token(token_address, 0)
+                        # Don't mark as broken if it's PumpFun - might need different buy path
+                        if not is_pumpfun:
+                            mark_broken_token(token_address, 0)
                         
                 except Exception as e:
                     logging.error(f"[DexScreener] Buy error: {e}")
@@ -281,7 +324,7 @@ class DexScreenerMonitor:
             return False
     
     async def should_buy_pool(self, pool: Dict) -> bool:
-        """Determine if pool meets buying criteria - LESS STRICT"""
+        """Determine if pool meets buying criteria - ADJUSTED FOR MATURITY"""
         try:
             # Extract metrics
             liquidity_usd = float(pool.get("liquidity", {}).get("usd", 0))
@@ -292,25 +335,25 @@ class DexScreenerMonitor:
             buys_h1 = txns.get("h1", {}).get("buys", 0)
             sells_h1 = txns.get("h1", {}).get("sells", 0)
             
-            # Basic filters - LESS STRICT
+            # Basic filters - Stricter for older pools
             if liquidity_usd < MIN_LIQUIDITY_USD:
                 logging.info(f"[DexScreener] Skip - Low liquidity: ${liquidity_usd:.0f}")
                 return False
             
-            # Only check volume for older pools
-            if volume_h1 < MIN_VOLUME_USD and age_minutes > 3:
+            # Volume check - always apply for DexScreener pools since they're older
+            if volume_h1 < MIN_VOLUME_USD:
                 logging.info(f"[DexScreener] Skip - Low volume: ${volume_h1:.0f}")
                 return False
             
-            # Only check buys for older pools
-            if buys_h1 < MIN_BUYS and age_minutes > 2:
+            # Buys check - always apply
+            if buys_h1 < MIN_BUYS:
                 logging.info(f"[DexScreener] Skip - Low buys: {buys_h1}")
                 return False
             
-            # Check buy/sell ratio (avoid dumps) - LESS STRICT
+            # Check buy/sell ratio (avoid dumps)
             if sells_h1 > 0 and buys_h1 > 0:
                 buy_sell_ratio = buys_h1 / sells_h1
-                if buy_sell_ratio < 0.3:  # Very lenient
+                if buy_sell_ratio < 0.5:  # Stricter for older pools
                     logging.info(f"[DexScreener] Skip - Bad ratio: {buy_sell_ratio:.2f}")
                     return False
             
@@ -318,14 +361,14 @@ class DexScreenerMonitor:
             if ELITE_MODE:
                 # Check price change
                 price_change = pool.get("priceChange", {}).get("h1", 0)
-                if price_change < -30:  # Only skip major dumps
+                if price_change < -20:  # Stricter for older pools
                     logging.info(f"[DexScreener] Skip - Dumping: {price_change:.1f}%")
                     return False
             
-            # Special case: Always buy PumpFun graduates
+            # Special case: Always buy PumpFun graduates with good metrics
             token_name = pool.get("baseToken", {}).get("name", "").lower()
-            if PUMPFUN_PRIORITY and "pump" in token_name:
-                logging.info(f"[DexScreener] PRIORITY - PumpFun graduate detected!")
+            if PUMPFUN_PRIORITY and "pump" in token_name and liquidity_usd > 5000:
+                logging.info(f"[DexScreener] PRIORITY - PumpFun graduate with good liquidity!")
                 return True
             
             return True
@@ -340,6 +383,7 @@ class DexScreenerMonitor:
             "pools_found": self.stats["pools_found"],
             "pools_bought": self.stats["pools_bought"],
             "pools_skipped": self.stats["pools_skipped"],
+            "ultra_fresh_skipped": self.stats["ultra_fresh_skipped"],
             "success_rate": (self.stats["pools_bought"] / max(1, self.stats["pools_found"])) * 100,
             "api_failures": self.stats["api_failures"],
             "last_check": self.stats["last_check"]
