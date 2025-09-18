@@ -1249,15 +1249,17 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 pool_liquidity = lp_data.get("liquidity", 0)
             
             # ============================================
-            # CRITICAL: HANDLE ZERO LIQUIDITY
+            # CRITICAL FIX: HANDLE ZERO LIQUIDITY PROPERLY
             # ============================================
             if pool_liquidity == 0:
-                # Check if it's actually PumpFun that was misdetected
+                # Double-check if this is actually a PumpFun token
+                logging.info(f"[Buy] Zero liquidity detected - checking if PumpFun token...")
                 is_verified_pumpfun = await is_pumpfun_token(mint, assume_fresh=ultra_fresh)
                 
                 if is_verified_pumpfun:
                     # Redirect to PumpFun path
                     logging.info(f"[Buy] Zero LP token is PumpFun - redirecting to direct buy")
+                    # Recursive call with is_pumpfun=True flag
                     return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=is_migration)
                 else:
                     # Skip zero liquidity non-PumpFun tokens
