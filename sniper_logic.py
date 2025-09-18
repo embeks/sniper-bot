@@ -15,9 +15,6 @@ import httpx
 import random
 from dexscreener_monitor import start_dexscreener_monitor
 
-# CRITICAL FIX: Import pumpfun_tokens from shared module
-from shared import pumpfun_tokens
-
 from utils import (
     is_valid_mint, buy_token, log_skipped_token, send_telegram_alert,
     get_trending_mints, wait_and_auto_sell, get_liquidity_and_ownership,
@@ -150,6 +147,7 @@ BLACKLIST = set()
 TASKS = []
 
 # Enhanced tracking
+pumpfun_tokens = {}
 migration_watch_list = set()
 already_bought = set()
 recent_buy_attempts = {}
@@ -247,18 +245,6 @@ class SniperBot:
                 
                 if pumpfun_indicators >= PUMPFUN_MIN_INDICATORS:
                     logging.info(f"[PUMPFUN] Token creation detected via logs (score: {pumpfun_indicators})")
-                    
-                    # CRITICAL FIX: Extract and register token immediately
-                    token_mint = self._extract_pumpfun_token(tx)
-                    if token_mint and token_mint not in pumpfun_tokens:
-                        pumpfun_tokens[token_mint] = {
-                            "discovered": time.time(),
-                            "verified": True,
-                            "migrated": False,
-                            "tradeable": True
-                        }
-                        logging.info(f"[PUMPFUN] Pre-registered token {token_mint[:8]}... in global dict")
-                    
                     return True
             
             return False
@@ -394,16 +380,6 @@ class SniperBot:
                         if not token_address:
                             continue
                         
-                        # CRITICAL FIX: Register token immediately in shared dict
-                        if token_address not in pumpfun_tokens:
-                            pumpfun_tokens[token_address] = {
-                                "discovered": time.time(),
-                                "verified": True,
-                                "migrated": False,
-                                "tradeable": True
-                            }
-                            logging.info(f"[PumpFun] Registered token {token_address[:8]}... in global dict")
-                        
                         # Check if bonding curve has been created
                         bonding_curve = self._get_bonding_curve(token_address)
                         if not bonding_curve:
@@ -515,7 +491,9 @@ class SniperBot:
 # Create global instance
 sniper_bot = SniperBot()
 
+# ============================================
 # NEW: Background PumpFun transaction scanner task
+# ============================================
 async def pumpfun_tx_scanner_task():
     """Background task to continuously scan PumpFun transactions"""
     logging.info("[PumpFun Scanner] Starting background transaction scanner...")
@@ -538,7 +516,8 @@ async def pumpfun_tx_scanner_task():
         except Exception as e:
             logging.error(f"[PumpFun Scanner] Error in scanner loop: {e}")
             await asyncio.sleep(10)
-            # ============================================
+
+# ============================================
 # CRITICAL FIX: ULTRA-FRESH PUMPFUN TOKEN VERIFICATION
 # ============================================
 async def is_pumpfun_token(mint: str) -> bool:
@@ -1163,7 +1142,8 @@ async def pumpfun_migration_monitor():
         except Exception as e:
             logging.error(f"[Migration Monitor] Error: {e}")
             await asyncio.sleep(10)
-            async def scan_pumpfun_graduations():
+
+async def scan_pumpfun_graduations():
     """Scan PumpFun for tokens about to graduate"""
     try:
         url = "https://frontend-api.pump.fun/coins?offset=0&limit=50&sort=usd_market_cap&order=desc"
@@ -1180,7 +1160,6 @@ async def pumpfun_migration_monitor():
                     continue
                 
                 if market_cap > PUMPFUN_GRADUATION_MC * 0.8:
-                    # CRITICAL FIX: Register token immediately in shared dict
                     if mint not in pumpfun_tokens:
                         pumpfun_tokens[mint] = {
                             "discovered": time.time(),
@@ -1188,7 +1167,6 @@ async def pumpfun_migration_monitor():
                             "market_cap": market_cap,
                             "verified": True  # Mark as verified since it's from PumpFun API
                         }
-                        logging.info(f"[PumpFun] Registered graduating token {mint[:8]}... in global dict")
                     
                     if mint not in migration_watch_list:
                         migration_watch_list.add(mint)
@@ -1489,16 +1467,6 @@ async def mempool_listener(name, program_id=None):
                             # CRITICAL FIX: EARLY PUMPFUN VERIFICATION WITH ULTRA-FRESH SUPPORT
                             # ============================================
                             if name == "PumpFun":
-                                # CRITICAL FIX: Register token immediately in shared dict
-                                if token_mint not in pumpfun_tokens:
-                                    pumpfun_tokens[token_mint] = {
-                                        "discovered": time.time(),
-                                        "verified": True,
-                                        "migrated": False,
-                                        "tradeable": True
-                                    }
-                                    logging.info(f"[PumpFun] Registered token {token_mint[:8]}... in global dict")
-                                
                                 # Skip if already processed
                                 if token_mint in already_bought:
                                     continue
@@ -1555,11 +1523,6 @@ async def mempool_listener(name, program_id=None):
                                         has_bonding_curve = True
                                         sol_amount_in_curve = bc_info.value.lamports / 1e9
                                         logging.info(f"[PumpFun] Token {token_mint[:8]}... has bonding curve with {sol_amount_in_curve:.6f} SOL")
-                                        
-                                        # Update pumpfun_tokens with bonding curve info
-                                        if token_mint in pumpfun_tokens:
-                                            pumpfun_tokens[token_mint]["ultra_fresh"] = is_ultra_fresh
-                                            pumpfun_tokens[token_mint]["bonding_curve_sol"] = sol_amount_in_curve
                                     else:
                                         logging.warning(f"[PumpFun] Token {token_mint[:8]}... NO bonding curve found - SKIPPING")
                                         record_skip("no_bonding_curve")
@@ -1588,6 +1551,18 @@ async def mempool_listener(name, program_id=None):
                                     logging.warning(f"[PumpFun] Token {token_mint[:8]}... doesn't meet buy criteria - SKIPPING")
                                     record_skip("invalid_pumpfun")
                                     continue
+                                
+                                # Track the token
+                                if token_mint not in pumpfun_tokens:
+                                    pumpfun_tokens[token_mint] = {
+                                        "discovered": time.time(),
+                                        "migrated": False,
+                                        "verified": True,
+                                        "tradeable": True,
+                                        "ultra_fresh": is_ultra_fresh,
+                                        "bonding_curve_sol": sol_amount_in_curve
+                                    }
+                                    logging.info(f"[PumpFun] Tracked verified token: {token_mint[:8]}...")
                                 
                                 # Now proceed with the buy
                                 if should_buy:
@@ -1654,11 +1629,6 @@ async def mempool_listener(name, program_id=None):
                                 detected_pools[token_mint] = pool_id
                                 raydium.register_new_pool(pool_id, token_mint)
                                 logging.info(f"[Raydium] Registered pool {pool_id[:8]}... for token {token_mint[:8]}...")
-                                
-                                # CRITICAL FIX: Check if this is actually a PumpFun token being detected by Raydium
-                                if token_mint in pumpfun_tokens:
-                                    logging.info(f"[Raydium] Token {token_mint[:8]}... is a known PumpFun token - skipping Raydium processing")
-                                    continue
                             
                             # ============================================
                             # CRITICAL AGE ENFORCEMENT
@@ -1790,7 +1760,6 @@ async def mempool_listener(name, program_id=None):
                                             if should_send_telegram(f"raydium_error_{token_mint}"):
                                                 await send_telegram_alert(f"❌ Buy error: {str(e)[:100]}")
                     
-                    except async
                     except asyncio.TimeoutError:
                         continue
                     except websockets.exceptions.ConnectionClosed as e:
