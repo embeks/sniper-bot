@@ -1383,9 +1383,13 @@ async def mempool_listener(name, program_id=None):
                             # CRITICAL FIX: EARLY PUMPFUN VERIFICATION WITH ULTRA-FRESH SUPPORT
                             # ============================================
                             if name == "PumpFun":
+                                # Skip if already processed
+                                if token_mint in already_bought:
+                                    continue
+                                
                                 # First check if token is actually ultra-fresh (≤30s old)
-                                token_age_seconds = None
                                 is_ultra_fresh = False
+                                token_age_seconds = None
                                 
                                 try:
                                     # Use is_fresh_token to check if under 30 seconds
@@ -1406,8 +1410,6 @@ async def mempool_listener(name, program_id=None):
                                             logging.info(f"[PumpFun] Token {token_mint[:8]}... is 30-60s old - fresh but not ultra")
                                         else:
                                             # Older than 60s - definitely too old
-                                            is_ultra_fresh = False
-                                            # Don't even bother processing old tokens
                                             logging.info(f"[PumpFun] Token {token_mint[:8]}... is >60s old - TOO OLD, skipping")
                                             record_skip("old_token")
                                             continue  # SKIP OLD TOKENS IMMEDIATELY
@@ -1419,51 +1421,125 @@ async def mempool_listener(name, program_id=None):
                                     record_skip("age_check_failed")
                                     continue
                                 
-                                # Only process ultra-fresh tokens (under 30s)
-                                if is_ultra_fresh:
-                                    # Check if bonding curve EXISTS (even with 0 SOL)
-                                    try:
-                                        mint_pubkey = Pubkey.from_string(token_mint)
-                                        bonding_curve_seed = b"bonding-curve"
-                                        pumpfun_program = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-                                        bonding_curve, _ = Pubkey.find_program_address(
-                                            [bonding_curve_seed, bytes(mint_pubkey)],
-                                            pumpfun_program
-                                        )
-                                        
-                                        bc_info = rpc.get_account_info(bonding_curve)
-                                        if bc_info and bc_info.value:
-                                            # Bonding curve exists - accept it even with 0 SOL
-                                            sol_amount = bc_info.value.lamports / 1e9
-                                            logging.info(f"[PumpFun] ✅ ULTRA-FRESH token {token_mint[:8]}... (<30s) with bonding curve ({sol_amount:.6f} SOL) - ACCEPTING!")
-                                            is_valid_pumpfun = True
-                                        else:
-                                            logging.warning(f"[PumpFun] Ultra-fresh token {token_mint[:8]}... but NO bonding curve found - SKIPPING")
-                                            record_skip("no_bonding_curve")
-                                            continue
-                                    except Exception as e:
-                                        logging.error(f"[PumpFun] Error checking bonding curve: {e}")
-                                        record_skip("bonding_curve_error")
-                                        continue
-                                else:
-                                    # For tokens 30-60s old, use standard verification (requires SOL)
-                                    is_valid_pumpfun = await is_pumpfun_token(token_mint)
-                                    
-                                    if not is_valid_pumpfun:
-                                        logging.warning(f"[PumpFun] Token {token_mint[:8]}... (30-60s old) requires SOL in bonding curve - SKIPPING")
-                                        record_skip("no_tradeable_bc")
-                                        continue  # Skip this token
+                                # Check bonding curve for all fresh tokens (under 60s)
+                                has_bonding_curve = False
+                                sol_amount_in_curve = 0
                                 
-                                # Only track verified PumpFun tokens
+                                try:
+                                    mint_pubkey = Pubkey.from_string(token_mint)
+                                    bonding_curve_seed = b"bonding-curve"
+                                    pumpfun_program = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+                                    bonding_curve, _ = Pubkey.find_program_address(
+                                        [bonding_curve_seed, bytes(mint_pubkey)],
+                                        pumpfun_program
+                                    )
+                                    
+                                    bc_info = rpc.get_account_info(bonding_curve)
+                                    if bc_info and bc_info.value:
+                                        has_bonding_curve = True
+                                        sol_amount_in_curve = bc_info.value.lamports / 1e9
+                                        logging.info(f"[PumpFun] Token {token_mint[:8]}... has bonding curve with {sol_amount_in_curve:.6f} SOL")
+                                    else:
+                                        logging.warning(f"[PumpFun] Token {token_mint[:8]}... NO bonding curve found - SKIPPING")
+                                        record_skip("no_bonding_curve")
+                                        continue
+                                except Exception as e:
+                                    logging.error(f"[PumpFun] Error checking bonding curve: {e}")
+                                    record_skip("bonding_curve_error")
+                                    continue
+                                
+                                # Determine if we should buy based on freshness and bonding curve
+                                should_buy = False
+                                buy_reason = ""
+                                
+                                if is_ultra_fresh and has_bonding_curve:
+                                    # Ultra-fresh with ANY bonding curve = BUY
+                                    should_buy = True
+                                    buy_reason = "Ultra-fresh PumpFun"
+                                    logging.info(f"[PumpFun] ✅ ULTRA-FRESH token {token_mint[:8]}... (<30s) with bonding curve - WILL BUY!")
+                                elif not is_ultra_fresh and has_bonding_curve and sol_amount_in_curve >= 0.001:
+                                    # 30-60s old needs SOL in bonding curve
+                                    should_buy = True
+                                    buy_reason = "Fresh PumpFun with SOL"
+                                    logging.info(f"[PumpFun] ✅ Fresh token {token_mint[:8]}... (30-60s) with {sol_amount_in_curve:.6f} SOL - WILL BUY!")
+                                else:
+                                    # Don't buy
+                                    logging.warning(f"[PumpFun] Token {token_mint[:8]}... doesn't meet buy criteria - SKIPPING")
+                                    record_skip("invalid_pumpfun")
+                                    continue
+                                
+                                # Track the token
                                 if token_mint not in pumpfun_tokens:
                                     pumpfun_tokens[token_mint] = {
                                         "discovered": time.time(),
                                         "migrated": False,
-                                        "verified": True,  # Add verification flag
-                                        "tradeable": True,  # Confirmed tradeable (may have 0 SOL if ultra-fresh)
-                                        "ultra_fresh": is_ultra_fresh if 'is_ultra_fresh' in locals() else False
+                                        "verified": True,
+                                        "tradeable": True,
+                                        "ultra_fresh": is_ultra_fresh,
+                                        "bonding_curve_sol": sol_amount_in_curve
                                     }
-                                    logging.info(f"[PumpFun] VERIFIED tradeable token with bonding curve: {token_mint[:8]}...")
+                                    logging.info(f"[PumpFun] Tracked verified token: {token_mint[:8]}...")
+                                
+                                # Now proceed with the buy
+                                if should_buy:
+                                    # Check if graduated
+                                    graduated = await check_pumpfun_graduation(token_mint)
+                                    if graduated and token_mint in pumpfun_tokens:
+                                        pumpfun_tokens[token_mint]["migrated"] = True
+                                    
+                                    # Determine buy amount
+                                    if graduated:
+                                        buy_amount = PUMPFUN_MIGRATION_BUY
+                                        buy_reason = "PumpFun Graduate"
+                                    else:
+                                        buy_amount = PUMPFUN_EARLY_BUY
+                                    
+                                    # Mark as attempting buy
+                                    recent_buy_attempts[token_mint] = time.time()
+                                    
+                                    # Send alert
+                                    if should_send_telegram(f"pumpfun_detect_{token_mint}"):
+                                        await send_telegram_alert(
+                                            f"🎯 VERIFIED PUMPFUN TOKEN\n\n"
+                                            f"Token: `{token_mint}`\n"
+                                            f"Status: {buy_reason}\n"
+                                            f"Age: {'<30s' if is_ultra_fresh else '30-60s'}\n"
+                                            f"Bonding Curve: {sol_amount_in_curve:.6f} SOL\n"
+                                            f"Buy Amount: {buy_amount} SOL\n\n"
+                                            f"Attempting snipe..."
+                                        )
+                                    
+                                    # CRITICAL: Pass is_pumpfun=True to buy_token
+                                    try:
+                                        success = await buy_token(token_mint, amount=buy_amount, is_pumpfun=True, is_migration=graduated)
+                                        
+                                        if success:
+                                            already_bought.add(token_mint)
+                                            if BLACKLIST_AFTER_BUY:
+                                                BLACKLIST.add(token_mint)
+                                            
+                                            if should_send_telegram(f"pumpfun_success_{token_mint}"):
+                                                await send_telegram_alert(
+                                                    f"✅ PUMPFUN SNIPE SUCCESS!\n"
+                                                    f"Token: {token_mint[:16]}...\n"
+                                                    f"Amount: {buy_amount} SOL\n"
+                                                    f"Type: {buy_reason}"
+                                                )
+                                            asyncio.create_task(wait_and_auto_sell(token_mint))
+                                        else:
+                                            if should_send_telegram(f"pumpfun_fail_{token_mint}"):
+                                                await send_telegram_alert(
+                                                    f"❌ PumpFun snipe failed\n"
+                                                    f"Token: {token_mint[:16]}..."
+                                                )
+                                            mark_broken_token(token_mint, 0)
+                                    except Exception as e:
+                                        logging.error(f"[PUMPFUN] Buy error: {e}")
+                                        if should_send_telegram(f"pumpfun_error_{token_mint}"):
+                                            await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
+                                
+                                # End of PumpFun processing - skip to next token
+                                continue
                             
                             if name == "Raydium" and pool_id and token_mint:
                                 detected_pools[token_mint] = pool_id
@@ -1477,6 +1553,10 @@ async def mempool_listener(name, program_id=None):
                                 if token_mint not in BROKEN_TOKENS and token_mint not in BLACKLIST:
                                     if token_mint in already_bought:
                                         continue
+                                    
+                                    # PumpFun tokens are handled in their own section above
+                                    if name == "PumpFun":
+                                        continue  # Already handled
                                     
                                     # STRICT AGE CHECK - USE ENV VARIABLE
                                     if STRICT_AGE_CHECK:
@@ -1496,87 +1576,7 @@ async def mempool_listener(name, program_id=None):
                                     logging.info(f"[{name}] Token {token_mint[:8]}... PASSED age check (<{MAX_TOKEN_AGE_SECONDS}s)")
                                     
                                     # Continue with buying logic for FRESH tokens only
-                                    if name == "PumpFun":
-                                        # Double-check bonding curve still exists and is tradeable before buy attempt
-                                        if not await is_pumpfun_token(token_mint):
-                                            logging.error(f"[PumpFun] Token {token_mint[:8]}... lost bonding curve or became untradeable - ABORT")
-                                            mark_broken_token(token_mint, 0)
-                                            continue
-                                        
-                                        # Increased delay to ensure token is fully initialized
-                                        await asyncio.sleep(PUMPFUN_INIT_DELAY)
-                                        
-                                        # Triple-check after delay
-                                        if not await is_pumpfun_token(token_mint):
-                                            logging.error(f"[PumpFun] Token {token_mint[:8]}... not tradeable after init delay - ABORT")
-                                            mark_broken_token(token_mint, 0)
-                                            continue
-                                        
-                                        graduated = await check_pumpfun_graduation(token_mint)
-                                        if graduated and token_mint in pumpfun_tokens:
-                                            pumpfun_tokens[token_mint]["migrated"] = True
-                                        
-                                        lp_data = await get_liquidity_and_ownership(token_mint)
-                                        lp_amount = lp_data.get("liquidity", 0) if lp_data else 0
-                                        
-                                        if lp_amount == 0:
-                                            logging.info(f"[PUMPFUN] New token {token_mint[:8]}... - No LP yet, checking if tradeable")
-                                            lp_amount = 0.1
-                                        
-                                        min_lp_for_pumpfun = MIN_LP_FOR_PUMPFUN if not graduated else RUG_LP_THRESHOLD
-                                        
-                                        if lp_amount < min_lp_for_pumpfun and lp_amount > 0:
-                                            logging.info(f"[PUMPFUN] Low LP: {lp_amount:.2f} SOL but proceeding cautiously")
-                                        
-                                        recent_buy_attempts[token_mint] = time.time()
-                                        
-                                        if graduated:
-                                            buy_amount = PUMPFUN_MIGRATION_BUY
-                                            buy_reason = "PumpFun Graduate"
-                                        else:
-                                            buy_amount = PUMPFUN_EARLY_BUY
-                                            buy_reason = "PumpFun Early Entry"
-                                        
-                                        if should_send_telegram(f"pumpfun_detect_{token_mint}"):
-                                            await send_telegram_alert(
-                                                f"🎯 FRESH VERIFIED PUMPFUN TOKEN\n\n"
-                                                f"Token: `{token_mint}`\n"
-                                                f"Status: {buy_reason}\n"
-                                                f"Liquidity: {lp_amount:.2f} SOL\n"
-                                                f"Buy Amount: {buy_amount} SOL\n"
-                                                f"Bonding Curve: ✅ VERIFIED\n\n"
-                                                f"Attempting snipe..."
-                                            )
-                                        
-                                        try:
-                                            success = await buy_token(token_mint, amount=buy_amount, is_pumpfun=True)
-                                            
-                                            if success:
-                                                already_bought.add(token_mint)
-                                                if BLACKLIST_AFTER_BUY:
-                                                    BLACKLIST.add(token_mint)
-                                                
-                                                if should_send_telegram(f"pumpfun_success_{token_mint}"):
-                                                    await send_telegram_alert(
-                                                        f"✅ PUMPFUN SNIPE SUCCESS!\n"
-                                                        f"Token: {token_mint[:16]}...\n"
-                                                        f"Amount: {buy_amount} SOL\n"
-                                                        f"Type: {buy_reason}"
-                                                    )
-                                                asyncio.create_task(wait_and_auto_sell(token_mint))
-                                            else:
-                                                if should_send_telegram(f"pumpfun_fail_{token_mint}"):
-                                                    await send_telegram_alert(
-                                                        f"❌ PumpFun snipe failed\n"
-                                                        f"Token: {token_mint[:16]}..."
-                                                    )
-                                                mark_broken_token(token_mint, 0)
-                                        except Exception as e:
-                                            logging.error(f"[PUMPFUN] Buy error: {e}")
-                                            if should_send_telegram(f"pumpfun_error_{token_mint}"):
-                                                await send_telegram_alert(f"❌ PumpFun buy error: {str(e)[:100]}")
-                                    
-                                    elif name in ["Raydium"]:
+                                    if name in ["Raydium"]:
                                         await asyncio.sleep(MEMPOOL_DELAY_MS / 1000)
                                         
                                         lp_amount = 0
