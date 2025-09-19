@@ -358,30 +358,58 @@ async def main():
     await bot.run()
 
 if __name__ == "__main__":
-    # Add health server to satisfy Render's port requirement
     import os
-    import threading
     from aiohttp import web
     
-    async def _health(_: web.Request):
-        return web.Response(text="ok")
+    # Get port from environment (Render sets this automatically)
+    port = int(os.getenv("PORT", "10000"))
     
-    def _start_health_server():
+    # Create a simple HTTP server for health checks
+    async def health_handler(request):
+        return web.Response(text="Bot is running", status=200)
+    
+    async def start_health_server():
+        """Start health check server"""
         app = web.Application()
-        app.router.add_get("/", _health)
-        app.router.add_get("/healthz", _health)
-        port = int(os.getenv("PORT", "10000"))
-        web.run_app(app, port=port, print=None)  # print=None to suppress startup message
+        app.router.add_get("/", health_handler)
+        app.router.add_get("/health", health_handler)
+        app.router.add_get("/healthz", health_handler)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logger.info(f"✅ Health server started on port {port}")
+        return runner
     
-    # Start the HTTP server in background thread
-    threading.Thread(target=_start_health_server, daemon=True).start()
+    async def main_with_health():
+        """Run both health server and bot"""
+        # Start health server first
+        health_runner = await start_health_server()
+        
+        try:
+            # Run the bot
+            bot = SniperBot()
+            await bot.run()
+        finally:
+            # Cleanup health server
+            await health_runner.cleanup()
     
     # Handle signals
     def signal_handler(sig, frame):
         logger.info("\nReceived interrupt signal")
-        asyncio.get_event_loop().stop()
+        for task in asyncio.all_tasks():
+            task.cancel()
     
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    # Run bot
-    asyncio.run(main())
+    # Run everything
+    try:
+        asyncio.run(main_with_health())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
