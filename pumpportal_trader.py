@@ -1,14 +1,16 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
-FIXED: Handle application/octet-stream responses (raw binary transactions)
+FIXED: Proper base64 decoding and correct signing for v0/legacy transactions
 """
 
 import aiohttp
 import base64
 import logging
 from typing import Optional
+from solders.keypair import Keypair as SoldersKeypair
+from solders.transaction import VersionedTransaction
 from solana.transaction import Transaction
-from solders.keypair import Keypair
+from solana.keypair import Keypair as SolanaKeypair
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +31,11 @@ class PumpPortalTrader:
     ) -> Optional[str]:
         """Get a buy transaction from PumpPortal API"""
         try:
+            # Ensure publicKey matches our signing wallet
+            wallet_pubkey = str(self.wallet.pubkey)
+            
             payload = {
-                "publicKey": str(self.wallet.pubkey),
+                "publicKey": wallet_pubkey,
                 "action": "buy",
                 "mint": mint,
                 "denominatedInSol": "true",  # API expects string "true" not boolean
@@ -45,177 +50,86 @@ class PumpPortalTrader:
                 payload["bondingCurveKey"] = bonding_curve_key
             
             logger.info(f"Requesting buy transaction for {mint[:8]}... amount: {sol_amount} SOL")
+            logger.debug(f"Using wallet: {wallet_pubkey}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        content_type = response.headers.get('content-type', '')
+                        # Parse JSON response
+                        try:
+                            data = await response.json()
+                        except:
+                            # If not JSON, read as text
+                            text = await response.text()
+                            data = {"transaction": text}
                         
-                        # Read raw bytes
-                        response_bytes = await response.read()
-                        logger.info(f"Received response ({len(response_bytes)} bytes, type: {content_type})")
-                        
-                        tx_bytes = None
-                        
-                        # Handle different response types
-                        if 'application/json' in content_type:
-                            # JSON response with base64 transaction
-                            import json
-                            data = json.loads(response_bytes.decode('utf-8'))
-                            if "transaction" in data:
-                                # Decode base64
-                                tx_bytes = base64.b64decode(data["transaction"])
-                            else:
-                                logger.error(f"No transaction in JSON response: {data}")
-                                return None
-                        elif 'application/octet-stream' in content_type or 'binary' in content_type:
-                            # Raw binary transaction
-                            tx_bytes = response_bytes
-                        else:
-                            # Try to detect format
-                            try:
-                                # Try JSON first
-                                import json
-                                data = json.loads(response_bytes.decode('utf-8'))
-                                if "transaction" in data:
-                                    tx_bytes = base64.b64decode(data["transaction"])
-                            except:
-                                # Assume raw bytes
-                                tx_bytes = response_bytes
-                        
-                        if not tx_bytes:
-                            logger.error("No transaction data extracted from response")
+                        if "transaction" not in data:
+                            logger.error(f"No transaction in response: {data}")
                             return None
                         
-                        logger.info(f"Processing transaction ({len(tx_bytes)} bytes)")
+                        # PumpPortal returns base64 encoded transaction
+                        tx_base64 = data["transaction"]
+                        logger.info(f"Received base64 transaction from PumpPortal (length: {len(tx_base64)})")
                         
-                        # Debug: Log the first and last bytes to understand the structure
-                        logger.debug(f"First 10 bytes (hex): {tx_bytes[:10].hex()}")
-                        logger.debug(f"Last 10 bytes (hex): {tx_bytes[-10:].hex()}")
+                        # Decode base64 to raw bytes
+                        try:
+                            raw_tx_bytes = base64.b64decode(tx_base64)
+                            logger.info(f"Decoded PumpPortal transaction ({len(raw_tx_bytes)} bytes)")
+                        except Exception as e:
+                            logger.error(f"Failed to base64 decode transaction: {e}")
+                            return None
                         
-                        # Check what we're dealing with
-                        if tx_bytes[0] == 0x01:
-                            logger.info("Detected legacy transaction format (starts with 0x01)")
-                        elif tx_bytes[0] == 0x80:
-                            logger.info("Detected versioned transaction v0 (starts with 0x80)")
+                        # Detect transaction format by checking first byte
+                        is_versioned = (raw_tx_bytes[0] & 0x80) != 0
+                        
+                        if is_versioned:
+                            logger.info("Detected v0 versioned transaction")
+                            
+                            # Parse as VersionedTransaction using solders
+                            try:
+                                vt = VersionedTransaction.from_bytes(raw_tx_bytes)
+                                
+                                # Create signed transaction with our keypair
+                                # For v0 transactions, we pass the keypair directly
+                                signed_tx = VersionedTransaction(vt.message, [self.wallet.keypair])
+                                signed_tx_bytes = bytes(signed_tx)
+                                
+                                logger.info(f"Signed v0 transaction ({len(signed_tx_bytes)} bytes)")
+                            except Exception as e:
+                                logger.error(f"Failed to sign v0 transaction: {e}")
+                                return None
                         else:
-                            logger.info(f"Unknown transaction format (starts with 0x{tx_bytes[0]:02x})")
-                        
-                        # Try different transaction formats
-                        signed_tx_bytes = None
-                        
-                        # For 544-byte responses from PumpPortal, these are likely versioned transactions
-                        if len(tx_bytes) == 544:
+                            logger.info("Detected legacy transaction")
+                            
+                            # Convert solders Keypair to solana-py Keypair for legacy signing
                             try:
-                                # These might already be fully formed transactions that just need our signature
-                                # inserted at the right position
+                                # Get the secret key bytes from solders keypair
+                                secret_bytes = bytes(self.wallet.keypair.secret())
                                 
-                                # The transaction structure for v0 is:
-                                # [0x80 version][compact array of signatures][message]
-                                # Let's check if this is already a valid structure
+                                # Create solana-py Keypair
+                                solana_keypair = SolanaKeypair(secret_bytes)
                                 
-                                # Sign the message portion
-                                # For v0 transactions, after version byte and signature array
-                                version = tx_bytes[0]
-                                if version == 0x80:
-                                    # Next byte is the number of signatures
-                                    num_sigs = tx_bytes[1]
-                                    sig_start = 2
-                                    msg_start = sig_start + (64 * num_sigs)
-                                    
-                                    # Extract and sign the message
-                                    message_bytes = tx_bytes[msg_start:]
-                                    signature = self.wallet.keypair.sign_message(message_bytes)
-                                    
-                                    # Insert our signature in the first slot
-                                    signed_tx_bytes = (
-                                        tx_bytes[0:2] +  # version + num_sigs
-                                        bytes(signature) +  # our signature (64 bytes)
-                                        tx_bytes[sig_start + 64:]  # skip first empty sig, keep rest
-                                    )
-                                    logger.info(f"Manually signed v0 transaction ({len(signed_tx_bytes)} bytes)")
-                                else:
-                                    logger.warning(f"544-byte transaction doesn't start with 0x80: {version:02x}")
-                            except Exception as e:
-                                logger.error(f"Manual signing failed: {e}")
-                        
-                        # If manual approach didn't work, try parsing with libraries
-                        if signed_tx_bytes is None:
-                            try:
-                                from solders.transaction import VersionedTransaction
-                                from solders.message import MessageV0
-                                
-                                # Parse the versioned transaction
-                                versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                                
-                                # Simply use populate method to add our signature
-                                # This is the proper way to sign a partially signed transaction
-                                versioned_tx.populate(self.wallet.keypair)
-                                signed_tx_bytes = bytes(versioned_tx)
-                                
-                                logger.info(f"Successfully signed VersionedTransaction with populate ({len(signed_tx_bytes)} bytes)")
-                            except Exception as e:
-                                # If populate doesn't work, try manual signing
-                                try:
-                                    from solders.transaction import VersionedTransaction
-                                    
-                                    # Parse the versioned transaction again
-                                    versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                                    
-                                    # Get the actual message bytes for signing
-                                    message_bytes = bytes(versioned_tx.message)
-                                    
-                                    # Sign the message
-                                    signature = self.wallet.keypair.sign_message(message_bytes)
-                                    
-                                    # Manually reconstruct: version byte + signature + rest of transaction
-                                    # The transaction structure is: [version_byte][signatures][message]
-                                    if tx_bytes[0] == 0x80:
-                                        # Has version byte
-                                        # Find how many signatures there are (compact array)
-                                        num_sigs = tx_bytes[1]
-                                        sig_start = 2
-                                        sig_end = sig_start + (64 * num_sigs)
-                                        
-                                        # Replace first signature
-                                        signed_tx_bytes = (
-                                            tx_bytes[0:1] +  # version byte
-                                            tx_bytes[1:2] +  # num signatures
-                                            bytes(signature) +  # our signature
-                                            tx_bytes[sig_start + 64:] # rest of transaction
-                                        )
-                                    else:
-                                        # Legacy format - shouldn't happen for PumpFun
-                                        signed_tx_bytes = None
-                                    
-                                    if signed_tx_bytes:
-                                        logger.info("Signed using manual reconstruction")
-                                except Exception as e2:
-                                    logger.error(f"Manual signing also failed: {e2}")
-                        
-                        # If not versioned or versioned failed, try legacy
-                        if signed_tx_bytes is None:
-                            try:
-                                tx = Transaction.deserialize(tx_bytes)
-                                tx.sign(self.wallet.keypair)
+                                # Deserialize and sign legacy transaction
+                                tx = Transaction.deserialize(raw_tx_bytes)
+                                tx.sign(solana_keypair)
                                 signed_tx_bytes = tx.serialize()
-                                logger.info("Successfully processed as Legacy Transaction")
+                                
+                                logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
-                                logger.error(f"Legacy transaction also failed: {e}")
-                                logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
-                                logger.debug(f"Last 20 bytes (hex): {tx_bytes[-20:].hex()}")
+                                logger.error(f"Failed to sign legacy transaction: {e}")
                                 return None
-                        
-                        if not signed_tx_bytes:
-                            logger.error("Failed to sign transaction")
-                            return None
                         
                         # Send the signed transaction
                         logger.info(f"Sending signed transaction for {mint[:8]}...")
                         try:
                             response = self.client.send_raw_transaction(signed_tx_bytes)
                             sig = str(response.value)
-                            logger.info(f"✅ Transaction sent: {sig}")
+                            
+                            if is_versioned:
+                                logger.info(f"✅ v0 tx sent: {sig}")
+                            else:
+                                logger.info(f"✅ legacy tx sent: {sig}")
+                            
                             return sig
                         except Exception as e:
                             logger.error(f"Failed to send transaction: {e}")
@@ -240,8 +154,11 @@ class PumpPortalTrader:
     ) -> Optional[str]:
         """Get a sell transaction from PumpPortal API"""
         try:
+            # Ensure publicKey matches our signing wallet
+            wallet_pubkey = str(self.wallet.pubkey)
+            
             payload = {
-                "publicKey": str(self.wallet.pubkey),
+                "publicKey": wallet_pubkey,
                 "action": "sell",
                 "mint": mint,
                 "denominatedInSol": "false",  # API expects string "false" not boolean
@@ -255,131 +172,86 @@ class PumpPortalTrader:
                 payload["bondingCurveKey"] = bonding_curve_key
             
             logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {token_amount} tokens")
+            logger.debug(f"Using wallet: {wallet_pubkey}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        content_type = response.headers.get('content-type', '')
+                        # Parse JSON response
+                        try:
+                            data = await response.json()
+                        except:
+                            # If not JSON, read as text
+                            text = await response.text()
+                            data = {"transaction": text}
                         
-                        # Read raw bytes
-                        response_bytes = await response.read()
-                        logger.info(f"Received response ({len(response_bytes)} bytes, type: {content_type})")
-                        
-                        tx_bytes = None
-                        
-                        # Handle different response types
-                        if 'application/json' in content_type:
-                            # JSON response with base64 transaction
-                            import json
-                            data = json.loads(response_bytes.decode('utf-8'))
-                            if "transaction" in data:
-                                # Decode base64
-                                tx_bytes = base64.b64decode(data["transaction"])
-                            else:
-                                logger.error(f"No transaction in JSON response: {data}")
-                                return None
-                        elif 'application/octet-stream' in content_type or 'binary' in content_type:
-                            # Raw binary transaction
-                            tx_bytes = response_bytes
-                        else:
-                            # Try to detect format
-                            try:
-                                # Try JSON first
-                                import json
-                                data = json.loads(response_bytes.decode('utf-8'))
-                                if "transaction" in data:
-                                    tx_bytes = base64.b64decode(data["transaction"])
-                            except:
-                                # Assume raw bytes
-                                tx_bytes = response_bytes
-                        
-                        if not tx_bytes:
-                            logger.error("No transaction data extracted from response")
+                        if "transaction" not in data:
+                            logger.error(f"No transaction in response: {data}")
                             return None
                         
-                        logger.info(f"Processing transaction ({len(tx_bytes)} bytes)")
+                        # PumpPortal returns base64 encoded transaction
+                        tx_base64 = data["transaction"]
+                        logger.info(f"Received base64 transaction from PumpPortal (length: {len(tx_base64)})")
                         
-                        # Try different transaction formats
-                        signed_tx_bytes = None
+                        # Decode base64 to raw bytes
+                        try:
+                            raw_tx_bytes = base64.b64decode(tx_base64)
+                            logger.info(f"Decoded PumpPortal transaction ({len(raw_tx_bytes)} bytes)")
+                        except Exception as e:
+                            logger.error(f"Failed to base64 decode transaction: {e}")
+                            return None
                         
-                        # Check if this is a versioned transaction (starts with 0x80 or has length 544)
-                        is_versioned = tx_bytes[0] == 0x80 or len(tx_bytes) == 544
+                        # Detect transaction format by checking first byte
+                        is_versioned = (raw_tx_bytes[0] & 0x80) != 0
                         
                         if is_versioned:
+                            logger.info("Detected v0 versioned transaction")
+                            
+                            # Parse as VersionedTransaction using solders
                             try:
-                                from solders.transaction import VersionedTransaction
-                                from solders.message import MessageV0
+                                vt = VersionedTransaction.from_bytes(raw_tx_bytes)
                                 
-                                # Parse the versioned transaction
-                                versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                                # Create signed transaction with our keypair
+                                # For v0 transactions, we pass the keypair directly
+                                signed_tx = VersionedTransaction(vt.message, [self.wallet.keypair])
+                                signed_tx_bytes = bytes(signed_tx)
                                 
-                                # Simply use populate method to add our signature
-                                # This is the proper way to sign a partially signed transaction
-                                versioned_tx.populate(self.wallet.keypair)
-                                signed_tx_bytes = bytes(versioned_tx)
-                                
-                                logger.info(f"Successfully signed VersionedTransaction with populate ({len(signed_tx_bytes)} bytes)")
+                                logger.info(f"Signed v0 transaction ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
-                                # If populate doesn't work, try manual signing
-                                try:
-                                    from solders.transaction import VersionedTransaction
-                                    
-                                    # Parse the versioned transaction again
-                                    versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                                    
-                                    # Get the actual message bytes for signing
-                                    message_bytes = bytes(versioned_tx.message)
-                                    
-                                    # Sign the message
-                                    signature = self.wallet.keypair.sign_message(message_bytes)
-                                    
-                                    # Manually reconstruct: version byte + signature + rest of transaction
-                                    # The transaction structure is: [version_byte][signatures][message]
-                                    if tx_bytes[0] == 0x80:
-                                        # Has version byte
-                                        # Find how many signatures there are (compact array)
-                                        num_sigs = tx_bytes[1]
-                                        sig_start = 2
-                                        sig_end = sig_start + (64 * num_sigs)
-                                        
-                                        # Replace first signature
-                                        signed_tx_bytes = (
-                                            tx_bytes[0:1] +  # version byte
-                                            tx_bytes[1:2] +  # num signatures
-                                            bytes(signature) +  # our signature
-                                            tx_bytes[sig_start + 64:] # rest of transaction
-                                        )
-                                    else:
-                                        # Legacy format - shouldn't happen for PumpFun
-                                        signed_tx_bytes = None
-                                    
-                                    if signed_tx_bytes:
-                                        logger.info("Signed using manual reconstruction")
-                                except Exception as e2:
-                                    logger.error(f"Manual signing also failed: {e2}")
-                        
-                        # If not versioned or versioned failed, try legacy
-                        if signed_tx_bytes is None:
+                                logger.error(f"Failed to sign v0 transaction: {e}")
+                                return None
+                        else:
+                            logger.info("Detected legacy transaction")
+                            
+                            # Convert solders Keypair to solana-py Keypair for legacy signing
                             try:
-                                tx = Transaction.deserialize(tx_bytes)
-                                tx.sign(self.wallet.keypair)
+                                # Get the secret key bytes from solders keypair
+                                secret_bytes = bytes(self.wallet.keypair.secret())
+                                
+                                # Create solana-py Keypair
+                                solana_keypair = SolanaKeypair(secret_bytes)
+                                
+                                # Deserialize and sign legacy transaction
+                                tx = Transaction.deserialize(raw_tx_bytes)
+                                tx.sign(solana_keypair)
                                 signed_tx_bytes = tx.serialize()
-                                logger.info("Successfully processed as Legacy Transaction")
+                                
+                                logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
-                                logger.error(f"Legacy transaction also failed: {e}")
-                                logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
-                                logger.debug(f"Last 20 bytes (hex): {tx_bytes[-20:].hex()}")
+                                logger.error(f"Failed to sign legacy transaction: {e}")
                                 return None
                         
-                        if not signed_tx_bytes:
-                            logger.error("Failed to sign transaction")
-                            return None
-                        
                         # Send the signed transaction
+                        logger.info(f"Sending signed transaction for {mint[:8]}...")
                         try:
                             response = self.client.send_raw_transaction(signed_tx_bytes)
                             sig = str(response.value)
-                            logger.info(f"✅ Sell transaction sent: {sig}")
+                            
+                            if is_versioned:
+                                logger.info(f"✅ v0 tx sent: {sig}")
+                            else:
+                                logger.info(f"✅ legacy tx sent: {sig}")
+                            
                             return sig
                         except Exception as e:
                             logger.error(f"Failed to send transaction: {e}")
