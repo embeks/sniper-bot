@@ -13,7 +13,8 @@ from solders.pubkey import Pubkey
 
 from config import (
     WS_ENDPOINT, MONITOR_PROGRAMS, LOG_CONTAINS_FILTERS,
-    PUMPFUN_PROGRAM_ID, RAYDIUM_PROGRAM_ID
+    PUMPFUN_PROGRAM_ID, RAYDIUM_PROGRAM_ID,
+    RPC_ENDPOINT, SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,14 @@ class TokenMonitor:
         self.running = True
         logger.info("🔍 Starting WebSocket monitor...")
         
+        # Start both WebSocket and polling
+        websocket_task = asyncio.create_task(self._websocket_monitor())
+        polling_task = asyncio.create_task(self._polling_monitor())
+        
+        await asyncio.gather(websocket_task, polling_task)
+    
+    async def _websocket_monitor(self):
+        """WebSocket monitoring"""
         while self.running:
             try:
                 await self._connect_and_monitor()
@@ -45,6 +54,95 @@ class TokenMonitor:
                 if self.running:
                     logger.info("Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
+    
+    async def _polling_monitor(self):
+        """Backup polling method - checks recent transactions"""
+        from solana.rpc.api import Client
+        client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+        
+        while self.running:
+            try:
+                # Get recent signatures for PumpFun
+                signatures = client.get_signatures_for_address(
+                    PUMPFUN_PROGRAM_ID,
+                    limit=20
+                )
+                
+                if signatures.value:
+                    for sig_info in signatures.value:
+                        sig = sig_info.signature
+                        
+                        if sig in self.seen_signatures:
+                            continue
+                        
+                        self.seen_signatures.add(sig)
+                        
+                        # Get transaction details
+                        tx = client.get_transaction(
+                            sig,
+                            max_supported_transaction_version=0
+                        )
+                        
+                        if tx.value:
+                            # Check if it's a new token
+                            logs = tx.value.transaction.meta.log_messages if tx.value.transaction.meta else []
+                            
+                            # Look for creation patterns
+                            for log in logs:
+                                if any(pattern in log.lower() for pattern in [
+                                    'create', 'init', 'new', 'mint', 'bonding'
+                                ]):
+                                    logger.info(f"[POLLING] Potential launch detected: {sig[:20]}...")
+                                    
+                                    # Extract mint from transaction
+                                    mint = self._extract_mint_from_transaction(tx.value)
+                                    if mint and mint not in self.seen_tokens:
+                                        self.seen_tokens.add(mint)
+                                        self.launches_seen += 1
+                                        
+                                        logger.info(f"🚀 [POLLING] NEW TOKEN FOUND: {mint}")
+                                        
+                                        if self.on_token_found:
+                                            self.launches_processed += 1
+                                            await self.on_token_found({
+                                                'mint': mint,
+                                                'signature': sig,
+                                                'type': 'pumpfun_launch',
+                                                'source': 'polling',
+                                                'timestamp': datetime.now().isoformat()
+                                            })
+                                    break
+                
+                # Poll every 2 seconds
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                logger.debug(f"Polling error: {e}")
+                await asyncio.sleep(5)
+    
+    def _extract_mint_from_transaction(self, tx) -> Optional[str]:
+        """Extract mint address from transaction"""
+        try:
+            # Look through account keys
+            account_keys = tx.transaction.transaction.message.account_keys
+            
+            # PumpFun tokens are usually in the first few accounts after program
+            for i, key in enumerate(account_keys):
+                key_str = str(key)
+                # Skip known program IDs and system accounts
+                if key_str not in [
+                    str(PUMPFUN_PROGRAM_ID),
+                    str(SYSTEM_PROGRAM_ID), 
+                    str(TOKEN_PROGRAM_ID),
+                    "11111111111111111111111111111111",
+                    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                ] and len(key_str) > 30:
+                    # This might be the mint
+                    return key_str
+            
+            return None
+        except:
+            return None
     
     async def _connect_and_monitor(self):
         """Connect to WebSocket and monitor logs"""
@@ -128,27 +226,52 @@ class TokenMonitor:
                 # Get logs
                 logs = result.get('value', {}).get('logs', [])
                 
-                # Debug: Log any PumpFun activity
-                if any('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwkvq' in log for log in logs):
-                    logger.debug(f"PumpFun activity detected in {signature[:8]}...")
-                    
-                    # Log first few log entries for debugging
-                    for log in logs[:5]:
-                        if len(log) > 100:
-                            logger.debug(f"  Log: {log[:100]}...")
-                        else:
-                            logger.debug(f"  Log: {log}")
+                # Only process if it's PumpFun related
+                if not any('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwkvq' in log for log in logs):
+                    return
                 
-                # Check for PumpFun launch
-                if self._is_pumpfun_launch(logs):
-                    await self._handle_pumpfun_launch(logs, signature)
+                # Look for specific creation indicators
+                is_creation = False
+                for log in logs:
+                    # Strong indicators of new token creation
+                    if any(indicator in log for indicator in [
+                        'InitializeMint2',  # Token mint initialization
+                        'InitializeAccount3',  # Token account creation
+                        'MintTo',  # Initial mint
+                        'create_mint',
+                        'create_token',
+                        'Instruction: Create',
+                        'Instruction: Initialize'
+                    ]):
+                        is_creation = True
+                        break
                 
-                # Check for Raydium pool creation
-                elif self._is_raydium_creation(logs):
-                    await self._handle_raydium_creation(logs, signature)
+                if is_creation:
+                    # Extract mint address
+                    mint = self._extract_mint_from_logs(logs)
+                    if mint and mint not in self.seen_tokens:
+                        self.seen_tokens.add(mint)
+                        self.launches_seen += 1
+                        
+                        logger.info("=" * 60)
+                        logger.info(f"🚀 NEW PUMPFUN LAUNCH DETECTED!")
+                        logger.info(f"📜 Mint: {mint}")
+                        logger.info(f"📝 Signature: {signature[:20]}...")
+                        logger.info(f"📊 Total launches seen: {self.launches_seen}")
+                        logger.info("=" * 60)
+                        
+                        # Call the callback
+                        if self.on_token_found:
+                            self.launches_processed += 1
+                            await self.on_token_found({
+                                'mint': mint,
+                                'signature': signature,
+                                'type': 'pumpfun_launch',
+                                'timestamp': datetime.now().isoformat()
+                            })
                     
         except Exception as e:
-            logger.debug(f"Failed to process message: {e}")
+            pass  # Silently ignore parse errors in high volume
     
     def _is_pumpfun_launch(self, logs: list) -> bool:
         """Check if logs indicate a PumpFun token launch"""
