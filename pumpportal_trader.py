@@ -10,7 +10,16 @@ from typing import Optional
 from solders.keypair import Keypair as SoldersKeypair
 from solders.transaction import VersionedTransaction
 from solana.transaction import Transaction
-from solana.keypair import Keypair as SolanaKeypair
+# For solana-py, Keypair is in solana.keypair
+try:
+    from solana.keypair import Keypair as SolanaKeypair
+except ImportError:
+    # Fallback to older solana-py structure
+    try:
+        from solana.account import Account as SolanaKeypair
+    except ImportError:
+        # Last resort - use solders for everything
+        SolanaKeypair = None
 
 logger = logging.getLogger(__name__)
 
@@ -101,19 +110,22 @@ class PumpPortalTrader:
                         else:
                             logger.info("Detected legacy transaction")
                             
-                            # Convert solders Keypair to solana-py Keypair for legacy signing
+                            # For legacy transactions, we can use solders directly
                             try:
-                                # Get the secret key bytes from solders keypair
-                                secret_bytes = bytes(self.wallet.keypair.secret())
-                                
-                                # Create solana-py Keypair
-                                solana_keypair = SolanaKeypair(secret_bytes)
-                                
-                                # Deserialize and sign legacy transaction
+                                # Deserialize legacy transaction
                                 tx = Transaction.deserialize(raw_tx_bytes)
-                                tx.sign(solana_keypair)
-                                signed_tx_bytes = tx.serialize()
                                 
+                                # Sign with solders keypair directly if solana-py Keypair not available
+                                if SolanaKeypair is None:
+                                    # Use solders for signing - sign the transaction's message
+                                    tx.sign_partial(self.wallet.keypair)
+                                else:
+                                    # Convert solders Keypair to solana-py format
+                                    secret_bytes = bytes(self.wallet.keypair.secret())
+                                    solana_keypair = SolanaKeypair(secret_bytes)
+                                    tx.sign(solana_keypair)
+                                
+                                signed_tx_bytes = tx.serialize()
                                 logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
                                 logger.error(f"Failed to sign legacy transaction: {e}")
@@ -223,19 +235,22 @@ class PumpPortalTrader:
                         else:
                             logger.info("Detected legacy transaction")
                             
-                            # Convert solders Keypair to solana-py Keypair for legacy signing
+                            # For legacy transactions, we can use solders directly
                             try:
-                                # Get the secret key bytes from solders keypair
-                                secret_bytes = bytes(self.wallet.keypair.secret())
-                                
-                                # Create solana-py Keypair
-                                solana_keypair = SolanaKeypair(secret_bytes)
-                                
-                                # Deserialize and sign legacy transaction
+                                # Deserialize legacy transaction
                                 tx = Transaction.deserialize(raw_tx_bytes)
-                                tx.sign(solana_keypair)
-                                signed_tx_bytes = tx.serialize()
                                 
+                                # Sign with solders keypair directly if solana-py Keypair not available
+                                if SolanaKeypair is None:
+                                    # Use solders for signing - sign the transaction's message
+                                    tx.sign_partial(self.wallet.keypair)
+                                else:
+                                    # Convert solders Keypair to solana-py format
+                                    secret_bytes = bytes(self.wallet.keypair.secret())
+                                    solana_keypair = SolanaKeypair(secret_bytes)
+                                    tx.sign(solana_keypair)
+                                
+                                signed_tx_bytes = tx.serialize()
                                 logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
                                 logger.error(f"Failed to sign legacy transaction: {e}")
