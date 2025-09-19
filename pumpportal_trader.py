@@ -89,13 +89,58 @@ class PumpPortalTrader:
                         
                         logger.info(f"Processing transaction ({len(tx_bytes)} bytes)")
                         
+                        # Debug: Log the first and last bytes to understand the structure
+                        logger.debug(f"First 10 bytes (hex): {tx_bytes[:10].hex()}")
+                        logger.debug(f"Last 10 bytes (hex): {tx_bytes[-10:].hex()}")
+                        
+                        # Check what we're dealing with
+                        if tx_bytes[0] == 0x01:
+                            logger.info("Detected legacy transaction format (starts with 0x01)")
+                        elif tx_bytes[0] == 0x80:
+                            logger.info("Detected versioned transaction v0 (starts with 0x80)")
+                        else:
+                            logger.info(f"Unknown transaction format (starts with 0x{tx_bytes[0]:02x})")
+                        
                         # Try different transaction formats
                         signed_tx_bytes = None
                         
-                        # Check if this is a versioned transaction (starts with 0x80 or has length 544)
-                        is_versioned = tx_bytes[0] == 0x80 or len(tx_bytes) == 544
+                        # For 544-byte responses from PumpPortal, these are likely versioned transactions
+                        if len(tx_bytes) == 544:
+                            try:
+                                # These might already be fully formed transactions that just need our signature
+                                # inserted at the right position
+                                
+                                # The transaction structure for v0 is:
+                                # [0x80 version][compact array of signatures][message]
+                                # Let's check if this is already a valid structure
+                                
+                                # Sign the message portion
+                                # For v0 transactions, after version byte and signature array
+                                version = tx_bytes[0]
+                                if version == 0x80:
+                                    # Next byte is the number of signatures
+                                    num_sigs = tx_bytes[1]
+                                    sig_start = 2
+                                    msg_start = sig_start + (64 * num_sigs)
+                                    
+                                    # Extract and sign the message
+                                    message_bytes = tx_bytes[msg_start:]
+                                    signature = self.wallet.keypair.sign_message(message_bytes)
+                                    
+                                    # Insert our signature in the first slot
+                                    signed_tx_bytes = (
+                                        tx_bytes[0:2] +  # version + num_sigs
+                                        bytes(signature) +  # our signature (64 bytes)
+                                        tx_bytes[sig_start + 64:]  # skip first empty sig, keep rest
+                                    )
+                                    logger.info(f"Manually signed v0 transaction ({len(signed_tx_bytes)} bytes)")
+                                else:
+                                    logger.warning(f"544-byte transaction doesn't start with 0x80: {version:02x}")
+                            except Exception as e:
+                                logger.error(f"Manual signing failed: {e}")
                         
-                        if is_versioned:
+                        # If manual approach didn't work, try parsing with libraries
+                        if signed_tx_bytes is None:
                             try:
                                 from solders.transaction import VersionedTransaction
                                 from solders.message import MessageV0
