@@ -65,14 +65,21 @@ class SimpleScanner:
         """Start scanning"""
         self.running = True
         logger.info("🔍 Starting simple scanner...")
+        scan_count = 0
         
         while self.running:
             try:
+                scan_count += 1
+                if scan_count % 10 == 1:  # Log every 10 scans
+                    logger.info(f"📊 Scan #{scan_count} - Checking PumpFun transactions...")
+                
                 # Get PumpFun transactions
                 program_id = Pubkey.from_string(PUMPFUN_PROGRAM)
                 sigs = self.client.get_signatures_for_address(program_id, limit=10)
                 
                 if sigs and sigs.value:
+                    logger.info(f"Found {len(sigs.value)} PumpFun transactions")
+                    
                     for sig_info in sigs.value:
                         sig = sig_info.signature
                         
@@ -81,8 +88,7 @@ class SimpleScanner:
                         
                         self.seen.add(sig)
                         
-                        # Just notify about ANY new PumpFun transaction for now
-                        # We'll filter better once we confirm scanning works
+                        # Log EVERY new transaction we see
                         logger.info(f"📍 New PumpFun TX: {sig[:30]}...")
                         
                         # Every 10th transaction, trigger a test buy
@@ -99,11 +105,16 @@ class SimpleScanner:
                                     'type': 'test_trigger',
                                     'timestamp': datetime.now().isoformat()
                                 })
+                else:
+                    if scan_count % 10 == 1:
+                        logger.info("No transactions returned from RPC")
                 
                 await asyncio.sleep(3)  # Check every 3 seconds
                 
             except Exception as e:
                 logger.error(f"Scan error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 await asyncio.sleep(5)
     
     def stop(self):
