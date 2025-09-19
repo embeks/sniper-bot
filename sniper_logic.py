@@ -400,6 +400,14 @@ class SniperBot:
                         
                         # Mark as processed
                         self.processed_signatures.add(signature)
+
+                        if token_address not in pumpfun_tokens:
+                            pumpfun_tokens[token_address] = {
+                                "discovered": time.time(),
+                                "verified": True,
+                                "migrated": False
+                            }
+                            logging.info(f"[PumpFun] Registered token {token_address[:8]}... in global dict")
                         
                         # Get token details
                         if token_address not in pumpfun_tokens:
@@ -1378,6 +1386,23 @@ async def mempool_listener(name, program_id=None):
                                 if instruction_data == PUMPFUN_CREATE_DISCRIMINATOR:
                                     is_pool_creation = True
                                     logging.info(f"[PUMPFUN] Token creation detected via discriminator!")
+                                    
+                                    token_mint = self._extract_pumpfun_token(tx) if hasattr(self, '_extract_pumpfun_token') else None
+                                    if not token_mint:
+                                        for key in account_keys:
+                                            if isinstance(key, dict):
+                                                key = key.get("pubkey", "") or key.get("address", "")
+                                            if key and len(key) >= 43 and key not in SYSTEM_PROGRAMS:
+                                                if key != "So11111111111111111111111111111111111111112":
+                                                    token_mint = key
+                                                    break
+                                    if token_mint and token_mint not in pumpfun_tokens:
+                                        pumpfun_tokens[token_mint] = {
+                                            "discovered": time.time(),
+                                            "verified": True,
+                                            "migrated": False
+                                        }
+                                        logging.info(f"[PUMPFUN] Pre-registered token {token_mint[:8]}... via discriminator")
                                 else:
                                     # Fallback to log-based detection with stricter requirements
                                     pumpfun_create_indicators = 0
