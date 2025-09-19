@@ -48,7 +48,20 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        data = await response.json()
+                        # Handle different response types
+                        content_type = response.headers.get('content-type', '')
+                        
+                        if 'application/json' in content_type:
+                            data = await response.json()
+                        else:
+                            # If not JSON, try to parse as text first
+                            text_data = await response.text()
+                            try:
+                                import json
+                                data = json.loads(text_data)
+                            except:
+                                # If that fails, assume it's the transaction directly
+                                data = {"transaction": text_data}
                         
                         # The API returns a base58 encoded VersionedTransaction
                         if "transaction" in data:
@@ -111,7 +124,20 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        data = await response.json()
+                        # Handle different response types
+                        content_type = response.headers.get('content-type', '')
+                        
+                        if 'application/json' in content_type:
+                            data = await response.json()
+                        else:
+                            # If not JSON, try to parse as text first
+                            text_data = await response.text()
+                            try:
+                                import json
+                                data = json.loads(text_data)
+                            except:
+                                # If that fails, assume it's the transaction directly
+                                data = {"transaction": text_data}
                         
                         if "transaction" in data:
                             tx_base58 = data["transaction"]
