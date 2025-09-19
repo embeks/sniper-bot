@@ -389,38 +389,7 @@ Max Curve SOL: {MAX_BONDING_CURVE_SOL}
     
     async def cmd_recent_logs(self, args):
         """Get recent log entries"""
-        try:
-            num_lines = int(args[0]) if args else 10
-            num_lines = min(num_lines, 50)  # Limit
-            
-            # Read last N lines from log file
-            from config import LOG_FILE
-            import os
-            
-            if os.path.exists(LOG_FILE):
-                with open(LOG_FILE, 'r') as f:
-                    lines = f.readlines()
-                    recent = lines[-num_lines:]
-                    
-                    # Filter and format
-                    log_text = ""
-                    for line in recent:
-                        if "ERROR" in line:
-                            log_text += f"🔴 {line[:100]}...\n"
-                        elif "WARNING" in line:
-                            log_text += f"🟡 {line[:100]}...\n"
-                        elif "INFO" in line and any(x in line for x in ["BUY", "SELL", "PROFIT", "LOSS"]):
-                            log_text += f"🟢 {line[:100]}...\n"
-                    
-                    if log_text:
-                        await self.send_message(f"*📝 RECENT LOGS*\n```\n{log_text[:4000]}\n```")
-                    else:
-                        await self.send_message("📝 No significant logs")
-            else:
-                await self.send_message("❌ Log file not found")
-                
-        except Exception as e:
-            await self.send_message(f"❌ Error getting logs: {e}")
+        await self.send_message("❌ Log file disabled. Check Render dashboard for logs.")
     
     async def cmd_set_stop_loss(self, args):
         """Set stop loss percentage"""
