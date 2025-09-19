@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import base64
 from solders.transaction import VersionedTransaction
 import certifi
+from shared_state import pumpfun_tokens, trending_tokens
 
 # Solana imports
 from solders.keypair import Keypair
@@ -191,9 +192,6 @@ last_seen_token = {"Raydium": time.time(), "Jupiter": time.time(), "PumpFun": ti
 # Alert tracking for cooldowns
 last_alert_times = {}
 
-# Import shared state to avoid circular imports
-from shared_state import pumpfun_tokens, trending_tokens
-
 # Known token decimals
 KNOWN_TOKEN_DECIMALS = {
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
@@ -217,6 +215,11 @@ async def is_pumpfun_token(mint: str, assume_fresh: bool = False) -> bool:
     try:
         # If we already tracked it as PumpFun, trust that
         if mint in pumpfun_tokens:
+            if pumpfun_tokens[mint].get("verified", False):
+                logging.info(f"[Verify] {mint[:8]}... found in registry - IS PUMPFUN")
+            return True
+
+        if assume_fresh and mint in pumpfun_tokens:
             return True
         
         # For fresh tokens detected via mempool, assume they're PumpFun if bonding curve exists
