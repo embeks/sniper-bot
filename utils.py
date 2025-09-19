@@ -1277,15 +1277,15 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                 is_verified_pumpfun = await is_pumpfun_token(mint, assume_fresh=ultra_fresh)
                 
                 if is_verified_pumpfun:
-                    # Redirect to PumpFun path
-                    logging.info(f"[Buy] Zero LP token is PumpFun - redirecting to direct buy")
-                    # Recursive call with is_pumpfun=True flag
-                    return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=is_migration)
+                    
+                    logging.info(f"[Buy] Confirmed fresh PumpFun token - proceeding with bonding curve buy")
+                    
+                    return await buy_token(mint, amount=buy_amt, is_pumpfun=True, is_migration=False)
                 else:
-                    # Skip zero liquidity non-PumpFun tokens
-                    logging.warning(f"[Buy] Skipping zero liquidity non-PumpFun token")
+                    
+                    logging.warning(f"[Buy] Not a PumpFun token, skipping zero liquidity token")
                     log_skipped_token(mint, "Zero liquidity")
-                    record_skip("zero_lp_raydium")
+                    record_skip("zero_lp_not_pumpfun"))
                     return False
             
             # Adjust minimum LP for ultra-fresh tokens
