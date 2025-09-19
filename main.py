@@ -83,14 +83,16 @@ class SniperBot:
     def _log_startup_info(self):
         """Log startup information"""
         sol_balance = self.wallet.get_sol_balance()
-        max_trades = min(int((sol_balance - 0.5) / BUY_AMOUNT_SOL), MAX_POSITIONS)
+        tradeable_balance = sol_balance - MIN_SOL_BALANCE
+        max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
+        actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
-        logger.info(f"  • Available trades: {max_trades}")
+        logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
     
