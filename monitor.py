@@ -128,6 +128,17 @@ class TokenMonitor:
                 # Get logs
                 logs = result.get('value', {}).get('logs', [])
                 
+                # Debug: Log any PumpFun activity
+                if any('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwkvq' in log for log in logs):
+                    logger.debug(f"PumpFun activity detected in {signature[:8]}...")
+                    
+                    # Log first few log entries for debugging
+                    for log in logs[:5]:
+                        if len(log) > 100:
+                            logger.debug(f"  Log: {log[:100]}...")
+                        else:
+                            logger.debug(f"  Log: {log}")
+                
                 # Check for PumpFun launch
                 if self._is_pumpfun_launch(logs):
                     await self._handle_pumpfun_launch(logs, signature)
@@ -142,13 +153,22 @@ class TokenMonitor:
     def _is_pumpfun_launch(self, logs: list) -> bool:
         """Check if logs indicate a PumpFun token launch"""
         for log in logs:
-            if "InitializeBondingCurve" in log or "initialize_bonding_curve" in log:
-                return True
-            if "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwkvq" in log and "success" in log:
-                # Check for create instruction
-                for inner_log in logs:
-                    if "CreateBondingCurve" in inner_log or "create" in inner_log.lower():
-                        return True
+            log_lower = log.lower()
+            # Look for multiple possible indicators
+            if any(indicator in log_lower for indicator in [
+                "initializebondingcurve",
+                "initialize_bonding_curve", 
+                "createbondingcurve",
+                "create_bonding_curve",
+                "bondingcurve",
+                "init",
+                "create",
+                "new token",
+                "mint:"
+            ]):
+                # Confirm it's from PumpFun program
+                if "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwkvq" in str(logs):
+                    return True
         return False
     
     def _is_raydium_creation(self, logs: list) -> bool:
