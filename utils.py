@@ -1256,6 +1256,24 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
             if pool_liquidity == 0:
                 # Double-check if this is actually a PumpFun token
                 logging.info(f"[Buy] Zero liquidity detected - checking if PumpFun token...")
+                
+                if ultra_fresh:
+                    try:
+                        mint_pubkey = Pubkey.from_string(mint)
+                        bonding_curve_seed = b"bonding-curve"
+                        pumpfun_program = Pubkey.from_string(PUMPFUN_PROGRAM_ID)
+                        bonding_curve, _ = Pubkey.find_program_address(
+                            [bonding_curve_seed, bytes(mint_pubkey)],
+                            pumpfun_program
+                        )
+                        bc_info = rpc.get_account_info(bonding_curve)
+                        if bc_info and bc_info.value:
+                            logging.info(f"[Buy] Ultra-fresh token has bonding curve - treating as PumpFun")
+                            is_verified_pumpfun = True
+                    except:
+                        pass
+
+    
                 is_verified_pumpfun = await is_pumpfun_token(mint, assume_fresh=ultra_fresh)
                 
                 if is_verified_pumpfun:
