@@ -21,6 +21,7 @@ from config import (
 from wallet import WalletManager
 from dex import PumpFunDEX
 from pumpportal_monitor import PumpPortalMonitor
+from pumpportal_trader import PumpPortalTrader
 from telegram_bot import TelegramBot
 
 # Configure logging
@@ -61,6 +62,12 @@ class SniperBot:
         self.dex = PumpFunDEX(self.wallet)
         self.scanner = None
         self.telegram = None
+        
+        # Initialize PumpPortal trader for API-based transactions
+        from solana.rpc.api import Client
+        from config import RPC_ENDPOINT
+        client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+        self.trader = PumpPortalTrader(self.wallet, client)
         
         # Track positions
         self.positions: Dict[str, Position] = {}
