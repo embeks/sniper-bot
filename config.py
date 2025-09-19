@@ -37,7 +37,7 @@ BACKUP_RPC_ENDPOINTS = [
 BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.02'))
 PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '10'))
-MIN_SOL_BALANCE = 0.5  # Minimum SOL to keep for fees
+MIN_SOL_BALANCE = 0.05  # Minimum SOL to keep for fees
 
 # Risk management
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '50'))
