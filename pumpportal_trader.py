@@ -89,26 +89,43 @@ class PumpPortalTrader:
                         
                         logger.info(f"Processing transaction ({len(tx_bytes)} bytes)")
                         
-                        # Deserialize transaction
-                        try:
-                            tx = Transaction.deserialize(tx_bytes)
-                        except Exception as e:
-                            logger.error(f"Failed to deserialize transaction: {e}")
-                            # Log first few bytes for debugging
-                            logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
-                            return None
+                        # Try different transaction formats
+                        signed_tx_bytes = None
                         
-                        # Sign with our keypair
+                        # First try: VersionedTransaction (most likely for PumpFun)
                         try:
-                            tx.sign(self.wallet.keypair)
-                        except Exception as e:
-                            logger.error(f"Failed to sign transaction: {e}")
+                            from solders.transaction import VersionedTransaction
+                            # Parse as versioned transaction
+                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                            # Sign the versioned transaction
+                            versioned_tx.sign([self.wallet.keypair])
+                            signed_tx_bytes = bytes(versioned_tx)
+                            logger.info("Successfully processed as VersionedTransaction")
+                        except Exception as e1:
+                            logger.debug(f"Not a VersionedTransaction: {e1}")
+                            
+                            # Second try: Legacy Transaction
+                            try:
+                                tx = Transaction.deserialize(tx_bytes)
+                                tx.sign(self.wallet.keypair)
+                                signed_tx_bytes = tx.serialize()
+                                logger.info("Successfully processed as Legacy Transaction")
+                            except Exception as e2:
+                                logger.error(f"Failed to deserialize as any transaction type")
+                                logger.error(f"VersionedTransaction error: {e1}")
+                                logger.error(f"Legacy Transaction error: {e2}")
+                                logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
+                                logger.debug(f"Last 20 bytes (hex): {tx_bytes[-20:].hex()}")
+                                return None
+                        
+                        if not signed_tx_bytes:
+                            logger.error("Failed to sign transaction")
                             return None
                         
                         # Send the signed transaction
                         logger.info(f"Sending signed transaction for {mint[:8]}...")
                         try:
-                            response = self.client.send_raw_transaction(tx.serialize())
+                            response = self.client.send_raw_transaction(signed_tx_bytes)
                             sig = str(response.value)
                             logger.info(f"✅ Transaction sent: {sig}")
                             return sig
@@ -194,25 +211,42 @@ class PumpPortalTrader:
                         
                         logger.info(f"Processing transaction ({len(tx_bytes)} bytes)")
                         
-                        # Deserialize transaction
-                        try:
-                            tx = Transaction.deserialize(tx_bytes)
-                        except Exception as e:
-                            logger.error(f"Failed to deserialize transaction: {e}")
-                            # Log first few bytes for debugging
-                            logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
-                            return None
+                        # Try different transaction formats
+                        signed_tx_bytes = None
                         
-                        # Sign with our keypair
+                        # First try: VersionedTransaction (most likely for PumpFun)
                         try:
-                            tx.sign(self.wallet.keypair)
-                        except Exception as e:
-                            logger.error(f"Failed to sign transaction: {e}")
+                            from solders.transaction import VersionedTransaction
+                            # Parse as versioned transaction
+                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                            # Sign the versioned transaction
+                            versioned_tx.sign([self.wallet.keypair])
+                            signed_tx_bytes = bytes(versioned_tx)
+                            logger.info("Successfully processed as VersionedTransaction")
+                        except Exception as e1:
+                            logger.debug(f"Not a VersionedTransaction: {e1}")
+                            
+                            # Second try: Legacy Transaction
+                            try:
+                                tx = Transaction.deserialize(tx_bytes)
+                                tx.sign(self.wallet.keypair)
+                                signed_tx_bytes = tx.serialize()
+                                logger.info("Successfully processed as Legacy Transaction")
+                            except Exception as e2:
+                                logger.error(f"Failed to deserialize as any transaction type")
+                                logger.error(f"VersionedTransaction error: {e1}")
+                                logger.error(f"Legacy Transaction error: {e2}")
+                                logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
+                                logger.debug(f"Last 20 bytes (hex): {tx_bytes[-20:].hex()}")
+                                return None
+                        
+                        if not signed_tx_bytes:
+                            logger.error("Failed to sign transaction")
                             return None
                         
                         # Send the signed transaction
                         try:
-                            response = self.client.send_raw_transaction(tx.serialize())
+                            response = self.client.send_raw_transaction(signed_tx_bytes)
                             sig = str(response.value)
                             logger.info(f"✅ Sell transaction sent: {sig}")
                             return sig
