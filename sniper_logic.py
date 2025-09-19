@@ -1,5 +1,5 @@
 # sniper_logic.py - COMPLETE FIXED VERSION WITH ULTRA-FRESH PUMPFUN SUPPORT
-
+from shared_state import pumpfun_tokens
 import asyncio
 import json
 import os
@@ -147,7 +147,6 @@ BLACKLIST = set()
 TASKS = []
 
 # Enhanced tracking
-pumpfun_tokens = {}
 migration_watch_list = set()
 already_bought = set()
 recent_buy_attempts = {}
@@ -245,6 +244,14 @@ class SniperBot:
                 
                 if pumpfun_indicators >= PUMPFUN_MIN_INDICATORS:
                     logging.info(f"[PUMPFUN] Token creation detected via logs (score: {pumpfun_indicators})")
+                    token_mint = self._extract_pumpfun_token(tx)
+                    if token_mint and token_mint not in pumpfun_tokens:
+                        pumpfun_tokens[token_mint] = {
+                            "discovered": time.time(),
+                            "verified": True,
+                            "migrated": False
+                        }
+                        logging.info(f"[PUMPFUN] Pre-registered token {token_mint[:8]}... in global dict")
                     return True
             
             return False
@@ -403,6 +410,13 @@ class SniperBot:
                         self.processed_signatures.add(signature)
                         
                         # Get token details
+                        if token_address not in pumpfun_tokens:
+                            pumpfun_tokens[token_address] = {
+                                "discovered": time.time(),
+                                "verified": True,
+                                "migrated": False
+                            }
+                            logging.info(f"[PumpFun] Registered token {token_address[:8]}... in global dict")
                         token_info = {
                             'address': token_address,
                             'source': 'pumpfun',
@@ -1551,19 +1565,23 @@ async def mempool_listener(name, program_id=None):
                                     logging.warning(f"[PumpFun] Token {token_mint[:8]}... doesn't meet buy criteria - SKIPPING")
                                     record_skip("invalid_pumpfun")
                                     continue
-                                
-                                # Track the token
                                 if token_mint not in pumpfun_tokens:
                                     pumpfun_tokens[token_mint] = {
                                         "discovered": time.time(),
-                                        "migrated": False,
                                         "verified": True,
-                                        "tradeable": True,
+                                        "migrated": False,
                                         "ultra_fresh": is_ultra_fresh,
                                         "bonding_curve_sol": sol_amount_in_curve
                                     }
-                                    logging.info(f"[PumpFun] Tracked verified token: {token_mint[:8]}...")
-                                
+                                    logging.info(f"[PumpFun] Registered verified token: {token_mint[:8]}...")
+                                # Track the token
+                                else:
+                                    pumpfun_tokens[token_mint].update({
+                                        "tradeable": True,
+                                        "ultra_fresh": is_ultra_fresh,
+                                        "bonding_curve_sol": sol_amount_in_curve
+                                    })
+                                        
                                 # Now proceed with the buy
                                 if should_buy:
                                     # Check if graduated
