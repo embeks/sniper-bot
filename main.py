@@ -127,12 +127,22 @@ class SniperBot:
             # Log discovery (reduced spam)
             logger.info(f"🎯 Evaluating new token: {mint}")
             
-            # Execute buy
+            # Pass the bonding curve key from WebSocket data to DEX
+            if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
+                self.dex.last_token_data = token_data['data']
+            
+            # Execute buy with bonding curve key from WebSocket
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would buy {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
                 signature = "dry_run_sig_" + mint[:10]
             else:
-                signature = self.dex.execute_buy(mint)
+                # Extract bonding curve key from token data
+                bonding_curve_key = None
+                if 'data' in token_data:
+                    bonding_curve_key = token_data['data'].get('bondingCurveKey')
+                
+                # Execute buy with bonding curve key
+                signature = self.dex.execute_buy_with_curve(mint, bonding_curve_key)
             
             if signature:
                 # Create position
