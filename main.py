@@ -20,7 +20,7 @@ from config import (
 
 from wallet import WalletManager
 from dex import PumpFunDEX
-from monitor import TokenMonitor
+from pumpfun_scanner import PumpFunScanner
 from telegram_bot import TelegramBot
 
 # Configure logging
@@ -59,7 +59,7 @@ class SniperBot:
         # Initialize components
         self.wallet = WalletManager()
         self.dex = PumpFunDEX(self.wallet)
-        self.monitor = None
+        self.scanner = None
         self.telegram = None
         
         # Track positions
@@ -271,14 +271,14 @@ class SniperBot:
             if self.telegram:
                 await self.telegram.send_message("🚀 Bot started successfully\nType /help for commands")
             
-            # Start monitor
-            self.monitor = TokenMonitor(self.on_token_found)
-            monitor_task = asyncio.create_task(self.monitor.start())
+            # Start scanner
+            self.scanner = PumpFunScanner(self.on_token_found)
+            scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot is running. Press Ctrl+C to stop.")
             
             # Keep running (no periodic stats logging)
-            await monitor_task
+            await scanner_task
             
         except KeyboardInterrupt:
             logger.info("\n🛑 Shutting down...")
@@ -321,9 +321,9 @@ class SniperBot:
         for mint in list(self.positions.keys()):
             await self._close_position(mint, reason="shutdown")
         
-        # Stop monitor
-        if self.monitor:
-            self.monitor.stop()
+        # Stop scanner
+        if self.scanner:
+            self.scanner.stop()
         
         # Stop Telegram bot
         if self.telegram:
