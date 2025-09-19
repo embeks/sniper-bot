@@ -98,48 +98,55 @@ class PumpPortalTrader:
                         if is_versioned:
                             try:
                                 from solders.transaction import VersionedTransaction
+                                from solders.message import MessageV0
                                 
                                 # Parse the versioned transaction
                                 versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
                                 
-                                # Get the message to sign
-                                message_bytes = bytes(versioned_tx.message)
+                                # Simply use populate method to add our signature
+                                # This is the proper way to sign a partially signed transaction
+                                versioned_tx.populate(self.wallet.keypair)
+                                signed_tx_bytes = bytes(versioned_tx)
                                 
-                                # Sign the message
-                                signature = self.wallet.keypair.sign_message(message_bytes)
-                                
-                                # The transaction should already have placeholder signatures
-                                # We need to properly construct a new VersionedTransaction
-                                # with our signature in the correct position
-                                
-                                # Get the number of signatures required
-                                num_signatures = len(versioned_tx.signatures)
-                                
-                                # Create new signatures list with our signature first
-                                new_signatures = [signature]
-                                # Add any other signatures (likely empty placeholders)
-                                for i in range(1, num_signatures):
-                                    new_signatures.append(versioned_tx.signatures[i])
-                                
-                                # Create properly signed transaction
-                                signed_tx = VersionedTransaction(versioned_tx.message, new_signatures)
-                                signed_tx_bytes = bytes(signed_tx)
-                                
-                                logger.info(f"Successfully signed VersionedTransaction ({len(signed_tx_bytes)} bytes)")
+                                logger.info(f"Successfully signed VersionedTransaction with populate ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
-                                logger.error(f"Failed to sign as VersionedTransaction: {e}")
-                                # Try manual byte manipulation as last resort
+                                # If populate doesn't work, try manual signing
                                 try:
-                                    # Sign the raw message
-                                    message_start = 1 + (64 * 2)  # version + 2 signatures typically
-                                    message_bytes = tx_bytes[message_start:]
+                                    from solders.transaction import VersionedTransaction
+                                    
+                                    # Parse the versioned transaction again
+                                    versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                                    
+                                    # Get the actual message bytes for signing
+                                    message_bytes = bytes(versioned_tx.message)
+                                    
+                                    # Sign the message
                                     signature = self.wallet.keypair.sign_message(message_bytes)
                                     
-                                    # Replace first signature slot (after version byte)
-                                    signed_tx_bytes = tx_bytes[:1] + bytes(signature) + tx_bytes[65:]
-                                    logger.info("Signed using byte manipulation")
+                                    # Manually reconstruct: version byte + signature + rest of transaction
+                                    # The transaction structure is: [version_byte][signatures][message]
+                                    if tx_bytes[0] == 0x80:
+                                        # Has version byte
+                                        # Find how many signatures there are (compact array)
+                                        num_sigs = tx_bytes[1]
+                                        sig_start = 2
+                                        sig_end = sig_start + (64 * num_sigs)
+                                        
+                                        # Replace first signature
+                                        signed_tx_bytes = (
+                                            tx_bytes[0:1] +  # version byte
+                                            tx_bytes[1:2] +  # num signatures
+                                            bytes(signature) +  # our signature
+                                            tx_bytes[sig_start + 64:] # rest of transaction
+                                        )
+                                    else:
+                                        # Legacy format - shouldn't happen for PumpFun
+                                        signed_tx_bytes = None
+                                    
+                                    if signed_tx_bytes:
+                                        logger.info("Signed using manual reconstruction")
                                 except Exception as e2:
-                                    logger.error(f"Byte manipulation also failed: {e2}")
+                                    logger.error(f"Manual signing also failed: {e2}")
                         
                         # If not versioned or versioned failed, try legacy
                         if signed_tx_bytes is None:
@@ -256,48 +263,55 @@ class PumpPortalTrader:
                         if is_versioned:
                             try:
                                 from solders.transaction import VersionedTransaction
+                                from solders.message import MessageV0
                                 
                                 # Parse the versioned transaction
                                 versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
                                 
-                                # Get the message to sign
-                                message_bytes = bytes(versioned_tx.message)
+                                # Simply use populate method to add our signature
+                                # This is the proper way to sign a partially signed transaction
+                                versioned_tx.populate(self.wallet.keypair)
+                                signed_tx_bytes = bytes(versioned_tx)
                                 
-                                # Sign the message
-                                signature = self.wallet.keypair.sign_message(message_bytes)
-                                
-                                # The transaction should already have placeholder signatures
-                                # We need to properly construct a new VersionedTransaction
-                                # with our signature in the correct position
-                                
-                                # Get the number of signatures required
-                                num_signatures = len(versioned_tx.signatures)
-                                
-                                # Create new signatures list with our signature first
-                                new_signatures = [signature]
-                                # Add any other signatures (likely empty placeholders)
-                                for i in range(1, num_signatures):
-                                    new_signatures.append(versioned_tx.signatures[i])
-                                
-                                # Create properly signed transaction
-                                signed_tx = VersionedTransaction(versioned_tx.message, new_signatures)
-                                signed_tx_bytes = bytes(signed_tx)
-                                
-                                logger.info(f"Successfully signed VersionedTransaction ({len(signed_tx_bytes)} bytes)")
+                                logger.info(f"Successfully signed VersionedTransaction with populate ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
-                                logger.error(f"Failed to sign as VersionedTransaction: {e}")
-                                # Try manual byte manipulation as last resort
+                                # If populate doesn't work, try manual signing
                                 try:
-                                    # Sign the raw message
-                                    message_start = 1 + (64 * 2)  # version + 2 signatures typically
-                                    message_bytes = tx_bytes[message_start:]
+                                    from solders.transaction import VersionedTransaction
+                                    
+                                    # Parse the versioned transaction again
+                                    versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                                    
+                                    # Get the actual message bytes for signing
+                                    message_bytes = bytes(versioned_tx.message)
+                                    
+                                    # Sign the message
                                     signature = self.wallet.keypair.sign_message(message_bytes)
                                     
-                                    # Replace first signature slot (after version byte)
-                                    signed_tx_bytes = tx_bytes[:1] + bytes(signature) + tx_bytes[65:]
-                                    logger.info("Signed using byte manipulation")
+                                    # Manually reconstruct: version byte + signature + rest of transaction
+                                    # The transaction structure is: [version_byte][signatures][message]
+                                    if tx_bytes[0] == 0x80:
+                                        # Has version byte
+                                        # Find how many signatures there are (compact array)
+                                        num_sigs = tx_bytes[1]
+                                        sig_start = 2
+                                        sig_end = sig_start + (64 * num_sigs)
+                                        
+                                        # Replace first signature
+                                        signed_tx_bytes = (
+                                            tx_bytes[0:1] +  # version byte
+                                            tx_bytes[1:2] +  # num signatures
+                                            bytes(signature) +  # our signature
+                                            tx_bytes[sig_start + 64:] # rest of transaction
+                                        )
+                                    else:
+                                        # Legacy format - shouldn't happen for PumpFun
+                                        signed_tx_bytes = None
+                                    
+                                    if signed_tx_bytes:
+                                        logger.info("Signed using manual reconstruction")
                                 except Exception as e2:
-                                    logger.error(f"Byte manipulation also failed: {e2}")
+                                    logger.error(f"Manual signing also failed: {e2}")
                         
                         # If not versioned or versioned failed, try legacy
                         if signed_tx_bytes is None:
