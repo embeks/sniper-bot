@@ -22,7 +22,14 @@ class PumpFunScanner:
     def __init__(self, callback):
         """Initialize scanner"""
         self.callback = callback
-        self.client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+        # Fix the RPC endpoint URL
+        rpc_url = RPC_ENDPOINT
+        if rpc_url.startswith('wss://'):
+            rpc_url = rpc_url.replace('wss://', 'https://')
+        elif rpc_url.startswith('ws://'):
+            rpc_url = rpc_url.replace('ws://', 'http://')
+        
+        self.client = Client(rpc_url)
         self.seen_signatures = set()
         self.seen_mints = set()
         self.running = False
@@ -36,12 +43,15 @@ class PumpFunScanner:
         while self.running:
             try:
                 # Get recent PumpFun transactions
+                logger.debug("Fetching recent PumpFun transactions...")
                 signatures = self.client.get_signatures_for_address(
                     PUMPFUN_PROGRAM_ID,
-                    limit=50  # Check last 50 transactions
+                    limit=25  # Check last 25 transactions
                 )
                 
-                if signatures.value:
+                if signatures and signatures.value:
+                    logger.debug(f"Found {len(signatures.value)} transactions")
+                    
                     for sig_info in signatures.value:
                         sig = sig_info.signature
                         
@@ -58,14 +68,17 @@ class PumpFunScanner:
                                 max_supported_transaction_version=0
                             )
                             
-                            if tx.value and not tx.value.transaction.meta.err:
+                            if tx and tx.value and not tx.value.transaction.meta.err:
                                 # Check logs for buy instruction
-                                logs = tx.value.transaction.meta.log_messages if tx.value.transaction.meta else []
+                                logs = []
+                                if hasattr(tx.value.transaction.meta, 'log_messages'):
+                                    logs = tx.value.transaction.meta.log_messages
                                 
                                 is_buy = False
                                 for log in logs:
-                                    if 'Instruction: Buy' in log or 'Instruction: buy' in log:
+                                    if 'Buy' in log or 'buy' in log:
                                         is_buy = True
+                                        logger.debug(f"Found buy transaction: {sig[:20]}...")
                                         break
                                 
                                 if is_buy:
@@ -76,7 +89,8 @@ class PumpFunScanner:
                                         self.seen_mints.add(mint)
                                         
                                         # Check if this is a new token (bonding curve exists)
-                                        if await self._check_if_new_token(mint):
+                                        is_new = await self._check_if_new_token(mint)
+                                        if is_new:
                                             self.launches_found += 1
                                             
                                             logger.info("=" * 60)
@@ -96,14 +110,27 @@ class PumpFunScanner:
                                                 })
                                 
                         except Exception as e:
-                            logger.debug(f"Error processing tx {sig[:8]}: {e}")
+                            logger.debug(f"Error processing tx {sig[:8]}: {str(e)}")
+                else:
+                    logger.debug("No transactions found")
                 
                 # Wait before next scan
-                await asyncio.sleep(1)  # Scan every second
+                await asyncio.sleep(2)  # Scan every 2 seconds
                 
             except Exception as e:
-                logger.error(f"Scanner error: {e}")
-                await asyncio.sleep(5)
+                error_msg = f"Scanner error: {str(e)}"
+                logger.error(error_msg)
+                
+                # Check for specific errors
+                if "429" in str(e):
+                    logger.error("Rate limited - waiting 10 seconds")
+                    await asyncio.sleep(10)
+                elif "Connection" in str(e) or "Network" in str(e):
+                    logger.error("Connection issue - retrying in 5 seconds")
+                    await asyncio.sleep(5)
+                else:
+                    logger.error(f"Unknown error: {e.__class__.__name__}")
+                    await asyncio.sleep(5)
     
     def _extract_mint(self, tx) -> Optional[str]:
         """Extract mint address from transaction"""
