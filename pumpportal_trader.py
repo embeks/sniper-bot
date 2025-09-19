@@ -3,11 +3,11 @@ PumpPortal Trader - Use their API to get properly formatted transactions
 """
 
 import aiohttp
-import base64
+import base58
 import logging
 from typing import Optional
-from solana.transaction import Transaction
-from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
+from solders.keypair import Keypair
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class PumpPortalTrader:
         mint: str, 
         sol_amount: float,
         bonding_curve_key: str = None,
-        slippage: int = 10
+        slippage: int = 50
     ) -> Optional[str]:
         """Get a buy transaction from PumpPortal API"""
         try:
@@ -32,11 +32,11 @@ class PumpPortalTrader:
                 "publicKey": str(self.wallet.pubkey),
                 "action": "buy",
                 "mint": mint,
-                "denominatedInSol": "true",
+                "denominatedInSol": True,  # Boolean, not string
                 "amount": sol_amount,
                 "slippage": slippage,
-                "priorityFee": 0.0001,  # Priority fee in SOL
-                "pool": "pump"  # Use pump pool
+                "priorityFee": 0.0001,
+                "pool": "pump"
             }
             
             # Add bonding curve if provided
@@ -50,23 +50,23 @@ class PumpPortalTrader:
                     if response.status == 200:
                         data = await response.json()
                         
-                        # The API returns a base64 encoded transaction
+                        # The API returns a base58 encoded VersionedTransaction
                         if "transaction" in data:
-                            tx_base64 = data["transaction"]
+                            tx_base58 = data["transaction"]
                             logger.info("Received transaction from PumpPortal")
                             
-                            # Decode the transaction
-                            tx_bytes = base64.b64decode(tx_base64)
+                            # Decode from base58
+                            tx_bytes = base58.b58decode(tx_base58)
                             
-                            # Deserialize to Transaction object
-                            tx = Transaction.deserialize(tx_bytes)
+                            # Construct VersionedTransaction
+                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
                             
                             # Sign with our keypair
-                            tx.sign_partial(self.wallet.keypair)
+                            versioned_tx.sign([self.wallet.keypair])
                             
                             # Send the signed transaction
                             logger.info(f"Sending signed transaction for {mint[:8]}...")
-                            response = self.client.send_raw_transaction(tx.serialize())
+                            response = self.client.send_raw_transaction(bytes(versioned_tx))
                             
                             sig = str(response.value)
                             logger.info(f"✅ Transaction sent: {sig}")
@@ -88,7 +88,7 @@ class PumpPortalTrader:
         mint: str,
         token_amount: float,
         bonding_curve_key: str = None,
-        slippage: int = 10
+        slippage: int = 50
     ) -> Optional[str]:
         """Get a sell transaction from PumpPortal API"""
         try:
@@ -96,7 +96,7 @@ class PumpPortalTrader:
                 "publicKey": str(self.wallet.pubkey),
                 "action": "sell",
                 "mint": mint,
-                "denominatedInSol": "false",
+                "denominatedInSol": False,  # Boolean, not string
                 "amount": token_amount,
                 "slippage": slippage,
                 "priorityFee": 0.0001,
@@ -114,12 +114,20 @@ class PumpPortalTrader:
                         data = await response.json()
                         
                         if "transaction" in data:
-                            tx_base64 = data["transaction"]
-                            tx_bytes = base64.b64decode(tx_base64)
-                            tx = Transaction.deserialize(tx_bytes)
-                            tx.sign_partial(self.wallet.keypair)
+                            tx_base58 = data["transaction"]
                             
-                            response = self.client.send_raw_transaction(tx.serialize())
+                            # Decode from base58
+                            tx_bytes = base58.b58decode(tx_base58)
+                            
+                            # Construct VersionedTransaction
+                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                            
+                            # Sign with our keypair
+                            versioned_tx.sign([self.wallet.keypair])
+                            
+                            # Send the signed transaction
+                            response = self.client.send_raw_transaction(bytes(versioned_tx))
+                            
                             sig = str(response.value)
                             logger.info(f"✅ Sell transaction sent: {sig}")
                             return sig
