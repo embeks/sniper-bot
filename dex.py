@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 class PumpFunDEX:
     """PumpFun bonding curve integration"""
     
+    # Feature flag for Phase 1
+    USE_MANUAL_PUMPFUN_BUY = False
+    
     def __init__(self, wallet_manager):
         """Initialize with wallet manager"""
         self.wallet = wallet_manager
@@ -216,6 +219,11 @@ class PumpFunDEX:
     
     def execute_buy(self, mint: str) -> Optional[str]:
         """Execute a PumpFun bonding curve buy (original method)"""
+        # Check feature flag
+        if not self.USE_MANUAL_PUMPFUN_BUY:
+            logger.info("Manual PumpFun buy path disabled for Phase-1 (using PumpPortal).")
+            return None
+        
         try:
             # Check if token can be bought
             curve_data = self.get_bonding_curve_data(mint)
@@ -287,6 +295,11 @@ class PumpFunDEX:
     
     def execute_buy_with_curve(self, mint: str, bonding_curve_key: str = None) -> Optional[str]:
         """Execute buy with known bonding curve key"""
+        # Check feature flag
+        if not self.USE_MANUAL_PUMPFUN_BUY:
+            logger.info("Manual PumpFun buy path disabled for Phase-1 (using PumpPortal).")
+            return None
+        
         try:
             if bonding_curve_key:
                 # Use the provided bonding curve directly without checking if it exists
@@ -349,25 +362,23 @@ class PumpFunDEX:
             associated_bonding_curve = get_associated_token_address(bonding_curve, mint)
             user_token_account = get_associated_token_address(self.wallet.pubkey, mint)
             
-            # Build instruction data
+            # Build instruction data for PumpFun buy
+            # Discriminator for 'buy' instruction
             discriminator = bytes([102, 6, 61, 18, 1, 218, 235, 234])
             sol_amount_lamports = int(sol_amount * 1e9)
             data = discriminator + struct.pack('<Q', sol_amount_lamports) + struct.pack('<Q', min_tokens)
             
-            # Build accounts
+            # Build accounts in correct order for PumpFun
             accounts = [
-                AccountMeta(pubkey=PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
-                AccountMeta(pubkey=PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),
-                AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=associated_bonding_curve, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=user_token_account, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=self.wallet.pubkey, is_signer=True, is_writable=True),
                 AccountMeta(pubkey=SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-                AccountMeta(pubkey=RENT_PROGRAM_ID, is_signer=False, is_writable=False),
-                AccountMeta(pubkey=Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"), is_signer=False, is_writable=False),
+                AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),
             ]
             
             return Instruction(
