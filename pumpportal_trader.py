@@ -92,45 +92,64 @@ class PumpPortalTrader:
                         # Try different transaction formats
                         signed_tx_bytes = None
                         
-                        # First try: VersionedTransaction (most likely for PumpFun)
-                        try:
-                            from solders.transaction import VersionedTransaction
-                            
-                            # Parse as versioned transaction
-                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                            
-                            # Sign the message directly
-                            message_to_sign = bytes(versioned_tx.message)
-                            signature = self.wallet.keypair.sign_message(message_to_sign)
-                            
-                            # Manually reconstruct the transaction bytes with our signature
-                            # VersionedTransaction format: [signatures][message]
-                            # Each signature is 64 bytes
-                            signature_bytes = bytes(signature)
-                            
-                            # Get the existing transaction bytes and replace the first signature
-                            # The first 64 bytes after any version byte should be the first signature slot
-                            if tx_bytes[0] == 0x80:  # Versioned transaction marker
-                                # Skip version byte, replace first signature
-                                signed_tx_bytes = tx_bytes[0:1] + signature_bytes + tx_bytes[65:]
-                            else:
-                                # No version byte, replace first signature directly
-                                signed_tx_bytes = signature_bytes + tx_bytes[64:]
-                            
-                            logger.info("Successfully signed as VersionedTransaction")
-                        except Exception as e1:
-                            logger.debug(f"VersionedTransaction approach failed: {e1}")
-                            
-                            # Second try: Legacy Transaction
+                        # Check if this is a versioned transaction (starts with 0x80 or has length 544)
+                        is_versioned = tx_bytes[0] == 0x80 or len(tx_bytes) == 544
+                        
+                        if is_versioned:
+                            try:
+                                from solders.transaction import VersionedTransaction
+                                
+                                # Parse the versioned transaction
+                                versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                                
+                                # Get the message to sign
+                                message_bytes = bytes(versioned_tx.message)
+                                
+                                # Sign the message
+                                signature = self.wallet.keypair.sign_message(message_bytes)
+                                
+                                # The transaction should already have placeholder signatures
+                                # We need to properly construct a new VersionedTransaction
+                                # with our signature in the correct position
+                                
+                                # Get the number of signatures required
+                                num_signatures = len(versioned_tx.signatures)
+                                
+                                # Create new signatures list with our signature first
+                                new_signatures = [signature]
+                                # Add any other signatures (likely empty placeholders)
+                                for i in range(1, num_signatures):
+                                    new_signatures.append(versioned_tx.signatures[i])
+                                
+                                # Create properly signed transaction
+                                signed_tx = VersionedTransaction(versioned_tx.message, new_signatures)
+                                signed_tx_bytes = bytes(signed_tx)
+                                
+                                logger.info(f"Successfully signed VersionedTransaction ({len(signed_tx_bytes)} bytes)")
+                            except Exception as e:
+                                logger.error(f"Failed to sign as VersionedTransaction: {e}")
+                                # Try manual byte manipulation as last resort
+                                try:
+                                    # Sign the raw message
+                                    message_start = 1 + (64 * 2)  # version + 2 signatures typically
+                                    message_bytes = tx_bytes[message_start:]
+                                    signature = self.wallet.keypair.sign_message(message_bytes)
+                                    
+                                    # Replace first signature slot (after version byte)
+                                    signed_tx_bytes = tx_bytes[:1] + bytes(signature) + tx_bytes[65:]
+                                    logger.info("Signed using byte manipulation")
+                                except Exception as e2:
+                                    logger.error(f"Byte manipulation also failed: {e2}")
+                        
+                        # If not versioned or versioned failed, try legacy
+                        if signed_tx_bytes is None:
                             try:
                                 tx = Transaction.deserialize(tx_bytes)
                                 tx.sign(self.wallet.keypair)
                                 signed_tx_bytes = tx.serialize()
                                 logger.info("Successfully processed as Legacy Transaction")
-                            except Exception as e2:
-                                logger.error(f"Failed to deserialize as any transaction type")
-                                logger.error(f"VersionedTransaction error: {e1}")
-                                logger.error(f"Legacy Transaction error: {e2}")
+                            except Exception as e:
+                                logger.error(f"Legacy transaction also failed: {e}")
                                 logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
                                 logger.debug(f"Last 20 bytes (hex): {tx_bytes[-20:].hex()}")
                                 return None
@@ -231,45 +250,64 @@ class PumpPortalTrader:
                         # Try different transaction formats
                         signed_tx_bytes = None
                         
-                        # First try: VersionedTransaction (most likely for PumpFun)
-                        try:
-                            from solders.transaction import VersionedTransaction
-                            
-                            # Parse as versioned transaction
-                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                            
-                            # Sign the message directly
-                            message_to_sign = bytes(versioned_tx.message)
-                            signature = self.wallet.keypair.sign_message(message_to_sign)
-                            
-                            # Manually reconstruct the transaction bytes with our signature
-                            # VersionedTransaction format: [signatures][message]
-                            # Each signature is 64 bytes
-                            signature_bytes = bytes(signature)
-                            
-                            # Get the existing transaction bytes and replace the first signature
-                            # The first 64 bytes after any version byte should be the first signature slot
-                            if tx_bytes[0] == 0x80:  # Versioned transaction marker
-                                # Skip version byte, replace first signature
-                                signed_tx_bytes = tx_bytes[0:1] + signature_bytes + tx_bytes[65:]
-                            else:
-                                # No version byte, replace first signature directly
-                                signed_tx_bytes = signature_bytes + tx_bytes[64:]
-                            
-                            logger.info("Successfully signed as VersionedTransaction")
-                        except Exception as e1:
-                            logger.debug(f"VersionedTransaction approach failed: {e1}")
-                            
-                            # Second try: Legacy Transaction
+                        # Check if this is a versioned transaction (starts with 0x80 or has length 544)
+                        is_versioned = tx_bytes[0] == 0x80 or len(tx_bytes) == 544
+                        
+                        if is_versioned:
+                            try:
+                                from solders.transaction import VersionedTransaction
+                                
+                                # Parse the versioned transaction
+                                versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                                
+                                # Get the message to sign
+                                message_bytes = bytes(versioned_tx.message)
+                                
+                                # Sign the message
+                                signature = self.wallet.keypair.sign_message(message_bytes)
+                                
+                                # The transaction should already have placeholder signatures
+                                # We need to properly construct a new VersionedTransaction
+                                # with our signature in the correct position
+                                
+                                # Get the number of signatures required
+                                num_signatures = len(versioned_tx.signatures)
+                                
+                                # Create new signatures list with our signature first
+                                new_signatures = [signature]
+                                # Add any other signatures (likely empty placeholders)
+                                for i in range(1, num_signatures):
+                                    new_signatures.append(versioned_tx.signatures[i])
+                                
+                                # Create properly signed transaction
+                                signed_tx = VersionedTransaction(versioned_tx.message, new_signatures)
+                                signed_tx_bytes = bytes(signed_tx)
+                                
+                                logger.info(f"Successfully signed VersionedTransaction ({len(signed_tx_bytes)} bytes)")
+                            except Exception as e:
+                                logger.error(f"Failed to sign as VersionedTransaction: {e}")
+                                # Try manual byte manipulation as last resort
+                                try:
+                                    # Sign the raw message
+                                    message_start = 1 + (64 * 2)  # version + 2 signatures typically
+                                    message_bytes = tx_bytes[message_start:]
+                                    signature = self.wallet.keypair.sign_message(message_bytes)
+                                    
+                                    # Replace first signature slot (after version byte)
+                                    signed_tx_bytes = tx_bytes[:1] + bytes(signature) + tx_bytes[65:]
+                                    logger.info("Signed using byte manipulation")
+                                except Exception as e2:
+                                    logger.error(f"Byte manipulation also failed: {e2}")
+                        
+                        # If not versioned or versioned failed, try legacy
+                        if signed_tx_bytes is None:
                             try:
                                 tx = Transaction.deserialize(tx_bytes)
                                 tx.sign(self.wallet.keypair)
                                 signed_tx_bytes = tx.serialize()
                                 logger.info("Successfully processed as Legacy Transaction")
-                            except Exception as e2:
-                                logger.error(f"Failed to deserialize as any transaction type")
-                                logger.error(f"VersionedTransaction error: {e1}")
-                                logger.error(f"Legacy Transaction error: {e2}")
+                            except Exception as e:
+                                logger.error(f"Legacy transaction also failed: {e}")
                                 logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
                                 logger.debug(f"Last 20 bytes (hex): {tx_bytes[-20:].hex()}")
                                 return None
