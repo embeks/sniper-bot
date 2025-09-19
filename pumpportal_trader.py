@@ -1,5 +1,6 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
+FIXED: UTF-8 decode error when handling transaction responses
 """
 
 import aiohttp
@@ -32,7 +33,7 @@ class PumpPortalTrader:
                 "publicKey": str(self.wallet.pubkey),
                 "action": "buy",
                 "mint": mint,
-                "denominatedInSol": True,  # Boolean, not string
+                "denominatedInSol": "true",  # API expects string "true" not boolean
                 "amount": sol_amount,
                 "slippage": slippage,
                 "priorityFee": 0.0001,
@@ -48,44 +49,57 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        # Handle different response types
-                        content_type = response.headers.get('content-type', '')
+                        # Read response as bytes first to avoid UTF-8 decode issues
+                        response_bytes = await response.read()
                         
-                        if 'application/json' in content_type:
-                            data = await response.json()
-                        else:
-                            # If not JSON, try to parse as text first
-                            text_data = await response.text()
-                            try:
-                                import json
-                                data = json.loads(text_data)
-                            except:
-                                # If that fails, assume it's the transaction directly
-                                data = {"transaction": text_data}
+                        # Try to parse as JSON
+                        try:
+                            import json
+                            response_text = response_bytes.decode('utf-8', errors='ignore')
+                            data = json.loads(response_text)
+                            tx_base58 = data.get("transaction")
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            # If not JSON, assume the entire response is the base58 transaction
+                            # Remove any non-base58 characters
+                            tx_base58 = response_bytes.decode('ascii', errors='ignore').strip()
                         
-                        # The API returns a base58 encoded VersionedTransaction
-                        if "transaction" in data:
-                            tx_base58 = data["transaction"]
-                            logger.info("Received transaction from PumpPortal")
-                            
-                            # Decode from base58
+                        if not tx_base58:
+                            logger.error("No transaction data in response")
+                            return None
+                        
+                        logger.info(f"Received transaction from PumpPortal (length: {len(tx_base58)})")
+                        
+                        # Decode base58 transaction - this is already bytes, no UTF-8 involved
+                        try:
                             tx_bytes = base58.b58decode(tx_base58)
-                            
-                            # Construct VersionedTransaction
+                        except Exception as e:
+                            logger.error(f"Failed to decode base58 transaction: {e}")
+                            return None
+                        
+                        # Construct VersionedTransaction from bytes
+                        try:
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                            
-                            # Sign with our keypair
+                        except Exception as e:
+                            logger.error(f"Failed to parse transaction bytes: {e}")
+                            return None
+                        
+                        # Sign with our keypair
+                        try:
                             versioned_tx.sign([self.wallet.keypair])
-                            
-                            # Send the signed transaction
-                            logger.info(f"Sending signed transaction for {mint[:8]}...")
+                        except Exception as e:
+                            logger.error(f"Failed to sign transaction: {e}")
+                            return None
+                        
+                        # Send the signed transaction
+                        logger.info(f"Sending signed transaction for {mint[:8]}...")
+                        try:
+                            # Send as bytes, not string
                             response = self.client.send_raw_transaction(bytes(versioned_tx))
-                            
                             sig = str(response.value)
                             logger.info(f"✅ Transaction sent: {sig}")
                             return sig
-                        else:
-                            logger.error(f"No transaction in response: {data}")
+                        except Exception as e:
+                            logger.error(f"Failed to send transaction: {e}")
                             return None
                     else:
                         error_text = await response.text()
@@ -94,6 +108,8 @@ class PumpPortalTrader:
                         
         except Exception as e:
             logger.error(f"Failed to create buy transaction: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     async def create_sell_transaction(
@@ -109,7 +125,7 @@ class PumpPortalTrader:
                 "publicKey": str(self.wallet.pubkey),
                 "action": "sell",
                 "mint": mint,
-                "denominatedInSol": False,  # Boolean, not string
+                "denominatedInSol": "false",  # API expects string "false" not boolean
                 "amount": token_amount,
                 "slippage": slippage,
                 "priorityFee": 0.0001,
@@ -124,41 +140,52 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        # Handle different response types
-                        content_type = response.headers.get('content-type', '')
+                        # Read response as bytes first to avoid UTF-8 decode issues
+                        response_bytes = await response.read()
                         
-                        if 'application/json' in content_type:
-                            data = await response.json()
-                        else:
-                            # If not JSON, try to parse as text first
-                            text_data = await response.text()
-                            try:
-                                import json
-                                data = json.loads(text_data)
-                            except:
-                                # If that fails, assume it's the transaction directly
-                                data = {"transaction": text_data}
+                        # Try to parse as JSON
+                        try:
+                            import json
+                            response_text = response_bytes.decode('utf-8', errors='ignore')
+                            data = json.loads(response_text)
+                            tx_base58 = data.get("transaction")
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            # If not JSON, assume the entire response is the base58 transaction
+                            tx_base58 = response_bytes.decode('ascii', errors='ignore').strip()
                         
-                        if "transaction" in data:
-                            tx_base58 = data["transaction"]
-                            
-                            # Decode from base58
+                        if not tx_base58:
+                            logger.error("No transaction data in response")
+                            return None
+                        
+                        # Decode base58 transaction
+                        try:
                             tx_bytes = base58.b58decode(tx_base58)
-                            
-                            # Construct VersionedTransaction
+                        except Exception as e:
+                            logger.error(f"Failed to decode base58 transaction: {e}")
+                            return None
+                        
+                        # Construct VersionedTransaction from bytes
+                        try:
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                            
-                            # Sign with our keypair
+                        except Exception as e:
+                            logger.error(f"Failed to parse transaction bytes: {e}")
+                            return None
+                        
+                        # Sign with our keypair
+                        try:
                             versioned_tx.sign([self.wallet.keypair])
-                            
-                            # Send the signed transaction
+                        except Exception as e:
+                            logger.error(f"Failed to sign transaction: {e}")
+                            return None
+                        
+                        # Send the signed transaction
+                        try:
                             response = self.client.send_raw_transaction(bytes(versioned_tx))
-                            
                             sig = str(response.value)
                             logger.info(f"✅ Sell transaction sent: {sig}")
                             return sig
-                        else:
-                            logger.error(f"No transaction in response: {data}")
+                        except Exception as e:
+                            logger.error(f"Failed to send transaction: {e}")
                             return None
                     else:
                         error_text = await response.text()
@@ -167,4 +194,6 @@ class PumpPortalTrader:
                         
         except Exception as e:
             logger.error(f"Failed to create sell transaction: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
