@@ -134,22 +134,24 @@ class SniperBot:
             # Log discovery (reduced spam)
             logger.info(f"🎯 Evaluating new token: {mint}")
             
-            # Pass the bonding curve key from WebSocket data to DEX
-            if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
-                self.dex.last_token_data = token_data['data']
-            
-            # Execute buy with bonding curve key from WebSocket
+            # Execute buy
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would buy {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
                 signature = "dry_run_sig_" + mint[:10]
             else:
-                # Extract bonding curve key from token data
+                # Extract bonding curve key from token data if available
                 bonding_curve_key = None
-                if 'data' in token_data:
-                    bonding_curve_key = token_data['data'].get('bondingCurveKey')
+                if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
+                    bonding_curve_key = token_data['data']['bondingCurveKey']
+                    logger.info(f"Using bonding curve from WebSocket: {bonding_curve_key[:20]}...")
                 
-                # Execute buy with bonding curve key
-                signature = self.dex.execute_buy_with_curve(mint, bonding_curve_key)
+                # Use PumpPortal API to create transaction
+                signature = await self.trader.create_buy_transaction(
+                    mint=mint,
+                    sol_amount=BUY_AMOUNT_SOL,
+                    bonding_curve_key=bonding_curve_key,
+                    slippage=50
+                )
             
             if signature:
                 # Create position
@@ -356,6 +358,24 @@ async def main():
     await bot.run()
 
 if __name__ == "__main__":
+    # Add health server to satisfy Render's port requirement
+    import os
+    import threading
+    from aiohttp import web
+    
+    async def _health(_: web.Request):
+        return web.Response(text="ok")
+    
+    def _start_health_server():
+        app = web.Application()
+        app.router.add_get("/", _health)
+        app.router.add_get("/healthz", _health)
+        port = int(os.getenv("PORT", "10000"))
+        web.run_app(app, port=port, print=None)  # print=None to suppress startup message
+    
+    # Start the HTTP server in background thread
+    threading.Thread(target=_start_health_server, daemon=True).start()
+    
     # Handle signals
     def signal_handler(sig, frame):
         logger.info("\nReceived interrupt signal")
