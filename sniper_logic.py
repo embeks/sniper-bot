@@ -1482,6 +1482,14 @@ async def mempool_listener(name, program_id=None):
                             if not token_mint:
                                 logging.warning(f"[{name}] Could not extract token mint from transaction")
                                 continue
+
+                            if name == "PumpFun" and token_mint not in pumpfun_tokens:
+                                pumpfun_tokens[token_mint] = {
+                                    "discovered": time.time(),
+                                    "verified": True,
+                                    "migrated": False
+                                }
+                                logging.info(f"[PumpFun] PRE-REGISTERED token {token_mint[:8]}... in global dict")
                             
                             # Validate it's a proper mint
                             try:
