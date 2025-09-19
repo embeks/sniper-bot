@@ -95,25 +95,25 @@ class PumpPortalTrader:
                         # First try: VersionedTransaction (most likely for PumpFun)
                         try:
                             from solders.transaction import VersionedTransaction
-                            from solders.signature import Signature
                             
                             # Parse as versioned transaction
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
                             
-                            # Get the message to sign
-                            message_bytes = bytes(versioned_tx.message)
+                            # The transaction from PumpPortal is already partially signed
+                            # We need to add our signature to the first slot
+                            message_to_sign = bytes(versioned_tx.message)
                             
                             # Sign the message
-                            signature = self.wallet.keypair.sign_message(message_bytes)
+                            signature = self.wallet.keypair.sign_message(message_to_sign)
                             
-                            # Create a new versioned transaction with the signature
-                            signatures = [signature] + list(versioned_tx.signatures[1:])
-                            signed_versioned_tx = VersionedTransaction(
-                                versioned_tx.message,
-                                signatures
-                            )
+                            # Update the signatures list - replace the first empty signature
+                            signatures_list = list(versioned_tx.signatures)
+                            signatures_list[0] = signature
                             
-                            signed_tx_bytes = bytes(signed_versioned_tx)
+                            # Reconstruct the transaction with all signatures
+                            signed_tx = VersionedTransaction(versioned_tx.message, signatures_list)
+                            signed_tx_bytes = bytes(signed_tx)
+                            
                             logger.info("Successfully processed as VersionedTransaction")
                         except Exception as e1:
                             logger.debug(f"Not a VersionedTransaction: {e1}")
@@ -231,25 +231,25 @@ class PumpPortalTrader:
                         # First try: VersionedTransaction (most likely for PumpFun)
                         try:
                             from solders.transaction import VersionedTransaction
-                            from solders.signature import Signature
                             
                             # Parse as versioned transaction
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
                             
-                            # Get the message to sign
-                            message_bytes = bytes(versioned_tx.message)
+                            # The transaction from PumpPortal is already partially signed
+                            # We need to add our signature to the first slot
+                            message_to_sign = bytes(versioned_tx.message)
                             
                             # Sign the message
-                            signature = self.wallet.keypair.sign_message(message_bytes)
+                            signature = self.wallet.keypair.sign_message(message_to_sign)
                             
-                            # Create a new versioned transaction with the signature
-                            signatures = [signature] + list(versioned_tx.signatures[1:])
-                            signed_versioned_tx = VersionedTransaction(
-                                versioned_tx.message,
-                                signatures
-                            )
+                            # Update the signatures list - replace the first empty signature
+                            signatures_list = list(versioned_tx.signatures)
+                            signatures_list[0] = signature
                             
-                            signed_tx_bytes = bytes(signed_versioned_tx)
+                            # Reconstruct the transaction with all signatures
+                            signed_tx = VersionedTransaction(versioned_tx.message, signatures_list)
+                            signed_tx_bytes = bytes(signed_tx)
+                            
                             logger.info("Successfully processed as VersionedTransaction")
                         except Exception as e1:
                             logger.debug(f"Not a VersionedTransaction: {e1}")
