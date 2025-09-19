@@ -149,7 +149,7 @@ RPC_TIMEOUT = 30  # RPC call timeout in seconds
 # ============================================
 # LOGGING
 # ============================================
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'DEBUG')  # Changed to DEBUG temporarily
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')  # Back to INFO level
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_FILE = None  # No file logging, only console output
 
