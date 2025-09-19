@@ -99,24 +99,27 @@ class PumpPortalTrader:
                             # Parse as versioned transaction
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
                             
-                            # The transaction from PumpPortal is already partially signed
-                            # We need to add our signature to the first slot
+                            # Sign the message directly
                             message_to_sign = bytes(versioned_tx.message)
-                            
-                            # Sign the message
                             signature = self.wallet.keypair.sign_message(message_to_sign)
                             
-                            # Update the signatures list - replace the first empty signature
-                            signatures_list = list(versioned_tx.signatures)
-                            signatures_list[0] = signature
+                            # Manually reconstruct the transaction bytes with our signature
+                            # VersionedTransaction format: [signatures][message]
+                            # Each signature is 64 bytes
+                            signature_bytes = bytes(signature)
                             
-                            # Reconstruct the transaction with all signatures
-                            signed_tx = VersionedTransaction(versioned_tx.message, signatures_list)
-                            signed_tx_bytes = bytes(signed_tx)
+                            # Get the existing transaction bytes and replace the first signature
+                            # The first 64 bytes after any version byte should be the first signature slot
+                            if tx_bytes[0] == 0x80:  # Versioned transaction marker
+                                # Skip version byte, replace first signature
+                                signed_tx_bytes = tx_bytes[0:1] + signature_bytes + tx_bytes[65:]
+                            else:
+                                # No version byte, replace first signature directly
+                                signed_tx_bytes = signature_bytes + tx_bytes[64:]
                             
-                            logger.info("Successfully processed as VersionedTransaction")
+                            logger.info("Successfully signed as VersionedTransaction")
                         except Exception as e1:
-                            logger.debug(f"Not a VersionedTransaction: {e1}")
+                            logger.debug(f"VersionedTransaction approach failed: {e1}")
                             
                             # Second try: Legacy Transaction
                             try:
@@ -235,24 +238,27 @@ class PumpPortalTrader:
                             # Parse as versioned transaction
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
                             
-                            # The transaction from PumpPortal is already partially signed
-                            # We need to add our signature to the first slot
+                            # Sign the message directly
                             message_to_sign = bytes(versioned_tx.message)
-                            
-                            # Sign the message
                             signature = self.wallet.keypair.sign_message(message_to_sign)
                             
-                            # Update the signatures list - replace the first empty signature
-                            signatures_list = list(versioned_tx.signatures)
-                            signatures_list[0] = signature
+                            # Manually reconstruct the transaction bytes with our signature
+                            # VersionedTransaction format: [signatures][message]
+                            # Each signature is 64 bytes
+                            signature_bytes = bytes(signature)
                             
-                            # Reconstruct the transaction with all signatures
-                            signed_tx = VersionedTransaction(versioned_tx.message, signatures_list)
-                            signed_tx_bytes = bytes(signed_tx)
+                            # Get the existing transaction bytes and replace the first signature
+                            # The first 64 bytes after any version byte should be the first signature slot
+                            if tx_bytes[0] == 0x80:  # Versioned transaction marker
+                                # Skip version byte, replace first signature
+                                signed_tx_bytes = tx_bytes[0:1] + signature_bytes + tx_bytes[65:]
+                            else:
+                                # No version byte, replace first signature directly
+                                signed_tx_bytes = signature_bytes + tx_bytes[64:]
                             
-                            logger.info("Successfully processed as VersionedTransaction")
+                            logger.info("Successfully signed as VersionedTransaction")
                         except Exception as e1:
-                            logger.debug(f"Not a VersionedTransaction: {e1}")
+                            logger.debug(f"VersionedTransaction approach failed: {e1}")
                             
                             # Second try: Legacy Transaction
                             try:
