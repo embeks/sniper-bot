@@ -95,11 +95,25 @@ class PumpPortalTrader:
                         # First try: VersionedTransaction (most likely for PumpFun)
                         try:
                             from solders.transaction import VersionedTransaction
+                            from solders.signature import Signature
+                            
                             # Parse as versioned transaction
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                            # Sign the versioned transaction
-                            versioned_tx.sign([self.wallet.keypair])
-                            signed_tx_bytes = bytes(versioned_tx)
+                            
+                            # Get the message to sign
+                            message_bytes = bytes(versioned_tx.message)
+                            
+                            # Sign the message
+                            signature = self.wallet.keypair.sign_message(message_bytes)
+                            
+                            # Create a new versioned transaction with the signature
+                            signatures = [signature] + list(versioned_tx.signatures[1:])
+                            signed_versioned_tx = VersionedTransaction(
+                                versioned_tx.message,
+                                signatures
+                            )
+                            
+                            signed_tx_bytes = bytes(signed_versioned_tx)
                             logger.info("Successfully processed as VersionedTransaction")
                         except Exception as e1:
                             logger.debug(f"Not a VersionedTransaction: {e1}")
@@ -217,11 +231,25 @@ class PumpPortalTrader:
                         # First try: VersionedTransaction (most likely for PumpFun)
                         try:
                             from solders.transaction import VersionedTransaction
+                            from solders.signature import Signature
+                            
                             # Parse as versioned transaction
                             versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
-                            # Sign the versioned transaction
-                            versioned_tx.sign([self.wallet.keypair])
-                            signed_tx_bytes = bytes(versioned_tx)
+                            
+                            # Get the message to sign
+                            message_bytes = bytes(versioned_tx.message)
+                            
+                            # Sign the message
+                            signature = self.wallet.keypair.sign_message(message_bytes)
+                            
+                            # Create a new versioned transaction with the signature
+                            signatures = [signature] + list(versioned_tx.signatures[1:])
+                            signed_versioned_tx = VersionedTransaction(
+                                versioned_tx.message,
+                                signatures
+                            )
+                            
+                            signed_tx_bytes = bytes(signed_versioned_tx)
                             logger.info("Successfully processed as VersionedTransaction")
                         except Exception as e1:
                             logger.debug(f"Not a VersionedTransaction: {e1}")
