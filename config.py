@@ -1,240 +1,155 @@
-# config.py - FIXED VERSION WITH PROPER VALIDATION
+"""
+Phase 1 Configuration - Minimal PumpFun Bonding Curve Sniper
+Focus: Catch launches, execute trades, prove profitability
+"""
+
 import os
-import re
-from dataclasses import dataclass
+from solders.pubkey import Pubkey
+from dotenv import load_dotenv
 
-def _valid_pubkey(s: str) -> bool:
-    if not s or not isinstance(s, str):
-        return False
-    # Strip whitespace/newlines that might be in .env file
-    s = s.strip()
-    # Solana pubkeys are exactly 43-44 chars in base58
-    return 43 <= len(s) <= 44 and re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]+', s) is not None
+# Load environment variables
+load_dotenv()
 
-def _b(name, default):
-    v = os.getenv(name)
-    return (str(v).lower() in ("1","true","yes","y","on")) if v is not None else default
+# ============================================
+# CORE WALLET CONFIGURATION
+# ============================================
+PRIVATE_KEY = os.getenv('PRIVATE_KEY')
+if not PRIVATE_KEY:
+    raise ValueError("PRIVATE_KEY not found in environment variables")
 
-def _f(name, default):
-    try: return float(os.getenv(name, default))
-    except: return default
+# ============================================
+# RPC CONFIGURATION
+# ============================================
+RPC_ENDPOINT = os.getenv('RPC_ENDPOINT', 'https://mainnet.helius-rpc.com/?api-key=' + os.getenv('HELIUS_API_KEY', ''))
+WS_ENDPOINT = RPC_ENDPOINT.replace('https://', 'wss://').replace('http://', 'ws://')
 
-def _i(name, default):
-    try: return int(float(os.getenv(name, default)))
-    except: return default
+# Backup RPC endpoints
+BACKUP_RPC_ENDPOINTS = [
+    os.getenv('BACKUP_RPC_1', 'https://api.mainnet-beta.solana.com'),
+    os.getenv('BACKUP_RPC_2', 'https://solana-api.projectserum.com')
+]
 
-@dataclass(frozen=True)
-class Config:
-    # Core settings
-    BUY_AMOUNT_SOL: float
-    USE_DYNAMIC_SIZING: bool
-    FORCE_JUPITER_SELL: bool
-    SIMULATE_BEFORE_SEND: bool
-    CACHE_TTL_SECONDS: int
-    SELL_MULTIPLIERS: str
-    SELL_TIMEOUT_SEC: int
-    RUG_LP_THRESHOLD: float
-    
-    # Phase One: Buy-specific settings
-    BUY_SLIPPAGE_BPS: int
-    BUY_PRIORITY_FEE_LAMPORTS: int
-    BUY_RETRY_DELAY_1_MS: int
-    BUY_RETRY_DELAY_2_MS: int
-    NEWBORN_RAYDIUM_MIN_LP_SOL: float
-    
-    # PumpFun Direct Buy settings
-    PUMPFUN_PROGRAM_ID: str
-    PUMPFUN_COMPUTE_UNIT_LIMIT: int
-    PUMPFUN_PRIORITY_FEE_LAMPORTS: int
-    PUMPFUN_REFERRER: str
-    
-    # Profit targets
-    TAKE_PROFIT_1: float
-    TAKE_PROFIT_2: float
-    TAKE_PROFIT_3: float
-    SELL_PERCENT_1: float
-    SELL_PERCENT_2: float
-    SELL_PERCENT_3: float
-    
-    # Risk management
-    TRAILING_STOP_PERCENT: float
-    MAX_HOLD_TIME_SEC: int
-    
-    # PumpFun strategy
-    PUMPFUN_USE_MOON_STRATEGY: bool
-    PUMPFUN_TAKE_PROFIT_1: float
-    PUMPFUN_TAKE_PROFIT_2: float
-    PUMPFUN_TAKE_PROFIT_3: float
-    PUMPFUN_SELL_PERCENT_1: float
-    PUMPFUN_SELL_PERCENT_2: float
-    PUMPFUN_MOON_BAG: float
-    NO_SELL_FIRST_MINUTES: int
-    TRAILING_STOP_ACTIVATION: float
-    
-    # Trending strategy
-    TRENDING_USE_CUSTOM: bool
-    TRENDING_TAKE_PROFIT_1: float
-    TRENDING_TAKE_PROFIT_2: float
-    TRENDING_TAKE_PROFIT_3: float
-    
-    # Price handling
-    OVERRIDE_DECIMALS_TO_9: bool
-    IGNORE_JUPITER_PRICE_FIELD: bool
-    LP_CHECK_TIMEOUT: int
-    SOL_PRICE_USD: float
-    
-    # Scaling
-    SCALE_WITH_BALANCE: bool
-    MIGRATION_BOOST_MULTIPLIER: float
-    TRENDING_BOOST_MULTIPLIER: float
-    
-    # Pre-trade safety
-    MIN_LP_SOL: float
-    REQUIRE_AUTH_RENOUNCED: bool
-    MAX_TRADE_TAX_BPS: int
-    
-    # Stop-loss engine
-    STOP_LOSS_PCT: float
-    STOP_CHECK_INTERVAL_SEC: int
-    STOP_MAX_SLIPPAGE_BPS: int
-    STOP_EMERGENCY_SLIPPAGE_BPS: int
-    STOP_MIN_OUT_BPS_FLOOR: int
-    STOP_ALERT_EVERY_SEC: int
-    ROUTE_AMOUNT_MODE: str
-    
-    # Alert switches - NEW CONSOLIDATED CONFIG
-    ALERTS_NOTIFY: dict
-    
-    # API endpoints
-    JUPITER_QUOTE_BASE_URL: str
-    JUPITER_SWAP_URL: str
-    ROUTE_TIMEOUT_SEC: int
-    
-    # Connection settings
-    RPC_URL: str
-    TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_CHAT_ID: str
-    TELEGRAM_USER_ID: str
-    BIRDEYE_API_KEY: str
-    HELIUS_API: str
-    SOLANA_PRIVATE_KEY: str
-    BLACKLISTED_TOKENS: str
+# ============================================
+# PHASE 1 TRADING PARAMETERS
+# ============================================
+# Position sizing
+BUY_AMOUNT_SOL = 0.02  # Fixed 0.02 SOL per trade
+MAX_POSITIONS = 10  # Maximum concurrent positions
+MIN_SOL_BALANCE = 0.5  # Minimum SOL to keep for fees
 
-def load() -> Config:
-    # Parse alert config from env or use defaults
-    alerts_notify = {
-        "startup": _b("ALERT_STARTUP", True),
-        "buy": _b("ALERT_ON_BUY", True),
-        "sell": _b("ALERT_ON_SELL", True),
-        "stop_triggered": _b("ALERT_ON_STOP_TRIGGER", True),
-        "stop_filled": _b("ALERT_ON_STOP_FILLED", True),
-        "buy_failed": _b("ALERT_ON_BUY_FAILED", False),
-        "sell_failed": _b("ALERT_ON_SELL_FAILED", False),
-        "blocked": _b("ALERT_ON_BLOCKED", False),
-        "attempt": _b("ALERT_ON_ATTEMPT", False),
-        "skip": _b("ALERT_ON_SKIP", False),
-        "error": _b("ALERT_ON_ERROR", False),
-        "cooldown_secs": _i("ALERT_COOLDOWN_SECS", 60)
-    }
-    
-    # PumpFun Direct Buy settings - FIXED with proper validation
-    PUMPFUN_PROGRAM_ID = os.getenv("PUMPFUN_PROGRAM_ID", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").strip()
-    if not _valid_pubkey(PUMPFUN_PROGRAM_ID):
-        PUMPFUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-    
-    return Config(
-        # Core settings
-        BUY_AMOUNT_SOL=_f("BUY_AMOUNT_SOL", 0.1),
-        USE_DYNAMIC_SIZING=_b("USE_DYNAMIC_SIZING", True),
-        FORCE_JUPITER_SELL=_b("FORCE_JUPITER_SELL", True),
-        SIMULATE_BEFORE_SEND=_b("SIMULATE_BEFORE_SEND", True),
-        CACHE_TTL_SECONDS=_i("POOL_CACHE_TTL", 60),
-        SELL_MULTIPLIERS=os.getenv("SELL_MULTIPLIERS", "1.5,3,10"),
-        SELL_TIMEOUT_SEC=_i("SELL_TIMEOUT_SEC", 300),
-        RUG_LP_THRESHOLD=_f("RUG_LP_THRESHOLD", 1.0),
-        
-        # Phase One: Buy-specific settings
-        BUY_SLIPPAGE_BPS=_i("BUY_SLIPPAGE_BPS", 2500),
-        BUY_PRIORITY_FEE_LAMPORTS=_i("BUY_PRIORITY_FEE_LAMPORTS", 1000000),
-        BUY_RETRY_DELAY_1_MS=_i("BUY_RETRY_DELAY_1_MS", 200),
-        BUY_RETRY_DELAY_2_MS=_i("BUY_RETRY_DELAY_2_MS", 400),
-        NEWBORN_RAYDIUM_MIN_LP_SOL=_f("NEWBORN_RAYDIUM_MIN_LP_SOL", 0.2),
-        
-        # PumpFun Direct Buy settings
-        PUMPFUN_PROGRAM_ID=PUMPFUN_PROGRAM_ID,
-        PUMPFUN_COMPUTE_UNIT_LIMIT=_i("PUMPFUN_COMPUTE_UNIT_LIMIT", 1000000),
-        PUMPFUN_PRIORITY_FEE_LAMPORTS=_i("PUMPFUN_PRIORITY_FEE_LAMPORTS", 1000000),
-        PUMPFUN_REFERRER=os.getenv("PUMPFUN_REFERRER", "").strip(),  # Also strip referrer
-        
-        # Profit targets
-        TAKE_PROFIT_1=_f("TAKE_PROFIT_1", 1.5),
-        TAKE_PROFIT_2=_f("TAKE_PROFIT_2", 3.0),
-        TAKE_PROFIT_3=_f("TAKE_PROFIT_3", 10.0),
-        SELL_PERCENT_1=_f("SELL_PERCENT_1", 50),
-        SELL_PERCENT_2=_f("SELL_PERCENT_2", 25),
-        SELL_PERCENT_3=_f("SELL_PERCENT_3", 25),
-        
-        # Risk management
-        TRAILING_STOP_PERCENT=_f("TRAILING_STOP_PERCENT", 20),
-        MAX_HOLD_TIME_SEC=_i("MAX_HOLD_TIME_SEC", 3600),
-        
-        # PumpFun strategy
-        PUMPFUN_USE_MOON_STRATEGY=_b("PUMPFUN_USE_MOON_STRATEGY", True),
-        PUMPFUN_TAKE_PROFIT_1=_f("PUMPFUN_TAKE_PROFIT_1", 10.0),
-        PUMPFUN_TAKE_PROFIT_2=_f("PUMPFUN_TAKE_PROFIT_2", 25.0),
-        PUMPFUN_TAKE_PROFIT_3=_f("PUMPFUN_TAKE_PROFIT_3", 50.0),
-        PUMPFUN_SELL_PERCENT_1=_f("PUMPFUN_SELL_PERCENT_1", 20),
-        PUMPFUN_SELL_PERCENT_2=_f("PUMPFUN_SELL_PERCENT_2", 30),
-        PUMPFUN_MOON_BAG=_f("PUMPFUN_MOON_BAG", 50),
-        NO_SELL_FIRST_MINUTES=_i("NO_SELL_FIRST_MINUTES", 30),
-        TRAILING_STOP_ACTIVATION=_f("TRAILING_STOP_ACTIVATION", 5.0),
-        
-        # Trending strategy
-        TRENDING_USE_CUSTOM=_b("TRENDING_USE_CUSTOM", False),
-        TRENDING_TAKE_PROFIT_1=_f("TRENDING_TAKE_PROFIT_1", 3.0),
-        TRENDING_TAKE_PROFIT_2=_f("TRENDING_TAKE_PROFIT_2", 8.0),
-        TRENDING_TAKE_PROFIT_3=_f("TRENDING_TAKE_PROFIT_3", 15.0),
-        
-        # Price handling
-        OVERRIDE_DECIMALS_TO_9=_b("OVERRIDE_DECIMALS_TO_9", False),
-        IGNORE_JUPITER_PRICE_FIELD=_b("IGNORE_JUPITER_PRICE_FIELD", False),
-        LP_CHECK_TIMEOUT=_i("LP_CHECK_TIMEOUT", 3),
-        SOL_PRICE_USD=_f("SOL_PRICE_USD", 150.0),
-        
-        # Scaling
-        SCALE_WITH_BALANCE=_b("SCALE_WITH_BALANCE", True),
-        MIGRATION_BOOST_MULTIPLIER=_f("MIGRATION_BOOST_MULTIPLIER", 2.0),
-        TRENDING_BOOST_MULTIPLIER=_f("TRENDING_BOOST_MULTIPLIER", 1.5),
-        
-        # Pre-trade safety
-        MIN_LP_SOL=_f("MIN_LP_SOL", 1.0),
-        REQUIRE_AUTH_RENOUNCED=_b("REQUIRE_AUTH_RENOUNCED", True),
-        MAX_TRADE_TAX_BPS=_i("MAX_TRADE_TAX_BPS", 300),
-        
-        # Stop-loss engine
-        STOP_LOSS_PCT=_f("STOP_LOSS_PCT", 0.30),
-        STOP_CHECK_INTERVAL_SEC=_i("STOP_CHECK_INTERVAL_SEC", 2),
-        STOP_MAX_SLIPPAGE_BPS=_i("STOP_MAX_SLIPPAGE_BPS", 200),
-        STOP_EMERGENCY_SLIPPAGE_BPS=_i("STOP_EMERGENCY_SLIPPAGE_BPS", 500),
-        STOP_MIN_OUT_BPS_FLOOR=_i("STOP_MIN_OUT_BPS_FLOOR", 10),
-        STOP_ALERT_EVERY_SEC=_i("STOP_ALERT_EVERY_SEC", 30),
-        ROUTE_AMOUNT_MODE=os.getenv("ROUTE_AMOUNT_MODE", "POSITION"),
-        
-        # Alert switches
-        ALERTS_NOTIFY=alerts_notify,
-        
-        # API endpoints
-        JUPITER_QUOTE_BASE_URL=os.getenv("JUPITER_QUOTE_BASE_URL", "https://quote-api.jup.ag/v6/quote"),
-        JUPITER_SWAP_URL=os.getenv("JUPITER_SWAP_URL", "https://quote-api.jup.ag/v6/swap"),
-        ROUTE_TIMEOUT_SEC=_i("ROUTE_TIMEOUT_SEC", 20),
-        
-        # Connection settings - also strip these for safety
-        RPC_URL=os.getenv("RPC_URL", "").strip(),
-        TELEGRAM_BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-        TELEGRAM_CHAT_ID=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
-        TELEGRAM_USER_ID=os.getenv("TELEGRAM_USER_ID", "").strip(),
-        BIRDEYE_API_KEY=os.getenv("BIRDEYE_API_KEY", "").strip(),
-        HELIUS_API=os.getenv("HELIUS_API", "").strip(),
-        SOLANA_PRIVATE_KEY=os.getenv("SOLANA_PRIVATE_KEY", "").strip(),
-        BLACKLISTED_TOKENS=os.getenv("BLACKLISTED_TOKENS", "").strip(),
-    )
+# Risk management
+STOP_LOSS_PERCENTAGE = 50  # Sell at -50% loss
+TAKE_PROFIT_PERCENTAGE = 200  # Take profit at 2x (200% gain)
+PARTIAL_TAKE_PROFIT = {
+    50: 0.25,   # Sell 25% at 50% gain
+    100: 0.25,  # Sell 25% at 100% gain
+    200: 0.5    # Sell remaining 50% at 200% gain
+}
+
+# Timing
+SELL_DELAY_SECONDS = 30  # Wait 30 seconds before allowing sells
+MAX_POSITION_AGE_SECONDS = 600  # Force sell after 10 minutes
+
+# ============================================
+# PUMPFUN SPECIFIC CONFIGURATION
+# ============================================
+PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwkvq")
+PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
+
+# Bonding curve parameters
+MIN_BONDING_CURVE_SOL = 1.5  # Minimum SOL in bonding curve to consider
+MAX_BONDING_CURVE_SOL = 85  # Maximum SOL (near migration)
+MIGRATION_THRESHOLD_SOL = 85  # When PumpFun migrates to Raydium
+
+# Buy criteria
+MIN_VIRTUAL_SOL_RESERVES = 30  # Minimum virtual SOL reserves
+MIN_VIRTUAL_TOKEN_RESERVES = 1_000_000_000  # Minimum virtual token reserves
+MAX_PRICE_IMPACT_PERCENTAGE = 5  # Maximum acceptable price impact
+
+# ============================================
+# DEX CONFIGURATION
+# ============================================
+# Raydium
+RAYDIUM_PROGRAM_ID = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
+RAYDIUM_AUTHORITY = Pubkey.from_string("5Q544fKrFoe6tsEbJEqQ1t8ahN3Hje29jZiuJRm9Kv2b")
+
+# System programs
+SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
+TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+RENT_PROGRAM_ID = Pubkey.from_string("SysvarRent111111111111111111111111111111111")
+
+# ============================================
+# MONITORING CONFIGURATION
+# ============================================
+# WebSocket subscriptions
+MONITOR_PROGRAMS = [
+    str(PUMPFUN_PROGRAM_ID),  # PumpFun launches
+    str(RAYDIUM_PROGRAM_ID)    # Raydium pool creations
+]
+
+# Log filters
+LOG_CONTAINS_FILTERS = [
+    "Program log: Instruction: InitializeBondingCurve",  # PumpFun launch
+    "Program log: Instruction: Buy",  # PumpFun buy
+    "Program log: Instruction: Sell",  # PumpFun sell
+    "initialize2"  # Raydium pool creation
+]
+
+# ============================================
+# TOKEN FILTERS (PHASE 1 - BASIC)
+# ============================================
+# Blacklisted tokens (known rugs/scams)
+BLACKLISTED_TOKENS = set()  # Add known scam tokens here
+
+# Required token metadata
+REQUIRE_METADATA = True
+REQUIRE_SOCIAL_LINKS = False  # Not required in Phase 1
+MIN_HOLDER_COUNT = 0  # No minimum in Phase 1
+
+# ============================================
+# PERFORMANCE TRACKING
+# ============================================
+TRACK_METRICS = True
+METRICS_UPDATE_INTERVAL = 60  # Update metrics every 60 seconds
+PROFIT_TARGET_DAILY = 100  # $100-500 daily target (minimum)
+PROFIT_TARGET_PHASE1 = 3.5  # Grow from 1.5 SOL to 5+ SOL
+
+# ============================================
+# NOTIFICATIONS
+# ============================================
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+ENABLE_TELEGRAM_NOTIFICATIONS = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+
+# Notification triggers
+NOTIFY_ON_BUY = True
+NOTIFY_ON_SELL = True
+NOTIFY_ON_PROFIT = True
+NOTIFY_ON_LOSS = True
+NOTIFY_PROFIT_THRESHOLD = 50  # Notify on profits > $50
+
+# ============================================
+# RETRY CONFIGURATION
+# ============================================
+MAX_RETRIES = 3
+RETRY_DELAY = 1  # Seconds between retries
+RPC_TIMEOUT = 30  # RPC call timeout in seconds
+
+# ============================================
+# LOGGING
+# ============================================
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+LOG_FILE = 'v2/sniper_bot.log'
+
+# ============================================
+# DEVELOPMENT/TESTING
+# ============================================
+DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
+DEBUG_MODE = os.getenv('DEBUG', 'false').lower() == 'true'
+
+if DRY_RUN:
+    print("⚠️ DRY RUN MODE - No real transactions will be executed")
+if DEBUG_MODE:
+    print("🔍 DEBUG MODE - Verbose logging enabled")
