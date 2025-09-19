@@ -214,25 +214,85 @@ class PumpFunDEX:
             logger.error(f"Failed to create buy instruction: {e}")
             return None
     
+    def execute_buy(self, mint: str) -> Optional[str]:
+        """Execute a PumpFun bonding curve buy (original method)"""
+        try:
+            # Check if token can be bought
+            curve_data = self.get_bonding_curve_data(mint)
+            if not curve_data:
+                logger.warning(f"❌ No bonding curve for {mint[:8]}...")
+                return None
+            
+            if not curve_data['can_buy']:
+                if curve_data['is_migrating']:
+                    logger.warning(f"❌ Token {mint[:8]}... is migrating to Raydium")
+                else:
+                    logger.warning(f"❌ Bonding curve has insufficient SOL: {curve_data['sol_in_curve']:.2f}")
+                return None
+            
+            # Calculate buy amount
+            min_tokens, price_impact = self.calculate_buy_amount(mint, BUY_AMOUNT_SOL)
+            if min_tokens <= 0:
+                logger.warning(f"❌ Invalid token amount calculated")
+                return None
+            
+            if price_impact > 5:
+                logger.warning(f"❌ Price impact too high: {price_impact:.2f}%")
+                return None
+            
+            # Create buy instruction
+            buy_ix = self.create_buy_instruction(mint, BUY_AMOUNT_SOL, min_tokens)
+            if not buy_ix:
+                logger.error(f"❌ Failed to create buy instruction")
+                return None
+            
+            # Build transaction
+            recent_blockhash = self.client.get_latest_blockhash().value.blockhash
+            
+            transaction = Transaction()
+            transaction.recent_blockhash = recent_blockhash
+            transaction.fee_payer = self.wallet.pubkey
+            
+            # Add priority fees
+            transaction.add(set_compute_unit_price(100_000))  # 0.0001 SOL priority
+            transaction.add(set_compute_unit_limit(250_000))
+            
+            # Add buy instruction
+            transaction.add(buy_ix)
+            
+            # Sign and send
+            transaction.sign(self.wallet.keypair)
+            
+            logger.info(f"🚀 Sending PumpFun BUY for {mint[:8]}...")
+            signature = self.client.send_transaction(transaction, self.wallet.keypair)
+            sig_str = str(signature.value)
+            
+            logger.info(f"✅ [PumpFun] BUY transaction sent: {sig_str}")
+            
+            # Record the buy
+            self.bonding_curves[mint]['last_action'] = 'buy'
+            self.bonding_curves[mint]['buy_sig'] = sig_str
+            self.bonding_curves[mint]['buy_amount'] = BUY_AMOUNT_SOL
+            self.bonding_curves[mint]['expected_tokens'] = min_tokens
+            
+            return sig_str
+            
+        except Exception as e:
+            logger.error(f"❌ PumpFun buy failed: {e}")
+            return None
+    
     def execute_buy_with_curve(self, mint: str, bonding_curve_key: str = None) -> Optional[str]:
         """Execute buy with known bonding curve key"""
         try:
             if bonding_curve_key:
-                # Use the provided bonding curve directly
+                # Use the provided bonding curve directly without checking if it exists
+                # (it might not be confirmed yet)
                 logger.info(f"Using bonding curve from WebSocket: {bonding_curve_key}")
                 bonding_curve = Pubkey.from_string(bonding_curve_key)
-                
-                # We need to verify it exists
-                response = self.client.get_account_info(bonding_curve)
-                if not response.value:
-                    logger.warning(f"Bonding curve account doesn't exist yet")
-                    return None
-                    
-                # Create buy instruction using this bonding curve
                 mint_pubkey = Pubkey.from_string(mint)
                 
-                # Calculate a reasonable buy amount
-                min_tokens = int(1000000 * 1e6)  # 1M tokens as estimate
+                # Calculate a reasonable buy amount (1M tokens estimate)
+                min_tokens = int(1000000 * 1e6)
                 
                 # Build transaction directly
                 buy_ix = self._create_buy_ix_with_curve(mint_pubkey, bonding_curve, BUY_AMOUNT_SOL, min_tokens)
@@ -255,7 +315,7 @@ class PumpFunDEX:
                     # Sign and send
                     transaction.sign(self.wallet.keypair)
                     
-                    logger.info(f"🚀 Sending PumpFun BUY for {mint[:8]}...")
+                    logger.info(f"🚀 Sending PumpFun BUY for {mint[:8]}... with curve {bonding_curve_key[:8]}...")
                     signature = self.client.send_transaction(transaction, self.wallet.keypair)
                     sig_str = str(signature.value)
                     
@@ -269,8 +329,10 @@ class PumpFunDEX:
                 return self.execute_buy(mint)
                 
         except Exception as e:
-            logger.error(f"Buy failed: {e}")
-            return None
+            logger.error(f"Buy with curve failed: {e}")
+            # Try fallback to regular buy
+            logger.info("Falling back to regular buy method...")
+            return self.execute_buy(mint)
     
     def _create_buy_ix_with_curve(self, mint: Pubkey, bonding_curve: Pubkey, sol_amount: float, min_tokens: int) -> Optional[Instruction]:
         """Create buy instruction with known bonding curve"""
