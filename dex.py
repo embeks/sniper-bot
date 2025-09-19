@@ -11,9 +11,9 @@ from typing import Optional, Dict, Tuple
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.instruction import Instruction, AccountMeta
-from solders.transaction import Transaction
 from solders.compute_budget import set_compute_unit_price, set_compute_unit_limit
 from solana.rpc.api import Client
+from solana.transaction import Transaction
 from spl.token.instructions import get_associated_token_address
 
 from config import (
@@ -247,11 +247,13 @@ class PumpFunDEX:
                 return None
             
             # Build transaction
-            recent_blockhash = self.client.get_latest_blockhash().value.blockhash
+            recent_blockhash_resp = self.client.get_latest_blockhash()
             
-            transaction = Transaction()
-            transaction.recent_blockhash = recent_blockhash
+            from solana.transaction import Transaction as SolanaTransaction
+            
+            transaction = SolanaTransaction()
             transaction.fee_payer = self.wallet.pubkey
+            transaction.recent_blockhash = recent_blockhash_resp.value.blockhash
             
             # Add priority fees
             transaction.add(set_compute_unit_price(100_000))  # 0.0001 SOL priority
@@ -260,12 +262,14 @@ class PumpFunDEX:
             # Add buy instruction
             transaction.add(buy_ix)
             
-            # Sign and send
-            transaction.sign(self.wallet.keypair)
+            # Sign transaction
+            transaction.sign_partial(self.wallet.keypair)
             
             logger.info(f"🚀 Sending PumpFun BUY for {mint[:8]}...")
-            signature = self.client.send_transaction(transaction, self.wallet.keypair)
-            sig_str = str(signature.value)
+            
+            # Send transaction
+            response = self.client.send_raw_transaction(transaction.serialize())
+            sig_str = str(response.value)
             
             logger.info(f"✅ [PumpFun] BUY transaction sent: {sig_str}")
             
@@ -298,12 +302,14 @@ class PumpFunDEX:
                 buy_ix = self._create_buy_ix_with_curve(mint_pubkey, bonding_curve, BUY_AMOUNT_SOL, min_tokens)
                 
                 if buy_ix:
-                    # Send transaction
-                    recent_blockhash = self.client.get_latest_blockhash().value.blockhash
+                    # Send transaction - using correct Transaction constructor
+                    recent_blockhash_resp = self.client.get_latest_blockhash()
                     
-                    transaction = Transaction()
-                    transaction.recent_blockhash = recent_blockhash
+                    from solana.transaction import Transaction as SolanaTransaction
+                    
+                    transaction = SolanaTransaction()
                     transaction.fee_payer = self.wallet.pubkey
+                    transaction.recent_blockhash = recent_blockhash_resp.value.blockhash
                     
                     # Add priority fees
                     transaction.add(set_compute_unit_price(100_000))
@@ -312,12 +318,14 @@ class PumpFunDEX:
                     # Add buy instruction
                     transaction.add(buy_ix)
                     
-                    # Sign and send
-                    transaction.sign(self.wallet.keypair)
+                    # Sign transaction
+                    transaction.sign_partial(self.wallet.keypair)
                     
                     logger.info(f"🚀 Sending PumpFun BUY for {mint[:8]}... with curve {bonding_curve_key[:8]}...")
-                    signature = self.client.send_transaction(transaction, self.wallet.keypair)
-                    sig_str = str(signature.value)
+                    
+                    # Send transaction
+                    response = self.client.send_raw_transaction(transaction.serialize())
+                    sig_str = str(response.value)
                     
                     logger.info(f"✅ [PumpFun] BUY transaction sent: {sig_str}")
                     return sig_str
