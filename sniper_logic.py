@@ -326,6 +326,9 @@ class SniperBot:
         """Process PumpFun transactions to detect new token creations - FIXED VERSION"""
         try:
             logging.info("[PumpFun] Starting transaction scan...")
+
+            current_time = time.time()
+            cutoff_time = current_time - 30  # Only check last 30 seconds
             
             # Get recent signatures for PumpFun program
             signatures = await self.get_signatures_for_program(
@@ -356,6 +359,11 @@ class SniperBot:
                     try:
                         signature = sig_info.get('signature')
                         if not signature:
+                            continue
+
+                        block_time = sig_info.get('blockTime', 0)
+                        if block_time and block_time < cutoff_time:
+                            logging.debug(f"[PumpFun] Skipping old tx from {int(current_time - block_time)}s ago")
                             continue
                         
                         # Check if we've already processed this transaction
