@@ -530,10 +530,10 @@ async def pumpfun_tx_scanner_task():
                 continue
             
             # Process recent transactions
-            await sniper_bot.process_pumpfun_transactions(max_signatures=100)
+            await sniper_bot.process_pumpfun_transactions(max_signatures=50)
             
             # Wait before next scan
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             
         except Exception as e:
             logging.error(f"[PumpFun Scanner] Error in scanner loop: {e}")
