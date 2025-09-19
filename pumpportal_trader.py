@@ -1,13 +1,13 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
-FIXED: UTF-8 decode error when handling transaction responses
+FIXED: Use base64 decoding instead of base58 for PumpPortal responses
 """
 
 import aiohttp
-import base58
+import base64
 import logging
 from typing import Optional
-from solders.transaction import VersionedTransaction
+from solana.transaction import Transaction
 from solders.keypair import Keypair
 
 logger = logging.getLogger(__name__)
@@ -49,43 +49,34 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        # Read response as bytes first to avoid UTF-8 decode issues
-                        response_bytes = await response.read()
+                        # Parse JSON response
+                        data = await response.json()
                         
-                        # Try to parse as JSON
-                        try:
-                            import json
-                            response_text = response_bytes.decode('utf-8', errors='ignore')
-                            data = json.loads(response_text)
-                            tx_base58 = data.get("transaction")
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            # If not JSON, assume the entire response is the base58 transaction
-                            # Remove any non-base58 characters
-                            tx_base58 = response_bytes.decode('ascii', errors='ignore').strip()
-                        
-                        if not tx_base58:
-                            logger.error("No transaction data in response")
+                        if "transaction" not in data:
+                            logger.error(f"No transaction in response: {data}")
                             return None
                         
-                        logger.info(f"Received transaction from PumpPortal (length: {len(tx_base58)})")
+                        # PumpPortal returns base64 encoded transaction
+                        tx_base64 = data["transaction"]
+                        logger.info(f"Received base64 transaction from PumpPortal (length: {len(tx_base64)})")
                         
-                        # Decode base58 transaction - this is already bytes, no UTF-8 involved
+                        # Decode base64 to bytes
                         try:
-                            tx_bytes = base58.b58decode(tx_base58)
+                            tx_bytes = base64.b64decode(tx_base64)
                         except Exception as e:
-                            logger.error(f"Failed to decode base58 transaction: {e}")
+                            logger.error(f"Failed to decode base64 transaction: {e}")
                             return None
                         
-                        # Construct VersionedTransaction from bytes
+                        # Deserialize transaction
                         try:
-                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                            tx = Transaction.deserialize(tx_bytes)
                         except Exception as e:
-                            logger.error(f"Failed to parse transaction bytes: {e}")
+                            logger.error(f"Failed to deserialize transaction: {e}")
                             return None
                         
                         # Sign with our keypair
                         try:
-                            versioned_tx.sign([self.wallet.keypair])
+                            tx.sign(self.wallet.keypair)
                         except Exception as e:
                             logger.error(f"Failed to sign transaction: {e}")
                             return None
@@ -93,8 +84,7 @@ class PumpPortalTrader:
                         # Send the signed transaction
                         logger.info(f"Sending signed transaction for {mint[:8]}...")
                         try:
-                            # Send as bytes, not string
-                            response = self.client.send_raw_transaction(bytes(versioned_tx))
+                            response = self.client.send_raw_transaction(tx.serialize())
                             sig = str(response.value)
                             logger.info(f"✅ Transaction sent: {sig}")
                             return sig
@@ -140,47 +130,41 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        # Read response as bytes first to avoid UTF-8 decode issues
-                        response_bytes = await response.read()
+                        # Parse JSON response
+                        data = await response.json()
                         
-                        # Try to parse as JSON
-                        try:
-                            import json
-                            response_text = response_bytes.decode('utf-8', errors='ignore')
-                            data = json.loads(response_text)
-                            tx_base58 = data.get("transaction")
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            # If not JSON, assume the entire response is the base58 transaction
-                            tx_base58 = response_bytes.decode('ascii', errors='ignore').strip()
-                        
-                        if not tx_base58:
-                            logger.error("No transaction data in response")
+                        if "transaction" not in data:
+                            logger.error(f"No transaction in response: {data}")
                             return None
                         
-                        # Decode base58 transaction
+                        # PumpPortal returns base64 encoded transaction
+                        tx_base64 = data["transaction"]
+                        logger.info(f"Received base64 transaction from PumpPortal (length: {len(tx_base64)})")
+                        
+                        # Decode base64 to bytes
                         try:
-                            tx_bytes = base58.b58decode(tx_base58)
+                            tx_bytes = base64.b64decode(tx_base64)
                         except Exception as e:
-                            logger.error(f"Failed to decode base58 transaction: {e}")
+                            logger.error(f"Failed to decode base64 transaction: {e}")
                             return None
                         
-                        # Construct VersionedTransaction from bytes
+                        # Deserialize transaction
                         try:
-                            versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+                            tx = Transaction.deserialize(tx_bytes)
                         except Exception as e:
-                            logger.error(f"Failed to parse transaction bytes: {e}")
+                            logger.error(f"Failed to deserialize transaction: {e}")
                             return None
                         
                         # Sign with our keypair
                         try:
-                            versioned_tx.sign([self.wallet.keypair])
+                            tx.sign(self.wallet.keypair)
                         except Exception as e:
                             logger.error(f"Failed to sign transaction: {e}")
                             return None
                         
                         # Send the signed transaction
                         try:
-                            response = self.client.send_raw_transaction(bytes(versioned_tx))
+                            response = self.client.send_raw_transaction(tx.serialize())
                             sig = str(response.value)
                             logger.info(f"✅ Sell transaction sent: {sig}")
                             return sig
@@ -197,3 +181,4 @@ class PumpPortalTrader:
             import traceback
             logger.error(traceback.format_exc())
             return None
+        
