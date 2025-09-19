@@ -1490,6 +1490,27 @@ async def mempool_listener(name, program_id=None):
                                     "migrated": False
                                 }
                                 logging.info(f"[PumpFun] PRE-REGISTERED token {token_mint[:8]}... in global dict")
+
+                            if name == "Raydium" and token_mint not in pumpfun_tokens:
+                                try:
+                                    mint_pubkey = Pubkey.from_string(token_mint)
+                                    bonding_curve_seed = b"bonding-curve"
+                                    pumpfun_program = Pubkey.from_string(PUMPFUN_PROGRAM_ID)
+                                    bonding_curve, _ = Pubkey.find_program_address(
+                                        [bonding_curve_seed, bytes(mint_pubkey)],
+                                        pumpfun_program
+                                    )
+                                    bc_info = rpc.get_account_info(bonding_curve)
+                                    if bc_info and bc_info.value:
+                                        pumpfun_tokens[token_mint] = {
+                                            "discovered": time.time(),
+                                            "verified": True,
+                                            "migrated": True  # Mark as graduated to Raydium
+                                        }
+                                        logging.info(f"[Raydium] Detected PumpFun GRADUATION for {token_mint[:8]}...")
+                                except Exception as e:
+                                    logging.debug(f"[Raydium] Bonding curve check error: {e}")
+                                    
                             
                             # Validate it's a proper mint
                             try:
