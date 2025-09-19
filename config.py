@@ -13,14 +13,15 @@ load_dotenv()
 # ============================================
 # CORE WALLET CONFIGURATION
 # ============================================
-PRIVATE_KEY = os.getenv('PRIVATE_KEY')
+PRIVATE_KEY = os.getenv('PRIVATE_KEY') or os.getenv('SOLANA_PRIVATE_KEY')
 if not PRIVATE_KEY:
     raise ValueError("PRIVATE_KEY not found in environment variables")
 
 # ============================================
 # RPC CONFIGURATION
 # ============================================
-RPC_ENDPOINT = os.getenv('RPC_ENDPOINT', 'https://mainnet.helius-rpc.com/?api-key=' + os.getenv('HELIUS_API_KEY', ''))
+HELIUS_API_KEY = os.getenv('HELIUS_API') or os.getenv('HELIUS_API_KEY', '')
+RPC_ENDPOINT = os.getenv('RPC_URL') or os.getenv('RPC_ENDPOINT') or f'https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}'
 WS_ENDPOINT = RPC_ENDPOINT.replace('https://', 'wss://').replace('http://', 'ws://')
 
 # Backup RPC endpoints
@@ -33,22 +34,27 @@ BACKUP_RPC_ENDPOINTS = [
 # PHASE 1 TRADING PARAMETERS
 # ============================================
 # Position sizing
-BUY_AMOUNT_SOL = 0.02  # Fixed 0.02 SOL per trade
-MAX_POSITIONS = 10  # Maximum concurrent positions
+BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.02'))
+PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
+MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '10'))
 MIN_SOL_BALANCE = 0.5  # Minimum SOL to keep for fees
 
 # Risk management
-STOP_LOSS_PERCENTAGE = 50  # Sell at -50% loss
-TAKE_PROFIT_PERCENTAGE = 200  # Take profit at 2x (200% gain)
-PARTIAL_TAKE_PROFIT = {
-    50: 0.25,   # Sell 25% at 50% gain
-    100: 0.25,  # Sell 25% at 100% gain
-    200: 0.5    # Sell remaining 50% at 200% gain
-}
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '50'))
+TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100  # Convert to percentage
+
+# Partial profit taking from env
+PARTIAL_TAKE_PROFIT = {}
+if os.getenv('SELL_PERCENT_1'):
+    PARTIAL_TAKE_PROFIT[float(os.getenv('TAKE_PROFIT_1', '2')) * 100 / 2] = float(os.getenv('SELL_PERCENT_1', '40')) / 100
+if os.getenv('SELL_PERCENT_2'):
+    PARTIAL_TAKE_PROFIT[float(os.getenv('TAKE_PROFIT_2', '3')) * 100 / 3] = float(os.getenv('SELL_PERCENT_2', '30')) / 100
+if os.getenv('SELL_PERCENT_3'):
+    PARTIAL_TAKE_PROFIT[float(os.getenv('TAKE_PROFIT_3', '5')) * 100 / 5] = float(os.getenv('SELL_PERCENT_3', '30')) / 100
 
 # Timing
 SELL_DELAY_SECONDS = 30  # Wait 30 seconds before allowing sells
-MAX_POSITION_AGE_SECONDS = 600  # Force sell after 10 minutes
+MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '600'))  # Force sell after X seconds
 
 # ============================================
 # PUMPFUN SPECIFIC CONFIGURATION
@@ -65,6 +71,10 @@ MIGRATION_THRESHOLD_SOL = 85  # When PumpFun migrates to Raydium
 MIN_VIRTUAL_SOL_RESERVES = 30  # Minimum virtual SOL reserves
 MIN_VIRTUAL_TOKEN_RESERVES = 1_000_000_000  # Minimum virtual token reserves
 MAX_PRICE_IMPACT_PERCENTAGE = 5  # Maximum acceptable price impact
+
+# Auto buy setting
+AUTO_BUY = os.getenv('AUTO_BUY', 'true').lower() == 'true'
+PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 
 # ============================================
 # DEX CONFIGURATION
