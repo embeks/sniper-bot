@@ -1285,7 +1285,7 @@ async def buy_token(mint: str, amount: float = None, **kwargs) -> bool:
                     
                     logging.warning(f"[Buy] Not a PumpFun token, skipping zero liquidity token")
                     log_skipped_token(mint, "Zero liquidity")
-                    record_skip("zero_lp_not_pumpfun"))
+                    record_skip("zero_lp_not_pumpfun")
                     return False
             
             # Adjust minimum LP for ultra-fresh tokens
