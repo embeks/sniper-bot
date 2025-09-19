@@ -63,7 +63,7 @@ class WalletManager:
             max_trades = int(tradeable_balance / BUY_AMOUNT_SOL)
             
             if max_trades < 1:
-                logger.error(f"❌ Insufficient balance for trading. Need at least {MIN_SOL_BALANCE + BUY_AMOUNT_SOL} SOL")
+                logger.warning(f"⚠️ Limited trading capability. Balance: {balance_sol:.4f} SOL, Reserved: {MIN_SOL_BALANCE} SOL")
             else:
                 logger.info(f"💰 Can execute up to {min(max_trades, MAX_POSITIONS)} trades")
             
