@@ -364,6 +364,9 @@ class SniperBot:
                         block_time = sig_info.get('blockTime', 0)
                         if block_time and block_time < cutoff_time:
                             logging.debug(f"[PumpFun] Skipping old tx from {int(current_time - block_time)}s ago")
+                            # Stop processing if we've hit old transactions
+                            # Since signatures are newest-first, all remaining will be older
+                            break
                             continue
                         
                         # Check if we've already processed this transaction
