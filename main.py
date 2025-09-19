@@ -27,10 +27,7 @@ from telegram_bot import TelegramBot
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format=LOG_FORMAT,
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_FILE) if LOG_FILE else logging.NullHandler()
-    ]
+    handlers=[logging.StreamHandler()]  # Console output only
 )
 
 logger = logging.getLogger(__name__)
