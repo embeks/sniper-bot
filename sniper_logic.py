@@ -1,5 +1,5 @@
 # sniper_logic.py - COMPLETE FIXED VERSION WITH ULTRA-FRESH PUMPFUN SUPPORT
-from shared_state import pumpfun_tokens
+from shared_state import pumpfun_tokens, already_bought, recent_buy_attempts, migration_watch_list, detected_pools, momentum_analyzed, momentum_bought
 import asyncio
 import json
 import os
@@ -138,20 +138,12 @@ REDUCED_HOURS = list(range(6, 21))
 MOMENTUM_SCAN_INTERVAL = int(os.getenv("MOMENTUM_SCAN_INTERVAL", 120))
 MAX_MOMENTUM_TOKENS = 20
 
-# Track momentum tokens
-momentum_analyzed = {}
-momentum_bought = set()
-
 seen_tokens = set()
 BLACKLIST = set()
 TASKS = []
 
 # Enhanced tracking
-migration_watch_list = set()
-already_bought = set()
-recent_buy_attempts = {}
 pool_verification_cache = {}
-detected_pools = {}
 
 last_alert_sent = {"Raydium": 0, "Jupiter": 0, "PumpFun": 0, "Moonshot": 0}
 alert_cooldown_sec = 1800
