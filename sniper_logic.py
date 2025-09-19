@@ -530,10 +530,10 @@ async def pumpfun_tx_scanner_task():
                 continue
             
             # Process recent transactions
-            await sniper_bot.process_pumpfun_transactions(max_signatures=50)
+            await sniper_bot.process_pumpfun_transactions(max_signatures=20)
             
             # Wait before next scan
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             
         except Exception as e:
             logging.error(f"[PumpFun Scanner] Error in scanner loop: {e}")
@@ -1792,17 +1792,17 @@ async def mempool_listener(name, program_id=None):
                                         
                                         recent_buy_attempts[token_mint] = time.time()
                                         
-                                        if should_send_telegram(f"raydium_detect_{token_mint}"):
-                                            await send_telegram_alert(
-                                                f"✅ FRESH QUALITY TOKEN DETECTED ✅\n\n"
-                                                f"Platform: {name}\n"
-                                                f"Token: `{token_mint}`\n"
-                                                f"Liquidity: {lp_amount:.2f} SOL\n"
-                                                f"Risk: {risk_level}\n"
-                                                f"Tier: {tier.upper()}\n"
-                                                f"Buy Amount: {buy_amount} SOL\n\n"
-                                                f"Attempting snipe..."
-                                            )
+                                       # if should_send_telegram(f"raydium_detect_{token_mint}"):
+                                           # await send_telegram_alert(
+                                               # f"✅ FRESH QUALITY TOKEN DETECTED ✅\n\n"
+                                               # f"Platform: {name}\n"
+                                               # f"Token: `{token_mint}`\n"
+                                               # f"Liquidity: {lp_amount:.2f} SOL\n"
+                                               # f"Risk: {risk_level}\n"
+                                               # f"Tier: {tier.upper()}\n"
+                                               # f"Buy Amount: {buy_amount} SOL\n\n"
+                                               # f"Attempting snipe..."
+                                           # )
                                         
                                         try:
                                             success = await buy_token(token_mint, amount=buy_amount)
@@ -1821,11 +1821,11 @@ async def mempool_listener(name, program_id=None):
                                                     )
                                                 asyncio.create_task(wait_and_auto_sell(token_mint))
                                             else:
-                                                if should_send_telegram(f"raydium_fail_{token_mint}"):
-                                                    await send_telegram_alert(
-                                                        f"❌ Snipe failed\n"
-                                                        f"Token: {token_mint[:16]}..."
-                                                    )
+                                               # if should_send_telegram(f"raydium_fail_{token_mint}"):
+                                                    #await send_telegram_alert(
+                                                       # f"❌ Snipe failed\n"
+                                                       # f"Token: {token_mint[:16]}..."
+                                                  #  )
                                                 mark_broken_token(token_mint, 0)
                                         except Exception as e:
                                             logging.error(f"[{name}] Buy error: {e}")
