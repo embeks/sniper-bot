@@ -20,7 +20,7 @@ from config import (
 
 from wallet import WalletManager
 from dex import PumpFunDEX
-from simple_scanner import SimpleScanner
+from pumpfun_log_monitor import PumpFunLogMonitor
 from telegram_bot import TelegramBot
 
 # Configure logging
@@ -272,7 +272,7 @@ class SniperBot:
                 await self.telegram.send_message("🚀 Bot started successfully\nType /help for commands")
             
             # Start scanner
-            self.scanner = SimpleScanner(self.on_token_found)
+            self.scanner = PumpFunLogMonitor(self.on_token_found)
             scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot is running. Press Ctrl+C to stop.")
