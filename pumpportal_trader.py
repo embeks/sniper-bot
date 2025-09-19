@@ -1,6 +1,6 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
-FIXED: Use base64 decoding instead of base58 for PumpPortal responses
+FIXED: Handle application/octet-stream responses (raw binary transactions)
 """
 
 import aiohttp
@@ -49,29 +49,53 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        # Parse JSON response
-                        data = await response.json()
+                        content_type = response.headers.get('content-type', '')
                         
-                        if "transaction" not in data:
-                            logger.error(f"No transaction in response: {data}")
+                        # Read raw bytes
+                        response_bytes = await response.read()
+                        logger.info(f"Received response ({len(response_bytes)} bytes, type: {content_type})")
+                        
+                        tx_bytes = None
+                        
+                        # Handle different response types
+                        if 'application/json' in content_type:
+                            # JSON response with base64 transaction
+                            import json
+                            data = json.loads(response_bytes.decode('utf-8'))
+                            if "transaction" in data:
+                                # Decode base64
+                                tx_bytes = base64.b64decode(data["transaction"])
+                            else:
+                                logger.error(f"No transaction in JSON response: {data}")
+                                return None
+                        elif 'application/octet-stream' in content_type or 'binary' in content_type:
+                            # Raw binary transaction
+                            tx_bytes = response_bytes
+                        else:
+                            # Try to detect format
+                            try:
+                                # Try JSON first
+                                import json
+                                data = json.loads(response_bytes.decode('utf-8'))
+                                if "transaction" in data:
+                                    tx_bytes = base64.b64decode(data["transaction"])
+                            except:
+                                # Assume raw bytes
+                                tx_bytes = response_bytes
+                        
+                        if not tx_bytes:
+                            logger.error("No transaction data extracted from response")
                             return None
                         
-                        # PumpPortal returns base64 encoded transaction
-                        tx_base64 = data["transaction"]
-                        logger.info(f"Received base64 transaction from PumpPortal (length: {len(tx_base64)})")
-                        
-                        # Decode base64 to bytes
-                        try:
-                            tx_bytes = base64.b64decode(tx_base64)
-                        except Exception as e:
-                            logger.error(f"Failed to decode base64 transaction: {e}")
-                            return None
+                        logger.info(f"Processing transaction ({len(tx_bytes)} bytes)")
                         
                         # Deserialize transaction
                         try:
                             tx = Transaction.deserialize(tx_bytes)
                         except Exception as e:
                             logger.error(f"Failed to deserialize transaction: {e}")
+                            # Log first few bytes for debugging
+                            logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
                             return None
                         
                         # Sign with our keypair
@@ -130,29 +154,53 @@ class PumpPortalTrader:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
                     if response.status == 200:
-                        # Parse JSON response
-                        data = await response.json()
+                        content_type = response.headers.get('content-type', '')
                         
-                        if "transaction" not in data:
-                            logger.error(f"No transaction in response: {data}")
+                        # Read raw bytes
+                        response_bytes = await response.read()
+                        logger.info(f"Received response ({len(response_bytes)} bytes, type: {content_type})")
+                        
+                        tx_bytes = None
+                        
+                        # Handle different response types
+                        if 'application/json' in content_type:
+                            # JSON response with base64 transaction
+                            import json
+                            data = json.loads(response_bytes.decode('utf-8'))
+                            if "transaction" in data:
+                                # Decode base64
+                                tx_bytes = base64.b64decode(data["transaction"])
+                            else:
+                                logger.error(f"No transaction in JSON response: {data}")
+                                return None
+                        elif 'application/octet-stream' in content_type or 'binary' in content_type:
+                            # Raw binary transaction
+                            tx_bytes = response_bytes
+                        else:
+                            # Try to detect format
+                            try:
+                                # Try JSON first
+                                import json
+                                data = json.loads(response_bytes.decode('utf-8'))
+                                if "transaction" in data:
+                                    tx_bytes = base64.b64decode(data["transaction"])
+                            except:
+                                # Assume raw bytes
+                                tx_bytes = response_bytes
+                        
+                        if not tx_bytes:
+                            logger.error("No transaction data extracted from response")
                             return None
                         
-                        # PumpPortal returns base64 encoded transaction
-                        tx_base64 = data["transaction"]
-                        logger.info(f"Received base64 transaction from PumpPortal (length: {len(tx_base64)})")
-                        
-                        # Decode base64 to bytes
-                        try:
-                            tx_bytes = base64.b64decode(tx_base64)
-                        except Exception as e:
-                            logger.error(f"Failed to decode base64 transaction: {e}")
-                            return None
+                        logger.info(f"Processing transaction ({len(tx_bytes)} bytes)")
                         
                         # Deserialize transaction
                         try:
                             tx = Transaction.deserialize(tx_bytes)
                         except Exception as e:
                             logger.error(f"Failed to deserialize transaction: {e}")
+                            # Log first few bytes for debugging
+                            logger.debug(f"First 20 bytes (hex): {tx_bytes[:20].hex()}")
                             return None
                         
                         # Sign with our keypair
@@ -181,4 +229,3 @@ class PumpPortalTrader:
             import traceback
             logger.error(traceback.format_exc())
             return None
-        
