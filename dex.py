@@ -44,8 +44,26 @@ class PumpFunDEX:
     def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
         """Fetch and parse bonding curve data"""
         try:
-            mint_pubkey = Pubkey.from_string(mint)
-            bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
+            # The WebSocket gives us the bonding curve key directly!
+            # Check if we have it from the token data
+            if hasattr(self, 'last_token_data') and self.last_token_data:
+                if self.last_token_data.get('mint') == mint:
+                    bonding_curve_str = self.last_token_data.get('bondingCurveKey')
+                    if bonding_curve_str:
+                        logger.info(f"Using bonding curve from WebSocket: {bonding_curve_str}")
+                        bonding_curve = Pubkey.from_string(bonding_curve_str)
+                    else:
+                        # Derive it
+                        mint_pubkey = Pubkey.from_string(mint)
+                        bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
+                else:
+                    # Derive it normally
+                    mint_pubkey = Pubkey.from_string(mint)
+                    bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
+            else:
+                # Derive it normally
+                mint_pubkey = Pubkey.from_string(mint)
+                bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
             
             # Get account info
             response = self.client.get_account_info(bonding_curve)
@@ -196,14 +214,101 @@ class PumpFunDEX:
             logger.error(f"Failed to create buy instruction: {e}")
             return None
     
-    def execute_buy(self, mint: str) -> Optional[str]:
-        """Execute a PumpFun bonding curve buy"""
+    def execute_buy_with_curve(self, mint: str, bonding_curve_key: str = None) -> Optional[str]:
+        """Execute buy with known bonding curve key"""
         try:
-            # Check if token can be bought
-            curve_data = self.get_bonding_curve_data(mint)
-            if not curve_data:
-                logger.warning(f"❌ No bonding curve for {mint[:8]}...")
-                return None
+            if bonding_curve_key:
+                # Use the provided bonding curve directly
+                logger.info(f"Using bonding curve from WebSocket: {bonding_curve_key}")
+                bonding_curve = Pubkey.from_string(bonding_curve_key)
+                
+                # We need to verify it exists
+                response = self.client.get_account_info(bonding_curve)
+                if not response.value:
+                    logger.warning(f"Bonding curve account doesn't exist yet")
+                    return None
+                    
+                # Create buy instruction using this bonding curve
+                mint_pubkey = Pubkey.from_string(mint)
+                
+                # Calculate a reasonable buy amount
+                min_tokens = int(1000000 * 1e6)  # 1M tokens as estimate
+                
+                # Build transaction directly
+                buy_ix = self._create_buy_ix_with_curve(mint_pubkey, bonding_curve, BUY_AMOUNT_SOL, min_tokens)
+                
+                if buy_ix:
+                    # Send transaction
+                    recent_blockhash = self.client.get_latest_blockhash().value.blockhash
+                    
+                    transaction = Transaction()
+                    transaction.recent_blockhash = recent_blockhash
+                    transaction.fee_payer = self.wallet.pubkey
+                    
+                    # Add priority fees
+                    transaction.add(set_compute_unit_price(100_000))
+                    transaction.add(set_compute_unit_limit(250_000))
+                    
+                    # Add buy instruction
+                    transaction.add(buy_ix)
+                    
+                    # Sign and send
+                    transaction.sign(self.wallet.keypair)
+                    
+                    logger.info(f"🚀 Sending PumpFun BUY for {mint[:8]}...")
+                    signature = self.client.send_transaction(transaction, self.wallet.keypair)
+                    sig_str = str(signature.value)
+                    
+                    logger.info(f"✅ [PumpFun] BUY transaction sent: {sig_str}")
+                    return sig_str
+                else:
+                    logger.error("Failed to create buy instruction")
+                    return None
+            else:
+                # Fall back to original method
+                return self.execute_buy(mint)
+                
+        except Exception as e:
+            logger.error(f"Buy failed: {e}")
+            return None
+    
+    def _create_buy_ix_with_curve(self, mint: Pubkey, bonding_curve: Pubkey, sol_amount: float, min_tokens: int) -> Optional[Instruction]:
+        """Create buy instruction with known bonding curve"""
+        try:
+            # Get token accounts
+            associated_bonding_curve = get_associated_token_address(bonding_curve, mint)
+            user_token_account = get_associated_token_address(self.wallet.pubkey, mint)
+            
+            # Build instruction data
+            discriminator = bytes([102, 6, 61, 18, 1, 218, 235, 234])
+            sol_amount_lamports = int(sol_amount * 1e9)
+            data = discriminator + struct.pack('<Q', sol_amount_lamports) + struct.pack('<Q', min_tokens)
+            
+            # Build accounts
+            accounts = [
+                AccountMeta(pubkey=PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=associated_bonding_curve, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=user_token_account, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=self.wallet.pubkey, is_signer=True, is_writable=True),
+                AccountMeta(pubkey=SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=RENT_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"), is_signer=False, is_writable=False),
+                AccountMeta(pubkey=ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+            ]
+            
+            return Instruction(
+                program_id=PUMPFUN_PROGRAM_ID,
+                accounts=accounts,
+                data=data
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to create buy instruction: {e}")
+            return None
             
             if not curve_data['can_buy']:
                 if curve_data['is_migrating']:
