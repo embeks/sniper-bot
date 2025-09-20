@@ -1,6 +1,6 @@
 """
 DEX Integration - PumpFun Bonding Curves and Raydium
-Focus: Direct bonding curve execution with correct calculations
+FIXED: Removed duplicate code, fixed account ordering
 """
 
 import time
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class PumpFunDEX:
     """PumpFun bonding curve integration"""
     
-    # Feature flag for Phase 1
+    # Feature flag for Phase 1 - DISABLED since we use PumpPortal
     USE_MANUAL_PUMPFUN_BUY = False
     
     def __init__(self, wallet_manager):
@@ -47,8 +47,7 @@ class PumpFunDEX:
     def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
         """Fetch and parse bonding curve data"""
         try:
-            # The WebSocket gives us the bonding curve key directly!
-            # Check if we have it from the token data
+            # Check if we have bonding curve key from WebSocket
             if hasattr(self, 'last_token_data') and self.last_token_data:
                 if self.last_token_data.get('mint') == mint:
                     bonding_curve_str = self.last_token_data.get('bondingCurveKey')
@@ -174,7 +173,7 @@ class PumpFunDEX:
             return 0, 0
     
     def create_buy_instruction(self, mint: str, sol_amount: float, min_tokens: int) -> Optional[Instruction]:
-        """Create PumpFun buy instruction"""
+        """Create PumpFun buy instruction - FIXED account ordering"""
         try:
             mint_pubkey = Pubkey.from_string(mint)
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
@@ -191,9 +190,8 @@ class PumpFunDEX:
             sol_amount_lamports = int(sol_amount * 1e9)
             data = discriminator + struct.pack('<Q', sol_amount_lamports) + struct.pack('<Q', min_tokens)
             
-            # Build accounts
+            # Build accounts - FIXED: Removed PUMPFUN_PROGRAM_ID from accounts list
             accounts = [
-                AccountMeta(pubkey=PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=mint_pubkey, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
@@ -302,8 +300,7 @@ class PumpFunDEX:
         
         try:
             if bonding_curve_key:
-                # Use the provided bonding curve directly without checking if it exists
-                # (it might not be confirmed yet)
+                # Use the provided bonding curve directly
                 logger.info(f"Using bonding curve from WebSocket: {bonding_curve_key}")
                 bonding_curve = Pubkey.from_string(bonding_curve_key)
                 mint_pubkey = Pubkey.from_string(mint)
@@ -315,7 +312,7 @@ class PumpFunDEX:
                 buy_ix = self._create_buy_ix_with_curve(mint_pubkey, bonding_curve, BUY_AMOUNT_SOL, min_tokens)
                 
                 if buy_ix:
-                    # Send transaction - using correct Transaction constructor
+                    # Send transaction
                     recent_blockhash_resp = self.client.get_latest_blockhash()
                     
                     from solana.transaction import Transaction as SolanaTransaction
@@ -356,19 +353,18 @@ class PumpFunDEX:
             return self.execute_buy(mint)
     
     def _create_buy_ix_with_curve(self, mint: Pubkey, bonding_curve: Pubkey, sol_amount: float, min_tokens: int) -> Optional[Instruction]:
-        """Create buy instruction with known bonding curve"""
+        """Create buy instruction with known bonding curve - FIXED account ordering"""
         try:
             # Get token accounts
             associated_bonding_curve = get_associated_token_address(bonding_curve, mint)
             user_token_account = get_associated_token_address(self.wallet.pubkey, mint)
             
             # Build instruction data for PumpFun buy
-            # Discriminator for 'buy' instruction
             discriminator = bytes([102, 6, 61, 18, 1, 218, 235, 234])
             sol_amount_lamports = int(sol_amount * 1e9)
             data = discriminator + struct.pack('<Q', sol_amount_lamports) + struct.pack('<Q', min_tokens)
             
-            # Build accounts in correct order for PumpFun
+            # Build accounts in correct order for PumpFun - without program ID in accounts
             accounts = [
                 AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=associated_bonding_curve, is_signer=False, is_writable=True),
@@ -390,67 +386,9 @@ class PumpFunDEX:
         except Exception as e:
             logger.error(f"Failed to create buy instruction: {e}")
             return None
-            
-            if not curve_data['can_buy']:
-                if curve_data['is_migrating']:
-                    logger.warning(f"❌ Token {mint[:8]}... is migrating to Raydium")
-                else:
-                    logger.warning(f"❌ Bonding curve has insufficient SOL: {curve_data['sol_in_curve']:.2f}")
-                return None
-            
-            # Calculate buy amount
-            min_tokens, price_impact = self.calculate_buy_amount(mint, BUY_AMOUNT_SOL)
-            if min_tokens <= 0:
-                logger.warning(f"❌ Invalid token amount calculated")
-                return None
-            
-            if price_impact > 5:
-                logger.warning(f"❌ Price impact too high: {price_impact:.2f}%")
-                return None
-            
-            # Create buy instruction
-            buy_ix = self.create_buy_instruction(mint, BUY_AMOUNT_SOL, min_tokens)
-            if not buy_ix:
-                logger.error(f"❌ Failed to create buy instruction")
-                return None
-            
-            # Build transaction
-            recent_blockhash = self.client.get_latest_blockhash().value.blockhash
-            
-            transaction = Transaction()
-            transaction.recent_blockhash = recent_blockhash
-            transaction.fee_payer = self.wallet.pubkey
-            
-            # Add priority fees
-            transaction.add(set_compute_unit_price(100_000))  # 0.0001 SOL priority
-            transaction.add(set_compute_unit_limit(250_000))
-            
-            # Add buy instruction
-            transaction.add(buy_ix)
-            
-            # Sign and send
-            transaction.sign(self.wallet.keypair)
-            
-            logger.info(f"🚀 Sending PumpFun BUY for {mint[:8]}...")
-            signature = self.client.send_transaction(transaction, self.wallet.keypair)
-            sig_str = str(signature.value)
-            
-            logger.info(f"✅ [PumpFun] BUY transaction sent: {sig_str}")
-            
-            # Record the buy
-            self.bonding_curves[mint]['last_action'] = 'buy'
-            self.bonding_curves[mint]['buy_sig'] = sig_str
-            self.bonding_curves[mint]['buy_amount'] = BUY_AMOUNT_SOL
-            self.bonding_curves[mint]['expected_tokens'] = min_tokens
-            
-            return sig_str
-            
-        except Exception as e:
-            logger.error(f"❌ PumpFun buy failed: {e}")
-            return None
     
     def create_sell_instruction(self, mint: str, token_amount: int, min_sol: int) -> Optional[Instruction]:
-        """Create PumpFun sell instruction"""
+        """Create PumpFun sell instruction - FIXED account ordering"""
         try:
             mint_pubkey = Pubkey.from_string(mint)
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
@@ -466,9 +404,8 @@ class PumpFunDEX:
             # Pack amounts
             data = discriminator + struct.pack('<Q', token_amount) + struct.pack('<Q', min_sol)
             
-            # Build accounts (same as buy)
+            # Build accounts - FIXED: Removed PUMPFUN_PROGRAM_ID from accounts list
             accounts = [
-                AccountMeta(pubkey=PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=mint_pubkey, is_signer=False, is_writable=False),
                 AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
@@ -493,6 +430,11 @@ class PumpFunDEX:
     
     def execute_sell(self, mint: str, token_amount: int) -> Optional[str]:
         """Execute a PumpFun bonding curve sell"""
+        # This method is not used in Phase 1 since we use PumpPortal
+        if not self.USE_MANUAL_PUMPFUN_BUY:
+            logger.info("Manual PumpFun sell path disabled (using PumpPortal)")
+            return None
+            
         try:
             # Check bonding curve still exists
             curve_data = self.get_bonding_curve_data(mint)
@@ -516,7 +458,9 @@ class PumpFunDEX:
             # Build transaction
             recent_blockhash = self.client.get_latest_blockhash().value.blockhash
             
-            transaction = Transaction()
+            from solana.transaction import Transaction as SolanaTransaction
+            
+            transaction = SolanaTransaction()
             transaction.recent_blockhash = recent_blockhash
             transaction.fee_payer = self.wallet.pubkey
             
@@ -527,12 +471,14 @@ class PumpFunDEX:
             # Add sell instruction
             transaction.add(sell_ix)
             
-            # Sign and send
-            transaction.sign(self.wallet.keypair)
+            # Sign transaction
+            transaction.sign_partial(self.wallet.keypair)
             
             logger.info(f"🚀 Sending PumpFun SELL for {mint[:8]}...")
-            signature = self.client.send_transaction(transaction, self.wallet.keypair)
-            sig_str = str(signature.value)
+            
+            # Send transaction
+            response = self.client.send_raw_transaction(transaction.serialize())
+            sig_str = str(response.value)
             
             logger.info(f"✅ [PumpFun] SELL transaction sent: {sig_str}")
             
