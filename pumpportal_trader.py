@@ -142,7 +142,11 @@ class PumpPortalTrader:
                         # Send the signed transaction
                         logger.info(f"Sending signed transaction for {mint[:8]}...")
                         try:
-                            response = self.client.send_raw_transaction(signed_tx_bytes)
+                            # Try sending with skip_preflight to avoid blockhash issues
+                            from solana.rpc.types import TxOpts
+                            opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
+                            
+                            response = self.client.send_raw_transaction(signed_tx_bytes, opts)
                             sig = str(response.value)
                             
                             if is_versioned:
@@ -153,7 +157,21 @@ class PumpPortalTrader:
                             return sig
                         except Exception as e:
                             logger.error(f"Failed to send transaction: {e}")
-                            return None
+                            
+                            # Try again without options
+                            try:
+                                response = self.client.send_raw_transaction(signed_tx_bytes)
+                                sig = str(response.value)
+                                
+                                if is_versioned:
+                                    logger.info(f"✅ v0 tx sent (retry): {sig}")
+                                else:
+                                    logger.info(f"✅ legacy tx sent (retry): {sig}")
+                                
+                                return sig
+                            except Exception as e2:
+                                logger.error(f"Retry also failed: {e2}")
+                                return None
                     else:
                         error_text = await response.text()
                         logger.error(f"PumpPortal API error ({response.status}): {error_text}")
@@ -275,7 +293,11 @@ class PumpPortalTrader:
                         # Send the signed transaction
                         logger.info(f"Sending signed transaction for {mint[:8]}...")
                         try:
-                            response = self.client.send_raw_transaction(signed_tx_bytes)
+                            # Try sending with skip_preflight to avoid blockhash issues
+                            from solana.rpc.types import TxOpts
+                            opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
+                            
+                            response = self.client.send_raw_transaction(signed_tx_bytes, opts)
                             sig = str(response.value)
                             
                             if is_versioned:
@@ -286,7 +308,21 @@ class PumpPortalTrader:
                             return sig
                         except Exception as e:
                             logger.error(f"Failed to send transaction: {e}")
-                            return None
+                            
+                            # Try again without options
+                            try:
+                                response = self.client.send_raw_transaction(signed_tx_bytes)
+                                sig = str(response.value)
+                                
+                                if is_versioned:
+                                    logger.info(f"✅ v0 tx sent (retry): {sig}")
+                                else:
+                                    logger.info(f"✅ legacy tx sent (retry): {sig}")
+                                
+                                return sig
+                            except Exception as e2:
+                                logger.error(f"Retry also failed: {e2}")
+                                return None
                     else:
                         error_text = await response.text()
                         logger.error(f"PumpPortal API error ({response.status}): {error_text}")
