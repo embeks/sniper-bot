@@ -1,5 +1,6 @@
 """
 Main Orchestrator - Coordinates Phase 1 sniper bot operations
+FIXED: Added methods for Telegram bot integration
 """
 
 import asyncio
@@ -61,6 +62,7 @@ class SniperBot:
         self.wallet = WalletManager()
         self.dex = PumpFunDEX(self.wallet)
         self.scanner = None
+        self.scanner_task = None
         self.telegram = None
         
         # Initialize PumpPortal trader for API-based transactions
@@ -83,6 +85,7 @@ class SniperBot:
         # Initialize Telegram bot
         if ENABLE_TELEGRAM_NOTIFICATIONS:
             self.telegram = TelegramBot(self)
+            logger.info("✅ Telegram bot enabled")
         
         # Log initial status
         self._log_startup_info()
@@ -103,10 +106,54 @@ class SniperBot:
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
     
+    # ============================================
+    # TELEGRAM COMMAND SUPPORT METHODS
+    # ============================================
+    
+    async def stop_scanner(self):
+        """Stop the scanner and set running to False"""
+        self.running = False
+        
+        # Cancel scanner task if it exists
+        if self.scanner_task and not self.scanner_task.done():
+            self.scanner_task.cancel()
+            logger.info("Scanner task cancelled")
+        
+        # Stop the scanner itself
+        if self.scanner:
+            self.scanner.stop()
+            logger.info("Scanner stopped")
+        
+        logger.info("✅ Bot stopped via command")
+    
+    async def start_scanner(self):
+        """Start or restart the scanner"""
+        self.running = True
+        
+        # Create scanner if it doesn't exist
+        if not self.scanner:
+            from pumpportal_monitor import PumpPortalMonitor
+            self.scanner = PumpPortalMonitor(self.on_token_found)
+            logger.info("Scanner initialized")
+        
+        # Cancel old task if exists
+        if self.scanner_task and not self.scanner_task.done():
+            self.scanner_task.cancel()
+            await asyncio.sleep(0.1)  # Brief delay for cleanup
+        
+        # Start new scanner task
+        self.scanner_task = asyncio.create_task(self.scanner.start())
+        logger.info("✅ Scanner started via command")
+    
     async def on_token_found(self, token_data: Dict):
         """Handle new token found by monitor"""
         try:
             mint = token_data['mint']
+            
+            # Check if running
+            if not self.running:
+                logger.debug("Bot is stopped, skipping token")
+                return
             
             # Check if paused
             if self.paused:
@@ -228,10 +275,15 @@ class SniperBot:
             logger.error(f"Error monitoring position {mint[:8]}: {e}")
     
     async def _close_position(self, mint: str, reason: str = "manual"):
-        """Close a position"""
+        """Close a position - PUBLIC for telegram access"""
         try:
             position = self.positions.get(mint)
-            if not position or position.status != 'active':
+            if not position:
+                logger.warning(f"Position {mint[:8]}... not found")
+                return
+            
+            if position.status != 'active':
+                logger.warning(f"Position {mint[:8]}... already closed")
                 return
             
             # Get token balance
@@ -239,6 +291,7 @@ class SniperBot:
             if token_balance <= 0:
                 logger.warning(f"No tokens to sell for {mint[:8]}...")
                 position.status = 'closed'
+                del self.positions[mint]
                 return
             
             # Execute sell
@@ -246,10 +299,10 @@ class SniperBot:
                 logger.info(f"[DRY RUN] Would sell {token_balance:,.0f} tokens of {mint[:8]}...")
                 signature = "dry_run_sell_" + mint[:10]
             else:
-                # Use PumpPortal API for selling, just like buying
+                # Use PumpPortal API for selling
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
-                    token_amount=token_balance,  # Pass the decimal amount
+                    token_amount=token_balance,
                     slippage=50
                 )
             
@@ -277,9 +330,10 @@ class SniperBot:
                     if self.total_pnl > NOTIFY_PROFIT_THRESHOLD:
                         total_pnl_sol = self.total_pnl / 100 * BUY_AMOUNT_SOL * self.total_trades
                         await self.telegram.notify_profit_milestone(total_pnl_sol, total_pnl_sol * sol_price)
-                
+            
             # Remove from active positions
-            del self.positions[mint]
+            if mint in self.positions:
+                del self.positions[mint]
             
         except Exception as e:
             logger.error(f"Failed to close position {mint[:8]}: {e}")
@@ -295,12 +349,22 @@ class SniperBot:
             
             # Start scanner
             self.scanner = PumpPortalMonitor(self.on_token_found)
-            scanner_task = asyncio.create_task(self.scanner.start())
+            self.scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot is running. Press Ctrl+C to stop.")
+            logger.info("📱 Send /help to Telegram for commands")
             
-            # Keep running (no periodic stats logging)
-            await scanner_task
+            # Keep running
+            while self.running:
+                await asyncio.sleep(1)
+                
+                # Check if scanner task failed
+                if self.scanner_task and self.scanner_task.done():
+                    exc = self.scanner_task.exception()
+                    if exc:
+                        logger.error(f"Scanner task failed: {exc}")
+                        logger.info("Restarting scanner...")
+                        self.scanner_task = asyncio.create_task(self.scanner.start())
             
         except KeyboardInterrupt:
             logger.info("\n🛑 Shutting down...")
@@ -338,14 +402,17 @@ class SniperBot:
         if self.telegram:
             await self.telegram.send_message("🛑 Bot shutting down...")
         
+        # Stop scanner first
+        if self.scanner_task and not self.scanner_task.done():
+            self.scanner_task.cancel()
+        
+        if self.scanner:
+            self.scanner.stop()
+        
         # Close all positions
         logger.info("Closing all positions...")
         for mint in list(self.positions.keys()):
             await self._close_position(mint, reason="shutdown")
-        
-        # Stop scanner
-        if self.scanner:
-            self.scanner.stop()
         
         # Stop Telegram bot
         if self.telegram:
