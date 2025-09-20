@@ -76,6 +76,11 @@ class TelegramBot:
         """Poll for commands"""
         self.running = True
         logger.info("📱 Telegram polling started")
+        logger.info(f"Bot token: {self.token[:10]}...")
+        logger.info(f"Chat ID: {self.chat_id}")
+        
+        # Send test message to confirm connection
+        await self.send_message("📱 Telegram polling active - commands ready")
         
         while self.running:
             try:
@@ -83,6 +88,8 @@ class TelegramBot:
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"Polling error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 await asyncio.sleep(5)
     
     async def get_updates(self):
@@ -116,7 +123,7 @@ class TelegramBot:
                 return
             
             # Log received command for debugging
-            logger.info(f"Telegram command received: {text}")
+            logger.info(f"📱 Telegram command received: {text}")
             
             # Parse command
             parts = text.split()
@@ -125,6 +132,7 @@ class TelegramBot:
             
             # Execute command
             if command in self.commands:
+                logger.info(f"Executing command: {command}")
                 handler = self.commands[command]
                 await handler(args)
             elif text.startswith('/'):
@@ -132,6 +140,8 @@ class TelegramBot:
                 
         except Exception as e:
             logger.error(f"Failed to process update: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             await self.send_message(f"❌ Error processing command: {e}")
     
     # ============================================
