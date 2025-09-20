@@ -299,7 +299,21 @@ class SniperBot:
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would buy {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
                 signature = f"dry_run_buy_{mint[:10]}"
-                bought_tokens = 1000000
+                                    # Wait for transaction confirmation
+                    logger.info(f"Waiting for transaction confirmation...")
+                    await asyncio.sleep(5)
+                    bought_tokens = self.wallet.get_token_balance(mint)
+                    
+                    # Retry if balance is 0
+                    if bought_tokens == 0:
+                        logger.warning(f"Token balance showing 0, retrying...")
+                        await asyncio.sleep(3)
+                        bought_tokens = self.wallet.get_token_balance(mint)
+                        
+                        if bought_tokens == 0:
+                            # Use estimate for monitoring purposes
+                            bought_tokens = 500000
+                            logger.warning(f"Using estimated tokens for monitoring: {bought_tokens}")
             else:
                 bonding_curve_key = None
                 if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
@@ -318,6 +332,25 @@ class SniperBot:
             
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
+                
+                # Wait for transaction to confirm and token account to be created
+                logger.info(f"Waiting for token account creation...")
+                await asyncio.sleep(5)
+                
+                # Try to get token balance
+                bought_tokens = self.wallet.get_token_balance(mint)
+                
+                # If still 0, try again with longer wait
+                if bought_tokens == 0:
+                    logger.warning(f"Token balance showing 0, retrying...")
+                    await asyncio.sleep(3)
+                    bought_tokens = self.wallet.get_token_balance(mint)
+                    
+                    # If STILL 0, use an estimate based on buy amount
+                    if bought_tokens == 0:
+                        # Rough estimate: ~500k tokens per 0.015 SOL at typical launch prices
+                        bought_tokens = 500000
+                        logger.warning(f"Using estimated token amount: {bought_tokens}")
                 
                 # Log successful buy
                 self.tracker.log_buy_executed(
