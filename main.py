@@ -246,9 +246,12 @@ class SniperBot:
                 logger.info(f"[DRY RUN] Would sell {token_balance:,.0f} tokens of {mint[:8]}...")
                 signature = "dry_run_sell_" + mint[:10]
             else:
-                # Convert to raw amount (assuming 6 decimals for PumpFun tokens)
-                token_amount_raw = int(token_balance * 1e6)
-                signature = self.dex.execute_sell(mint, token_amount_raw)
+                # Use PumpPortal API for selling, just like buying
+                signature = await self.trader.create_sell_transaction(
+                    mint=mint,
+                    token_amount=token_balance,  # Pass the decimal amount
+                    slippage=50
+                )
             
             if signature:
                 position.sell_signature = signature
