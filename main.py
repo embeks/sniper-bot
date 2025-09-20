@@ -402,6 +402,9 @@ class SniperBot:
                     
                     if not curve_data:
                         logger.warning(f"❌ No bonding curve for {mint[:8]}... (migrated)")
+                        # For migrated tokens, try to sell anyway through PumpPortal
+                        # They might handle Raydium sells too
+                        logger.info(f"Attempting to close migrated position {mint[:8]}...")
                         await self._close_position_full(mint, reason="migration")
                         break
                     
