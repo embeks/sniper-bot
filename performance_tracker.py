@@ -48,22 +48,19 @@ class PerformanceTracker:
         }
         
         logger.info(f"📊 Performance tracker initialized")
-        if self.sheet_id:
-            logger.info(f"📈 Google Sheets connected: {self.sheet_id}")
+        if self.sheet_url:
+            logger.info(f"📈 Sheety connected for Google Sheets logging")
     
     def setup_google_sheets(self):
-        """Setup Google Sheets connection"""
-        # Get Sheet ID from environment or hardcode it
-        self.sheet_id = os.getenv('GOOGLE_SHEET_ID', '')
+        """Setup Google Sheets connection via Sheety"""
+        # Only use SHEETY_URL - no need for GOOGLE_SHEET_ID
+        self.sheet_url = os.getenv('SHEETY_URL', '')
         
-        if not self.sheet_id:
-            logger.warning("⚠️ No GOOGLE_SHEET_ID set - add to Render environment variables")
-            logger.warning("Format: just the ID part from your sheets URL")
-            self.sheet_url = None
+        if not self.sheet_url:
+            logger.warning("⚠️ No SHEETY_URL set - add to Render environment variables")
+            logger.warning("Get your Sheety API URL from https://sheety.co")
         else:
-            # Using Google Sheets API v4 public endpoint (no auth needed for public sheets)
-            self.sheet_url = f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}/values/Sheet1!A:I:append"
-            
+            logger.info(f"✅ Sheety configured for Google Sheets logging")
             # Test connection
             self.test_sheet_connection()
     
@@ -88,49 +85,28 @@ class PerformanceTracker:
             logger.error("Make sure your sheet is set to 'Anyone with link can edit'")
     
     def write_to_sheet(self, data: Dict):
-        """Write a row to Google Sheets using a simpler method"""
+        """Write a row to Google Sheets using Sheety"""
         try:
-            if not self.sheet_id:
+            if not self.sheet_url:
                 return
             
-            # Use Google Forms API trick - simpler and works without auth
-            # First, you need to create a Google Form linked to your sheet
-            # For now, let's use a webhook service
+            # Format data for Sheety API
+            row = {
+                'timestamp': data.get('timestamp', ''),
+                'Event_Type': data.get('event_type', ''),
+                'Mint': data.get('mint', '')[:8] if data.get('mint') else '',
+                'Amount_Sol': float(data.get('amount_sol', 0)),
+                'PnL_Sol': float(data.get('pnl_sol', 0)),
+                'Fees_Sol': float(data.get('fees_sol', 0)),
+                'Tokens': float(data.get('tokens', 0)),
+                'Execution_Ms': float(data.get('execution_ms', 0)),
+                'Reason': data.get('reason', '')
+            }
             
-            # Alternative: Use Sheety.co API (free tier: 200 requests/month)
-            # Sign up at https://sheety.co and connect your Google Sheet
-            sheety_url = os.getenv('SHEETY_URL', '')
-            
-            if sheety_url:
-                row = {
-                    'timestamp': data.get('timestamp', ''),
-                    'Event_Type': data.get('event_type', ''),
-                    'Mint': data.get('mint', '')[:8] if data.get('mint') else '',
-                    'Amount_Sol': float(data.get('amount_sol', 0)),
-                    'PnL_Sol': float(data.get('pnl_sol', 0)),
-                    'Fees_Sol': float(data.get('fees_sol', 0)),
-                    'Tokens': float(data.get('tokens', 0)),
-                    'Execution_Ms': float(data.get('execution_ms', 0)),
-                    'Reason': data.get('reason', '')
-                }
-                
-                response = requests.post(sheety_url, json={'sheet1': row})
-                if response.status_code != 200:
-                    logger.debug(f"Sheet write failed: {response.status_code}")
-            else:
-                # Fallback: Use IFTTT Webhooks (free)
-                ifttt_key = os.getenv('IFTTT_KEY', '')
-                if ifttt_key:
-                    webhook_url = f"https://maker.ifttt.com/trigger/bot_event/with/key/{ifttt_key}"
-                    
-                    # IFTTT only accepts 3 values
-                    values = {
-                        'value1': f"{data.get('event_type', '')} | {data.get('mint', '')[:8]}",
-                        'value2': f"Amount: {data.get('amount_sol', 0):.4f} SOL | P&L: {data.get('pnl_sol', 0):+.4f}",
-                        'value3': f"Fees: {data.get('fees_sol', 0):.6f} | Time: {datetime.now().strftime('%H:%M:%S')}"
-                    }
-                    
-                    requests.post(webhook_url, json=values)
+            # Send to Sheety
+            response = requests.post(self.sheet_url, json={'sheet1': row})
+            if response.status_code != 200:
+                logger.debug(f"Sheet write failed: {response.status_code}")
                 
         except Exception as e:
             logger.debug(f"Sheet write error: {e}")
