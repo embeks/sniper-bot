@@ -264,6 +264,26 @@ class SniperBot:
                     self._last_balance_warning = current_time
                 return
             
+            # SIMPLE QUALITY FILTERS - Phase 1.5
+            # Filter 1: Check creator's initial buy amount
+            initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
+            name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
+            
+            # Skip if creator bought less than 0.1 SOL (no skin in the game)
+            if initial_buy < 0.1:
+                logger.debug(f"Skipping {mint[:8]}... - creator only bought {initial_buy:.3f} SOL")
+                return
+            
+            # Skip if creator bought more than 10 SOL (likely planning to dump)
+            if initial_buy > 10:
+                logger.debug(f"Skipping {mint[:8]}... - creator bought {initial_buy:.1f} SOL (too much)")
+                return
+            
+            # Skip obvious low-effort tokens
+            if len(name) < 3 or 'test' in name.lower():
+                logger.debug(f"Skipping {mint[:8]}... - low effort name: {name}")
+                return
+            
             # Log detection time
             detection_time_ms = (time.time() - detection_start) * 1000
             self.tracker.log_token_detection(mint, token_data.get('source', 'pumpportal'), detection_time_ms)
