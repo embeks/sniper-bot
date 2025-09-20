@@ -29,6 +29,7 @@ class TelegramBot:
         self.last_update_id = 0
         self.running = False
         self.last_message_time = 0
+        self.polling_task = None  # FIXED: Track polling task to prevent duplicates
         
         # Command handlers
         self.commands = {
@@ -49,6 +50,7 @@ class TelegramBot:
             '/logs': self.cmd_recent_logs,
             '/set_sl': self.cmd_set_stop_loss,
             '/set_tp': self.cmd_set_take_profit,
+            '/perf': self.cmd_perf,  # ADDED: Performance command
         }
         
         if ENABLE_TELEGRAM_NOTIFICATIONS:
@@ -95,6 +97,11 @@ class TelegramBot:
     
     async def start_polling(self):
         """Poll for commands"""
+        # FIXED: Prevent duplicate polling
+        if self.polling_task and not self.polling_task.done():
+            logger.warning("Polling already active, skipping duplicate start")
+            return self.polling_task
+        
         self.running = True
         logger.info("📱 Telegram polling started")
         logger.info(f"Bot token: {self.token[:10]}...")
@@ -437,6 +444,7 @@ Max Curve: {MAX_BONDING_CURVE_SOL} SOL
             "/stats - Statistics\n"
             "/pnl - P&L summary\n"
             "/config - Settings\n"
+            "/perf - Performance metrics\n"
             "/force_sell all - Close all\n"
             "/force_sell <mint> - Close one\n"
             "/set_sl <pct> - Set stop loss\n"
@@ -445,6 +453,33 @@ Max Curve: {MAX_BONDING_CURVE_SOL} SOL
         )
         
         await self.send_message(message)
+    
+    async def cmd_perf(self, args):
+        """Get performance metrics from tracker"""
+        try:
+            if hasattr(self.bot, 'tracker'):
+                stats = self.bot.tracker.get_session_stats()
+                
+                message = f"""
+*📊 PERFORMANCE METRICS*
+━━━━━━━━━━━━━━━━━━━━━
+Session: {stats['session_duration_minutes']:.1f} min
+Buys: {stats['total_buys']}
+Sells: {stats['total_sells']}
+Volume: {stats['total_volume_sol']:.4f} SOL
+Fees Paid: {stats['total_fees_sol']:.6f} SOL
+P&L: {stats['total_pnl_sol']:+.4f} SOL
+Win Rate: {stats['win_rate_percent']:.1f}%
+Avg Detection: {stats['avg_detection_time_ms']:.1f}ms
+Avg Execution: {stats['avg_execution_time_ms']:.1f}ms
+━━━━━━━━━━━━━━━━━━━━━
+                """
+                await self.send_message(message)
+            else:
+                await self.send_message("Performance tracker not initialized")
+                
+        except Exception as e:
+            await self.send_message(f"❌ Error getting performance: {e}")
     
     async def cmd_force_sell(self, args):
         """Force sell a position"""
