@@ -51,7 +51,7 @@ class TelegramBot:
         
         if ENABLE_TELEGRAM_NOTIFICATIONS:
             logger.info("✅ Telegram bot initialized")
-            # Note: polling will be started in orchestrator after event loop is ready
+            # Note: polling will be started in orchestrator after event loop is ready - DO NOT start here
     
     async def send_message(self, text: str, parse_mode: str = "Markdown"):
         """Send message to Telegram with rate limiting"""
