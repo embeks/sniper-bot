@@ -1,6 +1,6 @@
 """
 Main Orchestrator - Phase 1 with Complete Control and Multi-Target Profit Taking
-FIXED: Clean stop/start, no auto-restart, better control, reduced spam
+FIXED: Integrated performance tracking
 """
 
 import asyncio
@@ -24,6 +24,7 @@ from wallet import WalletManager
 from dex import PumpFunDEX
 from pumpportal_monitor import PumpPortalMonitor
 from pumpportal_trader import PumpPortalTrader
+from performance_tracker import PerformanceTracker
 
 # Configure logging
 logging.basicConfig(
@@ -79,6 +80,9 @@ class SniperBot:
         self.scanner_task = None
         self.telegram = None
         self.telegram_polling_task = None
+        
+        # Initialize performance tracker
+        self.tracker = PerformanceTracker()
         
         # Initialize PumpPortal trader
         from solana.rpc.api import Client
@@ -228,6 +232,8 @@ class SniperBot:
     
     async def on_token_found(self, token_data: Dict):
         """Handle new token found by monitor"""
+        detection_start = time.time()
+        
         try:
             mint = token_data['mint']
             
@@ -257,9 +263,18 @@ class SniperBot:
                     self._last_balance_warning = current_time
                 return
             
+            # Log detection time
+            detection_time_ms = (time.time() - detection_start) * 1000
+            self.tracker.log_token_detection(mint, token_data.get('source', 'pumpportal'), detection_time_ms)
+            
             logger.info(f"🎯 Processing new token: {mint}")
             
+            # Log buy attempt
+            cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
+            
             # Execute buy
+            execution_start = time.time()
+            
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would buy {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
                 signature = f"dry_run_buy_{mint[:10]}"
@@ -281,6 +296,17 @@ class SniperBot:
                     bought_tokens = self.wallet.get_token_balance(mint)
             
             if signature:
+                execution_time_ms = (time.time() - execution_start) * 1000
+                
+                # Log successful buy
+                self.tracker.log_buy_executed(
+                    mint=mint,
+                    amount_sol=BUY_AMOUNT_SOL,
+                    signature=signature,
+                    tokens_received=bought_tokens,
+                    execution_time_ms=execution_time_ms
+                )
+                
                 # Create and track position
                 position = Position(mint, BUY_AMOUNT_SOL, bought_tokens)
                 position.buy_signature = signature
@@ -292,7 +318,10 @@ class SniperBot:
                 
                 logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
                 logger.info(f"   Amount: {BUY_AMOUNT_SOL} SOL")
+                logger.info(f"   Total Cost: {cost_breakdown['total_cost']:.6f} SOL")
+                logger.info(f"   Fees: {cost_breakdown['total_fees']:.6f} SOL")
                 logger.info(f"   Tokens: {bought_tokens:,.0f}")
+                logger.info(f"   Execution: {execution_time_ms:.1f}ms")
                 logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
                 
                 # Send Telegram notifications
@@ -312,9 +341,13 @@ class SniperBot:
                 # Start monitoring
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
+            else:
+                # Log failed buy
+                self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, "Transaction failed")
                 
         except Exception as e:
             logger.error(f"Failed to process token: {e}")
+            self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
             import traceback
             logger.error(traceback.format_exc())
     
@@ -362,6 +395,15 @@ class SniperBot:
                             price_change = ((current_price / position.entry_price) - 1) * 100
                             position.pnl_percent = price_change
                             position.current_price = current_price
+                            
+                            # Log position update periodically
+                            if check_count % 10 == 1:  # Every 10th check (~50 seconds)
+                                self.tracker.log_position_update(
+                                    mint=mint,
+                                    current_pnl_percent=price_change,
+                                    current_price=current_price,
+                                    age_seconds=age
+                                )
                             
                             # Log every 3rd check
                             if check_count % 3 == 1:
@@ -451,20 +493,31 @@ class SniperBot:
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would sell {tokens_to_sell:,.0f} tokens")
                 signature = f"dry_run_sell_{target_name}_{mint[:10]}"
+                sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
                     token_amount=tokens_to_sell,
                     slippage=50
                 )
+                sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)  # Estimate
             
             if signature:
                 position.sell_signatures.append(signature)
                 
-                sol_value = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
-                profit_sol = sol_value - (BUY_AMOUNT_SOL * sell_percent / 100)
+                profit_sol = sol_received - (BUY_AMOUNT_SOL * sell_percent / 100)
                 position.realized_pnl_sol += profit_sol
                 self.total_realized_sol += profit_sol
+                
+                # Log partial sell
+                self.tracker.log_partial_sell(
+                    mint=mint,
+                    target_name=target_name,
+                    percent_sold=sell_percent,
+                    tokens_sold=tokens_to_sell,
+                    sol_received=sol_received,
+                    pnl_sol=profit_sol
+                )
                 
                 logger.info(f"✅ {target_name} SELL EXECUTED")
                 logger.info(f"   Profit: {profit_sol:+.4f} SOL")
@@ -516,18 +569,21 @@ class SniperBot:
                 return
             
             remaining_percent = 100 - position.total_sold_percent
+            hold_time = time.time() - position.entry_time
             
             logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}...")
             
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would sell {token_balance:,.0f} tokens")
                 signature = f"dry_run_close_{mint[:10]}"
+                sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             else:
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
                     token_amount=token_balance,
                     slippage=50
                 )
+                sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)  # Estimate
             
             if signature:
                 position.sell_signatures.append(signature)
@@ -537,16 +593,27 @@ class SniperBot:
                     self.profitable_trades += 1
                 self.total_pnl += position.pnl_percent
                 
-                remaining_value = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
-                remaining_cost = BUY_AMOUNT_SOL * (remaining_percent / 100)
-                final_pnl = remaining_value - remaining_cost
+                final_pnl = sol_received - (BUY_AMOUNT_SOL * remaining_percent / 100)
                 position.realized_pnl_sol += final_pnl
                 self.total_realized_sol += final_pnl
+                
+                # Log sell execution
+                self.tracker.log_sell_executed(
+                    mint=mint,
+                    tokens_sold=token_balance,
+                    signature=signature,
+                    sol_received=sol_received,
+                    pnl_sol=position.realized_pnl_sol,
+                    pnl_percent=position.pnl_percent,
+                    hold_time_seconds=hold_time,
+                    reason=reason
+                )
                 
                 logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
                 logger.info(f"   Reason: {reason}")
                 logger.info(f"   Final P&L: {position.pnl_percent:+.1f}%")
                 logger.info(f"   Realized: {position.realized_pnl_sol:+.4f} SOL")
+                logger.info(f"   Hold time: {hold_time:.0f}s")
                 
                 if self.telegram:
                     sol_price = 250
@@ -610,6 +677,15 @@ class SniperBot:
                                 f"Age: {age:.0f}s"
                             )
                     
+                    # Log performance stats
+                    perf_stats = self.tracker.get_session_stats()
+                    if perf_stats['total_buys'] > 0:
+                        logger.info(f"📊 SESSION PERFORMANCE:")
+                        logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
+                        logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
+                        logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
+                        logger.info(f"  • Fees paid: {perf_stats['total_fees_sol']:.6f} SOL")
+                    
                     if self.total_realized_sol != 0:
                         logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
                     
@@ -656,6 +732,9 @@ class SniperBot:
         """Clean shutdown"""
         self.running = False
         logger.info("Starting shutdown...")
+        
+        # Log final session summary
+        self.tracker.log_session_summary()
         
         if self.telegram:
             await self.telegram.send_message(
