@@ -4,6 +4,7 @@ Telegram Bot Integration - Command-based interface for bot control
 
 import asyncio
 import logging
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import aiohttp
@@ -26,6 +27,7 @@ class TelegramBot:
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.last_update_id = 0
         self.running = False
+        self.last_message_time = 0  # Rate limiting
         
         # Command handlers
         self.commands = {
@@ -49,13 +51,19 @@ class TelegramBot:
         
         if ENABLE_TELEGRAM_NOTIFICATIONS:
             logger.info("✅ Telegram bot initialized")
-            asyncio.create_task(self.start_polling())
+            # Note: polling will be started in orchestrator after event loop is ready
     
     async def send_message(self, text: str, parse_mode: str = "Markdown"):
-        """Send message to Telegram"""
+        """Send message to Telegram with rate limiting"""
         try:
             if not ENABLE_TELEGRAM_NOTIFICATIONS:
                 return
+            
+            # Rate limiting - wait if sending too fast
+            current_time = time.time()
+            time_since_last = current_time - self.last_message_time
+            if time_since_last < 0.5:  # Minimum 0.5 seconds between messages
+                await asyncio.sleep(0.5 - time_since_last)
             
             async with aiohttp.ClientSession() as session:
                 url = f"{self.base_url}/sendMessage"
@@ -66,7 +74,17 @@ class TelegramBot:
                 }
                 
                 async with session.post(url, json=payload) as resp:
-                    if resp.status != 200:
+                    self.last_message_time = time.time()  # Update last message time
+                    
+                    if resp.status == 429:  # Rate limited
+                        retry_after = int(resp.headers.get('Retry-After', 5))
+                        logger.warning(f"Rate limited, waiting {retry_after} seconds")
+                        await asyncio.sleep(retry_after)
+                        # Retry once
+                        async with session.post(url, json=payload) as retry_resp:
+                            if retry_resp.status != 200:
+                                logger.error(f"Failed to send Telegram message after retry: {await retry_resp.text()}")
+                    elif resp.status != 200:
                         logger.error(f"Failed to send Telegram message: {await resp.text()}")
                         
         except Exception as e:
@@ -108,6 +126,16 @@ class TelegramBot:
                         
                         for update in data.get('result', []):
                             self.last_update_id = update['update_id']
+                            
+                            # Skip old messages (older than 60 seconds)
+                            message = update.get('message', {})
+                            if message.get('date'):
+                                message_time = message['date']
+                                current_time = time.time()
+                                if current_time - message_time > 60:
+                                    logger.debug(f"Skipping old message from {message_time}")
+                                    continue
+                            
                             await self.process_update(update)
                             
         except Exception as e:
@@ -178,18 +206,8 @@ class TelegramBot:
         """Stop the bot"""
         await self.send_message("🛑 Stopping bot...")
         
-        # Set running flag to False
-        self.bot.running = False
-        
-        # Cancel scanner task if it exists
-        if hasattr(self.bot, 'scanner_task'):
-            self.bot.scanner_task.cancel()
-            await self.send_message("📡 Scanner stopped")
-        
-        # Stop scanner if it has a stop method
-        if hasattr(self.bot, 'scanner') and self.bot.scanner:
-            if hasattr(self.bot.scanner, 'stop'):
-                await self.bot.scanner.stop()
+        # Stop the scanner (not async)
+        await self.bot.stop_scanner()
         
         # Close all positions if requested
         if args and args[0] == 'all':
