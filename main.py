@@ -1,6 +1,6 @@
 """
-Main Orchestrator - Coordinates Phase 1 sniper bot operations
-FIXED: Added methods for Telegram bot integration
+Main Orchestrator - Phase 1 with Multi-Target Profit Taking
+COMPLETE: Working auto-sell, Telegram commands, and partial profit taking at 2x, 3x, 5x
 """
 
 import asyncio
@@ -8,7 +8,7 @@ import logging
 import signal
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from config import (
     LOG_LEVEL, LOG_FORMAT, LOG_FILE,
@@ -16,41 +16,55 @@ from config import (
     STOP_LOSS_PERCENTAGE, TAKE_PROFIT_PERCENTAGE,
     SELL_DELAY_SECONDS, MAX_POSITION_AGE_SECONDS,
     DRY_RUN, DEBUG_MODE, ENABLE_TELEGRAM_NOTIFICATIONS,
-    BLACKLISTED_TOKENS, NOTIFY_PROFIT_THRESHOLD
+    BLACKLISTED_TOKENS, NOTIFY_PROFIT_THRESHOLD,
+    PARTIAL_TAKE_PROFIT
 )
 
 from wallet import WalletManager
 from dex import PumpFunDEX
 from pumpportal_monitor import PumpPortalMonitor
 from pumpportal_trader import PumpPortalTrader
-from telegram_bot import TelegramBot
 
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format=LOG_FORMAT,
-    handlers=[logging.StreamHandler()]  # Console output only
+    handlers=[logging.StreamHandler()]
 )
 
 logger = logging.getLogger(__name__)
 
 class Position:
-    """Track an active position"""
+    """Track an active position with multi-target support"""
     def __init__(self, mint: str, amount_sol: float, tokens: float = 0):
         self.mint = mint
         self.amount_sol = amount_sol
-        self.tokens = tokens
+        self.initial_tokens = tokens
+        self.remaining_tokens = tokens
         self.entry_time = time.time()
         self.entry_price = 0
         self.current_price = 0
         self.pnl_percent = 0
         self.pnl_usd = 0
-        self.status = 'pending'
+        self.status = 'active'
         self.buy_signature = None
-        self.sell_signature = None
+        self.sell_signatures = []
+        self.monitor_task = None
+        
+        # Multi-target tracking
+        self.partial_sells = {}  # Track which targets have been hit
+        self.total_sold_percent = 0  # Track how much has been sold
+        self.realized_pnl_sol = 0  # Track realized profits
+        
+        # Profit targets (from config or defaults)
+        self.profit_targets = [
+            {'target': 100, 'sell_percent': 40, 'name': '2x'},   # 2x = +100%
+            {'target': 200, 'sell_percent': 30, 'name': '3x'},   # 3x = +200%
+            {'target': 400, 'sell_percent': 30, 'name': '5x'},   # 5x = +400%
+        ]
 
 class SniperBot:
-    """Main sniper bot orchestrator"""
+    """Main sniper bot orchestrator with multi-target profit taking"""
     
     def __init__(self):
         """Initialize all components"""
@@ -64,8 +78,9 @@ class SniperBot:
         self.scanner = None
         self.scanner_task = None
         self.telegram = None
+        self.telegram_polling_task = None
         
-        # Initialize PumpPortal trader for API-based transactions
+        # Initialize PumpPortal trader
         from solana.rpc.api import Client
         from config import RPC_ENDPOINT
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
@@ -76,16 +91,15 @@ class SniperBot:
         self.total_trades = 0
         self.profitable_trades = 0
         self.total_pnl = 0
-        self.MAX_POSITIONS = MAX_POSITIONS  # For telegram access
+        self.total_realized_sol = 0
+        self.MAX_POSITIONS = MAX_POSITIONS
         
         # Control flags
         self.running = False
-        self.paused = False  # For pause/resume functionality
+        self.paused = False
         
-        # Initialize Telegram bot
-        if ENABLE_TELEGRAM_NOTIFICATIONS:
-            self.telegram = TelegramBot(self)
-            logger.info("✅ Telegram bot enabled")
+        # Telegram will be initialized in run()
+        self.telegram_enabled = ENABLE_TELEGRAM_NOTIFICATIONS
         
         # Log initial status
         self._log_startup_info()
@@ -93,33 +107,55 @@ class SniperBot:
     def _log_startup_info(self):
         """Log startup information"""
         sol_balance = self.wallet.get_sol_balance()
-        tradeable_balance = sol_balance - MIN_SOL_BALANCE
+        tradeable_balance = max(0, sol_balance - MIN_SOL_BALANCE)
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
+        logger.info(f"  • Reserved: {MIN_SOL_BALANCE:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
+        logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
+        logger.info(f"  • Profit targets: 2x (sell 40%), 3x (sell 30%), 5x (sell 30%)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
     
-    # ============================================
-    # TELEGRAM COMMAND SUPPORT METHODS
-    # ============================================
+    async def initialize_telegram(self):
+        """Initialize Telegram bot after event loop is ready"""
+        if self.telegram_enabled and not self.telegram:
+            try:
+                from telegram_bot import TelegramBot
+                self.telegram = TelegramBot(self)
+                
+                # Start polling in the current event loop
+                self.telegram_polling_task = asyncio.create_task(self.telegram.start_polling())
+                logger.info("✅ Telegram bot initialized and polling started")
+                
+                # Send startup message
+                sol_balance = self.wallet.get_sol_balance()
+                await self.telegram.send_message(
+                    "🚀 Bot started successfully\n"
+                    "📊 Phase 1 Mode with Multi-Targets\n"
+                    f"💰 Balance: {sol_balance:.4f} SOL\n"
+                    f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
+                    "📈 Targets: 2x→40%, 3x→30%, 5x→30%\n"
+                    "Type /help for commands"
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize Telegram: {e}")
+                self.telegram = None
     
     async def stop_scanner(self):
-        """Stop the scanner and set running to False"""
+        """Stop the scanner"""
         self.running = False
         
-        # Cancel scanner task if it exists
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
             logger.info("Scanner task cancelled")
         
-        # Stop the scanner itself
         if self.scanner:
             self.scanner.stop()
             logger.info("Scanner stopped")
@@ -129,19 +165,16 @@ class SniperBot:
     async def start_scanner(self):
         """Start or restart the scanner"""
         self.running = True
+        self.paused = False
         
-        # Create scanner if it doesn't exist
         if not self.scanner:
-            from pumpportal_monitor import PumpPortalMonitor
             self.scanner = PumpPortalMonitor(self.on_token_found)
             logger.info("Scanner initialized")
         
-        # Cancel old task if exists
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
-            await asyncio.sleep(0.1)  # Brief delay for cleanup
+            await asyncio.sleep(0.1)
         
-        # Start new scanner task
         self.scanner_task = asyncio.create_task(self.scanner.start())
         logger.info("✅ Scanner started via command")
     
@@ -150,24 +183,18 @@ class SniperBot:
         try:
             mint = token_data['mint']
             
-            # Check if running
-            if not self.running:
-                logger.debug("Bot is stopped, skipping token")
+            # Skip if not running or paused
+            if not self.running or self.paused:
+                logger.debug(f"Skipping token - running:{self.running}, paused:{self.paused}")
                 return
             
-            # Check if paused
-            if self.paused:
-                logger.debug("Bot is paused, skipping token")
-                return
-            
-            # Check if blacklisted
+            # Validation checks
             if mint in BLACKLISTED_TOKENS:
                 logger.debug(f"Token {mint[:8]}... is blacklisted")
                 return
             
-            # Check if we can take a new position
             if len(self.positions) >= MAX_POSITIONS:
-                logger.warning(f"❌ Max positions reached ({MAX_POSITIONS})")
+                logger.warning(f"Max positions reached ({MAX_POSITIONS})")
                 return
             
             if mint in self.positions:
@@ -175,131 +202,303 @@ class SniperBot:
                 return
             
             if not self.wallet.can_trade():
-                logger.warning(f"❌ Insufficient balance for trading")
+                logger.warning(f"Insufficient balance for trading")
                 return
             
-            # Log discovery (reduced spam)
-            logger.info(f"🎯 Evaluating new token: {mint}")
+            logger.info(f"🎯 Processing new token: {mint}")
             
             # Execute buy
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would buy {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
-                signature = "dry_run_sig_" + mint[:10]
+                signature = f"dry_run_buy_{mint[:10]}"
+                bought_tokens = 1000000  # Fake amount for dry run
             else:
-                # Extract bonding curve key from token data if available
                 bonding_curve_key = None
                 if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                     bonding_curve_key = token_data['data']['bondingCurveKey']
-                    logger.info(f"Using bonding curve from WebSocket: {bonding_curve_key[:20]}...")
                 
-                # Use PumpPortal API to create transaction
                 signature = await self.trader.create_buy_transaction(
                     mint=mint,
                     sol_amount=BUY_AMOUNT_SOL,
                     bonding_curve_key=bonding_curve_key,
                     slippage=50
                 )
+                
+                # Wait a bit for transaction to process
+                if signature:
+                    await asyncio.sleep(3)
+                    bought_tokens = self.wallet.get_token_balance(mint)
             
             if signature:
-                # Create position
-                position = Position(mint, BUY_AMOUNT_SOL)
+                # Create and track position
+                position = Position(mint, BUY_AMOUNT_SOL, bought_tokens)
                 position.buy_signature = signature
-                position.status = 'active'
+                position.initial_tokens = bought_tokens
+                position.remaining_tokens = bought_tokens
+                position.entry_time = time.time()
                 self.positions[mint] = position
                 self.total_trades += 1
                 
-                logger.info(f"✅ Position opened: {mint[:8]}...")
-                logger.info(f"   Active positions: {len(self.positions)}")
+                logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
+                logger.info(f"   Amount: {BUY_AMOUNT_SOL} SOL")
+                logger.info(f"   Tokens: {bought_tokens:,.0f}")
+                logger.info(f"   Signature: {signature[:20]}...")
+                logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
                 
-                # Send Telegram notification
+                # Send detailed Telegram notification
                 if self.telegram:
                     await self.telegram.notify_buy(mint, BUY_AMOUNT_SOL, signature)
+                    
+                    # Send monitoring setup message
+                    monitoring_msg = (
+                        f"📊 Monitoring {mint[:8]}... [STANDARD]\n"
+                        f"Entry: {BUY_AMOUNT_SOL} SOL\n"
+                        f"Targets: 2.0x/{BUY_AMOUNT_SOL*2:.3f} SOL, "
+                        f"3.0x/{BUY_AMOUNT_SOL*3:.3f} SOL, "
+                        f"5.0x/{BUY_AMOUNT_SOL*5:.3f} SOL\n"
+                        f"Stop Loss: -{STOP_LOSS_PERCENTAGE}%"
+                    )
+                    await self.telegram.send_message(monitoring_msg)
                 
-                # Schedule monitoring
-                asyncio.create_task(self._monitor_position(mint))
+                # Start monitoring this position
+                position.monitor_task = asyncio.create_task(
+                    self._monitor_position(mint)
+                )
+                logger.info(f"📊 Started monitoring position {mint[:8]}...")
                 
         except Exception as e:
-            logger.error(f"Failed to process token {token_data.get('mint', 'unknown')[:8]}: {e}")
+            logger.error(f"Failed to process token: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     async def _monitor_position(self, mint: str):
-        """Monitor a position for exit conditions"""
+        """Monitor position with multi-target profit taking"""
         try:
             position = self.positions.get(mint)
             if not position:
+                logger.error(f"Position {mint[:8]}... not found for monitoring")
                 return
             
-            # Wait initial delay before allowing sells
+            logger.info(f"⏳ Waiting {SELL_DELAY_SECONDS}s before monitoring {mint[:8]}...")
             await asyncio.sleep(SELL_DELAY_SECONDS)
             
-            while position.status == 'active' and self.running:
-                # Check position age
+            logger.info(f"📈 Starting active monitoring for {mint[:8]}...")
+            check_count = 0
+            last_notification_pnl = 0
+            
+            while mint in self.positions and position.status == 'active' and self.running:
+                check_count += 1
+                
+                # Check position age first
                 age = time.time() - position.entry_time
                 if age > MAX_POSITION_AGE_SECONDS:
-                    logger.warning(f"⏰ Position {mint[:8]}... exceeded max age")
-                    await self._close_position(mint, reason="max_age")
+                    logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s > {MAX_POSITION_AGE_SECONDS}s)")
+                    await self._close_position_full(mint, reason="max_age")
                     break
                 
                 # Get current price from bonding curve
-                curve_data = self.dex.get_bonding_curve_data(mint)
-                if not curve_data:
-                    logger.warning(f"Lost bonding curve for {mint[:8]}... (may have migrated)")
-                    await self._close_position(mint, reason="migration")
-                    break
-                
-                # Calculate P&L (simplified)
-                if curve_data['virtual_sol_reserves'] > 0 and curve_data['virtual_token_reserves'] > 0:
-                    current_price = curve_data['virtual_sol_reserves'] / curve_data['virtual_token_reserves']
+                try:
+                    curve_data = self.dex.get_bonding_curve_data(mint)
                     
-                    # Estimate P&L (this is simplified - real implementation needs actual entry price)
-                    if position.entry_price == 0:
-                        position.entry_price = current_price  # Set initial price
-                    
-                    price_change = ((current_price / position.entry_price) - 1) * 100 if position.entry_price > 0 else 0
-                    position.pnl_percent = price_change
-                    
-                    # Check exit conditions
-                    if price_change >= TAKE_PROFIT_PERCENTAGE:
-                        logger.info(f"💰 Take profit triggered for {mint[:8]}... (+{price_change:.1f}%)")
-                        await self._close_position(mint, reason="take_profit")
+                    if not curve_data:
+                        logger.warning(f"❌ No bonding curve data for {mint[:8]}... (may have migrated)")
+                        await self._close_position_full(mint, reason="migration")
                         break
                     
-                    elif price_change <= -STOP_LOSS_PERCENTAGE:
-                        logger.warning(f"🛑 Stop loss triggered for {mint[:8]}... ({price_change:.1f}%)")
-                        await self._close_position(mint, reason="stop_loss")
-                        break
+                    # Calculate price and P&L
+                    if curve_data['virtual_sol_reserves'] > 0 and curve_data['virtual_token_reserves'] > 0:
+                        current_price = curve_data['virtual_sol_reserves'] / curve_data['virtual_token_reserves']
+                        
+                        # Set entry price on first check
+                        if position.entry_price == 0:
+                            position.entry_price = current_price
+                            logger.info(f"📍 Entry price set for {mint[:8]}...: {position.entry_price:.10f}")
+                        
+                        # Calculate P&L
+                        if position.entry_price > 0:
+                            price_change = ((current_price / position.entry_price) - 1) * 100
+                            position.pnl_percent = price_change
+                            position.current_price = current_price
+                            
+                            # Log every 3rd check
+                            if check_count % 3 == 1:
+                                logger.info(
+                                    f"📊 {mint[:8]}... | "
+                                    f"P&L: {price_change:+.1f}% | "
+                                    f"Sold: {position.total_sold_percent}% | "
+                                    f"Age: {age:.0f}s"
+                                )
+                            
+                            # Send Telegram updates at significant P&L changes
+                            if self.telegram and abs(price_change - last_notification_pnl) >= 50:
+                                update_msg = (
+                                    f"📊 Update {mint[:8]}...\n"
+                                    f"P&L: {price_change:+.1f}%\n"
+                                    f"Status: {'🟢 Profit' if price_change > 0 else '🔴 Loss'}\n"
+                                    f"Remaining: {100 - position.total_sold_percent}%"
+                                )
+                                await self.telegram.send_message(update_msg)
+                                last_notification_pnl = price_change
+                            
+                            # Check for profit targets
+                            for target in position.profit_targets:
+                                target_name = target['name']
+                                target_pnl = target['target']
+                                sell_percent = target['sell_percent']
+                                
+                                if price_change >= target_pnl and target_name not in position.partial_sells:
+                                    logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}... (+{price_change:.1f}%)")
+                                    
+                                    # Execute partial sell
+                                    success = await self._execute_partial_sell(
+                                        mint, 
+                                        sell_percent, 
+                                        target_name,
+                                        price_change
+                                    )
+                                    
+                                    if success:
+                                        position.partial_sells[target_name] = {
+                                            'pnl': price_change,
+                                            'time': time.time(),
+                                            'percent_sold': sell_percent
+                                        }
+                                        position.total_sold_percent += sell_percent
+                                        
+                                        # Check if fully sold
+                                        if position.total_sold_percent >= 100:
+                                            logger.info(f"✅ Position fully closed after hitting all targets")
+                                            position.status = 'completed'
+                                            break
+                            
+                            # Check stop loss
+                            if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
+                                logger.warning(f"🛑 STOP LOSS TRIGGERED for {mint[:8]}... ({price_change:.1f}%)")
+                                await self._close_position_full(mint, reason="stop_loss")
+                                break
+                    
+                except Exception as e:
+                    logger.error(f"Error checking price for {mint[:8]}...: {e}")
                 
                 # Wait before next check
                 await asyncio.sleep(5)
+            
+            # If position is completed (all targets hit), remove it
+            if mint in self.positions and position.status == 'completed':
+                del self.positions[mint]
+                logger.info(f"Position {mint[:8]}... removed after completion")
                 
         except Exception as e:
-            logger.error(f"Error monitoring position {mint[:8]}: {e}")
+            logger.error(f"Monitor error for {mint[:8]}...: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            # Try to close on error
+            if mint in self.positions:
+                await self._close_position_full(mint, reason="monitor_error")
     
-    async def _close_position(self, mint: str, reason: str = "manual"):
-        """Close a position - PUBLIC for telegram access"""
+    async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
+        """Execute a partial sell at profit target"""
         try:
             position = self.positions.get(mint)
             if not position:
-                logger.warning(f"Position {mint[:8]}... not found")
-                return
+                return False
             
-            if position.status != 'active':
-                logger.warning(f"Position {mint[:8]}... already closed")
-                return
-            
-            # Get token balance
-            token_balance = self.wallet.get_token_balance(mint)
-            if token_balance <= 0:
+            # Get current token balance
+            current_balance = self.wallet.get_token_balance(mint)
+            if current_balance <= 0:
                 logger.warning(f"No tokens to sell for {mint[:8]}...")
-                position.status = 'closed'
-                del self.positions[mint]
-                return
+                return False
+            
+            # Calculate tokens to sell
+            tokens_to_sell = current_balance * (sell_percent / 100)
+            
+            logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
+            logger.info(f"   Selling: {sell_percent}% ({tokens_to_sell:,.0f} tokens)")
+            logger.info(f"   Current P&L: {current_pnl:+.1f}%")
             
             # Execute sell
             if DRY_RUN:
-                logger.info(f"[DRY RUN] Would sell {token_balance:,.0f} tokens of {mint[:8]}...")
-                signature = "dry_run_sell_" + mint[:10]
+                logger.info(f"[DRY RUN] Would sell {tokens_to_sell:,.0f} tokens")
+                signature = f"dry_run_sell_{target_name}_{mint[:10]}"
             else:
-                # Use PumpPortal API for selling
+                signature = await self.trader.create_sell_transaction(
+                    mint=mint,
+                    token_amount=tokens_to_sell,
+                    slippage=50
+                )
+            
+            if signature:
+                position.sell_signatures.append(signature)
+                
+                # Calculate realized profit
+                sol_value = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
+                profit_sol = sol_value - (BUY_AMOUNT_SOL * sell_percent / 100)
+                position.realized_pnl_sol += profit_sol
+                self.total_realized_sol += profit_sol
+                
+                logger.info(f"✅ {target_name} PARTIAL SELL EXECUTED")
+                logger.info(f"   Profit: {profit_sol:+.4f} SOL")
+                logger.info(f"   Signature: {signature[:20]}...")
+                
+                # Send Telegram notification
+                if self.telegram:
+                    sol_price = 250
+                    profit_usd = profit_sol * sol_price
+                    
+                    msg = (
+                        f"💰 {target_name} TARGET HIT!\n"
+                        f"Token: {mint[:16]}...\n"
+                        f"Sold: {sell_percent}% of position\n"
+                        f"P&L: {current_pnl:+.1f}% ({profit_sol:+.4f} SOL / ${profit_usd:+.2f})\n"
+                        f"Remaining: {100 - position.total_sold_percent - sell_percent}%\n"
+                        f"[View TX](https://solscan.io/tx/{signature})"
+                    )
+                    await self.telegram.send_message(msg)
+                
+                return True
+            else:
+                logger.error(f"Failed to execute {target_name} sell")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Partial sell error: {e}")
+            return False
+    
+    async def _close_position_full(self, mint: str, reason: str = "manual"):
+        """Close remaining position (for stop loss or max age)"""
+        try:
+            position = self.positions.get(mint)
+            if not position:
+                logger.warning(f"Cannot close - position {mint[:8]}... not found")
+                return
+            
+            if position.status != 'active':
+                logger.warning(f"Position {mint[:8]}... already {position.status}")
+                return
+            
+            # Mark as closing
+            position.status = 'closing'
+            
+            # Get remaining tokens
+            token_balance = self.wallet.get_token_balance(mint)
+            
+            if token_balance <= 0:
+                logger.warning(f"No tokens remaining for {mint[:8]}...")
+                position.status = 'closed'
+                if mint in self.positions:
+                    del self.positions[mint]
+                return
+            
+            remaining_percent = 100 - position.total_sold_percent
+            
+            logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}... ({reason})")
+            
+            # Execute sell
+            if DRY_RUN:
+                logger.info(f"[DRY RUN] Would sell {token_balance:,.0f} tokens")
+                signature = f"dry_run_close_{mint[:10]}"
+            else:
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
                     token_amount=token_balance,
@@ -307,165 +506,192 @@ class SniperBot:
                 )
             
             if signature:
-                position.sell_signature = signature
+                position.sell_signatures.append(signature)
                 position.status = 'closed'
                 
-                # Update stats
+                # Calculate final P&L
                 if position.pnl_percent > 0:
                     self.profitable_trades += 1
-                
                 self.total_pnl += position.pnl_percent
                 
-                logger.info(f"📈 Position closed: {mint[:8]}...")
+                # Calculate realized P&L for remaining portion
+                remaining_value = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
+                remaining_cost = BUY_AMOUNT_SOL * (remaining_percent / 100)
+                final_pnl = remaining_value - remaining_cost
+                position.realized_pnl_sol += final_pnl
+                self.total_realized_sol += final_pnl
+                
+                logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
                 logger.info(f"   Reason: {reason}")
-                logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
+                logger.info(f"   Final P&L: {position.pnl_percent:+.1f}%")
+                logger.info(f"   Total realized: {position.realized_pnl_sol:+.4f} SOL")
                 
                 # Send Telegram notification
                 if self.telegram:
-                    sol_price = 250  # Approximate
-                    pnl_usd = (position.amount_sol * position.pnl_percent / 100) * sol_price
-                    await self.telegram.notify_sell(mint, position.pnl_percent, pnl_usd, reason)
+                    sol_price = 250
+                    pnl_usd = position.realized_pnl_sol * sol_price
                     
-                    # Check for profit milestone
-                    if self.total_pnl > NOTIFY_PROFIT_THRESHOLD:
-                        total_pnl_sol = self.total_pnl / 100 * BUY_AMOUNT_SOL * self.total_trades
-                        await self.telegram.notify_profit_milestone(total_pnl_sol, total_pnl_sol * sol_price)
+                    emoji = "💰" if position.realized_pnl_sol > 0 else "🔴"
+                    msg = (
+                        f"{emoji} POSITION CLOSED\n"
+                        f"Token: {mint[:16]}...\n"
+                        f"Reason: {reason}\n"
+                        f"Final P&L: {position.pnl_percent:+.1f}%\n"
+                        f"Realized: {position.realized_pnl_sol:+.4f} SOL (${pnl_usd:+.2f})\n"
+                        f"Partial sells: {', '.join(position.partial_sells.keys()) if position.partial_sells else 'None'}"
+                    )
+                    await self.telegram.send_message(msg)
+            else:
+                logger.error(f"❌ Close transaction failed for {mint[:8]}...")
+                position.status = 'close_failed'
             
-            # Remove from active positions
+            # Remove from positions
             if mint in self.positions:
                 del self.positions[mint]
+                logger.info(f"Position removed. Active: {len(self.positions)}/{MAX_POSITIONS}")
             
         except Exception as e:
-            logger.error(f"Failed to close position {mint[:8]}: {e}")
+            logger.error(f"Failed to close position {mint[:8]}...: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            # Still try to remove
+            if mint in self.positions:
+                self.positions[mint].status = 'error'
+                del self.positions[mint]
+    
+    async def _close_position(self, mint: str, reason: str = "manual"):
+        """Wrapper for telegram compatibility"""
+        await self._close_position_full(mint, reason)
     
     async def run(self):
         """Main run loop"""
         self.running = True
         
         try:
-            # Send startup notification
-            if self.telegram:
-                await self.telegram.send_message("🚀 Bot started successfully\nType /help for commands")
+            # Initialize Telegram after event loop is ready
+            await self.initialize_telegram()
             
             # Start scanner
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot is running. Press Ctrl+C to stop.")
-            logger.info("📱 Send /help to Telegram for commands")
+            logger.info("✅ Bot is running with multi-target profit taking")
+            logger.info("📈 Targets: 2x (40%), 3x (30%), 5x (30%)")
             
-            # Keep running
+            # Monitor loop
+            last_stats_time = time.time()
+            
             while self.running:
-                await asyncio.sleep(1)
+                await asyncio.sleep(10)
                 
-                # Check if scanner task failed
+                # Log active positions every 60 seconds
+                if time.time() - last_stats_time > 60:
+                    if self.positions:
+                        logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
+                        for mint, pos in self.positions.items():
+                            age = time.time() - pos.entry_time
+                            targets_hit = ', '.join(pos.partial_sells.keys()) if pos.partial_sells else 'None'
+                            logger.info(
+                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
+                                f"Sold: {pos.total_sold_percent}% | Targets: {targets_hit} | "
+                                f"Age: {age:.0f}s"
+                            )
+                    
+                    # Log total realized profits
+                    if self.total_realized_sol != 0:
+                        logger.info(f"💰 Total realized profit: {self.total_realized_sol:+.4f} SOL")
+                    
+                    last_stats_time = time.time()
+                
+                # Check if scanner died
                 if self.scanner_task and self.scanner_task.done():
                     exc = self.scanner_task.exception()
                     if exc:
-                        logger.error(f"Scanner task failed: {exc}")
+                        logger.error(f"Scanner died: {exc}")
                         logger.info("Restarting scanner...")
                         self.scanner_task = asyncio.create_task(self.scanner.start())
             
         except KeyboardInterrupt:
             logger.info("\n🛑 Shutting down...")
-            await self.shutdown()
         except Exception as e:
             logger.error(f"Fatal error: {e}")
             if self.telegram:
                 await self.telegram.send_message(f"❌ Bot crashed: {e}")
+        finally:
             await self.shutdown()
-    
-    def _log_stats(self):
-        """Log current statistics (only when requested)"""
-        try:
-            sol_balance = self.wallet.get_sol_balance()
-            win_rate = (self.profitable_trades / self.total_trades * 100) if self.total_trades > 0 else 0
-            avg_pnl = (self.total_pnl / self.total_trades) if self.total_trades > 0 else 0
-            
-            logger.info("=" * 50)
-            logger.info("📊 STATISTICS")
-            logger.info(f"SOL Balance: {sol_balance:.4f}")
-            logger.info(f"Active Positions: {len(self.positions)}/{MAX_POSITIONS}")
-            logger.info(f"Total Trades: {self.total_trades}")
-            logger.info(f"Win Rate: {win_rate:.1f}%")
-            logger.info(f"Average P&L: {avg_pnl:+.1f}%")
-            logger.info("=" * 50)
-            
-        except Exception as e:
-            logger.error(f"Failed to log stats: {e}")
     
     async def shutdown(self):
         """Clean shutdown"""
         self.running = False
+        logger.info("Starting shutdown...")
         
-        # Send shutdown notification
+        # Notify Telegram
         if self.telegram:
-            await self.telegram.send_message("🛑 Bot shutting down...")
+            await self.telegram.send_message(
+                f"🛑 Bot shutting down\n"
+                f"Total realized: {self.total_realized_sol:+.4f} SOL"
+            )
         
-        # Stop scanner first
+        # Stop scanner
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
-        
         if self.scanner:
             self.scanner.stop()
         
         # Close all positions
-        logger.info("Closing all positions...")
-        for mint in list(self.positions.keys()):
-            await self._close_position(mint, reason="shutdown")
+        if self.positions:
+            logger.info(f"Closing {len(self.positions)} positions...")
+            for mint in list(self.positions.keys()):
+                await self._close_position_full(mint, reason="shutdown")
         
-        # Stop Telegram bot
+        # Stop Telegram polling
+        if self.telegram_polling_task and not self.telegram_polling_task.done():
+            self.telegram_polling_task.cancel()
         if self.telegram:
             self.telegram.stop()
         
         # Final stats
-        self._log_stats()
+        if self.total_trades > 0:
+            win_rate = (self.profitable_trades / self.total_trades * 100)
+            logger.info(f"📊 Final Stats:")
+            logger.info(f"  • Total trades: {self.total_trades}")
+            logger.info(f"  • Win rate: {win_rate:.1f}%")
+            logger.info(f"  • Total realized: {self.total_realized_sol:+.4f} SOL")
+        
         logger.info("✅ Shutdown complete")
 
-async def main():
-    """Main entry point"""
-    bot = SniperBot()
-    await bot.run()
-
+# Main entry point
 if __name__ == "__main__":
     import os
     from aiohttp import web
     
-    # Get port from environment (Render sets this automatically)
     port = int(os.getenv("PORT", "10000"))
     
-    # Create a simple HTTP server for health checks
     async def health_handler(request):
         return web.Response(text="Bot is running", status=200)
     
     async def start_health_server():
-        """Start health check server"""
         app = web.Application()
         app.router.add_get("/", health_handler)
         app.router.add_get("/health", health_handler)
-        app.router.add_get("/healthz", health_handler)
         
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
-        logger.info(f"✅ Health server started on port {port}")
+        logger.info(f"✅ Health server on port {port}")
         return runner
     
     async def main_with_health():
-        """Run both health server and bot"""
-        # Start health server first
         health_runner = await start_health_server()
         
         try:
-            # Run the bot
             bot = SniperBot()
             await bot.run()
         finally:
-            # Cleanup health server
             await health_runner.cleanup()
     
-    # Handle signals
     def signal_handler(sig, frame):
         logger.info("\nReceived interrupt signal")
         for task in asyncio.all_tasks():
@@ -474,7 +700,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Run everything
     try:
         asyncio.run(main_with_health())
     except KeyboardInterrupt:
