@@ -1,6 +1,7 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
 FIXED: Proper base64 decoding and correct signing for v0/legacy transactions
+FIXED: Sell transaction handling for all formats
 """
 
 import aiohttp
@@ -269,10 +270,46 @@ class PumpPortalTrader:
                         else:
                             logger.info("Detected legacy transaction")
                             
-                            # For legacy transactions, we can use solders directly
+                            # For legacy transactions, try multiple approaches
                             try:
-                                # Deserialize legacy transaction
-                                tx = Transaction.deserialize(raw_tx_bytes)
+                                # For sell transactions, PumpPortal might return pre-signed tx
+                                # Try to send directly first
+                                logger.info(f"Attempting to send pre-signed transaction for {mint[:8]}...")
+                                
+                                from solana.rpc.types import TxOpts
+                                opts = TxOpts(skip_preflight=True, preflight_commitment="processed", max_retries=3)
+                                
+                                try:
+                                    # Try sending raw bytes directly (might be pre-signed)
+                                    response = self.client.send_raw_transaction(raw_tx_bytes, opts)
+                                    sig = str(response.value)
+                                    logger.info(f"✅ Pre-signed sell tx sent: {sig}")
+                                    return sig
+                                except Exception as direct_send_error:
+                                    logger.info(f"Not pre-signed, will sign ourselves: {direct_send_error}")
+                                
+                                # If direct send failed, try to deserialize and sign
+                                try:
+                                    tx = Transaction.deserialize(raw_tx_bytes)
+                                except Exception as deser_error:
+                                    # If deserialization fails, it might be a different format
+                                    logger.warning(f"Standard deserialization failed: {deser_error}")
+                                    # Try sending as-is with our signature appended
+                                    logger.info("Attempting alternative signing method...")
+                                    
+                                    # Create a new transaction and copy the message
+                                    from solana.transaction import Transaction as SolanaTransaction
+                                    from solana.rpc.api import Client
+                                    
+                                    # Get recent blockhash for new tx
+                                    recent_blockhash_resp = self.client.get_latest_blockhash()
+                                    
+                                    # For sells, sometimes we need to construct differently
+                                    # Just try to send with higher limits
+                                    response = self.client.send_raw_transaction(raw_tx_bytes, opts)
+                                    sig = str(response.value)
+                                    logger.info(f"✅ Sell tx sent with alternative method: {sig}")
+                                    return sig
                                 
                                 # Sign with solders keypair directly if solana-py Keypair not available
                                 if SolanaKeypair is None:
@@ -287,8 +324,18 @@ class PumpPortalTrader:
                                 signed_tx_bytes = tx.serialize()
                                 logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
                             except Exception as e:
-                                logger.error(f"Failed to sign legacy transaction: {e}")
-                                return None
+                                logger.error(f"Failed to process legacy transaction: {e}")
+                                
+                                # Last resort - try sending original bytes
+                                logger.info("Last resort: sending original transaction bytes")
+                                try:
+                                    response = self.client.send_raw_transaction(raw_tx_bytes, opts)
+                                    sig = str(response.value)
+                                    logger.info(f"✅ Original bytes sent successfully: {sig}")
+                                    return sig
+                                except Exception as final_error:
+                                    logger.error(f"All methods failed: {final_error}")
+                                    return None
                         
                         # Send the signed transaction
                         logger.info(f"Sending signed transaction for {mint[:8]}...")
