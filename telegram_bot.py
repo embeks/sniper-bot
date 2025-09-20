@@ -107,7 +107,8 @@ class TelegramBot:
         logger.info(f"Bot token: {self.token[:10]}...")
         logger.info(f"Chat ID: {self.chat_id}")
         
-        await self.send_message("📱 Telegram polling active - commands ready")
+        # Don't send duplicate polling message on restart
+        # await self.send_message("📱 Telegram polling active - commands ready")
         
         while self.running:
             try:
