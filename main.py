@@ -151,7 +151,7 @@ class SniperBot:
                 self.telegram = None
     
     async def stop_scanner(self):
-        """Stop the scanner and mark for shutdown"""
+        """Stop the scanner and enter idle state (keeps health server alive)"""
         self.running = False
         self.shutdown_requested = True
         
@@ -167,10 +167,22 @@ class SniperBot:
             self.scanner.stop()
             logger.info("Scanner stopped")
         
-        logger.info("✅ Bot stopped via command")
+        logger.info("✅ Bot stopped and entering idle state")
     
     async def start_scanner(self):
         """Start or restart the scanner"""
+        # If we're in shutdown/idle state, exit it
+        if self.shutdown_requested:
+            logger.info("Exiting idle state...")
+            self.shutdown_requested = False
+            self.running = True
+            self.paused = False
+            
+            # The main loop will handle restarting the scanner
+            logger.info("✅ Bot resuming from idle")
+            return
+        
+        # Normal start if not idling
         if self.running and self.scanner_task and not self.scanner_task.done():
             logger.info("Scanner already running")
             return
@@ -612,9 +624,24 @@ class SniperBot:
                             logger.info("Restarting scanner...")
                             self.scanner_task = asyncio.create_task(self.scanner.start())
             
+            # If shutdown requested, keep health server alive but idle
             if self.shutdown_requested:
-                logger.info("Shutdown requested via command")
-                return
+                logger.info("Bot stopped - idling (health server active for Render)")
+                if self.telegram:
+                    await self.telegram.send_message("🛑 Bot stopped - use /start to resume")
+                
+                # Idle loop - keeps process alive so Render doesn't restart
+                while self.shutdown_requested:
+                    await asyncio.sleep(10)
+                    
+                    # If we exit this loop, it means start was called
+                    if not self.shutdown_requested:
+                        logger.info("Resuming from idle state...")
+                        # Restart the scanner
+                        if not self.scanner_task or self.scanner_task.done():
+                            self.scanner_task = asyncio.create_task(self.scanner.start())
+                        # Continue with main loop
+                        continue
             
         except KeyboardInterrupt:
             logger.info("\n🛑 Shutting down...")
