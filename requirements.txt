@@ -6,6 +6,7 @@ solders==0.20.0
 # Web and async
 websockets==10.4
 aiohttp==3.9.1
+requests==2.31.0
 
 # Utilities
 python-dotenv==1.0.0
