@@ -95,7 +95,9 @@ class PumpPortalTrader:
                         logger.info(f"Processing transaction ({len(raw_tx_bytes)} bytes)")
                         
                         # Detect transaction format by checking first byte
-                        is_versioned = (raw_tx_bytes[0] & 0x80) != 0
+                        # Versioned transactions start with 0x80 (for v0) or 0x00 (legacy marker followed by version)
+                        # 544-byte transactions from PumpFun are versioned v0
+                        is_versioned = len(raw_tx_bytes) == 544 or raw_tx_bytes[0] == 0x80
                         
                         if is_versioned:
                             logger.info("Detected v0 versioned transaction")
@@ -226,7 +228,9 @@ class PumpPortalTrader:
                         logger.info(f"Processing transaction ({len(raw_tx_bytes)} bytes)")
                         
                         # Detect transaction format by checking first byte
-                        is_versioned = (raw_tx_bytes[0] & 0x80) != 0
+                        # Versioned transactions start with 0x80 (for v0) or 0x00 (legacy marker followed by version)
+                        # 544-byte transactions from PumpFun are versioned v0
+                        is_versioned = len(raw_tx_bytes) == 544 or raw_tx_bytes[0] == 0x80
                         
                         if is_versioned:
                             logger.info("Detected v0 versioned transaction")
