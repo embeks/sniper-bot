@@ -1,9 +1,11 @@
 """
 Wallet Management - Deterministic verification and balance tracking
+FIXED: Removed eval() security issue
 """
 
 import base58
 import logging
+import json
 from typing import Optional, Dict, List
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -26,8 +28,8 @@ class WalletManager:
         try:
             # Decode private key
             if PRIVATE_KEY.startswith('[') and PRIVATE_KEY.endswith(']'):
-                # Array format
-                key_array = eval(PRIVATE_KEY)
+                # Array format - FIXED: Using json.loads instead of eval
+                key_array = json.loads(PRIVATE_KEY)
                 self.keypair = Keypair.from_bytes(bytes(key_array))
             else:
                 # Base58 format
@@ -133,7 +135,8 @@ class WalletManager:
         """Check if wallet can execute a trade"""
         try:
             balance = self.get_sol_balance()
-            required = MIN_SOL_BALANCE + BUY_AMOUNT_SOL
+            # Include all fees in calculation
+            required = MIN_SOL_BALANCE + BUY_AMOUNT_SOL + 0.000005 + 0.0001 + (BUY_AMOUNT_SOL * 0.01)
             
             if balance < required:
                 logger.warning(f"Insufficient balance: {balance:.4f} SOL (need {required:.4f} SOL)")
