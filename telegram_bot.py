@@ -1,5 +1,6 @@
 """
-Telegram Bot Integration - Command-based interface for bot control
+Telegram Bot Integration - Complete control interface with all fixes
+FIXED: No duplicate messages, working /help, proper stop/start, rate limiting
 """
 
 import asyncio
@@ -27,12 +28,13 @@ class TelegramBot:
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.last_update_id = 0
         self.running = False
-        self.last_message_time = 0  # Rate limiting
+        self.last_message_time = 0
         
         # Command handlers
         self.commands = {
             '/start': self.cmd_start,
             '/stop': self.cmd_stop,
+            '/restart': self.cmd_restart,
             '/pause': self.cmd_pause,
             '/resume': self.cmd_resume,
             '/status': self.cmd_status,
@@ -51,7 +53,6 @@ class TelegramBot:
         
         if ENABLE_TELEGRAM_NOTIFICATIONS:
             logger.info("✅ Telegram bot initialized")
-            # Note: polling will be started in orchestrator after event loop is ready - DO NOT start here
     
     async def send_message(self, text: str, parse_mode: str = "Markdown"):
         """Send message to Telegram with rate limiting"""
@@ -59,33 +60,35 @@ class TelegramBot:
             if not ENABLE_TELEGRAM_NOTIFICATIONS:
                 return
             
-            # Rate limiting - wait if sending too fast
+            # Rate limiting
             current_time = time.time()
             time_since_last = current_time - self.last_message_time
-            if time_since_last < 0.5:  # Minimum 0.5 seconds between messages
+            if time_since_last < 0.5:
                 await asyncio.sleep(0.5 - time_since_last)
             
             async with aiohttp.ClientSession() as session:
                 url = f"{self.base_url}/sendMessage"
                 payload = {
                     'chat_id': self.chat_id,
-                    'text': text[:4096],  # Telegram limit
+                    'text': text[:4096],
                     'parse_mode': parse_mode
                 }
                 
                 async with session.post(url, json=payload) as resp:
-                    self.last_message_time = time.time()  # Update last message time
+                    self.last_message_time = time.time()
                     
-                    if resp.status == 429:  # Rate limited
+                    if resp.status == 429:
                         retry_after = int(resp.headers.get('Retry-After', 5))
                         logger.warning(f"Rate limited, waiting {retry_after} seconds")
                         await asyncio.sleep(retry_after)
                         # Retry once
                         async with session.post(url, json=payload) as retry_resp:
                             if retry_resp.status != 200:
-                                logger.error(f"Failed to send Telegram message after retry: {await retry_resp.text()}")
+                                error_text = await retry_resp.text()
+                                logger.error(f"Failed after retry: {error_text}")
                     elif resp.status != 200:
-                        logger.error(f"Failed to send Telegram message: {await resp.text()}")
+                        error_text = await resp.text()
+                        logger.error(f"Failed to send: {error_text}")
                         
         except Exception as e:
             logger.error(f"Telegram send error: {e}")
@@ -97,7 +100,6 @@ class TelegramBot:
         logger.info(f"Bot token: {self.token[:10]}...")
         logger.info(f"Chat ID: {self.chat_id}")
         
-        # Send test message to confirm connection
         await self.send_message("📱 Telegram polling active - commands ready")
         
         while self.running:
@@ -133,7 +135,7 @@ class TelegramBot:
                                 message_time = message['date']
                                 current_time = time.time()
                                 if current_time - message_time > 60:
-                                    logger.debug(f"Skipping old message from {message_time}")
+                                    logger.debug(f"Skipping old message")
                                     continue
                             
                             await self.process_update(update)
@@ -150,7 +152,6 @@ class TelegramBot:
             if not text:
                 return
             
-            # Log received command for debugging
             logger.info(f"📱 Telegram command received: {text}")
             
             # Parse command
@@ -178,35 +179,17 @@ class TelegramBot:
     
     async def cmd_start(self, args):
         """Start the bot"""
-        if getattr(self.bot, 'running', False):
+        if getattr(self.bot, 'running', False) and not getattr(self.bot, 'shutdown_requested', False):
             await self.send_message("✅ Bot is already running")
         else:
             await self.send_message("🚀 Starting bot...")
-            
-            # Set running flag
-            self.bot.running = True
-            
-            # Restart scanner if it exists
-            if hasattr(self.bot, 'scanner') and self.bot.scanner:
-                try:
-                    # Cancel existing scanner task if it exists
-                    if hasattr(self.bot, 'scanner_task'):
-                        self.bot.scanner_task.cancel()
-                    
-                    # Start new scanner task
-                    self.bot.scanner_task = asyncio.create_task(self.bot.scanner.monitor_launches())
-                    await self.send_message("✅ Bot started successfully - monitoring for launches")
-                except Exception as e:
-                    logger.error(f"Failed to restart scanner: {e}")
-                    await self.send_message(f"⚠️ Bot started but scanner restart failed: {e}")
-            else:
-                await self.send_message("✅ Bot started (scanner not initialized)")
+            await self.bot.start_scanner()
+            await self.send_message("✅ Bot started successfully - monitoring for launches")
     
     async def cmd_stop(self, args):
         """Stop the bot"""
         await self.send_message("🛑 Stopping bot...")
         
-        # Stop the scanner (not async)
         await self.bot.stop_scanner()
         
         # Close all positions if requested
@@ -222,6 +205,12 @@ class TelegramBot:
         
         await self.send_message("✅ Bot stopped")
     
+    async def cmd_restart(self, args):
+        """Restart the bot"""
+        await self.send_message("🔄 Restarting bot...")
+        await self.bot.restart_bot()
+        await self.send_message("✅ Bot restarted successfully")
+    
     async def cmd_pause(self, args):
         """Pause new trades"""
         self.bot.paused = True
@@ -233,27 +222,34 @@ class TelegramBot:
         await self.send_message("▶️ Bot resumed - trading enabled")
     
     async def cmd_status(self, args):
-        """Get bot status"""
+        """Get bot status with scanner state"""
         try:
-            status = "🟢 Running" if getattr(self.bot, 'running', False) else "🔴 Stopped"
-            paused = "⏸️ Paused" if getattr(self.bot, 'paused', False) else "▶️ Active"
+            scanner_status = await self.bot.get_scanner_status()
             
-            sol_balance = 0
-            if hasattr(self.bot, 'wallet'):
-                sol_balance = self.bot.wallet.get_sol_balance()
+            # Determine overall status
+            if scanner_status['shutdown_requested']:
+                status = "🔴 Stopped"
+            elif scanner_status['scanner_alive']:
+                status = "🟢 Running"
+            else:
+                status = "🟡 Starting"
             
-            active_positions = len(getattr(self.bot, 'positions', {}))
-            max_positions = getattr(self.bot, 'MAX_POSITIONS', 5)
-            total_trades = getattr(self.bot, 'total_trades', 0)
+            paused = "⏸️ Paused" if scanner_status['paused'] else "▶️ Active"
+            scanner = "🟢 Live" if scanner_status['scanner_alive'] else "🔴 Dead"
+            
+            sol_balance = self.bot.wallet.get_sol_balance()
+            can_trade = "✅ Yes" if scanner_status['can_trade'] else "❌ No"
             
             message = f"""
 *🤖 BOT STATUS*
 ━━━━━━━━━━━━━━━━━━
 Status: {status}
+Scanner: {scanner}
 Trading: {paused}
+Can Trade: {can_trade}
 SOL Balance: {sol_balance:.4f}
-Active Positions: {active_positions}/{max_positions}
-Total Trades: {total_trades}
+Positions: {scanner_status['positions']}/{self.bot.MAX_POSITIONS}
+Total Trades: {self.bot.total_trades}
 ━━━━━━━━━━━━━━━━━━
             """
             
@@ -265,15 +261,12 @@ Total Trades: {total_trades}
     async def cmd_wallet(self, args):
         """Get wallet info"""
         try:
-            if not hasattr(self.bot, 'wallet'):
-                await self.send_message("❌ Wallet not initialized")
-                return
-            
             sol_balance = self.bot.wallet.get_sol_balance()
             token_accounts = self.bot.wallet.get_all_token_accounts()
             
-            tradeable_balance = max(0, sol_balance - 0.5)
-            available_trades = int(tradeable_balance / 0.02)
+            from config import MIN_SOL_BALANCE, BUY_AMOUNT_SOL
+            tradeable_balance = max(0, sol_balance - MIN_SOL_BALANCE)
+            available_trades = int(tradeable_balance / BUY_AMOUNT_SOL)
             
             message = f"""
 *💳 WALLET INFO*
@@ -301,17 +294,17 @@ Available Trades: {available_trades}
             
             message = "*📈 ACTIVE POSITIONS*\n━━━━━━━━━━━━━━━━━━\n"
             
-            for mint, pos in list(positions.items())[:10]:  # Limit to 10
-                age = (datetime.now().timestamp() - pos.entry_time) / 60
-                pnl_percent = getattr(pos, 'pnl_percent', 0)
-                pnl_emoji = "🟢" if pnl_percent > 0 else "🔴"
-                status = getattr(pos, 'status', 'unknown')
+            for mint, pos in list(positions.items())[:10]:
+                age = (time.time() - pos.entry_time) / 60
+                pnl_emoji = "🟢" if pos.pnl_percent > 0 else "🔴"
+                targets_hit = ', '.join(pos.partial_sells.keys()) if hasattr(pos, 'partial_sells') and pos.partial_sells else 'None'
                 
                 message += f"""
 Token: `{mint[:8]}...`
-P&L: {pnl_emoji} {pnl_percent:+.1f}%
+P&L: {pnl_emoji} {pos.pnl_percent:+.1f}%
+Targets Hit: {targets_hit}
 Age: {age:.1f} min
-Status: {status}
+Status: {pos.status}
 ━━━━━━━━━━━━━━━━━━
                 """
             
@@ -326,25 +319,17 @@ Status: {status}
     async def cmd_stats(self, args):
         """Get detailed statistics"""
         try:
-            # Safe attribute access with defaults
             total_trades = getattr(self.bot, 'total_trades', 0)
             profitable_trades = getattr(self.bot, 'profitable_trades', 0)
             total_pnl = getattr(self.bot, 'total_pnl', 0)
+            total_realized_sol = getattr(self.bot, 'total_realized_sol', 0)
             
             win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
             avg_pnl = (total_pnl / total_trades) if total_trades > 0 else 0
             
-            # Safe scanner access
             launches_seen = 0
             launches_processed = 0
-            
-            # Try different possible scanner attribute names
-            scanner = None
-            if hasattr(self.bot, 'scanner'):
-                scanner = self.bot.scanner
-            elif hasattr(self.bot, 'monitor'):
-                scanner = self.bot.monitor
-            
+            scanner = getattr(self.bot, 'scanner', None)
             if scanner:
                 launches_seen = getattr(scanner, 'launches_seen', 0)
                 launches_processed = getattr(scanner, 'launches_processed', 0)
@@ -357,6 +342,7 @@ Profitable: {profitable_trades}
 Win Rate: {win_rate:.1f}%
 Average P&L: {avg_pnl:+.1f}%
 Total P&L: {total_pnl:+.1f}%
+Realized: {total_realized_sol:+.4f} SOL
 
 Launches Seen: {launches_seen}
 Launches Traded: {launches_processed}
@@ -371,17 +357,18 @@ Launches Traded: {launches_processed}
     async def cmd_pnl(self, args):
         """Get P&L summary"""
         try:
-            # Calculate session P&L
-            session_pnl_sol = 0
             positions = getattr(self.bot, 'positions', {})
             
-            for pos in positions.values():
-                pnl_percent = getattr(pos, 'pnl_percent', 0)
-                amount_sol = getattr(pos, 'amount_sol', 0)
-                if pnl_percent != 0:
-                    session_pnl_sol += (amount_sol * pnl_percent / 100)
+            # Calculate session P&L
+            session_pnl_sol = getattr(self.bot, 'total_realized_sol', 0)
             
-            sol_price = 250  # Approximate, could fetch from API
+            # Add unrealized P&L
+            for pos in positions.values():
+                if hasattr(pos, 'pnl_percent') and pos.pnl_percent != 0:
+                    unrealized = (pos.amount_sol * pos.pnl_percent / 100)
+                    session_pnl_sol += unrealized
+            
+            sol_price = 250
             session_pnl_usd = session_pnl_sol * sol_price
             
             total_trades = getattr(self.bot, 'total_trades', 0)
@@ -409,18 +396,23 @@ Win Rate: {win_rate:.1f}%
             from config import (
                 BUY_AMOUNT_SOL, MAX_POSITIONS,
                 STOP_LOSS_PERCENTAGE, TAKE_PROFIT_PERCENTAGE,
-                MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL
+                MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
+                DRY_RUN
             )
+            
+            mode = "DRY RUN" if DRY_RUN else "LIVE"
             
             message = f"""
 *⚙️ CONFIGURATION*
 ━━━━━━━━━━━━━━━━━━
+Mode: {mode}
 Buy Amount: {BUY_AMOUNT_SOL} SOL
 Max Positions: {MAX_POSITIONS}
 Stop Loss: -{STOP_LOSS_PERCENTAGE}%
 Take Profit: +{TAKE_PROFIT_PERCENTAGE}%
-Min Curve SOL: {MIN_BONDING_CURVE_SOL}
-Max Curve SOL: {MAX_BONDING_CURVE_SOL}
+Targets: 2x→40%, 3x→30%, 5x→30%
+Min Curve: {MIN_BONDING_CURVE_SOL} SOL
+Max Curve: {MAX_BONDING_CURVE_SOL} SOL
 ━━━━━━━━━━━━━━━━━━
             """
             
@@ -430,41 +422,39 @@ Max Curve SOL: {MAX_BONDING_CURVE_SOL}
             await self.send_message(f"❌ Error getting config: {e}")
     
     async def cmd_help(self, args):
-        """Show help message"""
-        message = """
-*📚 AVAILABLE COMMANDS*
-━━━━━━━━━━━━━━━━━━
-/start - Start the bot
-/stop [all] - Stop bot (all=close positions)
-/pause - Pause new trades
-/resume - Resume trading
-/status - Bot status
-/wallet - Wallet info
-/positions - Active positions
-/stats - Trading statistics
-/pnl - P&L summary
-/config - Current settings
-/force_sell <mint> - Force sell position
-/blacklist <mint> - Blacklist token
-/logs [n] - Recent logs (default 10)
-/set_sl <percent> - Set stop loss
-/set_tp <percent> - Set take profit
-/help - This message
-━━━━━━━━━━━━━━━━━━
-        """
+        """Show help message - simplified for reliability"""
+        message = (
+            "📚 COMMANDS:\n\n"
+            "/start - Start the bot\n"
+            "/stop - Stop bot\n"
+            "/stop all - Stop and close positions\n"
+            "/restart - Restart bot\n"
+            "/pause - Pause trading\n"
+            "/resume - Resume trading\n"
+            "/status - Bot status\n"
+            "/wallet - Wallet info\n"
+            "/positions - Active positions\n"
+            "/stats - Statistics\n"
+            "/pnl - P&L summary\n"
+            "/config - Settings\n"
+            "/force_sell all - Close all\n"
+            "/force_sell <mint> - Close one\n"
+            "/set_sl <pct> - Set stop loss\n"
+            "/set_tp <pct> - Set take profit\n"
+            "/help - This message"
+        )
         
         await self.send_message(message)
     
     async def cmd_force_sell(self, args):
         """Force sell a position"""
         if not args:
-            await self.send_message("❌ Usage: /force_sell <mint_address> or /force_sell all")
+            await self.send_message("❌ Usage: /force_sell <mint> or /force_sell all")
             return
         
         mint = args[0]
         positions = getattr(self.bot, 'positions', {})
         
-        # Handle 'all' argument
         if mint.lower() == 'all':
             if not positions:
                 await self.send_message("📊 No positions to close")
@@ -501,7 +491,7 @@ Max Curve SOL: {MAX_BONDING_CURVE_SOL}
                 await self.bot._close_position(found_mint, reason="manual_force_sell")
                 await self.send_message("✅ Position closed")
             except Exception as e:
-                await self.send_message(f"❌ Failed to close position: {e}")
+                await self.send_message(f"❌ Failed: {e}")
         else:
             await self.send_message(f"❌ Position not found: {mint}")
     
@@ -517,12 +507,15 @@ Max Curve SOL: {MAX_BONDING_CURVE_SOL}
             BLACKLISTED_TOKENS.add(mint)
             await self.send_message(f"✅ Added {mint[:8]}... to blacklist")
         except Exception as e:
-            await self.send_message(f"❌ Failed to add to blacklist: {e}")
+            await self.send_message(f"❌ Failed: {e}")
     
     async def cmd_recent_logs(self, args):
         """Get recent log entries"""
-        # Since we're on Render, direct to dashboard
-        await self.send_message("📝 Logs are available in your Render dashboard:\nhttps://dashboard.render.com\n\nCheck the service logs section.")
+        await self.send_message(
+            "📝 Logs are available in your Render dashboard:\n"
+            "https://dashboard.render.com\n\n"
+            "Check the service logs section."
+        )
     
     async def cmd_set_stop_loss(self, args):
         """Set stop loss percentage"""
@@ -539,9 +532,9 @@ Max Curve SOL: {MAX_BONDING_CURVE_SOL}
             else:
                 await self.send_message("❌ Stop loss must be between 10% and 90%")
         except ValueError:
-            await self.send_message("❌ Invalid percentage. Use a number like: /set_sl 25")
+            await self.send_message("❌ Invalid percentage")
         except Exception as e:
-            await self.send_message(f"❌ Error setting stop loss: {e}")
+            await self.send_message(f"❌ Error: {e}")
     
     async def cmd_set_take_profit(self, args):
         """Set take profit percentage"""
@@ -558,9 +551,9 @@ Max Curve SOL: {MAX_BONDING_CURVE_SOL}
             else:
                 await self.send_message("❌ Take profit must be between 50% and 1000%")
         except ValueError:
-            await self.send_message("❌ Invalid percentage. Use a number like: /set_tp 200")
+            await self.send_message("❌ Invalid percentage")
         except Exception as e:
-            await self.send_message(f"❌ Error setting take profit: {e}")
+            await self.send_message(f"❌ Error: {e}")
     
     # ============================================
     # NOTIFICATION METHODS
@@ -604,20 +597,6 @@ Keep it up! 🚀
 *⚠️ ERROR ALERT*
 Type: {error_type}
 Details: {details}
-Check logs for more info.
-        """
-        await self.send_message(message)
-    
-    async def notify_launch_found(self, mint: str, metadata: dict):
-        """Notify when a potential launch is found"""
-        name = metadata.get('name', 'Unknown')
-        symbol = metadata.get('symbol', 'N/A')
-        
-        message = f"""
-*🔍 LAUNCH DETECTED*
-Token: {name} ({symbol})
-Mint: `{mint[:16]}...`
-Analyzing...
         """
         await self.send_message(message)
     
