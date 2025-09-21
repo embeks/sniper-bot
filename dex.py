@@ -175,7 +175,8 @@ class PumpFunDEX:
                 'can_buy': True,
                 'from_websocket': False,
                 'is_estimate': True,  # Flag that this is estimated data
-                'is_valid': True  # ADDED: Valid data flag
+                'is_valid': True,  # ADDED: Valid data flag
+                'needs_retry': True  # ADDED: Should retry for real data
             }
             
             # Cache it briefly
@@ -203,7 +204,8 @@ class PumpFunDEX:
                 'from_websocket': False,
                 'is_estimate': True,
                 'is_valid': False,  # ADDED: Mark as invalid due to error
-                'error': str(e)
+                'error': str(e),
+                'needs_retry': True  # ADDED: Should retry
             }
     
     def calculate_buy_amount(self, mint: str, sol_amount: float) -> Tuple[int, float]:
