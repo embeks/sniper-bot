@@ -1,7 +1,6 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
-FIXED: Proper base64 decoding and correct signing for v0/legacy transactions
-FIXED: Sell transaction handling for all formats
+FIXED: Expects raw token amounts from main.py for sells
 """
 
 import aiohttp
@@ -127,7 +126,7 @@ class PumpPortalTrader:
                                 # Sign with solders keypair directly if solana-py Keypair not available
                                 if SolanaKeypair is None:
                                     # Use solders for signing - sign the transaction's message
-                                    tx.sign_partial(self.wallet.keypair)
+                                    tx.sign_partial([self.wallet.keypair])
                                 else:
                                     # Convert solders Keypair to solana-py format
                                     secret_bytes = bytes(self.wallet.keypair.secret())
@@ -187,21 +186,26 @@ class PumpPortalTrader:
     async def create_sell_transaction(
         self,
         mint: str,
-        token_amount: float,
+        token_amount: float,  # Now expects raw amount from main.py
         bonding_curve_key: str = None,
         slippage: int = 50
     ) -> Optional[str]:
-        """Get a sell transaction from PumpPortal API"""
+        """Get a sell transaction from PumpPortal API - expects raw token amounts"""
         try:
             # Ensure publicKey matches our signing wallet
             wallet_pubkey = str(self.wallet.pubkey)
+            
+            # CRITICAL: main.py now sends raw amounts (already multiplied by 1e6)
+            # Just ensure it's an integer
+            raw_token_amount = int(token_amount)
+            logger.info(f"Selling {raw_token_amount} raw tokens")
             
             payload = {
                 "publicKey": wallet_pubkey,
                 "action": "sell",
                 "mint": mint,
                 "denominatedInSol": "false",  # API expects string "false" not boolean
-                "amount": token_amount,
+                "amount": raw_token_amount,  # Use raw amount directly
                 "slippage": slippage,
                 "priorityFee": 0.0001,
                 "pool": "pump"
@@ -210,7 +214,7 @@ class PumpPortalTrader:
             if bonding_curve_key:
                 payload["bondingCurveKey"] = bonding_curve_key
             
-            logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {token_amount} tokens")
+            logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {raw_token_amount} raw tokens")
             logger.debug(f"Using wallet: {wallet_pubkey}")
             
             async with aiohttp.ClientSession() as session:
@@ -314,7 +318,7 @@ class PumpPortalTrader:
                                 # Sign with solders keypair directly if solana-py Keypair not available
                                 if SolanaKeypair is None:
                                     # Use solders for signing - sign the transaction's message
-                                    tx.sign_partial(self.wallet.keypair)
+                                    tx.sign_partial([self.wallet.keypair])
                                 else:
                                     # Convert solders Keypair to solana-py format
                                     secret_bytes = bytes(self.wallet.keypair.secret())
