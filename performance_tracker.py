@@ -1,6 +1,7 @@
 """
 Performance Tracker - Track bot performance metrics and fees
 Logs all trading events to Google Sheets for easy access
+FIXED: Skips high-frequency events to avoid Google Sheets rate limits
 """
 
 import json
@@ -47,6 +48,13 @@ class PerformanceTracker:
             'platform_fee_rate': 0.01  # PumpFun 1% fee
         }
         
+        # Track last sheet write time to avoid spam
+        self.last_sheet_write = 0
+        self.sheet_write_cooldown = 2  # Minimum seconds between sheet writes
+        
+        # High-frequency events to skip in sheets
+        self.high_frequency_events = ['position_update', 'token_detected']
+        
         logger.info(f"📊 Performance tracker initialized")
         if self.sheet_url:
             logger.info(f"📈 Sheety connected for Google Sheets logging")
@@ -85,9 +93,16 @@ class PerformanceTracker:
             logger.error("Make sure your sheet is set to 'Anyone with link can edit'")
     
     def write_to_sheet(self, data: Dict):
-        """Write a row to Google Sheets using Sheety"""
+        """Write a row to Google Sheets using Sheety with rate limiting"""
         try:
             if not self.sheet_url:
+                return
+            
+            # FIXED: Rate limiting to avoid API limits
+            current_time = time.time()
+            time_since_last = current_time - self.last_sheet_write
+            if time_since_last < self.sheet_write_cooldown:
+                logger.debug(f"Skipping sheet write (cooldown: {self.sheet_write_cooldown - time_since_last:.1f}s)")
                 return
             
             # Format data for Sheety API
@@ -105,7 +120,9 @@ class PerformanceTracker:
             
             # Send to Sheety
             response = requests.post(self.sheet_url, json={'sheet1': row})
-            if response.status_code != 200:
+            if response.status_code == 200:
+                self.last_sheet_write = current_time
+            else:
                 logger.debug(f"Sheet write failed: {response.status_code}")
                 
         except Exception as e:
@@ -142,7 +159,12 @@ class PerformanceTracker:
             with open(self.events_file, 'a') as f:
                 f.write(json.dumps(event) + '\n')
             
-            # Write to Google Sheets
+            # FIXED: Skip high-frequency events for Google Sheets
+            if event_type in self.high_frequency_events:
+                logger.debug(f"Skipping sheet write for high-frequency event: {event_type}")
+                return
+            
+            # Write to Google Sheets (with rate limiting)
             sheet_data = {
                 'timestamp': datetime.now().isoformat(),
                 'event_type': event_type,
@@ -176,14 +198,25 @@ class PerformanceTracker:
             logger.error(f"Failed to log event: {e}")
     
     def log_token_detection(self, mint: str, source: str, detection_time_ms: float):
-        """Log token detection event"""
+        """Log token detection event - high frequency, skip sheets"""
         self.metrics['detection_times'].append(detection_time_ms)
         
-        self.log_event('token_detected', {
-            'mint': mint,
-            'source': source,
-            'detection_time_ms': detection_time_ms
-        })
+        # Only log to file, not sheets (high frequency)
+        try:
+            event = {
+                'timestamp': datetime.now().isoformat(),
+                'unix_time': time.time(),
+                'event_type': 'token_detected',
+                'mint': mint,
+                'source': source,
+                'detection_time_ms': detection_time_ms
+            }
+            
+            with open(self.events_file, 'a') as f:
+                f.write(json.dumps(event) + '\n')
+                
+        except Exception as e:
+            logger.debug(f"Failed to log token detection: {e}")
     
     def log_buy_attempt(self, mint: str, amount_sol: float, slippage: int):
         """Log buy attempt"""
@@ -250,7 +283,7 @@ class PerformanceTracker:
     
     def log_position_update(self, mint: str, current_pnl_percent: float, 
                            current_price: float, age_seconds: float):
-        """Log position monitoring update"""
+        """Log position monitoring update - high frequency, skip sheets"""
         # Only log to file, not sheets (too many updates)
         try:
             event = {
@@ -301,9 +334,12 @@ class PerformanceTracker:
     def log_session_summary(self):
         """Log session summary"""
         stats = self.get_session_stats()
+        
+        # Force write session summary to sheets (important event)
+        self.last_sheet_write = 0  # Reset cooldown for important event
         self.log_event('session_summary', stats)
         
-        # Also write summary to sheets
+        # Also write summary to sheets with special formatting
         self.write_to_sheet({
             'timestamp': datetime.now().isoformat(),
             'event_type': 'SESSION_SUMMARY',
