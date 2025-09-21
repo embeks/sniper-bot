@@ -426,12 +426,12 @@ class SniperBot:
             last_notification_pnl = 0
             consecutive_data_failures = 0
             
-            while mint in self.positions and position.status == 'active' and self.running:
+            while mint in self.positions and position.status == 'active':  # REMOVED self.running check
                 check_count += 1
                 
-                # Check position age - REDUCED for faster strategy
+                # Check position age - ALWAYS runs regardless of bot state
                 age = time.time() - position.entry_time
-                if age > 60:  # Exit after 1 minute max (was 600 seconds)
+                if age > 60:  # Exit after 1 minute max
                     logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s)")
                     await self._close_position_full(mint, reason="max_age")
                     break
