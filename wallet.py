@@ -1,6 +1,6 @@
 """
 Wallet Management - Deterministic verification and balance tracking
-FIXED: Removed eval() security issue
+FIXED: Token balance returns proper integer amount without decimals
 """
 
 import base58
@@ -83,14 +83,28 @@ class WalletManager:
             return 0.0
     
     def get_token_balance(self, mint: str) -> float:
-        """Get balance for a specific token"""
+        """Get balance for a specific token - returns integer token amount"""
         try:
             mint_pubkey = Pubkey.from_string(mint)
             token_account = get_associated_token_address(self.pubkey, mint_pubkey)
             
             response = self.client.get_token_account_balance(token_account)
             if response.value:
-                return float(response.value.ui_amount or 0)
+                # CRITICAL FIX: Return the actual token amount from the response
+                # The response contains the raw amount in response.value.amount
+                raw_amount = response.value.amount
+                decimals = response.value.decimals
+                
+                # Convert raw amount to decimal amount (without decimals)
+                # For example: raw_amount=529152222562 with decimals=6 -> 529152.222562
+                # But we want just the integer part: 529152
+                if raw_amount and decimals:
+                    token_amount = int(raw_amount) / (10 ** int(decimals))
+                    # Return integer amount for clean conversion later
+                    return float(int(token_amount))
+                else:
+                    # Fallback to ui_amount if available
+                    return float(int(response.value.ui_amount or 0))
             return 0.0
             
         except Exception as e:
