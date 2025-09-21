@@ -1,6 +1,6 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
-FIXED: Expects raw token amounts from main.py for sells
+FIXED: Expects UI token amounts from main.py for sells, not raw amounts
 """
 
 import aiohttp
@@ -175,6 +175,47 @@ class PumpPortalTrader:
                     else:
                         error_text = await response.text()
                         logger.error(f"PumpPortal API error ({response.status}): {error_text}")
+                        # Log additional debugging info for 400 errors
+                        if response.status == 400:
+                            logger.error(f"Bad Request - check if amount {ui_amount} is valid")
+                            logger.error(f"Expected format: UI amount as integer (e.g., 354749 for 354,749 tokens)")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Failed to create sell transaction: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return NoneOpts(skip_preflight=True, preflight_commitment="processed")
+                            
+                            response = self.client.send_raw_transaction(signed_tx_bytes, opts)
+                            sig = str(response.value)
+                            
+                            if is_versioned:
+                                logger.info(f"✅ v0 tx sent: {sig}")
+                            else:
+                                logger.info(f"✅ legacy tx sent: {sig}")
+                            
+                            return sig
+                        except Exception as e:
+                            logger.error(f"Failed to send transaction: {e}")
+                            
+                            # Try again without options
+                            try:
+                                response = self.client.send_raw_transaction(signed_tx_bytes)
+                                sig = str(response.value)
+                                
+                                if is_versioned:
+                                    logger.info(f"✅ v0 tx sent (retry): {sig}")
+                                else:
+                                    logger.info(f"✅ legacy tx sent (retry): {sig}")
+                                
+                                return sig
+                            except Exception as e2:
+                                logger.error(f"Retry also failed: {e2}")
+                                return None
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"PumpPortal API error ({response.status}): {error_text}")
                         return None
                         
         except Exception as e:
@@ -186,26 +227,31 @@ class PumpPortalTrader:
     async def create_sell_transaction(
         self,
         mint: str,
-        token_amount: float,  # Now expects raw amount from main.py
+        token_amount: float,  # Now expects UI amount from main.py
         bonding_curve_key: str = None,
         slippage: int = 50
     ) -> Optional[str]:
-        """Get a sell transaction from PumpPortal API - expects raw token amounts"""
+        """Get a sell transaction from PumpPortal API - expects UI token amounts"""
         try:
             # Ensure publicKey matches our signing wallet
             wallet_pubkey = str(self.wallet.pubkey)
             
-            # CRITICAL: main.py now sends raw amounts (already multiplied by 1e6)
-            # Just ensure it's an integer
-            raw_token_amount = int(token_amount)
-            logger.info(f"Selling {raw_token_amount} raw tokens")
+            # CRITICAL: PumpPortal expects UI amounts as integers, not raw amounts
+            # The API handles decimal conversion internally
+            ui_amount = int(token_amount)  # Ensure it's an integer
+            logger.info(f"Selling {ui_amount} tokens (UI amount for PumpPortal API)")
+            
+            # Additional validation
+            if ui_amount > 1000000000:  # 1 billion tokens
+                logger.warning(f"Large token amount detected: {ui_amount} - may be raw amount instead of UI")
+                logger.info(f"If this fails, check if PumpPortal expects UI amount instead")
             
             payload = {
                 "publicKey": wallet_pubkey,
                 "action": "sell",
                 "mint": mint,
                 "denominatedInSol": "false",  # API expects string "false" not boolean
-                "amount": raw_token_amount,  # Use raw amount directly
+                "amount": ui_amount,  # PumpPortal expects UI amount as integer
                 "slippage": slippage,
                 "priorityFee": 0.0001,
                 "pool": "pump"
@@ -214,8 +260,9 @@ class PumpPortalTrader:
             if bonding_curve_key:
                 payload["bondingCurveKey"] = bonding_curve_key
             
-            logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {raw_token_amount} raw tokens")
+            logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {ui_amount} tokens (UI)")
             logger.debug(f"Using wallet: {wallet_pubkey}")
+            logger.debug(f"Payload amount field: {payload['amount']}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
@@ -346,41 +393,4 @@ class PumpPortalTrader:
                         try:
                             # Try sending with skip_preflight to avoid blockhash issues
                             from solana.rpc.types import TxOpts
-                            opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-                            
-                            response = self.client.send_raw_transaction(signed_tx_bytes, opts)
-                            sig = str(response.value)
-                            
-                            if is_versioned:
-                                logger.info(f"✅ v0 tx sent: {sig}")
-                            else:
-                                logger.info(f"✅ legacy tx sent: {sig}")
-                            
-                            return sig
-                        except Exception as e:
-                            logger.error(f"Failed to send transaction: {e}")
-                            
-                            # Try again without options
-                            try:
-                                response = self.client.send_raw_transaction(signed_tx_bytes)
-                                sig = str(response.value)
-                                
-                                if is_versioned:
-                                    logger.info(f"✅ v0 tx sent (retry): {sig}")
-                                else:
-                                    logger.info(f"✅ legacy tx sent (retry): {sig}")
-                                
-                                return sig
-                            except Exception as e2:
-                                logger.error(f"Retry also failed: {e2}")
-                                return None
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"PumpPortal API error ({response.status}): {error_text}")
-                        return None
-                        
-        except Exception as e:
-            logger.error(f"Failed to create sell transaction: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
+                            opts = Tx
