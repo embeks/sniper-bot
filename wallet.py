@@ -1,6 +1,7 @@
 """
 Wallet Management - Deterministic verification and balance tracking
 FIXED: Returns UI amounts for position tracking, not raw amounts
+FIXED: Added get_token_balance_raw() method for getting raw token amounts
 """
 
 import base58
