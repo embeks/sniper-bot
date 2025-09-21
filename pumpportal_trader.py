@@ -175,47 +175,6 @@ class PumpPortalTrader:
                     else:
                         error_text = await response.text()
                         logger.error(f"PumpPortal API error ({response.status}): {error_text}")
-                        # Log additional debugging info for 400 errors
-                        if response.status == 400:
-                            logger.error(f"Bad Request - check if amount {ui_amount} is valid")
-                            logger.error(f"Expected format: UI amount as integer (e.g., 354749 for 354,749 tokens)")
-                        return None
-                        
-        except Exception as e:
-            logger.error(f"Failed to create sell transaction: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return NoneOpts(skip_preflight=True, preflight_commitment="processed")
-                            
-                            response = self.client.send_raw_transaction(signed_tx_bytes, opts)
-                            sig = str(response.value)
-                            
-                            if is_versioned:
-                                logger.info(f"✅ v0 tx sent: {sig}")
-                            else:
-                                logger.info(f"✅ legacy tx sent: {sig}")
-                            
-                            return sig
-                        except Exception as e:
-                            logger.error(f"Failed to send transaction: {e}")
-                            
-                            # Try again without options
-                            try:
-                                response = self.client.send_raw_transaction(signed_tx_bytes)
-                                sig = str(response.value)
-                                
-                                if is_versioned:
-                                    logger.info(f"✅ v0 tx sent (retry): {sig}")
-                                else:
-                                    logger.info(f"✅ legacy tx sent (retry): {sig}")
-                                
-                                return sig
-                            except Exception as e2:
-                                logger.error(f"Retry also failed: {e2}")
-                                return None
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"PumpPortal API error ({response.status}): {error_text}")
                         return None
                         
         except Exception as e:
@@ -380,6 +339,8 @@ class PumpPortalTrader:
                                 # Last resort - try sending original bytes
                                 logger.info("Last resort: sending original transaction bytes")
                                 try:
+                                    from solana.rpc.types import TxOpts
+                                    opts = TxOpts(skip_preflight=True, preflight_commitment="processed", max_retries=3)
                                     response = self.client.send_raw_transaction(raw_tx_bytes, opts)
                                     sig = str(response.value)
                                     logger.info(f"✅ Original bytes sent successfully: {sig}")
@@ -393,4 +354,45 @@ class PumpPortalTrader:
                         try:
                             # Try sending with skip_preflight to avoid blockhash issues
                             from solana.rpc.types import TxOpts
-                            opts = Tx
+                            opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
+                            
+                            response = self.client.send_raw_transaction(signed_tx_bytes, opts)
+                            sig = str(response.value)
+                            
+                            if is_versioned:
+                                logger.info(f"✅ v0 tx sent: {sig}")
+                            else:
+                                logger.info(f"✅ legacy tx sent: {sig}")
+                            
+                            return sig
+                        except Exception as e:
+                            logger.error(f"Failed to send transaction: {e}")
+                            
+                            # Try again without options
+                            try:
+                                response = self.client.send_raw_transaction(signed_tx_bytes)
+                                sig = str(response.value)
+                                
+                                if is_versioned:
+                                    logger.info(f"✅ v0 tx sent (retry): {sig}")
+                                else:
+                                    logger.info(f"✅ legacy tx sent (retry): {sig}")
+                                
+                                return sig
+                            except Exception as e2:
+                                logger.error(f"Retry also failed: {e2}")
+                                return None
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"PumpPortal API error ({response.status}): {error_text}")
+                        # Log additional debugging info for 400 errors
+                        if response.status == 400:
+                            logger.error(f"Bad Request - check if amount {ui_amount} is valid")
+                            logger.error(f"Expected format: UI amount as integer (e.g., 354749 for 354,749 tokens)")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Failed to create sell transaction: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
