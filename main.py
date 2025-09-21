@@ -1,6 +1,6 @@
 """
 Main Orchestrator - Phase 1 with Complete Control and Multi-Target Profit Taking
-FIXED: Integrated performance tracking and token balance detection
+FIXED: Proper sell handling for both migrated and non-migrated tokens with raw amounts
 """
 
 import asyncio
@@ -409,8 +409,6 @@ class SniperBot:
                     
                     if not curve_data:
                         logger.warning(f"❌ No bonding curve for {mint[:8]}... (migrated)")
-                        # For migrated tokens, try to sell anyway through PumpPortal
-                        # They might handle Raydium sells too
                         logger.info(f"Attempting to close migrated position {mint[:8]}...")
                         await self._close_position_full(mint, reason="migration")
                         break
@@ -526,14 +524,19 @@ class SniperBot:
                 signature = f"dry_run_sell_{target_name}_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
+                # CRITICAL FIX: Convert to raw amount for PumpPortal (6 decimals)
+                raw_token_amount = int(tokens_to_sell * 1e6)
+                logger.info(f"   Converting {tokens_to_sell:.2f} decimal tokens to {raw_token_amount} raw tokens")
+                
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
-                    token_amount=tokens_to_sell,
+                    token_amount=raw_token_amount,  # Send raw amount
                     slippage=50
                 )
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)  # Estimate
             
-            if signature:
+            # Check for valid signature (not all 1's)
+            if signature and not signature.startswith("1111111"):
                 position.sell_signatures.append(signature)
                 
                 profit_sol = sol_received - (BUY_AMOUNT_SOL * sell_percent / 100)
@@ -569,7 +572,7 @@ class SniperBot:
                 
                 return True
             else:
-                logger.error(f"Failed to execute {target_name} sell")
+                logger.error(f"Failed to execute {target_name} sell (invalid signature)")
                 return False
                 
         except Exception as e:
@@ -577,7 +580,7 @@ class SniperBot:
             return False
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position"""
+        """Close remaining position - handles both migrated and non-migrated tokens"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -603,20 +606,57 @@ class SniperBot:
             hold_time = time.time() - position.entry_time
             
             logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}...")
+            logger.info(f"   Token balance: {token_balance:,.2f} tokens")
             
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would sell {token_balance:,.0f} tokens")
                 signature = f"dry_run_close_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             else:
-                signature = await self.trader.create_sell_transaction(
-                    mint=mint,
-                    token_amount=token_balance,
-                    slippage=50
-                )
-                sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)  # Estimate
+                # Check if token has migrated
+                curve_data = self.dex.get_bonding_curve_data(mint)
+                is_migrated = curve_data is None or curve_data.get('virtual_sol_reserves', 0) == 0
+                
+                if is_migrated:
+                    logger.info(f"Token {mint[:8]}... has migrated to Raydium")
+                    
+                    # Try PumpPortal first - they might handle Raydium sells
+                    logger.info("Attempting sell through PumpPortal (may handle Raydium)...")
+                    
+                    # CRITICAL FIX: Convert to raw token amount for PumpPortal (6 decimals for PumpFun)
+                    raw_token_amount = int(token_balance * 1e6)
+                    logger.info(f"Converting {token_balance:.2f} decimal tokens to {raw_token_amount} raw tokens")
+                    
+                    signature = await self.trader.create_sell_transaction(
+                        mint=mint,
+                        token_amount=raw_token_amount,  # Send raw amount
+                        slippage=100  # Higher slippage for migrated tokens
+                    )
+                    
+                    # Check if we got a fake signature (all 1's)
+                    if signature and signature.startswith("1111111"):
+                        logger.warning("PumpPortal returned failed signature for migrated token")
+                        signature = None  # Mark as failed
+                    
+                    sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * 0.8  # Estimate with loss
+                else:
+                    logger.info(f"Token {mint[:8]}... still on bonding curve")
+                    
+                    # CRITICAL FIX: For non-migrated tokens, convert decimal to raw amount (6 decimals)
+                    raw_token_amount = int(token_balance * 1e6)
+                    
+                    logger.info(f"Selling {token_balance:.2f} tokens ({raw_token_amount} raw)")
+                    
+                    signature = await self.trader.create_sell_transaction(
+                        mint=mint,
+                        token_amount=raw_token_amount,  # Send raw amount
+                        slippage=50
+                    )
+                    
+                    sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             
-            if signature:
+            # Process the result
+            if signature and not signature.startswith("1111111"):
                 position.sell_signatures.append(signature)
                 position.status = 'closed'
                 
@@ -647,9 +687,6 @@ class SniperBot:
                 logger.info(f"   Hold time: {hold_time:.0f}s")
                 
                 if self.telegram:
-                    sol_price = 250
-                    pnl_usd = position.realized_pnl_sol * sol_price
-                    
                     emoji = "💰" if position.realized_pnl_sol > 0 else "🔴"
                     msg = (
                         f"{emoji} POSITION CLOSED\n"
@@ -661,8 +698,18 @@ class SniperBot:
                     )
                     await self.telegram.send_message(msg)
             else:
-                logger.error(f"❌ Close transaction failed")
+                logger.error(f"❌ Close transaction failed or returned invalid signature")
                 position.status = 'close_failed'
+                
+                # Still remove from positions if we can't sell (to free up slots)
+                if reason == "migration" or reason == "max_age":
+                    logger.warning(f"Removing unsellable position {mint[:8]}... to free slot")
+                    if self.telegram:
+                        await self.telegram.send_message(
+                            f"⚠️ Could not sell {mint[:8]}...\n"
+                            f"Reason: {reason}\n"
+                            f"Removing to free slot"
+                        )
             
             if mint in self.positions:
                 del self.positions[mint]
@@ -734,7 +781,6 @@ class SniperBot:
             # If shutdown requested, keep health server alive but idle
             if self.shutdown_requested:
                 logger.info("Bot stopped - idling (health server active for Render)")
-                # Don't send Telegram message here - the command handler already did
                 
                 # Idle loop - keeps process alive so Render doesn't restart
                 while self.shutdown_requested:
