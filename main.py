@@ -5,6 +5,7 @@ FIXED: Stop loss check happens BEFORE profit targets
 FIXED: Retry logic for uncertain bonding curve data
 FIXED: Use recorded token amounts when wallet balance is unreliable
 FIXED: Don't calculate P&L with uncertain curve data
+FIXED: raw_token_amount properly defined before use in _close_position_full
 """
 
 import asyncio
@@ -686,28 +687,30 @@ class SniperBot:
                 signature = f"dry_run_close_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             else:
+                # FIXED: Calculate raw amount BEFORE checking migration
+                # Get raw amount for selling - use wallet method if available, otherwise convert
+                try:
+                    raw_token_amount = self.wallet.get_token_balance_raw(mint)
+                    if raw_token_amount == 0:
+                        # Fallback: calculate from UI amount
+                        raw_token_amount = int(token_balance * 1000000)  # 6 decimals for PumpFun
+                        logger.info(f"Using calculated raw amount: {raw_token_amount}")
+                except Exception as e:
+                    # Wallet method doesn't exist, calculate from UI amount
+                    raw_token_amount = int(token_balance * 1000000)  # 6 decimals for PumpFun
+                    logger.info(f"Calculating raw amount: {raw_token_amount} from {token_balance} tokens")
+                
                 # Check if token has migrated
                 curve_data = self.dex.get_bonding_curve_data(mint)
                 is_migrated = curve_data is None or curve_data.get('is_migrated', False) or curve_data.get('virtual_sol_reserves', 0) == 0
                 
                 if is_migrated:
                     logger.info(f"Token {mint[:8]}... has migrated to Raydium")
-                    
-                    # Try PumpPortal first - they might handle Raydium sells
-                    logger.info("Attempting sell through PumpPortal (may handle Raydium)...")
-                    
-                    # CRITICAL FIX: Use position's remaining tokens
-                    clean_token_amount = int(token_balance)
-                    raw_token_amount = clean_token_amount * 1000000  # 6 decimals for PumpFun
-                    logger.info(f"Converting {clean_token_amount} tokens to {raw_token_amount} raw tokens")
-                    
-                if is_migrated:
-                    logger.info(f"Token {mint[:8]}... has migrated to Raydium")
                     logger.info("Attempting sell through PumpPortal (may handle Raydium)...")
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=raw_token_amount,  # Send raw amount
+                        token_amount=raw_token_amount,  # Use already-calculated raw amount
                         slippage=100  # Higher slippage for migrated tokens
                     )
                     
@@ -722,7 +725,7 @@ class SniperBot:
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=raw_token_amount,  # Send raw amount
+                        token_amount=raw_token_amount,  # Use already-calculated raw amount
                         slippage=50
                     )
                     
