@@ -5,7 +5,7 @@ FIXED: Stop loss check happens BEFORE profit targets
 FIXED: Retry logic for uncertain bonding curve data
 FIXED: Use recorded token amounts when wallet balance is unreliable
 FIXED: Don't calculate P&L with uncertain curve data
-FIXED: Send UI amounts to PumpPortal API, not raw amounts
+FIXED: Send RAW amounts to PumpPortal API for sells, not UI amounts
 """
 
 import asyncio
@@ -560,7 +560,7 @@ class SniperBot:
             if not position:
                 return False
             
-            # CRITICAL FIX: Use position's tracked balance, not wallet balance
+            # Get current token balance
             current_balance = self.wallet.get_token_balance(mint)  # UI amount
             
             # Validate the balance
@@ -592,15 +592,16 @@ class SniperBot:
                 signature = f"dry_run_sell_{target_name}_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
-                # FIXED: Send UI amount to PumpPortal, not raw amount
-                ui_to_sell = int(tokens_to_sell)  # Integer part of UI tokens
+                # FIXED: Get raw amount for partial sell
+                raw_token_amount = self.wallet.get_token_balance_raw(mint)
+                # Calculate proportional raw amount to sell
+                raw_to_sell = int(raw_token_amount * (sell_percent / 100))
                 
-                # Log what we're sending
-                logger.info(f"   Sending to PumpPortal: {ui_to_sell} tokens (UI amount)")
+                logger.info(f"   Sending to PumpPortal: {raw_to_sell} raw tokens")
                 
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
-                    token_amount=ui_to_sell,  # Send UI amount as integer
+                    token_amount=raw_to_sell,  # Send raw amount
                     slippage=50
                 )
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)  # Estimate
@@ -639,7 +640,7 @@ class SniperBot:
                         f"Sold: {sell_percent}% of position\n"
                         f"P&L: {current_pnl:+.1f}% ({profit_sol:+.4f} SOL)\n"
                         f"Remaining: {100 - position.total_sold_percent - sell_percent}%\n"
-                        f"[TX](https://solscan.io/tx/{signature})"
+                        f"TX: https://solscan.io/tx/{signature}"
                     )
                     await self.telegram.send_message(msg)
                 
@@ -687,15 +688,13 @@ class SniperBot:
                 signature = f"dry_run_close_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             else:
-                # FIXED: PumpPortal expects UI amounts, not raw blockchain amounts
-                # Send the UI token amount as an integer
-                ui_token_amount = int(token_balance)  # Just the integer part of UI tokens
-                logger.info(f"Preparing to sell {ui_token_amount} tokens (UI amount)")
+                # FIXED: Get raw amount from wallet for PumpPortal
+                raw_token_amount = self.wallet.get_token_balance_raw(mint)
+                logger.info(f"Preparing to sell {token_balance:.2f} UI tokens = {raw_token_amount} raw tokens")
                 
-                # Also log what the raw amount would be for debugging
-                raw_from_wallet = self.wallet.get_token_balance_raw(mint)
-                logger.info(f"DEBUG: Wallet raw balance: {raw_from_wallet}, UI balance: {token_balance}")
-                logger.info(f"Sending to PumpPortal: {ui_token_amount} (UI amount as integer)")
+                # PumpPortal expects raw amount when denominatedInSol is "false"
+                amount_to_send = raw_token_amount
+                logger.info(f"Sending to PumpPortal: {amount_to_send} (raw token amount)")
                 
                 # Check if token has migrated
                 curve_data = self.dex.get_bonding_curve_data(mint)
@@ -707,7 +706,7 @@ class SniperBot:
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=ui_token_amount,  # Send UI amount to PumpPortal
+                        token_amount=amount_to_send,  # Send raw amount to PumpPortal
                         slippage=100  # Higher slippage for migrated tokens
                     )
                     
@@ -722,7 +721,7 @@ class SniperBot:
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=ui_token_amount,  # Send UI amount to PumpPortal
+                        token_amount=amount_to_send,  # Send raw amount to PumpPortal
                         slippage=50
                     )
                     
@@ -761,9 +760,11 @@ class SniperBot:
                 
                 if self.telegram:
                     emoji = "💰" if position.realized_pnl_sol > 0 else "🔴"
+                    # Fix Telegram message to avoid parsing errors
+                    mint_short = mint[:16]
                     msg = (
                         f"{emoji} POSITION CLOSED\n"
-                        f"Token: {mint[:16]}...\n"
+                        f"Token: {mint_short}\n"
                         f"Reason: {reason}\n"
                         f"Final P&L: {position.pnl_percent:+.1f}%\n"
                         f"Realized: {position.realized_pnl_sol:+.4f} SOL\n"
@@ -778,8 +779,10 @@ class SniperBot:
                 if reason in ["migration", "max_age", "no_data"]:
                     logger.warning(f"Removing unsellable position {mint[:8]}... to free slot")
                     if self.telegram:
+                        # Fix Telegram message to avoid parsing errors
+                        mint_short = mint[:16]
                         await self.telegram.send_message(
-                            f"⚠️ Could not sell {mint[:8]}...\n"
+                            f"⚠️ Could not sell {mint_short}\n"
                             f"Reason: {reason}\n"
                             f"Removing to free slot"
                         )
