@@ -1,6 +1,7 @@
 """
 PumpPortal WebSocket Monitor - Direct feed from PumpFun
 This connects to the actual PumpFun WebSocket for real-time token launches
+FIXED: Clears seen_tokens on reconnect to avoid missing launches
 """
 
 import asyncio
@@ -16,6 +17,7 @@ class PumpPortalMonitor:
         self.callback = callback
         self.running = False
         self.seen_tokens = set()
+        self.reconnect_count = 0
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
@@ -28,6 +30,10 @@ class PumpPortalMonitor:
             try:
                 async with websockets.connect(uri) as websocket:
                     logger.info("✅ Connected to PumpPortal WebSocket!")
+                    
+                    # Log reconnect if this isn't first connection
+                    if self.reconnect_count > 0:
+                        logger.info(f"Reconnection #{self.reconnect_count} successful")
                     
                     # Subscribe to new tokens
                     subscribe_msg = {
@@ -64,7 +70,8 @@ class PumpPortalMonitor:
                                             'signature': data.get('signature', 'unknown'),
                                             'type': 'pumpfun_launch',
                                             'timestamp': datetime.now().isoformat(),
-                                            'data': data
+                                            'data': data,
+                                            'source': 'pumpportal'  # Added source field
                                         })
                         
                         except asyncio.TimeoutError:
@@ -79,7 +86,11 @@ class PumpPortalMonitor:
             except Exception as e:
                 logger.error(f"WebSocket connection error: {e}")
                 if self.running:
-                    logger.info("Reconnecting in 5 seconds...")
+                    # FIXED: Clear seen tokens on reconnect to catch any we missed
+                    self.seen_tokens.clear()
+                    self.reconnect_count += 1
+                    logger.info(f"Cleared seen tokens cache for fresh start after disconnect")
+                    logger.info(f"Reconnecting in 5 seconds... (attempt #{self.reconnect_count + 1})")
                     await asyncio.sleep(5)
     
     def _is_new_token(self, data: dict) -> bool:
@@ -91,6 +102,10 @@ class PumpPortalMonitor:
             return 'mint' in data['token']
         if 'type' in data and data['type'] in ['new_token', 'newToken', 'token_created']:
             return True
+        # Check for nested data structure
+        if 'data' in data and isinstance(data['data'], dict):
+            if 'mint' in data['data']:
+                return True
         return False
     
     def _extract_mint(self, data: dict) -> str:
@@ -107,8 +122,14 @@ class PumpPortalMonitor:
             return data['address']
         if 'tokenAddress' in data:
             return data['tokenAddress']
+        # Check nested data structure
+        if 'data' in data and isinstance(data['data'], dict):
+            if 'mint' in data['data']:
+                return data['data']['mint']
+            if 'address' in data['data']:
+                return data['data']['address']
         return None
     
     def stop(self):
         self.running = False
-        logger.info("PumpPortal monitor stopped")
+        logger.info(f"PumpPortal monitor stopped (processed {len(self.seen_tokens)} unique tokens)")
