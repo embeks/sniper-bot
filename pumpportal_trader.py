@@ -197,37 +197,40 @@ class PumpPortalTrader:
     async def create_sell_transaction(
         self,
         mint: str,
-        token_amount: float,  # Now expects raw amount from main.py
+        token_amount: float,  # Now expects UI amount from main.py
         bonding_curve_key: str = None,
-        slippage: int = 50
+        slippage: int = 50,
+        token_decimals: int = 6  # Default to 6 for PumpFun tokens
     ) -> Optional[str]:
-        """Get a sell transaction from PumpPortal API - expects raw token amounts"""
+        """Get a sell transaction from PumpPortal API - expects UI token amounts"""
         try:
             # Ensure publicKey matches our signing wallet
             wallet_pubkey = str(self.wallet.pubkey)
             
-            # CRITICAL: PumpPortal expects raw amounts when denominatedInSol is "false"
-            # main.py now sends raw amounts
-            raw_amount = int(token_amount)  # Ensure it's an integer
-            logger.info(f"Selling {raw_amount} raw tokens")
+            # PumpPortal expects UI amounts when denominatedInSol is "false"
+            # The API handles decimal conversion internally
+            ui_amount = float(token_amount)  # Ensure it's a float
+            logger.info(f"Selling {ui_amount:.6f} UI tokens")
             
             payload = {
                 "publicKey": wallet_pubkey,
                 "action": "sell",
                 "mint": mint,
                 "denominatedInSol": "false",  # API expects string "false" not boolean
-                "amount": raw_amount,  # PumpPortal expects raw amount
+                "amount": ui_amount,  # PumpPortal expects UI amount as float
                 "slippage": slippage,
                 "priorityFee": 0.0001,
-                "pool": "pump"
+                "pool": "pump",
+                "tokenDecimals": token_decimals  # Required for UI amount sells
             }
             
             if bonding_curve_key:
                 payload["bondingCurveKey"] = bonding_curve_key
             
-            logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {raw_amount} raw tokens")
+            logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {ui_amount:.6f} UI tokens (decimals: {token_decimals})")
             logger.debug(f"Using wallet: {wallet_pubkey}")
-            logger.debug(f"Payload amount field: {payload['amount']}")
+            logger.debug(f"Payload amount field: {payload['amount']} (UI amount)")
+            logger.debug(f"Token decimals: {token_decimals}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
@@ -404,9 +407,9 @@ class PumpPortalTrader:
                         logger.error(f"PumpPortal API error ({response.status}): {error_text}")
                         # Log additional debugging info for 400 errors
                         if response.status == 400:
-                            logger.error(f"Bad Request - check if amount {raw_amount} is valid")
-                            logger.error(f"Raw amount sent: {raw_amount}")
-                            logger.error(f"This should be the raw token amount (with all decimals)")
+                            logger.error(f"Bad Request - check if amount {ui_amount:.6f} is valid")
+                            logger.error(f"UI amount sent: {ui_amount:.6f}")
+                            logger.error(f"This should be the UI token amount (human-readable)")
                         return None
                         
         except Exception as e:
