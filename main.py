@@ -5,7 +5,7 @@ FIXED: Stop loss check happens BEFORE profit targets
 FIXED: Retry logic for uncertain bonding curve data
 FIXED: Use recorded token amounts when wallet balance is unreliable
 FIXED: Don't calculate P&L with uncertain curve data
-FIXED: raw_token_amount properly defined before use in _close_position_full
+FIXED: Send UI amounts to PumpPortal API, not raw amounts
 """
 
 import asyncio
@@ -592,15 +592,15 @@ class SniperBot:
                 signature = f"dry_run_sell_{target_name}_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
-                # Get raw amount for selling
-                raw_token_amount = self.wallet.get_token_balance_raw(mint)
-                # Calculate proportional raw amount to sell
-                raw_to_sell = int(raw_token_amount * (sell_percent / 100))
-                logger.info(f"   Selling {raw_to_sell} raw tokens")
+                # FIXED: Send UI amount to PumpPortal, not raw amount
+                ui_to_sell = int(tokens_to_sell)  # Integer part of UI tokens
+                
+                # Log what we're sending
+                logger.info(f"   Sending to PumpPortal: {ui_to_sell} tokens (UI amount)")
                 
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
-                    token_amount=raw_to_sell,  # Send raw amount
+                    token_amount=ui_to_sell,  # Send UI amount as integer
                     slippage=50
                 )
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)  # Estimate
@@ -687,18 +687,15 @@ class SniperBot:
                 signature = f"dry_run_close_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             else:
-                # FIXED: Calculate raw amount BEFORE checking migration
-                # Get raw amount for selling - use wallet method if available, otherwise convert
-                try:
-                    raw_token_amount = self.wallet.get_token_balance_raw(mint)
-                    if raw_token_amount == 0:
-                        # Fallback: calculate from UI amount
-                        raw_token_amount = int(token_balance * 1000000)  # 6 decimals for PumpFun
-                        logger.info(f"Using calculated raw amount: {raw_token_amount}")
-                except Exception as e:
-                    # Wallet method doesn't exist, calculate from UI amount
-                    raw_token_amount = int(token_balance * 1000000)  # 6 decimals for PumpFun
-                    logger.info(f"Calculating raw amount: {raw_token_amount} from {token_balance} tokens")
+                # FIXED: PumpPortal expects UI amounts, not raw blockchain amounts
+                # Send the UI token amount as an integer
+                ui_token_amount = int(token_balance)  # Just the integer part of UI tokens
+                logger.info(f"Preparing to sell {ui_token_amount} tokens (UI amount)")
+                
+                # Also log what the raw amount would be for debugging
+                raw_from_wallet = self.wallet.get_token_balance_raw(mint)
+                logger.info(f"DEBUG: Wallet raw balance: {raw_from_wallet}, UI balance: {token_balance}")
+                logger.info(f"Sending to PumpPortal: {ui_token_amount} (UI amount as integer)")
                 
                 # Check if token has migrated
                 curve_data = self.dex.get_bonding_curve_data(mint)
@@ -710,7 +707,7 @@ class SniperBot:
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=raw_token_amount,  # Use already-calculated raw amount
+                        token_amount=ui_token_amount,  # Send UI amount to PumpPortal
                         slippage=100  # Higher slippage for migrated tokens
                     )
                     
@@ -725,7 +722,7 @@ class SniperBot:
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=raw_token_amount,  # Use already-calculated raw amount
+                        token_amount=ui_token_amount,  # Send UI amount to PumpPortal
                         slippage=50
                     )
                     
