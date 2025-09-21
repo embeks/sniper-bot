@@ -1,11 +1,11 @@
 """
 Main Orchestrator - Phase 1 with Complete Control and Multi-Target Profit Taking
-FIXED: Proper sell handling for both migrated and non-migrated tokens with raw amounts
+FIXED: Proper sell handling using UI amounts for PumpPortal API
 FIXED: Stop loss check happens BEFORE profit targets
 FIXED: Retry logic for uncertain bonding curve data
 FIXED: Use recorded token amounts when wallet balance is unreliable
 FIXED: Don't calculate P&L with uncertain curve data
-FIXED: Send RAW amounts to PumpPortal API for sells, not UI amounts
+FIXED: Send UI amounts to PumpPortal API for sells, not raw amounts
 """
 
 import asyncio
@@ -560,7 +560,7 @@ class SniperBot:
             if not position:
                 return False
             
-            # Get current token balance
+            # Get current token balance (UI amount)
             current_balance = self.wallet.get_token_balance(mint)  # UI amount
             
             # Validate the balance
@@ -580,29 +580,30 @@ class SniperBot:
                 logger.warning(f"No tokens to sell for {mint[:8]}...")
                 return False
             
-            # Calculate tokens to sell from remaining balance
+            # Calculate UI tokens to sell from remaining balance
             remaining_balance = position.remaining_tokens
-            tokens_to_sell = remaining_balance * (sell_percent / 100)
+            ui_tokens_to_sell = remaining_balance * (sell_percent / 100)
             
             logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
-            logger.info(f"   Selling: {sell_percent}% ({tokens_to_sell:,.0f} tokens)")
+            logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} UI tokens)")
             
             if DRY_RUN:
-                logger.info(f"[DRY RUN] Would sell {tokens_to_sell:,.0f} tokens")
+                logger.info(f"[DRY RUN] Would sell {ui_tokens_to_sell:,.2f} tokens")
                 signature = f"dry_run_sell_{target_name}_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
-                # FIXED: Get raw amount for partial sell
-                raw_token_amount = self.wallet.get_token_balance_raw(mint)
-                # Calculate proportional raw amount to sell
-                raw_to_sell = int(raw_token_amount * (sell_percent / 100))
+                # Send UI amount to PumpPortal (they handle decimal conversion)
+                logger.info(f"   Sending to PumpPortal: {ui_tokens_to_sell:.6f} UI tokens")
                 
-                logger.info(f"   Sending to PumpPortal: {raw_to_sell} raw tokens")
+                # Get actual token decimals from mint
+                token_decimals = self.wallet.get_token_decimals(mint)
+                logger.debug(f"   Token has {token_decimals} decimals")
                 
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
-                    token_amount=raw_to_sell,  # Send raw amount
-                    slippage=50
+                    token_amount=ui_tokens_to_sell,  # Send UI amount as float
+                    slippage=50,
+                    token_decimals=token_decimals  # Use actual decimals from mint
                 )
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)  # Estimate
             
@@ -611,7 +612,7 @@ class SniperBot:
                 position.sell_signatures.append(signature)
                 
                 # Update remaining tokens
-                position.remaining_tokens -= tokens_to_sell
+                position.remaining_tokens -= ui_tokens_to_sell
                 
                 profit_sol = sol_received - (BUY_AMOUNT_SOL * sell_percent / 100)
                 position.realized_pnl_sol += profit_sol
@@ -622,7 +623,7 @@ class SniperBot:
                     mint=mint,
                     target_name=target_name,
                     percent_sold=sell_percent,
-                    tokens_sold=tokens_to_sell,
+                    tokens_sold=ui_tokens_to_sell,
                     sol_received=sol_received,
                     pnl_sol=profit_sol
                 )
@@ -667,10 +668,10 @@ class SniperBot:
             
             position.status = 'closing'
             
-            # Use remaining tokens from position tracking
-            token_balance = position.remaining_tokens
+            # Use remaining tokens from position tracking (UI amount)
+            ui_token_balance = position.remaining_tokens
             
-            if token_balance <= 0:
+            if ui_token_balance <= 0:
                 logger.warning(f"No tokens remaining for {mint[:8]}...")
                 position.status = 'closed'
                 if mint in self.positions:
@@ -681,24 +682,32 @@ class SniperBot:
             hold_time = time.time() - position.entry_time
             
             logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}...")
-            logger.info(f"   Token balance: {token_balance:,.2f} tokens")
+            logger.info(f"   Token balance: {ui_token_balance:,.2f} UI tokens")
             
             if DRY_RUN:
-                logger.info(f"[DRY RUN] Would sell {token_balance:,.0f} tokens")
+                logger.info(f"[DRY RUN] Would sell {ui_token_balance:,.2f} tokens")
                 signature = f"dry_run_close_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             else:
-                # FIXED: Get raw amount from wallet for PumpPortal
-                raw_token_amount = self.wallet.get_token_balance_raw(mint)
-                logger.info(f"Preparing to sell {token_balance:.2f} UI tokens = {raw_token_amount} raw tokens")
+                # PumpPortal expects UI amounts when denominatedInSol is "false"
+                logger.info(f"Preparing to sell {ui_token_balance:.6f} UI tokens")
                 
-                # PumpPortal expects raw amount when denominatedInSol is "false"
-                amount_to_send = raw_token_amount
-                logger.info(f"Sending to PumpPortal: {amount_to_send} (raw token amount)")
+                # Log actual wallet balance for debugging
+                actual_balance = self.wallet.get_token_balance(mint)
+                if actual_balance > 0:
+                    logger.info(f"DEBUG: Actual wallet UI balance: {actual_balance:.6f}")
+                    # Use actual balance if available
+                    ui_token_balance = actual_balance
+                
+                logger.info(f"Sending to PumpPortal: {ui_token_balance:.6f} (UI token amount)")
                 
                 # Check if token has migrated
                 curve_data = self.dex.get_bonding_curve_data(mint)
                 is_migrated = curve_data is None or curve_data.get('is_migrated', False) or curve_data.get('virtual_sol_reserves', 0) == 0
+                
+                # Get actual token decimals from mint
+                token_decimals = self.wallet.get_token_decimals(mint)
+                logger.debug(f"Token has {token_decimals} decimals")
                 
                 if is_migrated:
                     logger.info(f"Token {mint[:8]}... has migrated to Raydium")
@@ -706,8 +715,9 @@ class SniperBot:
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=amount_to_send,  # Send raw amount to PumpPortal
-                        slippage=100  # Higher slippage for migrated tokens
+                        token_amount=ui_token_balance,  # Send UI amount to PumpPortal
+                        slippage=100,  # Higher slippage for migrated tokens
+                        token_decimals=token_decimals  # Use actual decimals from mint
                     )
                     
                     # Check if we got a fake signature (all 1's)
@@ -721,8 +731,9 @@ class SniperBot:
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
-                        token_amount=amount_to_send,  # Send raw amount to PumpPortal
-                        slippage=50
+                        token_amount=ui_token_balance,  # Send UI amount to PumpPortal
+                        slippage=50,
+                        token_decimals=token_decimals  # Use actual decimals from mint
                     )
                     
                     sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
@@ -743,7 +754,7 @@ class SniperBot:
                 # Log sell execution
                 self.tracker.log_sell_executed(
                     mint=mint,
-                    tokens_sold=token_balance,
+                    tokens_sold=ui_token_balance,
                     signature=signature,
                     sol_received=sol_received,
                     pnl_sol=position.realized_pnl_sol,
