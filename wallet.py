@@ -228,7 +228,35 @@ class WalletManager:
                 'is_profit': False
             }
     
-    def log_wallet_status(self):
+    def get_token_decimals(self, mint: str) -> int:
+        """Get the decimals for a specific token mint"""
+        try:
+            mint_pubkey = Pubkey.from_string(mint)
+            
+            # Get mint account info
+            response = self.client.get_account_info(mint_pubkey)
+            if response.value and response.value.data:
+                # Decode mint data - decimals is at byte offset 44
+                mint_data = response.value.data
+                if isinstance(mint_data, bytes):
+                    # Decimals is a single byte at position 44 in Mint layout
+                    decimals = mint_data[44] if len(mint_data) > 44 else 6
+                    logger.debug(f"Token {mint[:8]}... has {decimals} decimals")
+                    return decimals
+                elif isinstance(mint_data, dict) and 'parsed' in mint_data:
+                    # Parsed JSON response
+                    parsed_info = mint_data.get('parsed', {}).get('info', {})
+                    decimals = parsed_info.get('decimals', 6)
+                    logger.debug(f"Token {mint[:8]}... has {decimals} decimals")
+                    return decimals
+            
+            # Default to 6 for PumpFun tokens
+            logger.debug(f"Could not fetch decimals for {mint[:8]}..., defaulting to 6")
+            return 6
+            
+        except Exception as e:
+            logger.debug(f"Failed to get token decimals: {e}, defaulting to 6")
+            return 6
         """Log current wallet status"""
         try:
             sol_balance = self.get_sol_balance()
