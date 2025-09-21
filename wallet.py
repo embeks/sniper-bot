@@ -1,6 +1,6 @@
 """
 Wallet Management - Deterministic verification and balance tracking
-FIXED: Token balance returns proper raw amount for PumpPortal
+FIXED: Returns UI amounts for position tracking, not raw amounts
 """
 
 import base58
@@ -83,41 +83,15 @@ class WalletManager:
             return 0.0
     
     def get_token_balance(self, mint: str) -> float:
-        """Get balance for a specific token - returns RAW amount for PumpPortal"""
+        """Get balance for a specific token - returns UI amount (human readable)"""
         try:
             mint_pubkey = Pubkey.from_string(mint)
             token_account = get_associated_token_address(self.pubkey, mint_pubkey)
             
             response = self.client.get_token_account_balance(token_account)
             if response.value:
-                # CRITICAL FIX: Return the raw amount directly, no conversion needed
-                # PumpPortal expects the raw token amount from the chain
-                raw_amount = response.value.amount
-                
-                # The amount field is already the raw token amount on chain
-                # For PumpFun tokens with 6 decimals, this is the actual amount * 10^6
-                # We should return this AS-IS for selling
-                
-                if raw_amount:
-                    # Return as float but it's actually the raw amount
-                    return float(raw_amount)
-                else:
-                    return 0.0
-            return 0.0
-            
-        except Exception as e:
-            logger.debug(f"No balance for token {mint[:8]}...")
-            return 0.0
-    
-    def get_token_balance_ui(self, mint: str) -> float:
-        """Get UI-friendly token balance (with decimals factored in) for display"""
-        try:
-            mint_pubkey = Pubkey.from_string(mint)
-            token_account = get_associated_token_address(self.pubkey, mint_pubkey)
-            
-            response = self.client.get_token_account_balance(token_account)
-            if response.value:
-                # For display purposes, use the UI amount
+                # CRITICAL: Return UI amount for position tracking
+                # This is the human-readable amount (e.g., 350000 tokens)
                 ui_amount = response.value.ui_amount
                 if ui_amount:
                     return float(ui_amount)
@@ -133,6 +107,25 @@ class WalletManager:
         except Exception as e:
             logger.debug(f"No balance for token {mint[:8]}...")
             return 0.0
+    
+    def get_token_balance_raw(self, mint: str) -> int:
+        """Get RAW balance for a specific token (for selling to PumpPortal)"""
+        try:
+            mint_pubkey = Pubkey.from_string(mint)
+            token_account = get_associated_token_address(self.pubkey, mint_pubkey)
+            
+            response = self.client.get_token_account_balance(token_account)
+            if response.value:
+                # Return the raw amount as integer
+                raw_amount = response.value.amount
+                if raw_amount:
+                    return int(raw_amount)
+                return 0
+            return 0
+            
+        except Exception as e:
+            logger.debug(f"No balance for token {mint[:8]}...")
+            return 0
     
     def get_all_token_accounts(self) -> Dict[str, Dict]:
         """Get all token accounts owned by this wallet"""
