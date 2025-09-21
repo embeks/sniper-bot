@@ -1,6 +1,8 @@
 """
 Main Orchestrator - Phase 1 with Complete Control and Multi-Target Profit Taking
 FIXED: Proper sell handling for both migrated and non-migrated tokens with raw amounts
+FIXED: Stop loss check happens BEFORE profit targets
+FIXED: Retry logic for uncertain bonding curve data
 """
 
 import asyncio
@@ -56,6 +58,9 @@ class Position:
         self.partial_sells = {}
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
+        
+        # Retry tracking for curve data
+        self.curve_check_retries = 0
         
         # Profit targets
         self.profit_targets = [
@@ -410,11 +415,33 @@ class SniperBot:
                 try:
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
-                    if not curve_data:
-                        logger.warning(f"❌ No bonding curve for {mint[:8]}... (migrated)")
-                        logger.info(f"Attempting to close migrated position {mint[:8]}...")
+                    # FIXED: Handle uncertain/placeholder data with retry logic
+                    if curve_data and curve_data.get('needs_retry'):
+                        if position.curve_check_retries < 3:
+                            position.curve_check_retries += 1
+                            logger.info(f"Curve data uncertain for {mint[:8]}..., retry {position.curve_check_retries}/3")
+                            await asyncio.sleep(2)
+                            continue
+                        else:
+                            logger.warning(f"Failed to get reliable curve data after 3 retries")
+                    
+                    # Reset retry counter on successful data
+                    if curve_data and not curve_data.get('needs_retry'):
+                        position.curve_check_retries = 0
+                    
+                    # Check for true migration
+                    if not curve_data or curve_data.get('is_migrated'):
+                        logger.warning(f"❌ Token {mint[:8]}... has truly migrated")
                         await self._close_position_full(mint, reason="migration")
                         break
+                    
+                    # Check if we have invalid data
+                    if curve_data and not curve_data.get('is_valid', True):
+                        logger.warning(f"Invalid curve data for {mint[:8]}...")
+                        if position.curve_check_retries >= 3:
+                            logger.info(f"Attempting to close position with invalid data")
+                            await self._close_position_full(mint, reason="no_valid_data")
+                            break
                     
                     if curve_data['virtual_sol_reserves'] > 0 and curve_data['virtual_token_reserves'] > 0:
                         current_price = curve_data['virtual_sol_reserves'] / curve_data['virtual_token_reserves']
@@ -455,7 +482,13 @@ class SniperBot:
                                 await self.telegram.send_message(update_msg)
                                 last_notification_pnl = price_change
                             
-                            # Check profit targets
+                            # FIXED: Check stop loss FIRST (before profit targets)
+                            if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
+                                logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... at {price_change:.1f}%")
+                                await self._close_position_full(mint, reason="stop_loss")
+                                break
+                            
+                            # THEN check profit targets
                             for target in position.profit_targets:
                                 target_name = target['name']
                                 target_pnl = target['target']
@@ -480,12 +513,6 @@ class SniperBot:
                                             logger.info(f"✅ Position fully closed")
                                             position.status = 'completed'
                                             break
-                            
-                            # Check stop loss
-                            if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
-                                logger.warning(f"🛑 STOP LOSS for {mint[:8]}...")
-                                await self._close_position_full(mint, reason="stop_loss")
-                                break
                     
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
@@ -516,6 +543,11 @@ class SniperBot:
             if current_balance <= 0:
                 logger.warning(f"No tokens to sell for {mint[:8]}...")
                 return False
+            
+            # FIXED: Validate token balance is actually an integer
+            if current_balance != int(current_balance):
+                logger.warning(f"Token balance has decimals: {current_balance}, converting to int")
+                current_balance = int(current_balance)
             
             tokens_to_sell = current_balance * (sell_percent / 100)
             
@@ -599,6 +631,11 @@ class SniperBot:
             
             token_balance = self.wallet.get_token_balance(mint)
             
+            # FIXED: Validate token balance
+            if token_balance != int(token_balance):
+                logger.warning(f"Token balance has decimals: {token_balance}, converting to int")
+                token_balance = int(token_balance)
+            
             if token_balance <= 0:
                 logger.warning(f"No tokens remaining for {mint[:8]}...")
                 position.status = 'closed'
@@ -619,7 +656,7 @@ class SniperBot:
             else:
                 # Check if token has migrated
                 curve_data = self.dex.get_bonding_curve_data(mint)
-                is_migrated = curve_data is None or curve_data.get('virtual_sol_reserves', 0) == 0
+                is_migrated = curve_data is None or curve_data.get('is_migrated', False) or curve_data.get('virtual_sol_reserves', 0) == 0
                 
                 if is_migrated:
                     logger.info(f"Token {mint[:8]}... has migrated to Raydium")
@@ -628,7 +665,6 @@ class SniperBot:
                     logger.info("Attempting sell through PumpPortal (may handle Raydium)...")
                     
                     # CRITICAL FIX: Ensure token_balance is integer before converting to raw
-                    # wallet.get_token_balance now returns clean integer, but double-check
                     clean_token_amount = int(token_balance)
                     raw_token_amount = clean_token_amount * 1000000  # 6 decimals for PumpFun
                     logger.info(f"Converting {clean_token_amount} tokens to {raw_token_amount} raw tokens")
