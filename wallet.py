@@ -1,6 +1,6 @@
 """
 Wallet Management - Deterministic verification and balance tracking
-FIXED: Token balance returns proper integer amount without decimals
+FIXED: Token balance returns proper raw amount for PumpPortal
 """
 
 import base58
@@ -83,28 +83,51 @@ class WalletManager:
             return 0.0
     
     def get_token_balance(self, mint: str) -> float:
-        """Get balance for a specific token - returns integer token amount"""
+        """Get balance for a specific token - returns RAW amount for PumpPortal"""
         try:
             mint_pubkey = Pubkey.from_string(mint)
             token_account = get_associated_token_address(self.pubkey, mint_pubkey)
             
             response = self.client.get_token_account_balance(token_account)
             if response.value:
-                # CRITICAL FIX: Return the actual token amount from the response
-                # The response contains the raw amount in response.value.amount
+                # CRITICAL FIX: Return the raw amount directly, no conversion needed
+                # PumpPortal expects the raw token amount from the chain
                 raw_amount = response.value.amount
-                decimals = response.value.decimals
                 
-                # Convert raw amount to decimal amount (without decimals)
-                # For example: raw_amount=529152222562 with decimals=6 -> 529152.222562
-                # But we want just the integer part: 529152
-                if raw_amount and decimals:
-                    token_amount = int(raw_amount) / (10 ** int(decimals))
-                    # Return integer amount for clean conversion later
-                    return float(int(token_amount))
+                # The amount field is already the raw token amount on chain
+                # For PumpFun tokens with 6 decimals, this is the actual amount * 10^6
+                # We should return this AS-IS for selling
+                
+                if raw_amount:
+                    # Return as float but it's actually the raw amount
+                    return float(raw_amount)
                 else:
-                    # Fallback to ui_amount if available
-                    return float(int(response.value.ui_amount or 0))
+                    return 0.0
+            return 0.0
+            
+        except Exception as e:
+            logger.debug(f"No balance for token {mint[:8]}...")
+            return 0.0
+    
+    def get_token_balance_ui(self, mint: str) -> float:
+        """Get UI-friendly token balance (with decimals factored in) for display"""
+        try:
+            mint_pubkey = Pubkey.from_string(mint)
+            token_account = get_associated_token_address(self.pubkey, mint_pubkey)
+            
+            response = self.client.get_token_account_balance(token_account)
+            if response.value:
+                # For display purposes, use the UI amount
+                ui_amount = response.value.ui_amount
+                if ui_amount:
+                    return float(ui_amount)
+                else:
+                    # Fallback: calculate from raw
+                    raw_amount = response.value.amount
+                    decimals = response.value.decimals
+                    if raw_amount and decimals:
+                        return float(int(raw_amount) / (10 ** int(decimals)))
+                    return 0.0
             return 0.0
             
         except Exception as e:
@@ -134,7 +157,8 @@ class WalletManager:
                                 token_accounts[mint] = {
                                     'pubkey': str(account.pubkey),
                                     'balance': float(info.get('tokenAmount', {}).get('uiAmount', 0)),
-                                    'decimals': info.get('tokenAmount', {}).get('decimals', 0)
+                                    'decimals': info.get('tokenAmount', {}).get('decimals', 0),
+                                    'raw_amount': info.get('tokenAmount', {}).get('amount', '0')
                                 }
                     except:
                         continue
@@ -226,7 +250,7 @@ class WalletManager:
                 logger.info("Active Positions:")
                 for mint, data in list(token_accounts.items())[:5]:  # Show first 5
                     if data['balance'] > 0:
-                        logger.info(f"  • {mint[:8]}... Balance: {data['balance']:,.2f}")
+                        logger.info(f"  • {mint[:8]}... Balance: {data['balance']:,.2f} (Raw: {data['raw_amount']})")
             
             logger.info("=" * 50)
             
