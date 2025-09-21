@@ -525,8 +525,9 @@ class SniperBot:
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
                 # CRITICAL FIX: Convert to raw amount for PumpPortal (6 decimals)
-                raw_token_amount = int(tokens_to_sell * 1e6)
-                logger.info(f"   Converting {tokens_to_sell:.2f} decimal tokens to {raw_token_amount} raw tokens")
+                clean_token_amount = int(tokens_to_sell)
+                raw_token_amount = clean_token_amount * 1000000  # 6 decimals
+                logger.info(f"   Converting {clean_token_amount} tokens to {raw_token_amount} raw tokens")
                 
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
@@ -623,9 +624,11 @@ class SniperBot:
                     # Try PumpPortal first - they might handle Raydium sells
                     logger.info("Attempting sell through PumpPortal (may handle Raydium)...")
                     
-                    # CRITICAL FIX: Convert to raw token amount for PumpPortal (6 decimals for PumpFun)
-                    raw_token_amount = int(token_balance * 1e6)
-                    logger.info(f"Converting {token_balance:.2f} decimal tokens to {raw_token_amount} raw tokens")
+                    # CRITICAL FIX: Ensure token_balance is integer before converting to raw
+                    # wallet.get_token_balance now returns clean integer, but double-check
+                    clean_token_amount = int(token_balance)
+                    raw_token_amount = clean_token_amount * 1000000  # 6 decimals for PumpFun
+                    logger.info(f"Converting {clean_token_amount} tokens to {raw_token_amount} raw tokens")
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
@@ -642,10 +645,11 @@ class SniperBot:
                 else:
                     logger.info(f"Token {mint[:8]}... still on bonding curve")
                     
-                    # CRITICAL FIX: For non-migrated tokens, convert decimal to raw amount (6 decimals)
-                    raw_token_amount = int(token_balance * 1e6)
+                    # CRITICAL FIX: For non-migrated tokens, ensure clean conversion
+                    clean_token_amount = int(token_balance)
+                    raw_token_amount = clean_token_amount * 1000000  # 6 decimals for PumpFun
                     
-                    logger.info(f"Selling {token_balance:.2f} tokens ({raw_token_amount} raw)")
+                    logger.info(f"Selling {clean_token_amount} tokens ({raw_token_amount} raw)")
                     
                     signature = await self.trader.create_sell_transaction(
                         mint=mint,
