@@ -321,9 +321,12 @@ class SniperBot:
                 expected_tokens = 0
                 if 'data' in token_data:
                     data = token_data['data']
-                    if 'initialBuy' in data:
+                    if 'initialBuy' in data and 'solAmount' in data:
                         # Use the initial buy as reference for estimation
-                        expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / float(data.get('solAmount', 0.01)))
+                        creator_sol = float(data.get('solAmount', 0.01))
+                        if creator_sol > 0:
+                            # Calculate expected raw tokens (already in raw format)
+                            expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / creator_sol) * 1000000
                 
                 signature = await self.trader.create_buy_transaction(
                     mint=mint,
@@ -336,16 +339,16 @@ class SniperBot:
                 if signature:
                     # Quick balance check - don't wait too long
                     await asyncio.sleep(2)
-                    bought_tokens = self.wallet.get_token_balance(mint)
+                    bought_tokens = self.wallet.get_token_balance(mint)  # This returns raw amount
                     if bought_tokens == 0:
                         # Use expected tokens from calculation
                         if expected_tokens > 0:
                             bought_tokens = int(expected_tokens)
-                            logger.info(f"Using calculated tokens: {bought_tokens:,.0f}")
+                            logger.info(f"Using calculated raw tokens: {bought_tokens:,.0f}")
                         else:
-                            # Fallback estimate based on typical bonding curve
-                            bought_tokens = int(350000 * (10 / BUY_AMOUNT_SOL))  # Scale by buy amount
-                            logger.warning(f"Using fallback estimate: {bought_tokens:,.0f}")
+                            # Fallback estimate - already in raw format
+                            bought_tokens = int(350000 * 1000000)  # 350k tokens * 10^6
+                            logger.warning(f"Using fallback estimate: {bought_tokens:,.0f} raw")
             
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
@@ -373,7 +376,8 @@ class SniperBot:
                 logger.info(f"   Amount: {BUY_AMOUNT_SOL} SOL")
                 logger.info(f"   Total Cost: {cost_breakdown['total_cost']:.6f} SOL")
                 logger.info(f"   Fees: {cost_breakdown['total_fees']:.6f} SOL")
-                logger.info(f"   Tokens: {bought_tokens:,.0f}")
+                logger.info(f"   Raw tokens: {bought_tokens:,.0f}")
+                logger.info(f"   UI tokens: {bought_tokens/1000000:,.2f}")  # Display friendly amount
                 logger.info(f"   Execution: {execution_time_ms:.1f}ms")
                 logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
                 
@@ -588,10 +592,10 @@ class SniperBot:
                 signature = f"dry_run_sell_{target_name}_{mint[:10]}"
                 sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
-                # CRITICAL FIX: Convert to raw amount for PumpPortal (6 decimals)
-                clean_token_amount = int(tokens_to_sell)
-                raw_token_amount = clean_token_amount * 1000000  # 6 decimals
-                logger.info(f"   Converting {clean_token_amount} tokens to {raw_token_amount} raw tokens")
+                # CRITICAL FIX: Wallet now returns raw amounts directly
+                # No conversion needed - wallet.get_token_balance returns raw
+                raw_token_amount = int(tokens_to_sell)
+                logger.info(f"   Selling {raw_token_amount} raw tokens (wallet returns raw)")
                 
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
