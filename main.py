@@ -3,6 +3,8 @@ Main Orchestrator - Phase 1 with Complete Control and Multi-Target Profit Taking
 FIXED: Proper sell handling for both migrated and non-migrated tokens with raw amounts
 FIXED: Stop loss check happens BEFORE profit targets
 FIXED: Retry logic for uncertain bonding curve data
+FIXED: Use recorded token amounts when wallet balance is unreliable
+FIXED: Don't calculate P&L with uncertain curve data
 """
 
 import asyncio
@@ -61,12 +63,13 @@ class Position:
         
         # Retry tracking for curve data
         self.curve_check_retries = 0
+        self.last_valid_balance = tokens  # Track last known good balance
         
-        # Profit targets
+        # Profit targets - ADJUSTED FOR FASTER EXITS
         self.profit_targets = [
-            {'target': 100, 'sell_percent': 40, 'name': '2x'},
-            {'target': 200, 'sell_percent': 30, 'name': '3x'},
-            {'target': 400, 'sell_percent': 30, 'name': '5x'},
+            {'target': 50, 'sell_percent': 50, 'name': '1.5x'},  # Take half at 50% gain
+            {'target': 100, 'sell_percent': 30, 'name': '2x'},   # Take more at 2x
+            {'target': 200, 'sell_percent': 20, 'name': '3x'},   # Leave runner
         ]
 
 class SniperBot:
@@ -129,7 +132,7 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Profit targets: 2x (40%), 3x (30%), 5x (30%)")
+        logger.info(f"  • Profit targets: 1.5x (50%), 2x (30%), 3x (20%)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
@@ -149,10 +152,10 @@ class SniperBot:
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
                     "🚀 Bot started successfully\n"
-                    "📊 Phase 1 Mode with Multi-Targets\n"
+                    "📊 Phase 1 Mode - Fast Exits\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    "📈 Targets: 2x→40%, 3x→30%, 5x→30%\n"
+                    "📈 Targets: 1.5x→50%, 2x→30%, 3x→20%\n"
                     "Type /help for commands"
                 )
                 await self.telegram.send_message(startup_msg)
@@ -297,11 +300,12 @@ class SniperBot:
             self.tracker.log_token_detection(mint, token_data.get('source', 'pumpportal'), detection_time_ms)
             
             logger.info(f"🎯 Processing new token: {mint}")
+            logger.info(f"   Detection latency: {detection_time_ms:.0f}ms")
             
             # Log buy attempt
             cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
             
-            # Execute buy
+            # Execute buy FAST - no delays
             execution_start = time.time()
             
             if DRY_RUN:
@@ -313,6 +317,14 @@ class SniperBot:
                 if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                     bonding_curve_key = token_data['data']['bondingCurveKey']
                 
+                # Get expected tokens from websocket data for better estimates
+                expected_tokens = 0
+                if 'data' in token_data:
+                    data = token_data['data']
+                    if 'initialBuy' in data:
+                        # Use the initial buy as reference for estimation
+                        expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / float(data.get('solAmount', 0.01)))
+                
                 signature = await self.trader.create_buy_transaction(
                     mint=mint,
                     sol_amount=BUY_AMOUNT_SOL,
@@ -322,14 +334,18 @@ class SniperBot:
                 
                 bought_tokens = 0
                 if signature:
-                    await asyncio.sleep(5)
+                    # Quick balance check - don't wait too long
+                    await asyncio.sleep(2)
                     bought_tokens = self.wallet.get_token_balance(mint)
                     if bought_tokens == 0:
-                        await asyncio.sleep(3)
-                        bought_tokens = self.wallet.get_token_balance(mint)
-                        if bought_tokens == 0:
-                            bought_tokens = 500000
-                            logger.warning(f"Using estimated tokens: {bought_tokens}")
+                        # Use expected tokens from calculation
+                        if expected_tokens > 0:
+                            bought_tokens = int(expected_tokens)
+                            logger.info(f"Using calculated tokens: {bought_tokens:,.0f}")
+                        else:
+                            # Fallback estimate based on typical bonding curve
+                            bought_tokens = int(350000 * (10 / BUY_AMOUNT_SOL))  # Scale by buy amount
+                            logger.warning(f"Using fallback estimate: {bought_tokens:,.0f}")
             
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
@@ -348,6 +364,7 @@ class SniperBot:
                 position.buy_signature = signature
                 position.initial_tokens = bought_tokens
                 position.remaining_tokens = bought_tokens
+                position.last_valid_balance = bought_tokens  # Store as last known good
                 position.entry_time = time.time()
                 self.positions[mint] = position
                 self.total_trades += 1
@@ -365,11 +382,11 @@ class SniperBot:
                     await self.telegram.notify_buy(mint, BUY_AMOUNT_SOL, signature)
                     
                     monitoring_msg = (
-                        f"📊 Monitoring {mint[:8]}... [STANDARD]\n"
+                        f"📊 Monitoring {mint[:8]}... [FAST EXIT]\n"
                         f"Entry: {BUY_AMOUNT_SOL} SOL\n"
-                        f"Targets: 2.0x/{BUY_AMOUNT_SOL*2:.3f} SOL, "
-                        f"3.0x/{BUY_AMOUNT_SOL*3:.3f} SOL, "
-                        f"5.0x/{BUY_AMOUNT_SOL*5:.3f} SOL\n"
+                        f"Targets: 1.5x/{BUY_AMOUNT_SOL*1.5:.3f} SOL, "
+                        f"2.0x/{BUY_AMOUNT_SOL*2:.3f} SOL, "
+                        f"3.0x/{BUY_AMOUNT_SOL*3:.3f} SOL\n"
                         f"Stop Loss: -{STOP_LOSS_PERCENTAGE}%"
                     )
                     await self.telegram.send_message(monitoring_msg)
@@ -395,19 +412,22 @@ class SniperBot:
                 logger.error(f"Position {mint[:8]}... not found for monitoring")
                 return
             
-            logger.info(f"⏳ Waiting {SELL_DELAY_SECONDS}s before monitoring {mint[:8]}...")
-            await asyncio.sleep(SELL_DELAY_SECONDS)
+            # REDUCED WAIT TIME for faster exits like Cupsey
+            wait_time = 5  # Only 5 seconds before checking for profit
+            logger.info(f"⏳ Waiting {wait_time}s before monitoring {mint[:8]}...")
+            await asyncio.sleep(wait_time)
             
             logger.info(f"📈 Starting active monitoring for {mint[:8]}...")
             check_count = 0
             last_notification_pnl = 0
+            consecutive_data_failures = 0
             
             while mint in self.positions and position.status == 'active' and self.running:
                 check_count += 1
                 
-                # Check position age
+                # Check position age - REDUCED for faster strategy
                 age = time.time() - position.entry_time
-                if age > MAX_POSITION_AGE_SECONDS:
+                if age > 60:  # Exit after 1 minute max (was 600 seconds)
                     logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s)")
                     await self._close_position_full(mint, reason="max_age")
                     break
@@ -415,109 +435,106 @@ class SniperBot:
                 try:
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
-                    # FIXED: Handle uncertain/placeholder data with retry logic
+                    # FIXED: Handle uncertain/placeholder data
                     if curve_data and curve_data.get('needs_retry'):
-                        if position.curve_check_retries < 3:
-                            position.curve_check_retries += 1
-                            logger.info(f"Curve data uncertain for {mint[:8]}..., retry {position.curve_check_retries}/3")
-                            await asyncio.sleep(2)
-                            continue
+                        consecutive_data_failures += 1
+                        if consecutive_data_failures < 3:
+                            logger.debug(f"Curve data uncertain for {mint[:8]}..., retry {consecutive_data_failures}/3")
+                            await asyncio.sleep(1)
+                            continue  # DON'T calculate P&L with uncertain data
                         else:
-                            logger.warning(f"Failed to get reliable curve data after 3 retries")
+                            # After 3 failures, just exit the position
+                            logger.warning(f"Can't get reliable data after 3 tries, closing position")
+                            await self._close_position_full(mint, reason="no_data")
+                            break
                     
-                    # Reset retry counter on successful data
+                    # Reset failure counter on good data
                     if curve_data and not curve_data.get('needs_retry'):
-                        position.curve_check_retries = 0
+                        consecutive_data_failures = 0
                     
                     # Check for true migration
                     if not curve_data or curve_data.get('is_migrated'):
-                        logger.warning(f"❌ Token {mint[:8]}... has truly migrated")
+                        logger.warning(f"❌ Token {mint[:8]}... has migrated")
                         await self._close_position_full(mint, reason="migration")
                         break
                     
-                    # Check if we have invalid data
-                    if curve_data and not curve_data.get('is_valid', True):
-                        logger.warning(f"Invalid curve data for {mint[:8]}...")
-                        if position.curve_check_retries >= 3:
-                            logger.info(f"Attempting to close position with invalid data")
-                            await self._close_position_full(mint, reason="no_valid_data")
-                            break
-                    
-                    if curve_data['virtual_sol_reserves'] > 0 and curve_data['virtual_token_reserves'] > 0:
-                        current_price = curve_data['virtual_sol_reserves'] / curve_data['virtual_token_reserves']
-                        
-                        if position.entry_price == 0:
-                            position.entry_price = current_price
-                            logger.info(f"📍 Entry price for {mint[:8]}...: {position.entry_price:.10f}")
-                        
-                        if position.entry_price > 0:
-                            price_change = ((current_price / position.entry_price) - 1) * 100
-                            position.pnl_percent = price_change
-                            position.current_price = current_price
+                    # Only calculate P&L with valid data
+                    if curve_data and curve_data.get('is_valid', True) and not curve_data.get('needs_retry'):
+                        if curve_data['virtual_sol_reserves'] > 0 and curve_data['virtual_token_reserves'] > 0:
+                            current_price = curve_data['virtual_sol_reserves'] / curve_data['virtual_token_reserves']
                             
-                            # Log position update periodically
-                            if check_count % 10 == 1:  # Every 10th check (~50 seconds)
-                                self.tracker.log_position_update(
-                                    mint=mint,
-                                    current_pnl_percent=price_change,
-                                    current_price=current_price,
-                                    age_seconds=age
-                                )
+                            if position.entry_price == 0:
+                                position.entry_price = current_price
+                                logger.info(f"📍 Entry price for {mint[:8]}...: {position.entry_price:.10f}")
                             
-                            # Log every 3rd check
-                            if check_count % 3 == 1:
-                                logger.info(
-                                    f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                                    f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
-                                )
-                            
-                            # Telegram updates at significant changes
-                            if self.telegram and abs(price_change - last_notification_pnl) >= 50:
-                                update_msg = (
-                                    f"📊 Update {mint[:8]}...\n"
-                                    f"P&L: {price_change:+.1f}%\n"
-                                    f"Status: {'🟢 Profit' if price_change > 0 else '🔴 Loss'}\n"
-                                    f"Remaining: {100 - position.total_sold_percent}%"
-                                )
-                                await self.telegram.send_message(update_msg)
-                                last_notification_pnl = price_change
-                            
-                            # FIXED: Check stop loss FIRST (before profit targets)
-                            if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
-                                logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... at {price_change:.1f}%")
-                                await self._close_position_full(mint, reason="stop_loss")
-                                break
-                            
-                            # THEN check profit targets
-                            for target in position.profit_targets:
-                                target_name = target['name']
-                                target_pnl = target['target']
-                                sell_percent = target['sell_percent']
+                            if position.entry_price > 0:
+                                price_change = ((current_price / position.entry_price) - 1) * 100
+                                position.pnl_percent = price_change
+                                position.current_price = current_price
                                 
-                                if price_change >= target_pnl and target_name not in position.partial_sells:
-                                    logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
-                                    
-                                    success = await self._execute_partial_sell(
-                                        mint, sell_percent, target_name, price_change
+                                # Log position update periodically
+                                if check_count % 10 == 1:  # Every 10th check
+                                    self.tracker.log_position_update(
+                                        mint=mint,
+                                        current_pnl_percent=price_change,
+                                        current_price=current_price,
+                                        age_seconds=age
                                     )
+                                
+                                # Log every 3rd check
+                                if check_count % 3 == 1:
+                                    logger.info(
+                                        f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                                        f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
+                                    )
+                                
+                                # Telegram updates at significant changes
+                                if self.telegram and abs(price_change - last_notification_pnl) >= 50:
+                                    update_msg = (
+                                        f"📊 Update {mint[:8]}...\n"
+                                        f"P&L: {price_change:+.1f}%\n"
+                                        f"Status: {'🟢 Profit' if price_change > 0 else '🔴 Loss'}\n"
+                                        f"Remaining: {100 - position.total_sold_percent}%"
+                                    )
+                                    await self.telegram.send_message(update_msg)
+                                    last_notification_pnl = price_change
+                                
+                                # FIXED: Check stop loss FIRST (before profit targets)
+                                if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
+                                    logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... at {price_change:.1f}%")
+                                    await self._close_position_full(mint, reason="stop_loss")
+                                    break
+                                
+                                # THEN check profit targets
+                                for target in position.profit_targets:
+                                    target_name = target['name']
+                                    target_pnl = target['target']
+                                    sell_percent = target['sell_percent']
                                     
-                                    if success:
-                                        position.partial_sells[target_name] = {
-                                            'pnl': price_change,
-                                            'time': time.time(),
-                                            'percent_sold': sell_percent
-                                        }
-                                        position.total_sold_percent += sell_percent
+                                    if price_change >= target_pnl and target_name not in position.partial_sells:
+                                        logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        if position.total_sold_percent >= 100:
-                                            logger.info(f"✅ Position fully closed")
-                                            position.status = 'completed'
-                                            break
+                                        success = await self._execute_partial_sell(
+                                            mint, sell_percent, target_name, price_change
+                                        )
+                                        
+                                        if success:
+                                            position.partial_sells[target_name] = {
+                                                'pnl': price_change,
+                                                'time': time.time(),
+                                                'percent_sold': sell_percent
+                                            }
+                                            position.total_sold_percent += sell_percent
+                                            
+                                            if position.total_sold_percent >= 100:
+                                                logger.info(f"✅ Position fully closed")
+                                                position.status = 'completed'
+                                                break
                     
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
                 
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)  # Check every 2 seconds for faster reaction
             
             # Clean up completed position
             if mint in self.positions and position.status == 'completed':
@@ -539,17 +556,29 @@ class SniperBot:
             if not position:
                 return False
             
+            # CRITICAL FIX: Use position's tracked balance, not wallet balance
             current_balance = self.wallet.get_token_balance(mint)
+            
+            # Validate the balance
+            if current_balance == 0:
+                # Use last known good balance
+                logger.warning(f"Wallet returns 0 balance, using recorded {position.last_valid_balance}")
+                current_balance = position.last_valid_balance
+            elif current_balance > position.initial_tokens * 2:
+                # Balance seems wrong (too high)
+                logger.warning(f"Suspicious balance {current_balance}, using recorded {position.last_valid_balance}")
+                current_balance = position.last_valid_balance
+            else:
+                # Update last valid balance
+                position.last_valid_balance = current_balance
+            
             if current_balance <= 0:
                 logger.warning(f"No tokens to sell for {mint[:8]}...")
                 return False
             
-            # FIXED: Validate token balance is actually an integer
-            if current_balance != int(current_balance):
-                logger.warning(f"Token balance has decimals: {current_balance}, converting to int")
-                current_balance = int(current_balance)
-            
-            tokens_to_sell = current_balance * (sell_percent / 100)
+            # Calculate tokens to sell from remaining balance
+            remaining_balance = position.remaining_tokens
+            tokens_to_sell = remaining_balance * (sell_percent / 100)
             
             logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
             logger.info(f"   Selling: {sell_percent}% ({tokens_to_sell:,.0f} tokens)")
@@ -574,6 +603,9 @@ class SniperBot:
             # Check for valid signature (not all 1's)
             if signature and not signature.startswith("1111111"):
                 position.sell_signatures.append(signature)
+                
+                # Update remaining tokens
+                position.remaining_tokens -= tokens_to_sell
                 
                 profit_sol = sol_received - (BUY_AMOUNT_SOL * sell_percent / 100)
                 position.realized_pnl_sol += profit_sol
@@ -629,12 +661,8 @@ class SniperBot:
             
             position.status = 'closing'
             
-            token_balance = self.wallet.get_token_balance(mint)
-            
-            # FIXED: Validate token balance
-            if token_balance != int(token_balance):
-                logger.warning(f"Token balance has decimals: {token_balance}, converting to int")
-                token_balance = int(token_balance)
+            # Use remaining tokens from position tracking
+            token_balance = position.remaining_tokens
             
             if token_balance <= 0:
                 logger.warning(f"No tokens remaining for {mint[:8]}...")
@@ -664,7 +692,7 @@ class SniperBot:
                     # Try PumpPortal first - they might handle Raydium sells
                     logger.info("Attempting sell through PumpPortal (may handle Raydium)...")
                     
-                    # CRITICAL FIX: Ensure token_balance is integer before converting to raw
+                    # CRITICAL FIX: Use position's remaining tokens
                     clean_token_amount = int(token_balance)
                     raw_token_amount = clean_token_amount * 1000000  # 6 decimals for PumpFun
                     logger.info(f"Converting {clean_token_amount} tokens to {raw_token_amount} raw tokens")
@@ -684,7 +712,7 @@ class SniperBot:
                 else:
                     logger.info(f"Token {mint[:8]}... still on bonding curve")
                     
-                    # CRITICAL FIX: For non-migrated tokens, ensure clean conversion
+                    # CRITICAL FIX: For non-migrated tokens, use position's remaining tokens
                     clean_token_amount = int(token_balance)
                     raw_token_amount = clean_token_amount * 1000000  # 6 decimals for PumpFun
                     
@@ -745,7 +773,7 @@ class SniperBot:
                 position.status = 'close_failed'
                 
                 # Still remove from positions if we can't sell (to free up slots)
-                if reason == "migration" or reason == "max_age":
+                if reason in ["migration", "max_age", "no_data"]:
                     logger.warning(f"Removing unsellable position {mint[:8]}... to free slot")
                     if self.telegram:
                         await self.telegram.send_message(
@@ -778,8 +806,8 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with multi-target profit taking")
-            logger.info("📈 Targets: 2x (40%), 3x (30%), 5x (30%)")
+            logger.info("✅ Bot running with fast exit strategy")
+            logger.info("📈 Targets: 1.5x (50%), 2x (30%), 3x (20%)")
             
             last_stats_time = time.time()
             
