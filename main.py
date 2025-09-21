@@ -238,6 +238,9 @@ class SniperBot:
         try:
             mint = token_data['mint']
             
+            # CRITICAL: Update DEX with WebSocket data for accurate bonding curve detection
+            self.dex.update_token_data(mint, token_data)
+            
             # Skip if not running or paused
             if not self.running or self.paused:
                 logger.debug(f"Skipping token - running:{self.running}, paused:{self.paused}")
