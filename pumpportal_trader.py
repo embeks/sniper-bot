@@ -87,23 +87,36 @@ class PumpPortalTrader:
                     is_v0 = len(raw_tx_bytes) == 544 or (raw_tx_bytes[0] & 0x80) != 0
                     
                     if is_v0:
-                        # V0 transactions from PumpPortal are already prepared
-                        # Just send them directly - NO SIGNING
-                        logger.info(f"V0 transaction from PumpPortal - sending directly")
-                        signed_tx_bytes = raw_tx_bytes
+                        logger.info(f"V0 transaction detected - needs signing")
+                        try:
+                            from solders.transaction import VersionedTransaction
+                            
+                            # Parse the unsigned v0 transaction to get the message
+                            unsigned_tx = VersionedTransaction.from_bytes(raw_tx_bytes)
+                            message = unsigned_tx.message
+                            
+                            # Create a NEW VersionedTransaction with the message and keypair
+                            # This constructor signs the message with your keypair
+                            signed_tx = VersionedTransaction(message, [self.wallet.keypair])
+                            signed_tx_bytes = bytes(signed_tx)
+                            
+                            logger.info(f"Created signed v0 transaction ({len(signed_tx_bytes)} bytes)")
+                            
+                        except Exception as e:
+                            logger.error(f"Failed to sign v0 transaction: {e}")
+                            return None
                     else:
-                        # Legacy transactions might need signing
-                        logger.info(f"Legacy transaction - may need signing")
+                        # Legacy transactions
+                        logger.info(f"Legacy transaction - signing with solana-py")
                         try:
                             from solana.transaction import Transaction
                             tx = Transaction.deserialize(raw_tx_bytes)
                             tx.sign_partial([self.wallet.keypair])
                             signed_tx_bytes = tx.serialize()
                             logger.info("Signed legacy transaction")
-                        except:
-                            # If signing fails, send as-is
-                            logger.info("Could not sign, sending as-is")
-                            signed_tx_bytes = raw_tx_bytes
+                        except Exception as e:
+                            logger.error(f"Failed to sign legacy transaction: {e}")
+                            return None
                     
                     logger.info(f"Sending transaction for {mint[:8]}...")
                     
@@ -229,23 +242,36 @@ class PumpPortalTrader:
                     is_v0 = len(raw_tx_bytes) == 544 or (raw_tx_bytes[0] & 0x80) != 0
                     
                     if is_v0:
-                        # V0 transactions from PumpPortal are already prepared
-                        # Just send them directly - NO SIGNING
-                        logger.info(f"V0 transaction from PumpPortal - sending directly")
-                        signed_tx_bytes = raw_tx_bytes
+                        logger.info(f"V0 transaction detected - needs signing")
+                        try:
+                            from solders.transaction import VersionedTransaction
+                            
+                            # Parse the unsigned v0 transaction to get the message
+                            unsigned_tx = VersionedTransaction.from_bytes(raw_tx_bytes)
+                            message = unsigned_tx.message
+                            
+                            # Create a NEW VersionedTransaction with the message and keypair
+                            # This constructor signs the message with your keypair
+                            signed_tx = VersionedTransaction(message, [self.wallet.keypair])
+                            signed_tx_bytes = bytes(signed_tx)
+                            
+                            logger.info(f"Created signed v0 transaction ({len(signed_tx_bytes)} bytes)")
+                            
+                        except Exception as e:
+                            logger.error(f"Failed to sign v0 transaction: {e}")
+                            return None
                     else:
-                        # Legacy transactions might need signing
-                        logger.info(f"Legacy transaction - may need signing")
+                        # Legacy transactions
+                        logger.info(f"Legacy transaction - signing with solana-py")
                         try:
                             from solana.transaction import Transaction
                             tx = Transaction.deserialize(raw_tx_bytes)
                             tx.sign_partial([self.wallet.keypair])
                             signed_tx_bytes = tx.serialize()
                             logger.info("Signed legacy transaction")
-                        except:
-                            # If signing fails, send as-is
-                            logger.info("Could not sign, sending as-is")
-                            signed_tx_bytes = raw_tx_bytes
+                        except Exception as e:
+                            logger.error(f"Failed to sign legacy transaction: {e}")
+                            return None
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
                     
