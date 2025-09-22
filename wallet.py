@@ -229,10 +229,10 @@ class WalletManager:
                 'is_profit': False
             }
     
-    def get_token_decimals(self, mint: str) -> Tuple[int, str]:
+    def get_token_decimals(self, mint: str) -> int:
         """
         Get the decimals for a specific token mint.
-        Returns: (decimals, source) where source is 'onchain' or 'fallback'
+        Returns: decimals (int) - just the decimal value
         
         CRITICAL FIX: Properly decode SPL Token Mint layout to read decimals at byte offset 44
         """
@@ -252,7 +252,8 @@ class WalletManager:
                         mint_bytes = base64.b64decode(mint_data)
                     except:
                         logger.warning(f"Failed to decode base64 data for {mint[:8]}...")
-                        return 6, "fallback"
+                        logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
+                        return 6
                 elif isinstance(mint_data, bytes):
                     # It's already bytes
                     mint_bytes = mint_data
@@ -262,16 +263,18 @@ class WalletManager:
                         mint_bytes = base64.b64decode(mint_data[0])
                     else:
                         logger.warning(f"Unknown encoding: {mint_data[1]}")
-                        return 6, "fallback"
+                        logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
+                        return 6
                 elif isinstance(mint_data, dict) and 'parsed' in mint_data:
                     # Parsed JSON response
                     parsed_info = mint_data.get('parsed', {}).get('info', {})
                     decimals = parsed_info.get('decimals', 6)
                     logger.info(f"Token {mint[:8]}... has {decimals} decimals (source: parsed)")
-                    return decimals, "onchain"
+                    return decimals
                 else:
                     logger.warning(f"Unknown data format for {mint[:8]}...")
-                    return 6, "fallback"
+                    logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
+                    return 6
                 
                 # SPL Token Mint Layout (165 bytes total):
                 # 0-4: COption<Pubkey> mint_authority (36 bytes: 4 byte discriminator + 32 byte pubkey)
@@ -287,21 +290,23 @@ class WalletManager:
                     # Sanity check - decimals should be reasonable (0-18 typically, 6-9 for most tokens)
                     if decimals > 12:
                         logger.warning(f"Suspicious decimals value {decimals} for {mint[:8]}..., using fallback")
-                        return 6, "fallback"
+                        logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
+                        return 6
                     
                     logger.info(f"Token {mint[:8]}... has {decimals} decimals (source: onchain)")
-                    return decimals, "onchain"
+                    return decimals
                 else:
                     logger.warning(f"Mint data too short ({len(mint_bytes)} bytes) for {mint[:8]}...")
-                    return 6, "fallback"
+                    logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
+                    return 6
             
             # No account found or no data
-            logger.debug(f"Could not fetch decimals for {mint[:8]}..., defaulting to 6")
-            return 6, "fallback"
+            logger.debug(f"Could not fetch decimals for {mint[:8]}..., defaulting to 6 (source: fallback)")
+            return 6
             
         except Exception as e:
-            logger.debug(f"Failed to get token decimals: {e}, defaulting to 6")
-            return 6, "fallback"
+            logger.debug(f"Failed to get token decimals: {e}, defaulting to 6 (source: fallback)")
+            return 6
     
     def log_wallet_status(self):
         """Log current wallet status"""
