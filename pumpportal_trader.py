@@ -1,6 +1,8 @@
 """
 PumpPortal Trader - Use their API to get properly formatted transactions
-REFACTORED: Proper handling of versioned (v0) and legacy transactions
+FIXED: Properly handles UI amounts for sells with tokenDecimals parameter
+FIXED: Checks for invalid signatures (all 1's) and handles them properly
+FIXED: Better handling of versioned vs legacy transactions
 """
 
 import aiohttp
@@ -97,9 +99,9 @@ class PumpPortalTrader:
                         logger.error(f"Transaction too small: {len(raw_tx_bytes)} bytes")
                         return None
                     
-                    # Detect transaction type by examining first byte
-                    # Versioned transactions have high bit set (0x80)
-                    is_versioned = (raw_tx_bytes[0] & 0x80) != 0
+                    # Detect transaction type by examining first byte and size
+                    # Versioned transactions have high bit set (0x80) or are exactly 544 bytes
+                    is_versioned = (raw_tx_bytes[0] & 0x80) != 0 or len(raw_tx_bytes) == 544
                     
                     if is_versioned:
                         logger.info("Detected versioned (v0) transaction")
@@ -108,7 +110,7 @@ class PumpPortalTrader:
                             # Parse and sign versioned transaction using solders
                             vt = VersionedTransaction.from_bytes(raw_tx_bytes)
                             
-                            # Sign in-place with wallet keypair
+                            # Sign with wallet keypair
                             vt.sign([self.wallet.keypair])
                             
                             # Get signed bytes
@@ -198,25 +200,36 @@ class PumpPortalTrader:
             
             # PumpPortal expects UI amounts when denominatedInSol is "false"
             ui_amount = float(token_amount)
-            logger.info(f"Selling {ui_amount:.6f} UI tokens")
+            
+            # Sanity check on UI amount
+            if ui_amount <= 0:
+                logger.error(f"Invalid UI amount: {ui_amount}")
+                return None
+            
+            # Log for debugging
+            logger.info(f"=== SELL TRANSACTION ===")
+            logger.info(f"Token: {mint[:8]}...")
+            logger.info(f"UI Amount: {ui_amount:.6f} tokens")
+            logger.info(f"Decimals: {token_decimals}")
+            logger.info(f"Verification - Raw atoms would be: {int(ui_amount * 10**token_decimals)}")
+            logger.info(f"=======================")
             
             payload = {
                 "publicKey": wallet_pubkey,
                 "action": "sell",
                 "mint": mint,
-                "denominatedInSol": "false",  # API expects string "false" not boolean
+                "denominatedInSol": "false",  # CRITICAL: Must be string "false" for token amounts
                 "amount": ui_amount,  # UI amount as float
                 "slippage": slippage,
                 "priorityFee": 0.0001,
                 "pool": "pump",
-                "tokenDecimals": token_decimals  # Required for UI amount sells
+                "tokenDecimals": token_decimals  # CRITICAL: Required for UI amount sells
             }
             
             if bonding_curve_key:
                 payload["bondingCurveKey"] = bonding_curve_key
             
-            logger.info(f"Requesting sell transaction for {mint[:8]}... amount: {ui_amount:.6f} UI tokens (decimals: {token_decimals})")
-            logger.debug(f"Using wallet: {wallet_pubkey}")
+            logger.debug(f"Sell payload: {json.dumps(payload, indent=2)}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, json=payload) as response:
@@ -224,7 +237,11 @@ class PumpPortalTrader:
                         error_text = await response.text()
                         logger.error(f"PumpPortal API error ({response.status}): {error_text}")
                         if response.status == 400:
-                            logger.error(f"Bad Request - UI amount: {ui_amount:.6f}, decimals: {token_decimals}")
+                            logger.error(f"Bad Request Details:")
+                            logger.error(f"  - UI amount sent: {ui_amount:.6f}")
+                            logger.error(f"  - Token decimals: {token_decimals}")
+                            logger.error(f"  - denominatedInSol: false (string)")
+                            logger.error(f"Check if token has migrated or if amount is valid")
                         return None
                     
                     content_type = response.headers.get('content-type', '')
@@ -266,9 +283,8 @@ class PumpPortalTrader:
                             logger.error(f"Transaction content: {raw_tx_bytes.hex()[:200]}")
                         return None
                     
-                    # Detect transaction type by examining first byte
-                    # Versioned transactions have high bit set (0x80)
-                    is_versioned = (raw_tx_bytes[0] & 0x80) != 0
+                    # Detect transaction type
+                    is_versioned = (raw_tx_bytes[0] & 0x80) != 0 or len(raw_tx_bytes) == 544
                     
                     if is_versioned:
                         logger.info("Detected versioned (v0) transaction")
@@ -277,7 +293,7 @@ class PumpPortalTrader:
                             # Parse and sign versioned transaction using solders
                             vt = VersionedTransaction.from_bytes(raw_tx_bytes)
                             
-                            # Sign in-place with wallet keypair
+                            # Sign with wallet keypair
                             vt.sign([self.wallet.keypair])
                             
                             # Get signed bytes
@@ -310,7 +326,7 @@ class PumpPortalTrader:
                             return None
                     
                     # Send the signed transaction
-                    logger.info(f"Sending signed transaction for {mint[:8]}...")
+                    logger.info(f"Sending signed sell transaction for {mint[:8]}...")
                     
                     # First attempt with options
                     try:
@@ -323,7 +339,7 @@ class PumpPortalTrader:
                             logger.warning("Transaction failed - received invalid signature")
                             raise Exception("Invalid signature returned")
                         
-                        logger.info(f"✅ Transaction sent successfully: {sig}")
+                        logger.info(f"✅ Sell transaction sent successfully: {sig}")
                         return sig
                         
                     except Exception as e:
@@ -339,7 +355,7 @@ class PumpPortalTrader:
                                 logger.error("Transaction failed - received invalid signature on retry")
                                 return None
                             
-                            logger.info(f"✅ Transaction sent on retry: {sig}")
+                            logger.info(f"✅ Sell transaction sent on retry: {sig}")
                             return sig
                             
                         except Exception as e2:
