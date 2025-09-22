@@ -106,14 +106,22 @@ class PumpPortalTrader:
                         logger.info("Detected versioned (v0) transaction")
                         
                         try:
-                            # Parse and sign versioned transaction using solders
+                            # Parse versioned transaction using solders
                             vt = VersionedTransaction.from_bytes(raw_tx_bytes)
                             
-                            # Sign with wallet keypair
-                            vt.sign([self.wallet.keypair])
+                            # For v0 transactions, we need to reconstruct with signatures
+                            # Create a new VersionedTransaction with our signature
+                            from solders.message import MessageV0
                             
-                            # Get signed bytes
-                            signed_tx_bytes = bytes(vt)
+                            # Get the message from the transaction
+                            message = vt.message
+                            
+                            # Create signature for the message
+                            signature = self.wallet.keypair.sign_message(bytes(message))
+                            
+                            # Create new transaction with signature
+                            signed_vt = VersionedTransaction(message, [signature])
+                            signed_tx_bytes = bytes(signed_vt)
                             logger.info(f"Signed v0 transaction ({len(signed_tx_bytes)} bytes)")
                             
                         except Exception as e:
@@ -299,14 +307,19 @@ class PumpPortalTrader:
                         logger.info("Detected versioned (v0) transaction")
                         
                         try:
-                            # Parse and sign versioned transaction using solders
+                            # Parse versioned transaction using solders
                             vt = VersionedTransaction.from_bytes(raw_tx_bytes)
                             
-                            # Sign with wallet keypair
-                            vt.sign([self.wallet.keypair])
+                            # For v0 transactions, we need to reconstruct with signatures
+                            # Get the message from the transaction
+                            message = vt.message
                             
-                            # Get signed bytes
-                            signed_tx_bytes = bytes(vt)
+                            # Create signature for the message
+                            signature = self.wallet.keypair.sign_message(bytes(message))
+                            
+                            # Create new transaction with signature
+                            signed_vt = VersionedTransaction(message, [signature])
+                            signed_tx_bytes = bytes(signed_vt)
                             logger.info(f"Signed v0 transaction ({len(signed_tx_bytes)} bytes)")
                             
                         except Exception as e:
