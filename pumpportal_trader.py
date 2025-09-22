@@ -174,6 +174,10 @@ class PumpPortalTrader:
                 logger.error(f"Invalid UI amount: {ui_amount}")
                 return None
             
+            # Handle decimals - it might be a tuple (decimals, source) or just an int
+            if isinstance(token_decimals, tuple):
+                token_decimals = token_decimals[0]  # Extract just the decimals value
+            
             logger.info(f"=== SELL TRANSACTION ===")
             logger.info(f"Token: {mint[:8]}...")
             logger.info(f"UI Amount: {ui_amount:.6f} tokens")
