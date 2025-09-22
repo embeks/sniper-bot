@@ -1,13 +1,14 @@
 """
-Wallet Management - Deterministic verification and balance tracking
-FIXED: Returns UI amounts for position tracking, not raw amounts
-FIXED: Added get_token_balance_raw() method for getting raw token amounts
+Wallet Management - Fixed decimals fetching from SPL token mint
+CRITICAL FIX: Properly decode mint account to get decimals at byte offset 44
 """
 
 import base58
+import base64
 import logging
 import json
-from typing import Optional, Dict, List
+import struct
+from typing import Optional, Dict, List, Tuple
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.rpc.responses import GetTokenAccountsByOwnerResp
@@ -228,35 +229,81 @@ class WalletManager:
                 'is_profit': False
             }
     
-    def get_token_decimals(self, mint: str) -> int:
-        """Get the decimals for a specific token mint"""
+    def get_token_decimals(self, mint: str) -> Tuple[int, str]:
+        """
+        Get the decimals for a specific token mint.
+        Returns: (decimals, source) where source is 'onchain' or 'fallback'
+        
+        CRITICAL FIX: Properly decode SPL Token Mint layout to read decimals at byte offset 44
+        """
         try:
             mint_pubkey = Pubkey.from_string(mint)
             
             # Get mint account info
             response = self.client.get_account_info(mint_pubkey)
             if response.value and response.value.data:
-                # Decode mint data - decimals is at byte offset 44
+                # Try to decode the account data
                 mint_data = response.value.data
-                if isinstance(mint_data, bytes):
-                    # Decimals is a single byte at position 44 in Mint layout
-                    decimals = mint_data[44] if len(mint_data) > 44 else 6
-                    logger.debug(f"Token {mint[:8]}... has {decimals} decimals")
-                    return decimals
+                
+                # Handle base64 encoded data
+                if isinstance(mint_data, str):
+                    try:
+                        # It's base64 encoded
+                        mint_bytes = base64.b64decode(mint_data)
+                    except:
+                        logger.warning(f"Failed to decode base64 data for {mint[:8]}...")
+                        return 6, "fallback"
+                elif isinstance(mint_data, bytes):
+                    # It's already bytes
+                    mint_bytes = mint_data
+                elif isinstance(mint_data, list) and len(mint_data) == 2:
+                    # It's the [data, encoding] format from RPC
+                    if mint_data[1] == 'base64':
+                        mint_bytes = base64.b64decode(mint_data[0])
+                    else:
+                        logger.warning(f"Unknown encoding: {mint_data[1]}")
+                        return 6, "fallback"
                 elif isinstance(mint_data, dict) and 'parsed' in mint_data:
                     # Parsed JSON response
                     parsed_info = mint_data.get('parsed', {}).get('info', {})
                     decimals = parsed_info.get('decimals', 6)
-                    logger.debug(f"Token {mint[:8]}... has {decimals} decimals")
-                    return decimals
+                    logger.info(f"Token {mint[:8]}... has {decimals} decimals (source: parsed)")
+                    return decimals, "onchain"
+                else:
+                    logger.warning(f"Unknown data format for {mint[:8]}...")
+                    return 6, "fallback"
+                
+                # SPL Token Mint Layout (165 bytes total):
+                # 0-4: COption<Pubkey> mint_authority (36 bytes: 4 byte discriminator + 32 byte pubkey)
+                # 36-44: u64 supply (8 bytes)
+                # 44: u8 decimals (1 byte) <-- THIS IS WHAT WE NEED
+                # 45: bool is_initialized (1 byte)
+                # 46-82: COption<Pubkey> freeze_authority (36 bytes)
+                
+                if len(mint_bytes) > 44:
+                    # Read the decimals byte at offset 44
+                    decimals = mint_bytes[44]
+                    
+                    # Sanity check - decimals should be reasonable (0-18 typically, 6-9 for most tokens)
+                    if decimals > 12:
+                        logger.warning(f"Suspicious decimals value {decimals} for {mint[:8]}..., using fallback")
+                        return 6, "fallback"
+                    
+                    logger.info(f"Token {mint[:8]}... has {decimals} decimals (source: onchain)")
+                    return decimals, "onchain"
+                else:
+                    logger.warning(f"Mint data too short ({len(mint_bytes)} bytes) for {mint[:8]}...")
+                    return 6, "fallback"
             
-            # Default to 6 for PumpFun tokens
+            # No account found or no data
             logger.debug(f"Could not fetch decimals for {mint[:8]}..., defaulting to 6")
-            return 6
+            return 6, "fallback"
             
         except Exception as e:
             logger.debug(f"Failed to get token decimals: {e}, defaulting to 6")
-            return 6
+            return 6, "fallback"
+    
+    def log_wallet_status(self):
         """Log current wallet status"""
         try:
             sol_balance = self.get_sol_balance()
