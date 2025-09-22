@@ -83,13 +83,34 @@ class PumpPortalTrader:
                         logger.error(f"Transaction too small: {len(raw_tx_bytes)} bytes")
                         return None
                     
-                    # NO SIGNING - PumpPortal already handled it
+                    # Check if it's a v0 transaction (544 bytes or high bit set)
+                    is_v0 = len(raw_tx_bytes) == 544 or (raw_tx_bytes[0] & 0x80) != 0
+                    
+                    if is_v0:
+                        # V0 transactions from PumpPortal are already prepared
+                        # Just send them directly - NO SIGNING
+                        logger.info(f"V0 transaction from PumpPortal - sending directly")
+                        signed_tx_bytes = raw_tx_bytes
+                    else:
+                        # Legacy transactions might need signing
+                        logger.info(f"Legacy transaction - may need signing")
+                        try:
+                            from solana.transaction import Transaction
+                            tx = Transaction.deserialize(raw_tx_bytes)
+                            tx.sign_partial([self.wallet.keypair])
+                            signed_tx_bytes = tx.serialize()
+                            logger.info("Signed legacy transaction")
+                        except:
+                            # If signing fails, send as-is
+                            logger.info("Could not sign, sending as-is")
+                            signed_tx_bytes = raw_tx_bytes
+                    
                     logger.info(f"Sending transaction for {mint[:8]}...")
                     
                     # Send with retry logic
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-                        response = self.client.send_raw_transaction(raw_tx_bytes, opts)
+                        response = self.client.send_raw_transaction(signed_tx_bytes, opts)
                         sig = str(response.value)
                         
                         if sig.startswith("1111111"):
@@ -204,13 +225,34 @@ class PumpPortalTrader:
                         logger.error(f"Transaction too small: {len(raw_tx_bytes)} bytes")
                         return None
                     
-                    # NO SIGNING - PumpPortal already handled it
+                    # Check if it's a v0 transaction (544 bytes or high bit set)
+                    is_v0 = len(raw_tx_bytes) == 544 or (raw_tx_bytes[0] & 0x80) != 0
+                    
+                    if is_v0:
+                        # V0 transactions from PumpPortal are already prepared
+                        # Just send them directly - NO SIGNING
+                        logger.info(f"V0 transaction from PumpPortal - sending directly")
+                        signed_tx_bytes = raw_tx_bytes
+                    else:
+                        # Legacy transactions might need signing
+                        logger.info(f"Legacy transaction - may need signing")
+                        try:
+                            from solana.transaction import Transaction
+                            tx = Transaction.deserialize(raw_tx_bytes)
+                            tx.sign_partial([self.wallet.keypair])
+                            signed_tx_bytes = tx.serialize()
+                            logger.info("Signed legacy transaction")
+                        except:
+                            # If signing fails, send as-is
+                            logger.info("Could not sign, sending as-is")
+                            signed_tx_bytes = raw_tx_bytes
+                    
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
                     
                     # Send with retry logic
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-                        response = self.client.send_raw_transaction(raw_tx_bytes, opts)
+                        response = self.client.send_raw_transaction(signed_tx_bytes, opts)
                         sig = str(response.value)
                         
                         if sig.startswith("1111111"):
