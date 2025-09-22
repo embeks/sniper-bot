@@ -1,8 +1,6 @@
 """
-PumpPortal Trader - Use their API to get properly formatted transactions
-FIXED: Compatible with solana-py 0.32.0 
-FIXED: Properly handles UI amounts for sells with tokenDecimals parameter
-FIXED: Checks for invalid signatures (all 1's) and handles them properly
+PumpPortal Trader - Minimal fix version
+NO SIGNING - PumpPortal handles everything when we provide publicKey
 """
 
 import aiohttp
@@ -10,13 +8,6 @@ import base64
 import json
 import logging
 from typing import Optional
-
-# Import solders for versioned transactions
-from solders.transaction import VersionedTransaction
-from solders.keypair import Keypair as SoldersKeypair
-
-# Import solana-py for legacy transactions
-from solana.transaction import Transaction
 from solana.rpc.types import TxOpts
 
 logger = logging.getLogger(__name__)
@@ -38,21 +29,19 @@ class PumpPortalTrader:
     ) -> Optional[str]:
         """Get a buy transaction from PumpPortal API"""
         try:
-            # Ensure publicKey matches our signing wallet
             wallet_pubkey = str(self.wallet.pubkey)
             
             payload = {
                 "publicKey": wallet_pubkey,
                 "action": "buy",
                 "mint": mint,
-                "denominatedInSol": "true",  # API expects string "true" not boolean
+                "denominatedInSol": "true",
                 "amount": sol_amount,
                 "slippage": slippage,
                 "priorityFee": 0.0001,
                 "pool": "pump"
             }
             
-            # Add bonding curve if provided
             if bonding_curve_key:
                 payload["bondingCurveKey"] = bonding_curve_key
             
@@ -70,11 +59,9 @@ class PumpPortalTrader:
                     
                     # Read response based on content type
                     if 'application/json' in content_type:
-                        # JSON response - decode base64 transaction
                         response_text = await response.text()
                         try:
                             data = json.loads(response_text)
-                            # Check for transaction or signedTransaction field
                             tx_base64 = data.get("transaction") or data.get("signedTransaction")
                             if not tx_base64:
                                 logger.error("No transaction field in JSON response")
@@ -85,11 +72,9 @@ class PumpPortalTrader:
                             logger.error(f"Failed to decode JSON response: {e}")
                             return None
                     elif 'application/octet-stream' in content_type:
-                        # Binary response - use directly
                         raw_tx_bytes = await response.read()
                         logger.info(f"Received raw binary transaction ({len(raw_tx_bytes)} bytes)")
                     else:
-                        # Unknown content type - try as raw bytes
                         raw_tx_bytes = await response.read()
                         logger.warning(f"Unknown content-type: {content_type}, treating as raw bytes")
                     
@@ -98,81 +83,15 @@ class PumpPortalTrader:
                         logger.error(f"Transaction too small: {len(raw_tx_bytes)} bytes")
                         return None
                     
-                    # Detect transaction type by examining first byte and size
-                    # Versioned transactions have high bit set (0x80) or are exactly 544 bytes
-                    is_versioned = (raw_tx_bytes[0] & 0x80) != 0 or len(raw_tx_bytes) == 544
+                    # NO SIGNING - PumpPortal already handled it
+                    logger.info(f"Sending transaction for {mint[:8]}...")
                     
-                    if is_versioned:
-                        logger.info("Detected versioned (v0) transaction")
-                        
-                        try:
-                            # Parse versioned transaction using solders
-                            vt = VersionedTransaction.from_bytes(raw_tx_bytes)
-                            
-                            # For v0 transactions, we need to reconstruct with signatures
-                            # Create a new VersionedTransaction with our signature
-                            from solders.message import MessageV0
-                            
-                            # Get the message from the transaction
-                            message = vt.message
-                            
-                            # Create signature for the message
-                            signature = self.wallet.keypair.sign_message(bytes(message))
-                            
-                            # Create new transaction with signature
-                            signed_vt = VersionedTransaction(message, [signature])
-                            signed_tx_bytes = bytes(signed_vt)
-                            logger.info(f"Signed v0 transaction ({len(signed_tx_bytes)} bytes)")
-                            
-                        except Exception as e:
-                            logger.error(f"Failed to sign v0 transaction: {e}")
-                            return None
-                    else:
-                        logger.info("Detected legacy transaction")
-                        
-                        try:
-                            # Parse legacy transaction
-                            tx = Transaction.deserialize(raw_tx_bytes)
-                            
-                            # For solana-py 0.32.0, we need to sign differently
-                            # The transaction needs to be signed with the keypair
-                            # We'll use the solders keypair directly
-                            
-                            # Sign using solders keypair directly
-                            # Transaction.sign_partial works with solders keypairs
-                            tx.sign_partial([self.wallet.keypair])
-                            
-                            # Get signed bytes
-                            signed_tx_bytes = tx.serialize()
-                            logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
-                            
-                        except Exception as e:
-                            logger.error(f"Failed to sign legacy transaction: {e}")
-                            # Try alternative signing method
-                            try:
-                                # If sign_partial doesn't work, try recreating the transaction
-                                logger.info("Attempting alternative signing method...")
-                                # Just send the raw bytes - PumpPortal might have pre-signed it
-                                signed_tx_bytes = raw_tx_bytes
-                                logger.info("Using raw transaction bytes (possibly pre-signed)")
-                            except Exception as e2:
-                                logger.error(f"Alternative signing also failed: {e2}")
-                                return None
-                    
-                    # Send the transaction bytes
-                    logger.info(f"Sending transaction for {mint[:8]}... ({len(raw_tx_bytes)} bytes)")
-                    
-                    # PumpPortal transactions might be pre-configured for our wallet
-                    # since we provided our publicKey in the request
-                    signed_tx_bytes = raw_tx_bytes
-                    
-                    # First attempt with options
+                    # Send with retry logic
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-                        response = self.client.send_raw_transaction(signed_tx_bytes, opts)
+                        response = self.client.send_raw_transaction(raw_tx_bytes, opts)
                         sig = str(response.value)
                         
-                        # Check for invalid signature (all 1's)
                         if sig.startswith("1111111"):
                             logger.warning("Transaction failed - received invalid signature")
                             raise Exception("Invalid signature returned")
@@ -183,12 +102,10 @@ class PumpPortalTrader:
                     except Exception as e:
                         logger.warning(f"First send attempt failed: {e}")
                         
-                        # Retry without options
                         try:
-                            response = self.client.send_raw_transaction(signed_tx_bytes)
+                            response = self.client.send_raw_transaction(raw_tx_bytes)
                             sig = str(response.value)
                             
-                            # Check for invalid signature
                             if sig.startswith("1111111"):
                                 logger.error("Transaction failed - received invalid signature on retry")
                                 return None
@@ -209,25 +126,20 @@ class PumpPortalTrader:
     async def create_sell_transaction(
         self,
         mint: str,
-        token_amount: float,  # Expects UI amount from main.py
+        token_amount: float,  # UI amount
         bonding_curve_key: str = None,
         slippage: int = 50,
-        token_decimals: int = 6  # Default to 6 for PumpFun tokens
+        token_decimals: int = 6
     ) -> Optional[str]:
         """Get a sell transaction from PumpPortal API - expects UI token amounts"""
         try:
-            # Ensure publicKey matches our signing wallet
             wallet_pubkey = str(self.wallet.pubkey)
-            
-            # PumpPortal expects UI amounts when denominatedInSol is "false"
             ui_amount = float(token_amount)
             
-            # Sanity check on UI amount
             if ui_amount <= 0:
                 logger.error(f"Invalid UI amount: {ui_amount}")
                 return None
             
-            # Log for debugging
             logger.info(f"=== SELL TRANSACTION ===")
             logger.info(f"Token: {mint[:8]}...")
             logger.info(f"UI Amount: {ui_amount:.6f} tokens")
@@ -239,12 +151,12 @@ class PumpPortalTrader:
                 "publicKey": wallet_pubkey,
                 "action": "sell",
                 "mint": mint,
-                "denominatedInSol": "false",  # CRITICAL: Must be string "false" for token amounts
-                "amount": ui_amount,  # UI amount as float
+                "denominatedInSol": "false",
+                "amount": ui_amount,
                 "slippage": slippage,
                 "priorityFee": 0.0001,
                 "pool": "pump",
-                "tokenDecimals": token_decimals  # CRITICAL: Required for UI amount sells
+                "tokenDecimals": token_decimals
             }
             
             if bonding_curve_key:
@@ -262,18 +174,15 @@ class PumpPortalTrader:
                             logger.error(f"  - UI amount sent: {ui_amount:.6f}")
                             logger.error(f"  - Token decimals: {token_decimals}")
                             logger.error(f"  - denominatedInSol: false (string)")
-                            logger.error(f"Check if token has migrated or if amount is valid")
                         return None
                     
                     content_type = response.headers.get('content-type', '')
                     
                     # Read response based on content type
                     if 'application/json' in content_type:
-                        # JSON response - decode base64 transaction
                         response_text = await response.text()
                         try:
                             data = json.loads(response_text)
-                            # Check for transaction or signedTransaction field
                             tx_base64 = data.get("transaction") or data.get("signedTransaction")
                             if not tx_base64:
                                 logger.error("No transaction field in JSON response")
@@ -284,81 +193,26 @@ class PumpPortalTrader:
                             logger.error(f"Failed to decode JSON response: {e}")
                             return None
                     elif 'application/octet-stream' in content_type:
-                        # Binary response - use directly
                         raw_tx_bytes = await response.read()
                         logger.info(f"Received raw binary transaction ({len(raw_tx_bytes)} bytes)")
                     else:
-                        # Unknown content type - try as raw bytes
                         raw_tx_bytes = await response.read()
                         logger.warning(f"Unknown content-type: {content_type}, treating as raw bytes")
-                    
-                    # Debug: Log first few bytes
-                    if len(raw_tx_bytes) > 0:
-                        first_bytes = raw_tx_bytes[:10].hex() if len(raw_tx_bytes) >= 10 else raw_tx_bytes.hex()
-                        logger.debug(f"First bytes of transaction: {first_bytes}")
                     
                     # Validate transaction size
                     if len(raw_tx_bytes) < 100:
                         logger.error(f"Transaction too small: {len(raw_tx_bytes)} bytes")
-                        if len(raw_tx_bytes) > 0:
-                            logger.error(f"Transaction content: {raw_tx_bytes.hex()[:200]}")
                         return None
                     
-                    # Detect transaction type
-                    is_versioned = (raw_tx_bytes[0] & 0x80) != 0 or len(raw_tx_bytes) == 544
+                    # NO SIGNING - PumpPortal already handled it
+                    logger.info(f"Sending sell transaction for {mint[:8]}...")
                     
-                    if is_versioned:
-                        logger.info("Detected versioned (v0) transaction (PumpPortal)")
-                        
-                        # PumpPortal returns unsigned v0 transactions that need signing
-                        # However, the transaction structure might already be complete
-                        # Let's try sending it directly first
-                        logger.info("Attempting to send v0 transaction directly (may be pre-configured)...")
-                        signed_tx_bytes = raw_tx_bytes
-                    else:
-                        logger.info("Detected legacy transaction")
-                        
-                        try:
-                            # Parse legacy transaction
-                            tx = Transaction.deserialize(raw_tx_bytes)
-                            
-                            # Sign using solders keypair directly
-                            # Transaction.sign_partial works with solders keypairs
-                            tx.sign_partial([self.wallet.keypair])
-                            
-                            # Get signed bytes
-                            signed_tx_bytes = tx.serialize()
-                            logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
-                            
-                        except Exception as e:
-                            logger.error(f"Failed to sign legacy transaction: {e}")
-                            # Try sending raw bytes - might be pre-signed
-                            try:
-                                logger.info("Attempting to send as pre-signed transaction...")
-                                opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-                                response = self.client.send_raw_transaction(raw_tx_bytes, opts)
-                                sig = str(response.value)
-                                
-                                if sig.startswith("1111111"):
-                                    logger.warning("Pre-signed transaction failed")
-                                    return None
-                                
-                                logger.info(f"✅ Pre-signed sell transaction sent: {sig}")
-                                return sig
-                            except Exception as e2:
-                                logger.error(f"Pre-signed send also failed: {e2}")
-                                return None
-                    
-                    # Send the signed transaction
-                    logger.info(f"Sending signed sell transaction for {mint[:8]}...")
-                    
-                    # First attempt with options
+                    # Send with retry logic
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-                        response = self.client.send_raw_transaction(signed_tx_bytes, opts)
+                        response = self.client.send_raw_transaction(raw_tx_bytes, opts)
                         sig = str(response.value)
                         
-                        # Check for invalid signature (all 1's)
                         if sig.startswith("1111111"):
                             logger.warning("Transaction failed - received invalid signature")
                             raise Exception("Invalid signature returned")
@@ -369,12 +223,10 @@ class PumpPortalTrader:
                     except Exception as e:
                         logger.warning(f"First send attempt failed: {e}")
                         
-                        # Retry without options
                         try:
-                            response = self.client.send_raw_transaction(signed_tx_bytes)
+                            response = self.client.send_raw_transaction(raw_tx_bytes)
                             sig = str(response.value)
                             
-                            # Check for invalid signature
                             if sig.startswith("1111111"):
                                 logger.error("Transaction failed - received invalid signature on retry")
                                 return None
