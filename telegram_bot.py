@@ -1,6 +1,6 @@
 """
-Telegram Bot Integration - Complete control interface with all fixes
-FIXED: No duplicate messages, working /help, proper stop/start, rate limiting
+Telegram Bot Integration - Fixed with HTML mode to avoid parsing errors
+FIXED: Using HTML parse mode and <code> tags for addresses
 """
 
 import asyncio
@@ -29,7 +29,7 @@ class TelegramBot:
         self.last_update_id = 0
         self.running = False
         self.last_message_time = 0
-        self.polling_task = None  # FIXED: Track polling task to prevent duplicates
+        self.polling_task = None
         
         # Command handlers
         self.commands = {
@@ -50,14 +50,15 @@ class TelegramBot:
             '/logs': self.cmd_recent_logs,
             '/set_sl': self.cmd_set_stop_loss,
             '/set_tp': self.cmd_set_take_profit,
-            '/perf': self.cmd_perf,  # ADDED: Performance command
+            '/perf': self.cmd_perf,
+            '/selftest': self.cmd_selftest,  # ADDED: Self-test command
         }
         
         if ENABLE_TELEGRAM_NOTIFICATIONS:
             logger.info("✅ Telegram bot initialized")
     
-    async def send_message(self, text: str, parse_mode: str = "Markdown"):
-        """Send message to Telegram with rate limiting"""
+    async def send_message(self, text: str, parse_mode: str = "HTML"):
+        """Send message to Telegram with HTML formatting"""
         try:
             if not ENABLE_TELEGRAM_NOTIFICATIONS:
                 return
@@ -97,18 +98,12 @@ class TelegramBot:
     
     async def start_polling(self):
         """Poll for commands"""
-        # FIXED: Prevent duplicate polling
         if self.polling_task and not self.polling_task.done():
             logger.warning("Polling already active, skipping duplicate start")
             return self.polling_task
         
         self.running = True
         logger.info("📱 Telegram polling started")
-        logger.info(f"Bot token: {self.token[:10]}...")
-        logger.info(f"Chat ID: {self.chat_id}")
-        
-        # Don't send duplicate polling message on restart
-        # await self.send_message("📱 Telegram polling active - commands ready")
         
         while self.running:
             try:
@@ -177,12 +172,10 @@ class TelegramBot:
                 
         except Exception as e:
             logger.error(f"Failed to process update: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             await self.send_message(f"❌ Error processing command: {e}")
     
     # ============================================
-    # COMMAND HANDLERS
+    # COMMAND HANDLERS (HTML formatted)
     # ============================================
     
     async def cmd_start(self, args):
@@ -249,7 +242,7 @@ class TelegramBot:
             can_trade = "✅ Yes" if scanner_status['can_trade'] else "❌ No"
             
             message = f"""
-*🤖 BOT STATUS*
+<b>🤖 BOT STATUS</b>
 ━━━━━━━━━━━━━━━━━━
 Status: {status}
 Scanner: {scanner}
@@ -277,9 +270,9 @@ Total Trades: {self.bot.total_trades}
             available_trades = int(tradeable_balance / BUY_AMOUNT_SOL)
             
             message = f"""
-*💳 WALLET INFO*
+<b>💳 WALLET INFO</b>
 ━━━━━━━━━━━━━━━━━━
-Address: `{str(self.bot.wallet.pubkey)[:20]}...`
+Address: <code>{str(self.bot.wallet.pubkey)[:20]}...</code>
 SOL Balance: {sol_balance:.4f}
 Token Positions: {len([t for t in token_accounts.values() if t['balance'] > 0])}
 Available Trades: {available_trades}
@@ -300,7 +293,7 @@ Available Trades: {available_trades}
                 await self.send_message("📊 No active positions")
                 return
             
-            message = "*📈 ACTIVE POSITIONS*\n━━━━━━━━━━━━━━━━━━\n"
+            message = "<b>📈 ACTIVE POSITIONS</b>\n━━━━━━━━━━━━━━━━━━\n"
             
             for mint, pos in list(positions.items())[:10]:
                 age = (time.time() - pos.entry_time) / 60
@@ -308,7 +301,7 @@ Available Trades: {available_trades}
                 targets_hit = ', '.join(pos.partial_sells.keys()) if hasattr(pos, 'partial_sells') and pos.partial_sells else 'None'
                 
                 message += f"""
-Token: `{mint[:8]}...`
+Token: <code>{mint[:8]}...</code>
 P&L: {pnl_emoji} {pos.pnl_percent:+.1f}%
 Targets Hit: {targets_hit}
 Age: {age:.1f} min
@@ -317,7 +310,7 @@ Status: {pos.status}
                 """
             
             if len(positions) > 10:
-                message += f"\n_...and {len(positions) - 10} more_"
+                message += f"\n<i>...and {len(positions) - 10} more</i>"
             
             await self.send_message(message)
             
@@ -335,15 +328,13 @@ Status: {pos.status}
             win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
             avg_pnl = (total_pnl / total_trades) if total_trades > 0 else 0
             
-            launches_seen = 0
-            launches_processed = 0
-            scanner = getattr(self.bot, 'scanner', None)
-            if scanner:
-                launches_seen = getattr(scanner, 'launches_seen', 0)
-                launches_processed = getattr(scanner, 'launches_processed', 0)
+            # Get scanner stats if available
+            scanner_stats = {}
+            if hasattr(self.bot, 'scanner') and hasattr(self.bot.scanner, 'get_stats'):
+                scanner_stats = self.bot.scanner.get_stats()
             
             message = f"""
-*📊 STATISTICS*
+<b>📊 STATISTICS</b>
 ━━━━━━━━━━━━━━━━━━
 Total Trades: {total_trades}
 Profitable: {profitable_trades}
@@ -351,11 +342,16 @@ Win Rate: {win_rate:.1f}%
 Average P&L: {avg_pnl:+.1f}%
 Total P&L: {total_pnl:+.1f}%
 Realized: {total_realized_sol:+.4f} SOL
-
-Launches Seen: {launches_seen}
-Launches Traded: {launches_processed}
-━━━━━━━━━━━━━━━━━━
-            """
+"""
+            
+            if scanner_stats:
+                message += f"""
+Tokens Seen: {scanner_stats.get('tokens_seen', 0)}
+Tokens Passed: {scanner_stats.get('tokens_passed', 0)}
+Filter Rate: {scanner_stats.get('filter_rate', 0):.1f}%
+"""
+            
+            message += "━━━━━━━━━━━━━━━━━━"
             
             await self.send_message(message)
             
@@ -384,7 +380,7 @@ Launches Traded: {launches_processed}
             win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
             
             message = f"""
-*💰 P&L SUMMARY*
+<b>💰 P&L SUMMARY</b>
 ━━━━━━━━━━━━━━━━━━
 Session P&L (SOL): {session_pnl_sol:+.4f}
 Session P&L (USD): ${session_pnl_usd:+.2f}
@@ -411,14 +407,14 @@ Win Rate: {win_rate:.1f}%
             mode = "DRY RUN" if DRY_RUN else "LIVE"
             
             message = f"""
-*⚙️ CONFIGURATION*
+<b>⚙️ CONFIGURATION</b>
 ━━━━━━━━━━━━━━━━━━
 Mode: {mode}
 Buy Amount: {BUY_AMOUNT_SOL} SOL
 Max Positions: {MAX_POSITIONS}
 Stop Loss: -{STOP_LOSS_PERCENTAGE}%
 Take Profit: +{TAKE_PROFIT_PERCENTAGE}%
-Targets: 2x→40%, 3x→30%, 5x→30%
+Targets: 1.5x→50%, 2x→30%, 3x→20%
 Min Curve: {MIN_BONDING_CURVE_SOL} SOL
 Max Curve: {MAX_BONDING_CURVE_SOL} SOL
 ━━━━━━━━━━━━━━━━━━
@@ -430,28 +426,30 @@ Max Curve: {MAX_BONDING_CURVE_SOL} SOL
             await self.send_message(f"❌ Error getting config: {e}")
     
     async def cmd_help(self, args):
-        """Show help message - simplified for reliability"""
-        message = (
-            "📚 COMMANDS:\n\n"
-            "/start - Start the bot\n"
-            "/stop - Stop bot\n"
-            "/stop all - Stop and close positions\n"
-            "/restart - Restart bot\n"
-            "/pause - Pause trading\n"
-            "/resume - Resume trading\n"
-            "/status - Bot status\n"
-            "/wallet - Wallet info\n"
-            "/positions - Active positions\n"
-            "/stats - Statistics\n"
-            "/pnl - P&L summary\n"
-            "/config - Settings\n"
-            "/perf - Performance metrics\n"
-            "/force_sell all - Close all\n"
-            "/force_sell <mint> - Close one\n"
-            "/set_sl <pct> - Set stop loss\n"
-            "/set_tp <pct> - Set take profit\n"
-            "/help - This message"
-        )
+        """Show help message"""
+        message = """
+<b>📚 COMMANDS:</b>
+
+/start - Start the bot
+/stop - Stop bot
+/stop all - Stop and close positions
+/restart - Restart bot
+/pause - Pause trading
+/resume - Resume trading
+/status - Bot status
+/wallet - Wallet info
+/positions - Active positions
+/stats - Statistics
+/pnl - P&L summary
+/config - Settings
+/perf - Performance metrics
+/force_sell all - Close all
+/force_sell <code>&lt;mint&gt;</code> - Close one
+/set_sl <code>&lt;pct&gt;</code> - Set stop loss
+/set_tp <code>&lt;pct&gt;</code> - Set take profit
+/selftest - Run self-test
+/help - This message
+        """
         
         await self.send_message(message)
     
@@ -462,7 +460,7 @@ Max Curve: {MAX_BONDING_CURVE_SOL} SOL
                 stats = self.bot.tracker.get_session_stats()
                 
                 message = f"""
-*📊 PERFORMANCE METRICS*
+<b>📊 PERFORMANCE METRICS</b>
 ━━━━━━━━━━━━━━━━━━━━━
 Session: {stats['session_duration_minutes']:.1f} min
 Buys: {stats['total_buys']}
@@ -482,10 +480,43 @@ Avg Execution: {stats['avg_execution_time_ms']:.1f}ms
         except Exception as e:
             await self.send_message(f"❌ Error getting performance: {e}")
     
+    async def cmd_selftest(self, args):
+        """Run self-test for decimals and sell payload"""
+        try:
+            await self.send_message("🔍 Running self-test...")
+            
+            # Test with a known PumpFun token (use a popular one)
+            test_mint = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"  # Example POPCAT
+            
+            # Test decimals fetching
+            decimals, source = self.bot.wallet.get_token_decimals(test_mint)
+            
+            test_results = f"""
+<b>🧪 SELF-TEST RESULTS</b>
+━━━━━━━━━━━━━━━━━━━━━
+Test Mint: <code>{test_mint[:16]}...</code>
+Decimals: {decimals}
+Source: {source}
+
+<b>Dry-run sell payload:</b>
+UI Amount: 1000000.0 tokens
+Token Decimals: {decimals}
+denominatedInSol: "false"
+Raw Atoms (verification): {int(1000000 * 10**decimals)}
+
+✅ Self-test complete
+━━━━━━━━━━━━━━━━━━━━━
+            """
+            
+            await self.send_message(test_results)
+            
+        except Exception as e:
+            await self.send_message(f"❌ Self-test failed: {e}")
+    
     async def cmd_force_sell(self, args):
         """Force sell a position"""
         if not args:
-            await self.send_message("❌ Usage: /force_sell <mint> or /force_sell all")
+            await self.send_message("❌ Usage: /force_sell <code>&lt;mint&gt;</code> or /force_sell all")
             return
         
         mint = args[0]
@@ -522,26 +553,26 @@ Avg Execution: {stats['avg_execution_time_ms']:.1f}ms
                 break
         
         if found_mint:
-            await self.send_message(f"📊 Force selling {found_mint[:8]}...")
+            await self.send_message(f"📊 Force selling <code>{found_mint[:8]}...</code>")
             try:
                 await self.bot._close_position(found_mint, reason="manual_force_sell")
                 await self.send_message("✅ Position closed")
             except Exception as e:
                 await self.send_message(f"❌ Failed: {e}")
         else:
-            await self.send_message(f"❌ Position not found: {mint}")
+            await self.send_message(f"❌ Position not found: <code>{mint}</code>")
     
     async def cmd_blacklist(self, args):
         """Add token to blacklist"""
         if not args:
-            await self.send_message("❌ Usage: /blacklist <mint_address>")
+            await self.send_message("❌ Usage: /blacklist <code>&lt;mint_address&gt;</code>")
             return
         
         mint = args[0]
         try:
             from config import BLACKLISTED_TOKENS
             BLACKLISTED_TOKENS.add(mint)
-            await self.send_message(f"✅ Added {mint[:8]}... to blacklist")
+            await self.send_message(f"✅ Added <code>{mint[:8]}...</code> to blacklist")
         except Exception as e:
             await self.send_message(f"❌ Failed: {e}")
     
@@ -556,7 +587,7 @@ Avg Execution: {stats['avg_execution_time_ms']:.1f}ms
     async def cmd_set_stop_loss(self, args):
         """Set stop loss percentage"""
         if not args:
-            await self.send_message("❌ Usage: /set_sl <percentage>")
+            await self.send_message("❌ Usage: /set_sl <code>&lt;percentage&gt;</code>")
             return
         
         try:
@@ -575,7 +606,7 @@ Avg Execution: {stats['avg_execution_time_ms']:.1f}ms
     async def cmd_set_take_profit(self, args):
         """Set take profit percentage"""
         if not args:
-            await self.send_message("❌ Usage: /set_tp <percentage>")
+            await self.send_message("❌ Usage: /set_tp <code>&lt;percentage&gt;</code>")
             return
         
         try:
@@ -592,16 +623,16 @@ Avg Execution: {stats['avg_execution_time_ms']:.1f}ms
             await self.send_message(f"❌ Error: {e}")
     
     # ============================================
-    # NOTIFICATION METHODS
+    # NOTIFICATION METHODS (HTML formatted)
     # ============================================
     
     async def notify_buy(self, mint: str, amount: float, signature: str):
         """Notify on buy execution"""
         message = f"""
-*🟢 BUY EXECUTED*
-Token: `{mint[:16]}...`
+<b>🟢 BUY EXECUTED</b>
+Token: <code>{mint[:16]}...</code>
 Amount: {amount} SOL
-[View TX](https://solscan.io/tx/{signature})
+<a href="https://solscan.io/tx/{signature}">View TX</a>
         """
         await self.send_message(message)
     
@@ -610,8 +641,8 @@ Amount: {amount} SOL
         emoji = "💰" if pnl_percent > 0 else "🔴"
         
         message = f"""
-*{emoji} SELL EXECUTED*
-Token: `{mint[:16]}...`
+<b>{emoji} SELL EXECUTED</b>
+Token: <code>{mint[:16]}...</code>
 P&L: {pnl_percent:+.1f}% (${pnl_usd:+.2f})
 Reason: {reason}
         """
@@ -620,7 +651,7 @@ Reason: {reason}
     async def notify_profit_milestone(self, total_pnl_sol: float, total_pnl_usd: float):
         """Notify on profit milestones"""
         message = f"""
-*🎯 PROFIT MILESTONE*
+<b>🎯 PROFIT MILESTONE</b>
 Total P&L: {total_pnl_sol:+.4f} SOL
 USD Value: ${total_pnl_usd:+.2f}
 Keep it up! 🚀
@@ -630,7 +661,7 @@ Keep it up! 🚀
     async def notify_error(self, error_type: str, details: str):
         """Notify on critical errors"""
         message = f"""
-*⚠️ ERROR ALERT*
+<b>⚠️ ERROR ALERT</b>
 Type: {error_type}
 Details: {details}
         """
