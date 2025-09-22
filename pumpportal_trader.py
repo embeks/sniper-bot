@@ -310,30 +310,25 @@ class PumpPortalTrader:
                             # Parse versioned transaction using solders
                             vt = VersionedTransaction.from_bytes(raw_tx_bytes)
                             
-                            # For v0 transactions, create a new signed transaction
-                            # The constructor expects keypairs, not signatures
-                            signed_vt = VersionedTransaction.populate(vt.message, [self.wallet.keypair])
+                            # Get the message from the transaction
+                            message = vt.message
+                            
+                            # Create a new VersionedTransaction with keypairs (not signatures)
+                            # This will sign the message internally
+                            signed_vt = VersionedTransaction(message, [self.wallet.keypair])
                             
                             # Get signed bytes
                             signed_tx_bytes = bytes(signed_vt)
                             logger.info(f"Signed v0 transaction ({len(signed_tx_bytes)} bytes)")
                             
                         except Exception as e:
-                            logger.error(f"Failed to sign v0 transaction: {e}")
-                            # Try alternative approach
+                            logger.error(f"Failed with standard signing: {e}")
+                            # Try without re-signing - PumpPortal might provide pre-signed tx
                             try:
-                                logger.info("Trying alternative v0 signing method...")
-                                # Get message and create signature
-                                message = vt.message
-                                signature = self.wallet.keypair.sign_message(bytes(message))
-                                
-                                # Manually construct signed transaction bytes
-                                # V0 format: [signatures_count][signatures][message]
-                                signatures_count = bytes([1])  # 1 signature
-                                signed_tx_bytes = signatures_count + bytes(signature) + bytes(message)
-                                logger.info(f"Manually constructed v0 transaction ({len(signed_tx_bytes)} bytes)")
+                                logger.info("Transaction might be pre-signed, attempting to send as-is...")
+                                signed_tx_bytes = raw_tx_bytes
                             except Exception as e2:
-                                logger.error(f"Alternative signing also failed: {e2}")
+                                logger.error(f"Failed to process transaction: {e2}")
                                 return None
                     else:
                         logger.info("Detected legacy transaction")
