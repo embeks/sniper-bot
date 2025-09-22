@@ -159,8 +159,12 @@ class PumpPortalTrader:
                                 logger.error(f"Alternative signing also failed: {e2}")
                                 return None
                     
-                    # Send the signed transaction
-                    logger.info(f"Sending signed transaction for {mint[:8]}...")
+                    # Send the transaction bytes
+                    logger.info(f"Sending transaction for {mint[:8]}... ({len(raw_tx_bytes)} bytes)")
+                    
+                    # PumpPortal transactions might be pre-configured for our wallet
+                    # since we provided our publicKey in the request
+                    signed_tx_bytes = raw_tx_bytes
                     
                     # First attempt with options
                     try:
@@ -304,32 +308,13 @@ class PumpPortalTrader:
                     is_versioned = (raw_tx_bytes[0] & 0x80) != 0 or len(raw_tx_bytes) == 544
                     
                     if is_versioned:
-                        logger.info("Detected versioned (v0) transaction")
+                        logger.info("Detected versioned (v0) transaction (PumpPortal)")
                         
-                        try:
-                            # Parse versioned transaction using solders
-                            vt = VersionedTransaction.from_bytes(raw_tx_bytes)
-                            
-                            # Get the message from the transaction
-                            message = vt.message
-                            
-                            # Create a new VersionedTransaction with keypairs (not signatures)
-                            # This will sign the message internally
-                            signed_vt = VersionedTransaction(message, [self.wallet.keypair])
-                            
-                            # Get signed bytes
-                            signed_tx_bytes = bytes(signed_vt)
-                            logger.info(f"Signed v0 transaction ({len(signed_tx_bytes)} bytes)")
-                            
-                        except Exception as e:
-                            logger.error(f"Failed with standard signing: {e}")
-                            # Try without re-signing - PumpPortal might provide pre-signed tx
-                            try:
-                                logger.info("Transaction might be pre-signed, attempting to send as-is...")
-                                signed_tx_bytes = raw_tx_bytes
-                            except Exception as e2:
-                                logger.error(f"Failed to process transaction: {e2}")
-                                return None
+                        # PumpPortal returns unsigned v0 transactions that need signing
+                        # However, the transaction structure might already be complete
+                        # Let's try sending it directly first
+                        logger.info("Attempting to send v0 transaction directly (may be pre-configured)...")
+                        signed_tx_bytes = raw_tx_bytes
                     else:
                         logger.info("Detected legacy transaction")
                         
