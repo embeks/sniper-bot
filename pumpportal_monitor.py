@@ -1,7 +1,6 @@
 """
-PumpPortal WebSocket Monitor - Direct feed from PumpFun
-This connects to the actual PumpFun WebSocket for real-time token launches
-FIXED: Clears seen_tokens on reconnect to avoid missing launches
+PumpPortal WebSocket Monitor - With Phase-1 Quality Filters
+ADDED: 5 Cupsey-style filters for better token quality
 """
 
 import asyncio
@@ -19,10 +18,96 @@ class PumpPortalMonitor:
         self.seen_tokens = set()
         self.reconnect_count = 0
         
+        # ADDED: Quality filter thresholds (configurable)
+        self.filters = {
+            'min_creator_sol': 0.3,  # Minimum creator buy
+            'max_creator_sol': 5.0,  # Maximum creator buy
+            'min_curve_sol': 1.5,    # Minimum SOL in curve
+            'max_curve_sol': 60,     # Maximum SOL in curve (avoid late entries)
+            'min_v_tokens': 500_000_000,  # Minimum virtual tokens
+            'min_name_length': 3,
+            'name_blacklist': ['test', 'rug', 'airdrop', 'claim', 'scam', 'fake'],
+            'filters_enabled': True  # Master toggle
+        }
+        
+        # Statistics
+        self.tokens_seen = 0
+        self.tokens_filtered = 0
+        self.tokens_passed = 0
+        
+    def _apply_quality_filters(self, data: dict) -> bool:
+        """
+        Apply quality filters to token data.
+        Returns True if token passes all filters, False otherwise.
+        """
+        if not self.filters['filters_enabled']:
+            return True
+            
+        # Extract the actual token data
+        token_data = data.get('data', data)
+        
+        # Filter 1: Creator initial buy amount
+        creator_sol = float(token_data.get('solAmount', 0))
+        if creator_sol < self.filters['min_creator_sol']:
+            logger.debug(f"Filtered: Creator buy too low ({creator_sol:.3f} SOL)")
+            return False
+        if creator_sol > self.filters['max_creator_sol']:
+            logger.debug(f"Filtered: Creator buy too high ({creator_sol:.1f} SOL)")
+            return False
+        
+        # Filter 2: Name and symbol quality
+        name = str(token_data.get('name', '')).strip()
+        symbol = str(token_data.get('symbol', '')).strip()
+        
+        # Check minimum length
+        if len(name) < self.filters['min_name_length']:
+            logger.debug(f"Filtered: Name too short ({name})")
+            return False
+        
+        # Check for ASCII only (avoid emojis and special chars)
+        if not name.isascii() or not symbol.isascii():
+            logger.debug(f"Filtered: Non-ASCII characters in name/symbol")
+            return False
+        
+        # Check blacklist (case-insensitive)
+        name_lower = name.lower()
+        for blacklisted in self.filters['name_blacklist']:
+            if blacklisted in name_lower:
+                logger.debug(f"Filtered: Blacklisted word '{blacklisted}' in name")
+                return False
+        
+        # Filter 3: Bonding curve SOL window
+        v_sol = float(token_data.get('vSolInBondingCurve', 0))
+        if v_sol < self.filters['min_curve_sol']:
+            logger.debug(f"Filtered: Too early ({v_sol:.2f} SOL in curve)")
+            return False
+        if v_sol > self.filters['max_curve_sol']:
+            logger.debug(f"Filtered: Too late ({v_sol:.2f} SOL in curve)")
+            return False
+        
+        # Filter 4: Virtual token reserves sanity check
+        v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
+        if v_tokens < self.filters['min_v_tokens']:
+            logger.debug(f"Filtered: Insufficient virtual tokens ({v_tokens:,.0f})")
+            return False
+        
+        # Filter 5: URI/Description blacklist (if available)
+        uri = str(token_data.get('uri', '')).lower()
+        description = str(token_data.get('description', '')).lower()
+        for blacklisted in self.filters['name_blacklist']:
+            if blacklisted in uri or blacklisted in description:
+                logger.debug(f"Filtered: Blacklisted word in URI/description")
+                return False
+        
+        # All filters passed
+        logger.info(f"✅ Token passed all filters: {name} (Creator: {creator_sol:.2f} SOL, Curve: {v_sol:.2f} SOL)")
+        return True
+        
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
+        logger.info(f"Quality filters: ENABLED (min creator: {self.filters['min_creator_sol']} SOL, curve window: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL)")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -57,11 +142,26 @@ class PumpPortalMonitor:
                                 
                                 if mint and mint not in self.seen_tokens:
                                     self.seen_tokens.add(mint)
+                                    self.tokens_seen += 1
+                                    
+                                    # ADDED: Apply quality filters
+                                    if not self._apply_quality_filters(data):
+                                        self.tokens_filtered += 1
+                                        logger.info(f"🚫 Token {mint[:8]}... filtered out ({self.tokens_filtered}/{self.tokens_seen} filtered)")
+                                        continue
+                                    
+                                    self.tokens_passed += 1
                                     
                                     logger.info("=" * 60)
-                                    logger.info("🚀 NEW PUMPFUN TOKEN DETECTED!")
+                                    logger.info("🚀 NEW QUALITY TOKEN DETECTED!")
                                     logger.info(f"📜 Mint: {mint}")
-                                    logger.info(f"📊 Data: {data}")
+                                    logger.info(f"📊 Stats: {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_seen} total")
+                                    
+                                    # Extract key metrics for logging
+                                    token_data = data.get('data', data)
+                                    logger.info(f"💰 Creator buy: {token_data.get('solAmount', 0):.2f} SOL")
+                                    logger.info(f"📈 Curve SOL: {token_data.get('vSolInBondingCurve', 0):.2f}")
+                                    logger.info(f"📝 Name: {token_data.get('name', 'Unknown')}")
                                     logger.info("=" * 60)
                                     
                                     if self.callback:
@@ -71,7 +171,8 @@ class PumpPortalMonitor:
                                             'type': 'pumpfun_launch',
                                             'timestamp': datetime.now().isoformat(),
                                             'data': data,
-                                            'source': 'pumpportal'  # Added source field
+                                            'source': 'pumpportal',
+                                            'passed_filters': True
                                         })
                         
                         except asyncio.TimeoutError:
@@ -86,7 +187,7 @@ class PumpPortalMonitor:
             except Exception as e:
                 logger.error(f"WebSocket connection error: {e}")
                 if self.running:
-                    # FIXED: Clear seen tokens on reconnect to catch any we missed
+                    # Clear seen tokens on reconnect to catch any we missed
                     self.seen_tokens.clear()
                     self.reconnect_count += 1
                     logger.info(f"Cleared seen tokens cache for fresh start after disconnect")
@@ -130,6 +231,21 @@ class PumpPortalMonitor:
                 return data['data']['address']
         return None
     
+    def update_filter_config(self, new_filters: dict):
+        """Update filter configuration dynamically"""
+        self.filters.update(new_filters)
+        logger.info(f"Updated filters: {self.filters}")
+    
+    def get_stats(self) -> dict:
+        """Get filter statistics"""
+        return {
+            'tokens_seen': self.tokens_seen,
+            'tokens_filtered': self.tokens_filtered,
+            'tokens_passed': self.tokens_passed,
+            'filter_rate': (self.tokens_filtered / self.tokens_seen * 100) if self.tokens_seen > 0 else 0
+        }
+    
     def stop(self):
         self.running = False
-        logger.info(f"PumpPortal monitor stopped (processed {len(self.seen_tokens)} unique tokens)")
+        stats = self.get_stats()
+        logger.info(f"PumpPortal monitor stopped - Stats: {stats['tokens_passed']} passed, {stats['tokens_filtered']} filtered (rate: {stats['filter_rate']:.1f}%)")
