@@ -267,30 +267,37 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transaction from PumpPortal. It's an unsigned shell:
-                        # [sig_count=0x00][message bytes...]. We must sign the message and
-                        # reassemble the wire format: [sig_count=0x01][64-byte sig][message].
-                        logger.info(f"Legacy transaction - manual signing")
+                        # Legacy transaction from PumpPortal
+                        logger.info(f"Legacy transaction - checking signature status")
                         try:
                             if len(raw_tx_bytes) < 2:
                                 logger.error(f"Legacy tx too small ({len(raw_tx_bytes)} bytes)")
                                 return None
                             
                             sig_count = raw_tx_bytes[0]
-                            msg_bytes = raw_tx_bytes[1:]  # the legacy message to sign
                             
-                            if sig_count != 0:
-                                logger.warning(f"Expected 0-signature legacy shell, got {sig_count}; continuing")
-                            
-                            # Sign the message with our solders keypair
-                            signature = self.wallet.keypair.sign_message(msg_bytes)  # 64 bytes
-                            
-                            # compact-u16 for small 1 is single byte 0x01
-                            signed_tx_bytes = bytes([1]) + bytes(signature) + msg_bytes
-                            
-                            logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
+                            if sig_count == 0:
+                                # Unsigned transaction - need to sign
+                                logger.info("Transaction unsigned, signing message")
+                                msg_bytes = raw_tx_bytes[1:]  # the legacy message to sign
+                                
+                                # Sign the message with our keypair
+                                signature = self.wallet.keypair.sign_message(msg_bytes)  # 64 bytes
+                                
+                                # compact-u16 for small 1 is single byte 0x01
+                                signed_tx_bytes = bytes([1]) + bytes(signature) + msg_bytes
+                                
+                                logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
+                            elif sig_count == 1:
+                                # Already signed - send as-is
+                                logger.info("Transaction already signed by PumpPortal, sending as-is")
+                                signed_tx_bytes = raw_tx_bytes
+                            else:
+                                logger.warning(f"Unexpected signature count: {sig_count}, attempting to send as-is")
+                                signed_tx_bytes = raw_tx_bytes
+                                
                         except Exception as e:
-                            logger.error(f"Failed to sign legacy transaction (manual pack): {e}")
+                            logger.error(f"Failed to process legacy transaction: {e}")
                             return None
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
