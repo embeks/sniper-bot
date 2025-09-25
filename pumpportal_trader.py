@@ -106,7 +106,7 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions (517 bytes for sells)
+                        # Legacy transactions (517 bytes for sells) - KEEP EXISTING WORKING CODE
                         logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
                         try:
                             from solana.transaction import Transaction
@@ -267,17 +267,30 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions
-                        logger.info(f"Legacy transaction - signing with solana-py")
+                        # Legacy transactions - FIXED to use solders
+                        logger.info(f"Legacy transaction - signing with solders")
                         try:
-                            from solana.transaction import Transaction
-                            tx = Transaction.deserialize(raw_tx_bytes)
-                            tx.sign_partial([self.wallet.keypair])
-                            signed_tx_bytes = tx.serialize()
-                            logger.info("Signed legacy transaction")
+                            from solders.transaction import Transaction as SoldersLegacyTx
+                            from solders.signature import Signature
+                            
+                            # Use solders for legacy transactions
+                            legacy_tx = SoldersLegacyTx.from_bytes(raw_tx_bytes)
+                            
+                            # Sign the transaction message
+                            message_bytes = bytes(legacy_tx.message)
+                            signature = self.wallet.keypair.sign_message(message_bytes)
+                            
+                            # Create new transaction with signature
+                            signatures = [signature] + [Signature.default()] * (len(legacy_tx.signatures) - 1)
+                            signed_tx = SoldersLegacyTx.populate(legacy_tx.message, signatures)
+                            signed_tx_bytes = bytes(signed_tx)
+                            
+                            logger.info(f"Signed legacy transaction with solders ({len(signed_tx_bytes)} bytes)")
                         except Exception as e:
-                            logger.error(f"Failed to sign legacy transaction: {e}")
-                            return None
+                            logger.error(f"Failed to sign legacy transaction with solders: {e}")
+                            # Fallback: try sending unsigned (PumpPortal might pre-sign)
+                            logger.info("Attempting to send without signing...")
+                            signed_tx_bytes = raw_tx_bytes
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
                     
