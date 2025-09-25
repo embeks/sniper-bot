@@ -106,8 +106,8 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions
-                        logger.info(f"Legacy transaction - signing with solana-py")
+                        # Legacy transactions (517 bytes for sells)
+                        logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
                         try:
                             from solana.transaction import Transaction
                             tx = Transaction.deserialize(raw_tx_bytes)
@@ -116,7 +116,9 @@ class PumpPortalTrader:
                             logger.info("Signed legacy transaction")
                         except Exception as e:
                             logger.error(f"Failed to sign legacy transaction: {e}")
-                            return None
+                            # Try sending as-is - PumpPortal might have pre-signed it
+                            logger.info("Attempting to send without signing...")
+                            signed_tx_bytes = raw_tx_bytes
                     
                     logger.info(f"Sending transaction for {mint[:8]}...")
                     
