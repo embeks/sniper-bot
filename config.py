@@ -1,6 +1,7 @@
 """
 Phase 1 Configuration - Minimal PumpFun Bonding Curve Sniper
 Focus: Catch launches, execute trades, prove profitability
+UPDATED: Extended monitoring window and grace period
 """
 
 import os
@@ -43,18 +44,24 @@ MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))  # Changed to 0.05
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '50'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100  # Convert to percentage
 
-# Partial profit taking from env
+# Partial profit taking from env - FIXED key collision
 PARTIAL_TAKE_PROFIT = {}
-if os.getenv('SELL_PERCENT_1'):
-    PARTIAL_TAKE_PROFIT[float(os.getenv('TAKE_PROFIT_1', '2')) * 100 / 2] = float(os.getenv('SELL_PERCENT_1', '40')) / 100
-if os.getenv('SELL_PERCENT_2'):
-    PARTIAL_TAKE_PROFIT[float(os.getenv('TAKE_PROFIT_2', '3')) * 100 / 3] = float(os.getenv('SELL_PERCENT_2', '30')) / 100
-if os.getenv('SELL_PERCENT_3'):
-    PARTIAL_TAKE_PROFIT[float(os.getenv('TAKE_PROFIT_3', '5')) * 100 / 5] = float(os.getenv('SELL_PERCENT_3', '30')) / 100
+tp1, sp1 = os.getenv('TAKE_PROFIT_1'), os.getenv('SELL_PERCENT_1')
+tp2, sp2 = os.getenv('TAKE_PROFIT_2'), os.getenv('SELL_PERCENT_2')
+tp3, sp3 = os.getenv('TAKE_PROFIT_3'), os.getenv('SELL_PERCENT_3')
 
-# Timing
-SELL_DELAY_SECONDS = 30  # Wait 30 seconds before allowing sells
-MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '600'))  # Force sell after X seconds
+if tp1 and sp1:
+    PARTIAL_TAKE_PROFIT[float(tp1) * 100] = float(sp1) / 100.0  # e.g., 200 for 2.0x
+if tp2 and sp2:
+    PARTIAL_TAKE_PROFIT[float(tp2) * 100] = float(sp2) / 100.0  # e.g., 300 for 3.0x
+if tp3 and sp3:
+    PARTIAL_TAKE_PROFIT[float(tp3) * 100] = float(sp3) / 100.0  # e.g., 500 for 5.0x
+
+# Timing - UPDATED FOR ENHANCED MONITORING
+SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '15'))  # Grace period before allowing sells
+MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '180'))  # 3 minutes
+MONITOR_CHECK_INTERVAL = int(os.getenv('MONITOR_CHECK_INTERVAL', '2'))  # Check every 2 seconds
+DATA_FAILURE_TOLERANCE = int(os.getenv('DATA_FAILURE_TOLERANCE', '10'))  # Allow 10 consecutive failures
 
 # ============================================
 # PUMPFUN SPECIFIC CONFIGURATION
