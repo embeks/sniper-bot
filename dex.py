@@ -48,11 +48,26 @@ class PumpFunDEX:
         
     def update_token_data(self, mint: str, websocket_data: Dict):
         """Update token data from WebSocket - called by monitor"""
+        # PumpPortal sends data in a specific structure
+        # Extract the actual data from nested structure
+        actual_data = websocket_data
+        if 'data' in websocket_data:
+            actual_data = websocket_data['data']
+        
+        # Store the data with proper structure
         self.token_websocket_data[mint] = {
-            'data': websocket_data,
+            'data': actual_data,
             'timestamp': time.time()
         }
-        logger.debug(f"Updated WebSocket data for {mint[:8]}...")
+        
+        # Also clear any old cache to force fresh data usage
+        if mint in self.bonding_curves_cache:
+            del self.bonding_curves_cache[mint]
+        
+        # Log the update with actual values
+        v_sol = actual_data.get('vSolInBondingCurve', 0)
+        logger.debug(f"Updated WebSocket data for {mint[:8]}... SOL in curve: {v_sol:.2f}")
+    
     
     def derive_bonding_curve_pda(self, mint: Pubkey) -> Tuple[Pubkey, int]:
         """Derive the bonding curve PDA for a token"""
