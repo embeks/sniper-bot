@@ -1,7 +1,7 @@
 """
 Performance Tracker - Track bot performance metrics and fees
 Logs all trading events to Google Sheets for easy access
-FIXED: Skips high-frequency events to avoid Google Sheets rate limits
+FIXED: Proper Sheety API integration with correct field mapping
 """
 
 import json
@@ -52,23 +52,33 @@ class PerformanceTracker:
         self.last_sheet_write = 0
         self.sheet_write_cooldown = 2  # Minimum seconds between sheet writes
         
+        # Important events to always log to sheets
+        self.important_events = [
+            'bot_started', 'buy_executed', 'sell_executed', 
+            'partial_sell', 'session_summary', 'buy_failed'
+        ]
+        
         # High-frequency events to skip in sheets
         self.high_frequency_events = ['position_update', 'token_detected']
         
         logger.info(f"📊 Performance tracker initialized")
         if self.sheet_url:
-            logger.info(f"📈 Sheety connected for Google Sheets logging")
+            logger.info(f"📈 Google Sheets connected via Sheety")
     
     def setup_google_sheets(self):
         """Setup Google Sheets connection via Sheety"""
-        # Only use SHEETY_URL - no need for GOOGLE_SHEET_ID
+        # Get Sheety URL from environment
         self.sheet_url = os.getenv('SHEETY_URL', '')
         
         if not self.sheet_url:
-            logger.warning("⚠️ No SHEETY_URL set - add to Render environment variables")
+            logger.warning("⚠️ No SHEETY_URL set - add to environment variables")
             logger.warning("Get your Sheety API URL from https://sheety.co")
         else:
-            logger.info(f"✅ Sheety configured for Google Sheets logging")
+            # Ensure URL ends with /sheet1 if not already
+            if not self.sheet_url.endswith('/sheet1'):
+                self.sheet_url = self.sheet_url.rstrip('/') + '/sheet1'
+            
+            logger.info(f"✅ Sheety configured: {self.sheet_url[:50]}...")
             # Test connection
             self.test_sheet_connection()
     
@@ -76,7 +86,7 @@ class PerformanceTracker:
         """Test if we can write to the sheet"""
         try:
             # Try to write a test row
-            self.write_to_sheet({
+            success = self.write_to_sheet({
                 'timestamp': datetime.now().isoformat(),
                 'event_type': 'bot_started',
                 'mint': 'SYSTEM',
@@ -87,47 +97,75 @@ class PerformanceTracker:
                 'execution_ms': 0,
                 'reason': 'Performance tracking initialized'
             })
-            logger.info("✅ Google Sheets connection successful")
+            
+            if success:
+                logger.info("✅ Google Sheets connection successful - check your sheet!")
+            else:
+                logger.warning("⚠️ Could not write to Google Sheets - check permissions")
+                
         except Exception as e:
             logger.error(f"❌ Google Sheets connection failed: {e}")
-            logger.error("Make sure your sheet is set to 'Anyone with link can edit'")
+            logger.error("Make sure:")
+            logger.error("1. Your sheet is set to 'Anyone with link can edit'")
+            logger.error("2. The Sheety URL is correct")
+            logger.error("3. Column names match: timestamp, Event_Type, Mint, etc.")
     
-    def write_to_sheet(self, data: Dict):
+    def write_to_sheet(self, data: Dict) -> bool:
         """Write a row to Google Sheets using Sheety with rate limiting"""
         try:
             if not self.sheet_url:
-                return
+                return False
             
-            # FIXED: Rate limiting to avoid API limits
-            current_time = time.time()
-            time_since_last = current_time - self.last_sheet_write
-            if time_since_last < self.sheet_write_cooldown:
-                logger.debug(f"Skipping sheet write (cooldown: {self.sheet_write_cooldown - time_since_last:.1f}s)")
-                return
+            # Check if this is an important event that should bypass rate limiting
+            is_important = data.get('event_type') in self.important_events
             
-            # Format data for Sheety API
+            # Rate limiting for non-important events
+            if not is_important:
+                current_time = time.time()
+                time_since_last = current_time - self.last_sheet_write
+                if time_since_last < self.sheet_write_cooldown:
+                    logger.debug(f"Skipping sheet write (cooldown: {self.sheet_write_cooldown - time_since_last:.1f}s)")
+                    return False
+            
+            # Format data for Sheety API - match your column names exactly
             row = {
-                'timestamp': data.get('timestamp', ''),
-                'Event_Type': data.get('event_type', ''),
-                'Mint': data.get('mint', '')[:8] if data.get('mint') else '',
-                'Amount_Sol': float(data.get('amount_sol', 0)),
-                'PnL_Sol': float(data.get('pnl_sol', 0)),
-                'Fees_Sol': float(data.get('fees_sol', 0)),
-                'Tokens': float(data.get('tokens', 0)),
-                'Execution_Ms': float(data.get('execution_ms', 0)),
-                'Reason': data.get('reason', '')
+                'timestamp': data.get('timestamp', datetime.now().isoformat()),
+                'eventType': data.get('event_type', ''),  # Note: eventType not Event_Type
+                'mint': data.get('mint', '')[:8] if data.get('mint') else '',
+                'amountSol': float(data.get('amount_sol', 0)),
+                'pnLSol': float(data.get('pnl_sol', 0)),
+                'feesSol': float(data.get('fees_sol', 0)),
+                'tokens': float(data.get('tokens', 0)),
+                'executionMs': float(data.get('execution_ms', 0)),
+                'reason': data.get('reason', '')
             }
             
+            # Wrap in sheet1 object as Sheety expects
+            payload = {'sheet1': row}
+            
+            # Log what we're sending for debugging
+            logger.debug(f"Sending to Sheety: {json.dumps(payload, indent=2)}")
+            
             # Send to Sheety
-            response = requests.post(self.sheet_url, json={'sheet1': row})
+            response = requests.post(
+                self.sheet_url, 
+                json=payload,
+                headers={'Content-Type': 'application/json'}
+            )
+            
             if response.status_code == 200:
-                self.last_sheet_write = current_time
+                self.last_sheet_write = time.time()
+                logger.debug(f"✅ Sheet write successful for {data.get('event_type')}")
+                return True
             else:
-                logger.debug(f"Sheet write failed: {response.status_code}")
+                logger.warning(f"Sheet write failed: {response.status_code}")
+                logger.warning(f"Response: {response.text}")
+                return False
                 
         except Exception as e:
-            logger.debug(f"Sheet write error: {e}")
+            logger.error(f"Sheet write error: {e}")
             # Don't break the bot over logging issues
+            return False
     
     def calculate_total_cost(self, buy_amount_sol: float) -> Dict:
         """Calculate total cost including all fees"""
@@ -155,16 +193,16 @@ class PerformanceTracker:
                 **data
             }
             
-            # Write to local file
+            # Always write to local file
             with open(self.events_file, 'a') as f:
                 f.write(json.dumps(event) + '\n')
             
-            # FIXED: Skip high-frequency events for Google Sheets
+            # Skip high-frequency events for Google Sheets
             if event_type in self.high_frequency_events:
                 logger.debug(f"Skipping sheet write for high-frequency event: {event_type}")
                 return
             
-            # Write to Google Sheets (with rate limiting)
+            # Write to Google Sheets
             sheet_data = {
                 'timestamp': datetime.now().isoformat(),
                 'event_type': event_type,
@@ -176,7 +214,14 @@ class PerformanceTracker:
                 'execution_ms': data.get('execution_time_ms', 0),
                 'reason': data.get('reason', '')
             }
-            self.write_to_sheet(sheet_data)
+            
+            # Log important events immediately
+            if event_type in self.important_events:
+                logger.info(f"📊 Logging {event_type} to Google Sheets")
+                self.write_to_sheet(sheet_data)
+            else:
+                # Rate-limited write for other events
+                self.write_to_sheet(sheet_data)
             
             # Update metrics based on event type
             if event_type == 'buy_executed':
@@ -244,13 +289,15 @@ class PerformanceTracker:
             'execution_time_ms': execution_time_ms,
             **cost_breakdown
         })
+        
+        logger.info(f"📊 Buy logged to Google Sheets for {mint[:8]}...")
     
     def log_buy_failed(self, mint: str, amount_sol: float, error: str):
         """Log failed buy"""
         self.log_event('buy_failed', {
             'mint': mint,
             'amount_sol': amount_sol,
-            'error': str(error)
+            'error': str(error)[:100]  # Limit error message length
         })
     
     def log_sell_executed(self, mint: str, tokens_sold: float, signature: str,
@@ -267,6 +314,8 @@ class PerformanceTracker:
             'hold_time_seconds': hold_time_seconds,
             'reason': reason
         })
+        
+        logger.info(f"📊 Sell logged to Google Sheets for {mint[:8]}... P&L: {pnl_sol:+.4f} SOL")
     
     def log_partial_sell(self, mint: str, target_name: str, percent_sold: float,
                         tokens_sold: float, sol_received: float, pnl_sol: float):
@@ -280,6 +329,8 @@ class PerformanceTracker:
             'pnl_sol': pnl_sol,
             'reason': target_name
         })
+        
+        logger.info(f"📊 Partial sell logged to Google Sheets for {mint[:8]}... Target: {target_name}")
     
     def log_position_update(self, mint: str, current_pnl_percent: float, 
                            current_price: float, age_seconds: float):
@@ -340,7 +391,7 @@ class PerformanceTracker:
         self.log_event('session_summary', stats)
         
         # Also write summary to sheets with special formatting
-        self.write_to_sheet({
+        summary_data = {
             'timestamp': datetime.now().isoformat(),
             'event_type': 'SESSION_SUMMARY',
             'mint': 'SUMMARY',
@@ -350,7 +401,10 @@ class PerformanceTracker:
             'tokens': stats['total_buys'],
             'execution_ms': stats['avg_execution_time_ms'],
             'reason': f"Win rate: {stats['win_rate_percent']:.1f}%"
-        })
+        }
+        
+        # Force immediate write
+        self.write_to_sheet(summary_data)
         
         logger.info("📊 SESSION PERFORMANCE SUMMARY")
         logger.info(f"Duration: {stats['session_duration_minutes']:.1f} minutes")
