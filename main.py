@@ -2,10 +2,10 @@
 Main Orchestrator - Phase 1 with Complete Control and Multi-Target Profit Taking
 FIXED: Proper sell handling using UI amounts for PumpPortal API
 FIXED: Stop loss check happens BEFORE profit targets
-FIXED: Retry logic for uncertain bonding curve data
-FIXED: Use recorded token amounts when wallet balance is unreliable
-FIXED: Don't calculate P&L with uncertain curve data
-FIXED: Send UI amounts to PumpPortal API for sells, not raw amounts
+FIXED: No more false no_data exits with persistent price cache
+FIXED: Extended monitoring window to 180s
+FIXED: Grace period before allowing sells
+FIXED: All timing from config/env vars - no hardcoded values
 """
 
 import asyncio
@@ -20,6 +20,7 @@ from config import (
     BUY_AMOUNT_SOL, MAX_POSITIONS, MIN_SOL_BALANCE,
     STOP_LOSS_PERCENTAGE, TAKE_PROFIT_PERCENTAGE,
     SELL_DELAY_SECONDS, MAX_POSITION_AGE_SECONDS,
+    MONITOR_CHECK_INTERVAL, DATA_FAILURE_TOLERANCE,
     DRY_RUN, DEBUG_MODE, ENABLE_TELEGRAM_NOTIFICATIONS,
     BLACKLISTED_TOKENS, NOTIFY_PROFIT_THRESHOLD,
     PARTIAL_TAKE_PROFIT
@@ -62,16 +63,63 @@ class Position:
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
         
-        # Retry tracking for curve data
-        self.curve_check_retries = 0
+        # Enhanced price tracking
+        self.last_valid_price = 0
+        self.last_price_update = time.time()
+        self.consecutive_stale_reads = 0
         self.last_valid_balance = tokens  # Track last known good balance
         
-        # Profit targets - ADJUSTED FOR FASTER EXITS
-        self.profit_targets = [
-            {'target': 50, 'sell_percent': 50, 'name': '1.5x'},  # Take half at 50% gain
-            {'target': 100, 'sell_percent': 30, 'name': '2x'},   # Take more at 2x
-            {'target': 200, 'sell_percent': 20, 'name': '3x'},   # Leave runner
-        ]
+        # Retry tracking for curve data
+        self.curve_check_retries = 0
+        
+        # Profit targets - Built from environment variables
+        self.profit_targets = []
+        
+        # Build targets from PARTIAL_TAKE_PROFIT config
+        # Note: PARTIAL_TAKE_PROFIT keys are like 200.0 (for 2x), 300.0 (for 3x)
+        # But the targets in percent are 50 (for 1.5x), 100 (for 2x), 200 (for 3x)
+        
+        # Check for 2.0x config (key would be 200.0)
+        if 200.0 in PARTIAL_TAKE_PROFIT:
+            self.profit_targets.append({
+                'target': 100,  # 100% gain = 2x
+                'sell_percent': PARTIAL_TAKE_PROFIT[200.0] * 100,  # Convert decimal to percent
+                'name': '2x'
+            })
+        
+        # Check for 3.0x config (key would be 300.0)
+        if 300.0 in PARTIAL_TAKE_PROFIT:
+            self.profit_targets.append({
+                'target': 200,  # 200% gain = 3x
+                'sell_percent': PARTIAL_TAKE_PROFIT[300.0] * 100,
+                'name': '3x'
+            })
+        
+        # Check for 5.0x config (key would be 500.0)
+        if 500.0 in PARTIAL_TAKE_PROFIT:
+            self.profit_targets.append({
+                'target': 400,  # 400% gain = 5x
+                'sell_percent': PARTIAL_TAKE_PROFIT[500.0] * 100,
+                'name': '5x'
+            })
+        
+        # Add 1.5x target (not in env vars, but hardcoded for faster exits)
+        self.profit_targets.insert(0, {
+            'target': 50,  # 50% gain = 1.5x
+            'sell_percent': 50,  # Always sell 50% at 1.5x
+            'name': '1.5x'
+        })
+        
+        # Sort targets by percentage (ascending)
+        self.profit_targets.sort(key=lambda x: x['target'])
+        
+        # Fallback if no env vars set
+        if len(self.profit_targets) == 1:  # Only has the 1.5x we added
+            self.profit_targets = [
+                {'target': 50, 'sell_percent': 50, 'name': '1.5x'},
+                {'target': 100, 'sell_percent': 30, 'name': '2x'},
+                {'target': 200, 'sell_percent': 20, 'name': '3x'},
+            ]
 
 class SniperBot:
     """Main sniper bot orchestrator with multi-target profit taking"""
@@ -133,7 +181,9 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Profit targets: 1.5x (50%), 2x (30%), 3x (20%)")
+        logger.info(f"  • Profit targets: Dynamic from env")
+        logger.info(f"  • Grace period: {SELL_DELAY_SECONDS}s")
+        logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
@@ -156,7 +206,7 @@ class SniperBot:
                     "📊 Phase 1 Mode - Fast Exits\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    "📈 Targets: 1.5x→50%, 2x→30%, 3x→20%\n"
+                    "📈 Dynamic targets from env\n"
                     "Type /help for commands"
                 )
                 await self.telegram.send_message(startup_msg)
@@ -385,12 +435,12 @@ class SniperBot:
                 if self.telegram:
                     await self.telegram.notify_buy(mint, BUY_AMOUNT_SOL, signature)
                     
+                    # Show actual targets from position
+                    targets_msg = ", ".join([f"{t['name']}/{t['sell_percent']:.0f}%" for t in position.profit_targets])
                     monitoring_msg = (
-                        f"📊 Monitoring {mint[:8]}... [FAST EXIT]\n"
+                        f"📊 Monitoring {mint[:8]}...\n"
                         f"Entry: {BUY_AMOUNT_SOL} SOL\n"
-                        f"Targets: 1.5x/{BUY_AMOUNT_SOL*1.5:.3f} SOL, "
-                        f"2.0x/{BUY_AMOUNT_SOL*2:.3f} SOL, "
-                        f"3.0x/{BUY_AMOUNT_SOL*3:.3f} SOL\n"
+                        f"Targets: {targets_msg}\n"
                         f"Stop Loss: -{STOP_LOSS_PERCENTAGE}%"
                     )
                     await self.telegram.send_message(monitoring_msg)
@@ -409,29 +459,28 @@ class SniperBot:
             logger.error(traceback.format_exc())
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with multi-target profit taking"""
+        """Monitor position with multi-target profit taking and persistent price cache"""
         try:
             position = self.positions.get(mint)
             if not position:
                 logger.error(f"Position {mint[:8]}... not found for monitoring")
                 return
             
-            # REDUCED WAIT TIME for faster exits like Cupsey
-            wait_time = 5  # Only 5 seconds before checking for profit
-            logger.info(f"⏳ Waiting {wait_time}s before monitoring {mint[:8]}...")
-            await asyncio.sleep(wait_time)
+            # Grace period before allowing sells
+            logger.info(f"⏳ Grace period {SELL_DELAY_SECONDS}s before monitoring {mint[:8]}...")
+            await asyncio.sleep(SELL_DELAY_SECONDS)
             
             logger.info(f"📈 Starting active monitoring for {mint[:8]}...")
             check_count = 0
             last_notification_pnl = 0
             consecutive_data_failures = 0
             
-            while mint in self.positions and position.status == 'active':  # REMOVED self.running check
+            while mint in self.positions and position.status == 'active':
                 check_count += 1
                 
-                # Check position age - ALWAYS runs regardless of bot state
+                # Check position age
                 age = time.time() - position.entry_time
-                if age > 60:  # Exit after 1 minute max
+                if age > MAX_POSITION_AGE_SECONDS:
                     logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s)")
                     await self._close_position_full(mint, reason="max_age")
                     break
@@ -439,22 +488,10 @@ class SniperBot:
                 try:
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
-                    # FIXED: Handle uncertain/placeholder data
-                    if curve_data and curve_data.get('needs_retry'):
-                        consecutive_data_failures += 1
-                        if consecutive_data_failures < 3:
-                            logger.debug(f"Curve data uncertain for {mint[:8]}..., retry {consecutive_data_failures}/3")
-                            await asyncio.sleep(1)
-                            continue  # DON'T calculate P&L with uncertain data
-                        else:
-                            # After 3 failures, just exit the position
-                            logger.warning(f"Can't get reliable data after 3 tries, closing position")
-                            await self._close_position_full(mint, reason="no_data")
-                            break
-                    
-                    # Reset failure counter on good data
-                    if curve_data and not curve_data.get('needs_retry'):
-                        consecutive_data_failures = 0
+                    # Log if using stale data
+                    if curve_data and curve_data.get('is_stale'):
+                        stale_age = curve_data.get('stale_age_seconds', 0)
+                        logger.info(f"Using stale price for {mint[:8]}... (age: {stale_age:.0f}s)")
                     
                     # Check for true migration
                     if not curve_data or curve_data.get('is_migrated'):
@@ -462,8 +499,8 @@ class SniperBot:
                         await self._close_position_full(mint, reason="migration")
                         break
                     
-                    # Only calculate P&L with valid data
-                    if curve_data and curve_data.get('is_valid', True) and not curve_data.get('needs_retry'):
+                    # Calculate P&L even with stale/estimated data
+                    if curve_data and curve_data.get('is_valid', True):
                         if curve_data['virtual_sol_reserves'] > 0 and curve_data['virtual_token_reserves'] > 0:
                             current_price = curve_data['virtual_sol_reserves'] / curve_data['virtual_token_reserves']
                             
@@ -476,8 +513,17 @@ class SniperBot:
                                 position.pnl_percent = price_change
                                 position.current_price = current_price
                                 
+                                # Update last valid price
+                                if not curve_data.get('is_stale') and not curve_data.get('no_data_available'):
+                                    position.last_valid_price = current_price
+                                    position.last_price_update = time.time()
+                                
+                                # Add warning if data is stale
+                                data_warning = " [STALE]" if curve_data.get('is_stale') else ""
+                                data_warning = " [EST]" if curve_data.get('no_data_available') else data_warning
+                                
                                 # Log position update periodically
-                                if check_count % 10 == 1:  # Every 10th check
+                                if check_count % 10 == 1:
                                     self.tracker.log_position_update(
                                         mint=mint,
                                         current_pnl_percent=price_change,
@@ -488,7 +534,7 @@ class SniperBot:
                                 # Log every 3rd check
                                 if check_count % 3 == 1:
                                     logger.info(
-                                        f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                                        f"📊 {mint[:8]}... | P&L: {price_change:+.1f}%{data_warning} | "
                                         f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
                                     )
                                 
@@ -537,8 +583,9 @@ class SniperBot:
                     
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
+                    # Don't exit on errors, continue monitoring
                 
-                await asyncio.sleep(2)  # Check every 2 seconds for faster reaction
+                await asyncio.sleep(MONITOR_CHECK_INTERVAL)
             
             # Clean up completed position
             if mint in self.positions and position.status == 'completed':
@@ -822,8 +869,9 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with fast exit strategy")
-            logger.info("📈 Targets: 1.5x (50%), 2x (30%), 3x (20%)")
+            logger.info("✅ Bot running with enhanced monitoring")
+            logger.info(f"📈 Dynamic targets from environment")
+            logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             
             last_stats_time = time.time()
             
