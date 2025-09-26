@@ -300,6 +300,13 @@ class SniperBot:
             # CRITICAL: Update DEX with WebSocket data for accurate bonding curve detection
             self.dex.update_token_data(mint, token_data)
             
+            # Check if this is just a price update for existing position
+            if mint in self.positions:
+                # Update price data for existing position
+                self.dex.update_token_data(mint, token_data)
+                logger.debug(f"Updated price data for existing position {mint[:8]}...")
+                return
+            
             # Skip if not running or paused
             if not self.running or self.paused:
                 logger.debug(f"Skipping token - running:{self.running}, paused:{self.paused}")
