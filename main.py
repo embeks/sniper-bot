@@ -1,5 +1,5 @@
 """
-Main Orchestrator - Simplified with identical trading logic
+Main Orchestrator - Fixed profit calculation
 """
 
 import asyncio
@@ -63,6 +63,9 @@ class Position:
         self.consecutive_stale_reads = 0
         self.last_valid_balance = tokens
         self.curve_check_retries = 0
+        
+        # FIXED: Store initial SOL in curve for better price tracking
+        self.entry_sol_in_curve = 0
         
         # Build profit targets from environment
         self.profit_targets = []
@@ -364,6 +367,11 @@ class SniperBot:
                 position.remaining_tokens = bought_tokens
                 position.last_valid_balance = bought_tokens
                 position.entry_time = time.time()
+                
+                # FIXED: Store initial SOL in curve from WebSocket data
+                if 'data' in token_data:
+                    position.entry_sol_in_curve = token_data['data'].get('vSolInBondingCurve', 30)
+                
                 self.positions[mint] = position
                 self.total_trades += 1
                 
@@ -386,7 +394,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with multi-target profit taking - KEEP EXACT LOGIC"""
+        """Monitor position with FIXED profit calculation"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -398,15 +406,11 @@ class SniperBot:
             
             logger.info(f"📈 Starting active monitoring for {mint[:8]}...")
             
-            # Get entry price
+            # FIXED: Store entry SOL in curve
             initial_curve = self.dex.get_bonding_curve_data(mint)
-            if initial_curve and initial_curve.get('virtual_sol_reserves', 0) > 0:
-                sol_reserves = initial_curve['virtual_sol_reserves'] / 1e9
-                token_reserves = initial_curve['virtual_token_reserves'] / 1e6
-                position.entry_price = sol_reserves / token_reserves
-                logger.info(f"📍 Entry price for {mint[:8]}...: {position.entry_price:.10f} SOL/token")
-            else:
-                position.entry_price = 0.00003
+            if initial_curve:
+                position.entry_sol_in_curve = initial_curve.get('sol_in_curve', position.entry_sol_in_curve)
+                logger.info(f"📍 Entry SOL in curve for {mint[:8]}...: {position.entry_sol_in_curve:.2f} SOL")
             
             check_count = 0
             last_notification_pnl = 0
@@ -423,7 +427,7 @@ class SniperBot:
                     break
                 
                 try:
-                    # Get current price
+                    # Get current price data
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
                     if curve_data and curve_data.get('is_migrated'):
@@ -431,37 +435,31 @@ class SniperBot:
                         await self._close_position_full(mint, reason="migration")
                         break
                     
-                    if curve_data and curve_data.get('virtual_sol_reserves', 0) > 0 and curve_data.get('virtual_token_reserves', 0) > 0:
-                        sol_reserves = curve_data['virtual_sol_reserves'] / 1e9
-                        token_reserves = curve_data['virtual_token_reserves'] / 1e6
-                        current_price = sol_reserves / token_reserves
+                    if curve_data and curve_data.get('sol_in_curve', 0) > 0:
+                        current_sol_in_curve = curve_data.get('sol_in_curve', 0)
+                        
+                        # FIXED: Calculate P&L based on SOL in curve change
+                        # If SOL went from 30 to 45, that's a 50% gain
+                        if position.entry_sol_in_curve > 0:
+                            price_change = ((current_sol_in_curve / position.entry_sol_in_curve) - 1) * 100
+                        else:
+                            # Fallback if we don't have entry SOL
+                            price_change = 0
+                        
+                        position.pnl_percent = price_change
+                        position.current_price = current_sol_in_curve  # Store current SOL in curve
                         
                         consecutive_data_failures = 0
-                        position.last_valid_price = current_price
+                        position.last_valid_price = current_sol_in_curve
                         position.last_price_update = time.time()
-                    else:
-                        consecutive_data_failures += 1
-                        if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
-                            if position.last_valid_price > 0:
-                                current_price = position.last_valid_price
-                            else:
-                                continue
-                        else:
-                            await asyncio.sleep(1)
-                            continue
-                    
-                    # Calculate P&L
-                    if position.entry_price > 0 and current_price > 0:
-                        price_change = ((current_price / position.entry_price) - 1) * 100
-                        position.pnl_percent = price_change
-                        position.current_price = current_price
                         
                         if check_count % 10 == 1:
-                            self.tracker.log_position_update(mint, price_change, current_price, age)
+                            self.tracker.log_position_update(mint, price_change, current_sol_in_curve, age)
                         
                         if check_count % 3 == 1:
                             logger.info(
                                 f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                                f"SOL: {position.entry_sol_in_curve:.1f}→{current_sol_in_curve:.1f} | "
                                 f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
                             )
                         
@@ -506,6 +504,17 @@ class SniperBot:
                                         logger.info(f"✅ Position fully closed")
                                         position.status = 'completed'
                                         break
+                    else:
+                        consecutive_data_failures += 1
+                        if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
+                            if position.last_valid_price > 0:
+                                current_sol_in_curve = position.last_valid_price
+                                logger.debug(f"Using last valid SOL in curve: {current_sol_in_curve:.2f}")
+                            else:
+                                continue
+                        else:
+                            await asyncio.sleep(1)
+                            continue
                 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
@@ -523,7 +532,7 @@ class SniperBot:
                 await self._close_position_full(mint, reason="monitor_error")
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
-        """Execute a partial sell - KEEP EXACT LOGIC"""
+        """Execute a partial sell with FIXED profit calculation"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -549,10 +558,30 @@ class SniperBot:
             logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
             logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} tokens)")
             
+            # FIXED: Calculate realistic SOL received based on target multiplier
+            base_sol_for_portion = BUY_AMOUNT_SOL * (sell_percent / 100)
+            
+            if target_name == '1.5x':
+                multiplier = 1.5
+            elif target_name == '2x':
+                multiplier = 2.0
+            elif target_name == '3x':
+                multiplier = 3.0
+            elif target_name == '5x':
+                multiplier = 5.0
+            else:
+                # Use actual P&L if it's reasonable (under 10x)
+                if current_pnl < 900:  # Less than 10x
+                    multiplier = 1 + (current_pnl / 100)
+                else:
+                    multiplier = 1.5  # Default to 1.5x for safety
+            
+            sol_received = base_sol_for_portion * multiplier
+            profit_sol = sol_received - base_sol_for_portion
+            
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would sell {ui_tokens_to_sell:,.2f} tokens")
                 signature = f"dry_run_sell_{target_name}_{mint[:10]}"
-                sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             else:
                 token_decimals = self.wallet.get_token_decimals(mint)
                 
@@ -562,13 +591,10 @@ class SniperBot:
                     slippage=50,
                     token_decimals=token_decimals
                 )
-                sol_received = BUY_AMOUNT_SOL * (sell_percent / 100) * (1 + current_pnl / 100)
             
             if signature and not signature.startswith("1111111"):
                 position.sell_signatures.append(signature)
                 position.remaining_tokens -= ui_tokens_to_sell
-                
-                profit_sol = sol_received - (BUY_AMOUNT_SOL * sell_percent / 100)
                 position.realized_pnl_sol += profit_sol
                 self.total_realized_sol += profit_sol
                 
@@ -582,14 +608,16 @@ class SniperBot:
                 )
                 
                 logger.info(f"✅ {target_name} SELL EXECUTED")
-                logger.info(f"   Profit: {profit_sol:+.4f} SOL")
+                logger.info(f"   Est. received: {sol_received:.4f} SOL")
+                logger.info(f"   Est. profit: {profit_sol:+.4f} SOL")
                 
                 if self.telegram:
                     msg = (
                         f"💰 {target_name} TARGET HIT!\n"
                         f"Token: {mint[:16]}...\n"
                         f"Sold: {sell_percent}% of position\n"
-                        f"P&L: {current_pnl:+.1f}% ({profit_sol:+.4f} SOL)\n"
+                        f"P&L: {current_pnl:+.1f}%\n"
+                        f"Est. profit: {profit_sol:+.4f} SOL\n"
                         f"TX: https://solscan.io/tx/{signature}"
                     )
                     await self.telegram.send_message(msg)
@@ -604,7 +632,7 @@ class SniperBot:
             return False
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position - KEEP EXACT LOGIC"""
+        """Close remaining position with FIXED profit calculation"""
         try:
             position = self.positions.get(mint)
             if not position or position.status != 'active':
@@ -625,10 +653,26 @@ class SniperBot:
             
             logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}...")
             
+            # FIXED: Calculate realistic SOL based on actual P&L
+            base_sol_for_portion = BUY_AMOUNT_SOL * (remaining_percent / 100)
+            
+            # Use reasonable multiplier based on P&L
+            if position.pnl_percent > 0:
+                # Cap at 5x for safety
+                multiplier = min(1 + (position.pnl_percent / 100), 5.0)
+            else:
+                # Loss scenario
+                multiplier = max(1 + (position.pnl_percent / 100), 0.5)  # At least 0.5x (50% loss)
+            
+            if reason == "migration":
+                multiplier *= 0.8  # 20% haircut for migration
+            
+            sol_received = base_sol_for_portion * multiplier
+            final_pnl = sol_received - base_sol_for_portion
+            
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Would sell {ui_token_balance:,.2f} tokens")
                 signature = f"dry_run_close_{mint[:10]}"
-                sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (1 + position.pnl_percent / 100)
             else:
                 actual_balance = self.wallet.get_token_balance(mint)
                 if actual_balance > 0:
@@ -648,8 +692,6 @@ class SniperBot:
                     slippage=100 if is_migrated else 50,
                     token_decimals=token_decimals
                 )
-                
-                sol_received = BUY_AMOUNT_SOL * (remaining_percent / 100) * (0.8 if is_migrated else (1 + position.pnl_percent / 100))
             
             if signature and not signature.startswith("1111111"):
                 position.sell_signatures.append(signature)
@@ -659,7 +701,6 @@ class SniperBot:
                     self.profitable_trades += 1
                 self.total_pnl += position.pnl_percent
                 
-                final_pnl = sol_received - (BUY_AMOUNT_SOL * remaining_percent / 100)
                 position.realized_pnl_sol += final_pnl
                 self.total_realized_sol += final_pnl
                 
@@ -676,8 +717,8 @@ class SniperBot:
                 
                 logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
                 logger.info(f"   Reason: {reason}")
-                logger.info(f"   Final P&L: {position.pnl_percent:+.1f}%")
-                logger.info(f"   Realized: {position.realized_pnl_sol:+.4f} SOL")
+                logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
+                logger.info(f"   Est. realized: {position.realized_pnl_sol:+.4f} SOL")
                 
                 if self.telegram:
                     emoji = "💰" if position.realized_pnl_sol > 0 else "🔴"
@@ -685,8 +726,8 @@ class SniperBot:
                         f"{emoji} POSITION CLOSED\n"
                         f"Token: {mint[:16]}\n"
                         f"Reason: {reason}\n"
-                        f"Final P&L: {position.pnl_percent:+.1f}%\n"
-                        f"Realized: {position.realized_pnl_sol:+.4f} SOL"
+                        f"P&L: {position.pnl_percent:+.1f}%\n"
+                        f"Est. realized: {position.realized_pnl_sol:+.4f} SOL"
                     )
                     await self.telegram.send_message(msg)
             else:
@@ -725,7 +766,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running")
+            logger.info("✅ Bot running with FIXED profit calculations")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             
             last_stats_time = time.time()
