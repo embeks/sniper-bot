@@ -93,6 +93,11 @@ class PumpPortalMonitor:
             logger.debug(f"Filtered: Too late ({v_sol:.2f} SOL in curve)")
             return False
         
+        # MOMENTUM FILTER - Ensure organic buyers have put in 3x the creator's amount
+        if v_sol < creator_sol * 3:
+            logger.debug(f"Filtered: Insufficient momentum ({v_sol:.2f} SOL vs {creator_sol:.2f} creator * 3 = {creator_sol * 3:.2f} needed)")
+            return False
+        
         # Filter 4: Virtual token reserves sanity check
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
@@ -108,14 +113,14 @@ class PumpPortalMonitor:
                 return False
         
         # All filters passed
-        logger.info(f"✅ Token passed all filters: {name} ({symbol}) | Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL")
+        logger.info(f"✅ Token passed all filters: {name} ({symbol}) | Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | Momentum: {v_sol/creator_sol:.1f}x")
         return True
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Quality filters: PHASE 1 TWEAKS (creator: {self.filters['min_creator_sol']}-{self.filters['max_creator_sol']} SOL, curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL)")
+        logger.info(f"Quality filters: PHASE 1 TWEAKS WITH MOMENTUM (creator: {self.filters['min_creator_sol']}-{self.filters['max_creator_sol']} SOL, curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL, momentum: 3x)")
         
         uri = "wss://pumpportal.fun/api/data"
         
