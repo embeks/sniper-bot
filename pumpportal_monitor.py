@@ -1,6 +1,5 @@
 """
-PumpPortal WebSocket Monitor - With Phase-1 Quality Filters
-ADDED: 5 Cupsey-style filters for better token quality
+PumpPortal WebSocket Monitor - Phase 1 Profitability Tweaks
 """
 
 import asyncio
@@ -18,16 +17,20 @@ class PumpPortalMonitor:
         self.seen_tokens = set()
         self.reconnect_count = 0
         
-        # ADDED: Quality filter thresholds (configurable)
+        # UPDATED: Tighter quality filters for Phase 1 profitability
         self.filters = {
-            'min_creator_sol': 0.3,  # Minimum creator buy
-            'max_creator_sol': 5.0,  # Maximum creator buy
-            'min_curve_sol': 1.5,    # Minimum SOL in curve
-            'max_curve_sol': 60,     # Maximum SOL in curve (avoid late entries)
-            'min_v_tokens': 500_000_000,  # Minimum virtual tokens
+            'min_creator_sol': 0.5,      # Updated from 0.3
+            'max_creator_sol': 3.0,      # Updated from 5.0
+            'min_curve_sol': 2.0,        # Updated from 1.5
+            'max_curve_sol': 50,         # Updated from 60
+            'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'name_blacklist': ['test', 'rug', 'airdrop', 'claim', 'scam', 'fake'],
-            'filters_enabled': True  # Master toggle
+            'name_blacklist': [
+                'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
+                'elon', 'pepe', 'trump', 'doge', 'bonk', 'pump', 
+                'moon', 'ai', 'safe', 'baby', 'inu', 'meta', 'grok'
+            ],
+            'filters_enabled': True
         }
         
         # Statistics
@@ -69,6 +72,11 @@ class PumpPortalMonitor:
             logger.debug(f"Filtered: Non-ASCII characters in name/symbol")
             return False
         
+        # NEW: Check symbol is uppercase
+        if not symbol.isupper():
+            logger.debug(f"Filtered: Symbol not uppercase ({symbol})")
+            return False
+        
         # Check blacklist (case-insensitive)
         name_lower = name.lower()
         for blacklisted in self.filters['name_blacklist']:
@@ -100,14 +108,14 @@ class PumpPortalMonitor:
                 return False
         
         # All filters passed
-        logger.info(f"✅ Token passed all filters: {name} (Creator: {creator_sol:.2f} SOL, Curve: {v_sol:.2f} SOL)")
+        logger.info(f"✅ Token passed all filters: {name} ({symbol}) | Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL")
         return True
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Quality filters: ENABLED (min creator: {self.filters['min_creator_sol']} SOL, curve window: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL)")
+        logger.info(f"Quality filters: PHASE 1 TWEAKS (creator: {self.filters['min_creator_sol']}-{self.filters['max_creator_sol']} SOL, curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL)")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -144,7 +152,7 @@ class PumpPortalMonitor:
                                     self.seen_tokens.add(mint)
                                     self.tokens_seen += 1
                                     
-                                    # ADDED: Apply quality filters
+                                    # Apply quality filters
                                     if not self._apply_quality_filters(data):
                                         self.tokens_filtered += 1
                                         logger.info(f"🚫 Token {mint[:8]}... filtered out ({self.tokens_filtered}/{self.tokens_seen} filtered)")
@@ -162,6 +170,7 @@ class PumpPortalMonitor:
                                     logger.info(f"💰 Creator buy: {token_data.get('solAmount', 0):.2f} SOL")
                                     logger.info(f"📈 Curve SOL: {token_data.get('vSolInBondingCurve', 0):.2f}")
                                     logger.info(f"📝 Name: {token_data.get('name', 'Unknown')}")
+                                    logger.info(f"🔤 Symbol: {token_data.get('symbol', 'Unknown')}")
                                     logger.info("=" * 60)
                                     
                                     if self.callback:
