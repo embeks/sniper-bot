@@ -1,5 +1,5 @@
 """
-Main Orchestrator - Fixed profit calculation
+Main Orchestrator - Fixed profit calculation + Phase 1 Tweaks
 """
 
 import asyncio
@@ -67,10 +67,10 @@ class Position:
         # FIXED: Store initial SOL in curve for better price tracking
         self.entry_sol_in_curve = 0
         
-        # Build profit targets from environment
+        # Build profit targets from environment - REMOVED 1.5x target
         self.profit_targets = []
         
-        # Check configured targets
+        # Check configured targets (2x, 3x, 5x only)
         if 200.0 in PARTIAL_TAKE_PROFIT:
             self.profit_targets.append({
                 'target': 100,  # 100% gain = 2x
@@ -92,21 +92,16 @@ class Position:
                 'name': '5x'
             })
         
-        # Add 1.5x target for faster exits
-        self.profit_targets.insert(0, {
-            'target': 50,  # 50% gain = 1.5x
-            'sell_percent': 50,
-            'name': '1.5x'
-        })
-        
-        # Sort and apply defaults if needed
+        # REMOVED: No longer adding 1.5x target
+        # Sort targets by percentage (ascending)
         self.profit_targets.sort(key=lambda x: x['target'])
         
-        if len(self.profit_targets) == 1:  # Only 1.5x
+        # Fallback if no env vars set (shouldn't happen with proper config)
+        if len(self.profit_targets) == 0:
             self.profit_targets = [
-                {'target': 50, 'sell_percent': 50, 'name': '1.5x'},
-                {'target': 100, 'sell_percent': 30, 'name': '2x'},
-                {'target': 200, 'sell_percent': 20, 'name': '3x'},
+                {'target': 100, 'sell_percent': 50, 'name': '2x'},
+                {'target': 200, 'sell_percent': 25, 'name': '3x'},
+                {'target': 400, 'sell_percent': 25, 'name': '5x'},
             ]
 
 class SniperBot:
@@ -115,7 +110,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT")
+        logger.info("🚀 INITIALIZING SNIPER BOT - PHASE 1 TWEAKS")
         logger.info("=" * 60)
         
         # Core components
@@ -164,6 +159,7 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
+        logger.info(f"  • Targets: 2x/3x/5x")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
@@ -179,9 +175,10 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started successfully\n"
+                    "🚀 Bot started - Phase 1 Tweaks\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
+                    f"📈 Targets: 2x/3x/5x\n"
                     "Type /help for commands"
                 )
                 await self.telegram.send_message(startup_msg)
@@ -561,9 +558,7 @@ class SniperBot:
             # FIXED: Calculate realistic SOL received based on target multiplier
             base_sol_for_portion = BUY_AMOUNT_SOL * (sell_percent / 100)
             
-            if target_name == '1.5x':
-                multiplier = 1.5
-            elif target_name == '2x':
+            if target_name == '2x':
                 multiplier = 2.0
             elif target_name == '3x':
                 multiplier = 3.0
@@ -574,7 +569,7 @@ class SniperBot:
                 if current_pnl < 900:  # Less than 10x
                     multiplier = 1 + (current_pnl / 100)
                 else:
-                    multiplier = 1.5  # Default to 1.5x for safety
+                    multiplier = 2.0  # Default to 2x for safety
             
             sol_received = base_sol_for_portion * multiplier
             profit_sol = sol_received - base_sol_for_portion
@@ -766,7 +761,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with FIXED profit calculations")
+            logger.info("✅ Bot running with Phase 1 Tweaks")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             
             last_stats_time = time.time()
