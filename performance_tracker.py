@@ -1,7 +1,5 @@
 """
-Performance Tracker - Track bot performance metrics and fees
-Logs all trading events to CSV file on Render Persistent Disk
-Using /data/trades.csv for persistent storage across redeploys
+Performance Tracker
 """
 
 import json
