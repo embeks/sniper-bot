@@ -1,6 +1,5 @@
 """
-Wallet Management - Fixed decimals fetching from SPL token mint
-CRITICAL FIX: Properly decode mint account to get decimals at byte offset 44
+Wallet Management
 """
 
 import base58
