@@ -1,5 +1,5 @@
 """
-Main Orchestrator - Fixed profit calculation + Phase 1 Tweaks
+Main Orchestrator - Fixed profit calculation + Phase 1.5 Configuration
 """
 
 import asyncio
@@ -67,7 +67,7 @@ class Position:
         # FIXED: Store initial SOL in curve for better price tracking
         self.entry_sol_in_curve = 0
         
-        # Build profit targets from environment - REMOVED 1.5x target
+        # Build profit targets from environment
         self.profit_targets = []
         
         # Check configured targets (2x, 3x, 5x only)
@@ -92,17 +92,10 @@ class Position:
                 'name': '5x'
             })
         
-        # REMOVED: No longer adding 1.5x target
         # Sort targets by percentage (ascending)
         self.profit_targets.sort(key=lambda x: x['target'])
         
-        # Fallback if no env vars set (shouldn't happen with proper config)
-        if len(self.profit_targets) == 0:
-            self.profit_targets = [
-                {'target': 100, 'sell_percent': 50, 'name': '2x'},
-                {'target': 200, 'sell_percent': 25, 'name': '3x'},
-                {'target': 400, 'sell_percent': 25, 'name': '5x'},
-            ]
+        # REMOVED: No fallback targets - rely on env vars only
 
 class SniperBot:
     """Main sniper bot orchestrator"""
@@ -110,7 +103,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - PHASE 1 TWEAKS")
+        logger.info("🚀 INITIALIZING SNIPER BOT - PHASE 1.5")
         logger.info("=" * 60)
         
         # Core components
@@ -142,6 +135,10 @@ class SniperBot:
         self.shutdown_requested = False
         self._last_balance_warning = 0
         
+        # Phase 1.5: Track consecutive losses for circuit breaker
+        self.consecutive_losses = 0
+        self.session_loss_count = 0
+        
         self.telegram_enabled = ENABLE_TELEGRAM_NOTIFICATIONS
         
         self._log_startup_info()
@@ -153,7 +150,7 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS:")
+        logger.info(f"📊 STARTUP STATUS - PHASE 1.5:")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
@@ -161,6 +158,7 @@ class SniperBot:
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
         logger.info(f"  • Targets: 2x/3x/5x")
         logger.info(f"  • Available trades: {actual_trades}")
+        logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
     
@@ -175,10 +173,12 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - Phase 1 Tweaks\n"
+                    "🚀 Bot started - Phase 1.5\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"📈 Targets: 2x/3x/5x\n"
+                    f"⚡ Min curve: 15 SOL\n"
+                    f"🛑 Circuit breaker: 3 losses\n"
                     "Type /help for commands"
                 )
                 await self.telegram.send_message(startup_msg)
@@ -222,6 +222,9 @@ class SniperBot:
         self.paused = False
         self.shutdown_requested = False
         
+        # Reset circuit breaker on fresh start
+        self.consecutive_losses = 0
+        
         if not self.scanner:
             self.scanner = PumpPortalMonitor(self.on_token_found)
         
@@ -253,7 +256,9 @@ class SniperBot:
             'scanner_alive': self.scanner_task and not self.scanner_task.done() if self.scanner_task else False,
             'shutdown_requested': self.shutdown_requested,
             'positions': len(self.positions),
-            'can_trade': self.wallet.can_trade()
+            'can_trade': self.wallet.can_trade(),
+            'consecutive_losses': self.consecutive_losses,
+            'session_losses': self.session_loss_count
         }
     
     async def on_token_found(self, token_data: Dict):
@@ -290,6 +295,18 @@ class SniperBot:
                 if current_time - self._last_balance_warning > 60:
                     logger.warning(f"Insufficient balance for trading")
                     self._last_balance_warning = current_time
+                return
+            
+            # Phase 1.5: Circuit breaker check
+            if self.consecutive_losses >= 3:
+                logger.warning(f"🛑 Circuit breaker activated - 3 consecutive losses")
+                self.paused = True
+                if self.telegram:
+                    await self.telegram.send_message(
+                        "🛑 Circuit breaker activated\n"
+                        "3 consecutive losses detected\n"
+                        "Bot paused - use /resume to continue"
+                    )
                 return
             
             # Quality filters (keep existing)
@@ -497,6 +514,9 @@ class SniperBot:
                                     }
                                     position.total_sold_percent += sell_percent
                                     
+                                    # Reset consecutive losses on profit
+                                    self.consecutive_losses = 0
+                                    
                                     if position.total_sold_percent >= 100:
                                         logger.info(f"✅ Position fully closed")
                                         position.status = 'completed'
@@ -694,6 +714,11 @@ class SniperBot:
                 
                 if position.pnl_percent > 0:
                     self.profitable_trades += 1
+                    self.consecutive_losses = 0  # Reset on profit
+                else:
+                    self.consecutive_losses += 1  # Increment on loss
+                    self.session_loss_count += 1
+                    
                 self.total_pnl += position.pnl_percent
                 
                 position.realized_pnl_sol += final_pnl
@@ -714,6 +739,7 @@ class SniperBot:
                 logger.info(f"   Reason: {reason}")
                 logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
                 logger.info(f"   Est. realized: {position.realized_pnl_sol:+.4f} SOL")
+                logger.info(f"   Consecutive losses: {self.consecutive_losses}")
                 
                 if self.telegram:
                     emoji = "💰" if position.realized_pnl_sol > 0 else "🔴"
@@ -724,6 +750,8 @@ class SniperBot:
                         f"P&L: {position.pnl_percent:+.1f}%\n"
                         f"Est. realized: {position.realized_pnl_sol:+.4f} SOL"
                     )
+                    if self.consecutive_losses >= 2:
+                        msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
                     await self.telegram.send_message(msg)
             else:
                 logger.error(f"❌ Close transaction failed")
@@ -761,8 +789,9 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with Phase 1 Tweaks")
+            logger.info("✅ Bot running with Phase 1.5 Configuration")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
+            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
             last_stats_time = time.time()
             
@@ -788,6 +817,8 @@ class SniperBot:
                         logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
                         logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
                         logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
+                        logger.info(f"  • Session losses: {self.session_loss_count}")
+                        logger.info(f"  • Consecutive losses: {self.consecutive_losses}/3")
                     
                     if self.total_realized_sol != 0:
                         logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
@@ -833,7 +864,8 @@ class SniperBot:
         if self.telegram and not self.shutdown_requested:
             await self.telegram.send_message(
                 f"🛑 Bot shutting down\n"
-                f"Total realized: {self.total_realized_sol:+.4f} SOL"
+                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
+                f"Session losses: {self.session_loss_count}"
             )
         
         if self.scanner_task and not self.scanner_task.done():
@@ -867,6 +899,7 @@ class SniperBot:
             logger.info(f"  • Trades: {self.total_trades}")
             logger.info(f"  • Win rate: {win_rate:.1f}%")
             logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
+            logger.info(f"  • Session losses: {self.session_loss_count}")
         
         logger.info("✅ Shutdown complete")
 
