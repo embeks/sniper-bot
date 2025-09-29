@@ -1,6 +1,5 @@
 """
-Telegram Bot Integration - Fixed with HTML mode to avoid parsing errors
-FIXED: Using HTML parse mode and <code> tags for addresses
+Telegram Bot
 """
 
 import asyncio
