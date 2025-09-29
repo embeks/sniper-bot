@@ -1,5 +1,5 @@
 """
-PumpPortal WebSocket Monitor - Phase 1 Profitability Tweaks
+PumpPortal WebSocket Monitor - 30-85 SOL Strategy
 """
 
 import asyncio
@@ -17,12 +17,12 @@ class PumpPortalMonitor:
         self.seen_tokens = set()
         self.reconnect_count = 0
         
-        # UPDATED: Tighter quality filters for Phase 1 profitability
+        # 30-85 SOL Strategy: Catch momentum in proven tokens
         self.filters = {
-            'min_creator_sol': 0.5,      # Updated from 0.3
-            'max_creator_sol': 3.0,      # Updated from 5.0
-            'min_curve_sol': 2.0,        # Updated from 1.5
-            'max_curve_sol': 50,         # Updated from 60
+            'min_creator_sol': 0.7,
+            'max_creator_sol': 2.0,
+            'min_curve_sol': 30.0,       # Changed from 15.0 - tokens with proven interest
+            'max_curve_sol': 70.0,       # Changed from 35.0 - before migration rush
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
             'name_blacklist': [
@@ -72,7 +72,7 @@ class PumpPortalMonitor:
             logger.debug(f"Filtered: Non-ASCII characters in name/symbol")
             return False
         
-        # NEW: Check symbol is uppercase
+        # Check symbol is uppercase
         if not symbol.isupper():
             logger.debug(f"Filtered: Symbol not uppercase ({symbol})")
             return False
@@ -84,18 +84,19 @@ class PumpPortalMonitor:
                 logger.debug(f"Filtered: Blacklisted word '{blacklisted}' in name")
                 return False
         
-        # Filter 3: Bonding curve SOL window
+        # Filter 3: Bonding curve SOL window - 30-85 STRATEGY
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
         if v_sol < self.filters['min_curve_sol']:
-            logger.debug(f"Filtered: Too early ({v_sol:.2f} SOL in curve)")
+            logger.debug(f"Filtered: Too early ({v_sol:.2f} SOL vs min {self.filters['min_curve_sol']} SOL)")
             return False
         if v_sol > self.filters['max_curve_sol']:
-            logger.debug(f"Filtered: Too late ({v_sol:.2f} SOL in curve)")
+            logger.debug(f"Filtered: Too late ({v_sol:.2f} SOL vs max {self.filters['max_curve_sol']} SOL)")
             return False
         
-        # MOMENTUM FILTER - Ensure organic buyers have put in 3x the creator's amount
-        if v_sol < creator_sol * 3:
-            logger.debug(f"Filtered: Insufficient momentum ({v_sol:.2f} SOL vs {creator_sol:.2f} creator * 3 = {creator_sol * 3:.2f} needed)")
+        # MOMENTUM FILTER - Less strict for established tokens
+        # At 30+ SOL, we don't need 3x creator amount anymore
+        if v_sol < creator_sol * 2:  # Reduced from 3x to 2x
+            logger.debug(f"Filtered: Insufficient momentum ({v_sol:.2f} SOL vs {creator_sol:.2f} creator * 2 = {creator_sol * 2:.2f} needed)")
             return False
         
         # Filter 4: Virtual token reserves sanity check
@@ -120,7 +121,8 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Quality filters: PHASE 1 TWEAKS WITH MOMENTUM (creator: {self.filters['min_creator_sol']}-{self.filters['max_creator_sol']} SOL, curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL, momentum: 3x)")
+        logger.info(f"Strategy: 30-85 SOL MOMENTUM (curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL)")
+        logger.info("🎯 Targeting proven tokens with room to run to migration")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -139,6 +141,8 @@ class PumpPortalMonitor:
                     }
                     await websocket.send(json.dumps(subscribe_msg))
                     logger.info("📡 Subscribed to new token events")
+                    logger.info("📊 Expecting VERY FEW trades - only tokens with 30+ SOL momentum")
+                    logger.info("🎯 These tokens have proven they're not rugs")
                     
                     # Listen for messages
                     while self.running:
@@ -160,20 +164,29 @@ class PumpPortalMonitor:
                                     # Apply quality filters
                                     if not self._apply_quality_filters(data):
                                         self.tokens_filtered += 1
-                                        logger.info(f"🚫 Token {mint[:8]}... filtered out ({self.tokens_filtered}/{self.tokens_seen} filtered)")
+                                        
+                                        # Log filter rate periodically
+                                        if self.tokens_seen % 10 == 0:
+                                            filter_rate = (self.tokens_filtered / self.tokens_seen * 100)
+                                            logger.info(f"📊 Filter stats: {self.tokens_filtered}/{self.tokens_seen} filtered ({filter_rate:.1f}%)")
                                         continue
                                     
                                     self.tokens_passed += 1
                                     
                                     logger.info("=" * 60)
-                                    logger.info("🚀 NEW QUALITY TOKEN DETECTED!")
+                                    logger.info("🚀 MOMENTUM TOKEN DETECTED - 30-85 STRATEGY!")
                                     logger.info(f"📜 Mint: {mint}")
                                     logger.info(f"📊 Stats: {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_seen} total")
                                     
                                     # Extract key metrics for logging
                                     token_data = data.get('data', data)
-                                    logger.info(f"💰 Creator buy: {token_data.get('solAmount', 0):.2f} SOL")
-                                    logger.info(f"📈 Curve SOL: {token_data.get('vSolInBondingCurve', 0):.2f}")
+                                    v_sol = token_data.get('vSolInBondingCurve', 0)
+                                    creator_sol = token_data.get('solAmount', 0)
+                                    
+                                    logger.info(f"💰 Creator buy: {creator_sol:.2f} SOL")
+                                    logger.info(f"📈 Curve SOL: {v_sol:.2f} SOL (30+ proves real interest)")
+                                    logger.info(f"🎯 Distance to migration: {85 - v_sol:.2f} SOL remaining")
+                                    logger.info(f"🔥 Momentum: {v_sol/creator_sol if creator_sol > 0 else 0:.1f}x creator investment")
                                     logger.info(f"📝 Name: {token_data.get('name', 'Unknown')}")
                                     logger.info(f"🔤 Symbol: {token_data.get('symbol', 'Unknown')}")
                                     logger.info("=" * 60)
@@ -186,7 +199,8 @@ class PumpPortalMonitor:
                                             'timestamp': datetime.now().isoformat(),
                                             'data': data,
                                             'source': 'pumpportal',
-                                            'passed_filters': True
+                                            'passed_filters': True,
+                                            'strategy': '30-85'
                                         })
                         
                         except asyncio.TimeoutError:
@@ -256,7 +270,8 @@ class PumpPortalMonitor:
             'tokens_seen': self.tokens_seen,
             'tokens_filtered': self.tokens_filtered,
             'tokens_passed': self.tokens_passed,
-            'filter_rate': (self.tokens_filtered / self.tokens_seen * 100) if self.tokens_seen > 0 else 0
+            'filter_rate': (self.tokens_filtered / self.tokens_seen * 100) if self.tokens_seen > 0 else 0,
+            'expected_trades_per_hour': self.tokens_passed / max(1, self.tokens_seen) * 60  # Rough estimate
         }
     
     def stop(self):
