@@ -21,8 +21,8 @@ class PumpPortalMonitor:
         self.filters = {
             'min_creator_sol': 0.7,
             'max_creator_sol': 2.0,
-            'min_curve_sol': 30.0,       # Changed from 15.0 - tokens with proven interest
-            'max_curve_sol': 70.0,       # Changed from 35.0 - before migration rush
+            'min_curve_sol': 75.0,       
+            'max_curve_sol': 84.0,       
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
             'name_blacklist': [
