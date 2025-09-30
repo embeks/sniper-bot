@@ -1,11 +1,12 @@
 """
-PumpPortal WebSocket Monitor - Enhanced Anti-Rug Filters
+PumpPortal WebSocket Monitor - Path B: MC + Holder Strategy with Timing Fixes
 """
 
 import asyncio
 import json
 import logging
 import time
+import os
 import websockets
 import aiohttp
 from datetime import datetime
@@ -28,21 +29,30 @@ class PumpPortalMonitor:
             logger.info(f"✅ Helius API key loaded: {HELIUS_API_KEY[:10]}...")
         
         # Token velocity tracking
-        self.token_history = {}  # {mint: [(timestamp, sol_amount), ...]}
-        self.filter_reasons = {}  # Track why tokens were filtered
+        self.token_history = {}
+        self.filter_reasons = {}
         
-        # 30-85 SOL Strategy with enhanced filters
+        # NEW: Token age tracking
+        self.token_first_seen = {}
+        
+        # NEW: SOL price caching for MC calculations
+        self.sol_price_usd = 250
+        self.last_sol_price_update = 0
+        
+        # PATH B FILTERS: 25-60 SOL with 2.5min minimum age
         self.filters = {
             'min_creator_sol': 0.7,
             'max_creator_sol': 2.0,
-            'min_curve_sol': 15.0,  # LOWERED from 30 - catch earlier with more holders       
-            'max_curve_sol': 60.0,  # LOWERED from 75 - more safety margin
+            'min_curve_sol': 25.0,  # CHANGED: Up from 15 - gives Helius time
+            'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 20,  # INCREASED from 15 - need more distribution
-            'max_top5_concentration': 55,  # TIGHTENED from 65 - more strict
-            'max_velocity_sol_per_sec': 1.5,  # TIGHTENED from 2.0
-            'min_time_to_target': 30,  # NEW - must take at least 30 seconds to reach min SOL
+            'min_holders': 60,  # CHANGED: More realistic for reliable data
+            'max_top5_concentration': 55,
+            'max_velocity_sol_per_sec': 1.5,
+            'min_token_age_seconds': 150,  # NEW: 2.5 minute minimum
+            'min_market_cap': 10000,  # NEW: $10k minimum MC
+            'max_market_cap': 50000,  # NEW: $50k maximum MC
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'elon', 'pepe', 'trump', 'doge', 'bonk', 'pump', 
@@ -50,7 +60,7 @@ class PumpPortalMonitor:
                 'token', 'coin', 'gem', 'launch', 'stealth', 'fair',
                 'liquidity', 'burned', 'renounced', 'safu', 'based',
                 'dev', 'team', 'official', 'meme', 'shib', 'floki',
-                'cat', 'dog'  # NEW - common low-effort tokens
+                'cat', 'dog'
             ],
             'filters_enabled': True
         }
@@ -59,7 +69,57 @@ class PumpPortalMonitor:
         self.tokens_seen = 0
         self.tokens_filtered = 0
         self.tokens_passed = 0
+    
+    async def _get_sol_price(self) -> float:
+        """Get current SOL price with caching (5 min cache)"""
+        if time.time() - self.last_sol_price_update < 300:
+            return self.sol_price_usd
         
+        try:
+            birdeye_key = os.getenv('BIRDEYE_API_KEY', '')
+            if not birdeye_key:
+                logger.debug("No Birdeye API key, using cached SOL price")
+                return self.sol_price_usd
+            
+            async with aiohttp.ClientSession() as session:
+                url = "https://public-api.birdeye.so/public/price?address=So11111111111111111111111111111111111111112"
+                headers = {"X-API-KEY": birdeye_key}
+                timeout = aiohttp.ClientTimeout(total=3)
+                async with session.get(url, headers=headers, timeout=timeout) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self.sol_price_usd = float(data['data']['value'])
+                        self.last_sol_price_update = time.time()
+                        logger.debug(f"Updated SOL price: ${self.sol_price_usd:.2f}")
+        except Exception as e:
+            logger.debug(f"SOL price fetch failed: {e}, using cached ${self.sol_price_usd:.2f}")
+        
+        return self.sol_price_usd
+    
+    def _calculate_market_cap(self, token_data: dict) -> float:
+        """Calculate market cap from bonding curve data"""
+        try:
+            v_sol = float(token_data.get('vSolInBondingCurve', 0))
+            v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
+            
+            if v_sol == 0 or v_tokens == 0:
+                logger.debug("Cannot calculate MC - missing bonding curve data")
+                return 0
+            
+            # Price per token in SOL
+            price_sol = v_sol / v_tokens
+            
+            # Total supply (PumpFun standard is 1B tokens)
+            total_supply = 1_000_000_000
+            
+            # Market cap in USD
+            market_cap_usd = total_supply * price_sol * self.sol_price_usd
+            
+            return market_cap_usd
+        except Exception as e:
+            logger.error(f"MC calculation error: {e}")
+            return 0
+    
     def _check_velocity(self, mint: str, v_sol: float) -> bool:
         """Reject instant pumps - require minimum time and reasonable growth rate"""
         now = time.time()
@@ -120,18 +180,18 @@ class PumpPortalMonitor:
                 async with session.post(url, json=payload, timeout=timeout) as resp:
                     if resp.status != 200:
                         logger.warning(f"❌ Helius HTTP error: {resp.status}")
-                        return False  # FAIL CLOSED
+                        return False
                     
                     data = await resp.json()
                     logger.debug(f"Helius response: {data}")
                     
                     if 'error' in data:
                         logger.warning(f"❌ Helius RPC error: {data['error']}")
-                        return False  # FAIL CLOSED
+                        return False
                     
                     if 'result' not in data or 'value' not in data['result']:
                         logger.warning(f"❌ Helius malformed response")
-                        return False  # FAIL CLOSED
+                        return False
                     
                     accounts = data['result']['value']
                     holder_count = len(accounts)
@@ -165,12 +225,12 @@ class PumpPortalMonitor:
                     
         except asyncio.TimeoutError:
             logger.warning("❌ Helius timeout (3s)")
-            return False  # FAIL CLOSED
+            return False
         except Exception as e:
             logger.error(f"❌ Helius exception: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return False  # FAIL CLOSED
+            return False
     
     def _log_filter(self, reason: str, detail: str):
         """Track why tokens are filtered"""
@@ -190,6 +250,21 @@ class PumpPortalMonitor:
         # Extract the actual token data
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
+        
+        # NEW: Track token age
+        now = time.time()
+        if mint not in self.token_first_seen:
+            self.token_first_seen[mint] = now
+        
+        age_seconds = now - self.token_first_seen[mint]
+        
+        # NEW: Age filter - reject tokens younger than 2.5 minutes
+        min_age = self.filters.get('min_token_age_seconds', 150)
+        if age_seconds < min_age:
+            self._log_filter("too_young", f"{age_seconds:.0f}s old (need {min_age}s)")
+            return False
+        
+        logger.info(f"✓ Token {mint[:8]}... age: {age_seconds:.0f}s - proceeding with filters")
         
         # Filter 1: Creator initial buy amount
         creator_sol = float(token_data.get('solAmount', 0))
@@ -264,14 +339,33 @@ class PumpPortalMonitor:
             self._log_filter("velocity", "too fast or too young")
             return False
         
+        # NEW Filter 7.5: Market Cap range check
+        await self._get_sol_price()  # Ensure we have current SOL price
+        market_cap = self._calculate_market_cap(token_data)
+        
+        if market_cap == 0:
+            self._log_filter("mc_calculation_failed", "Could not calculate MC")
+            return False
+        
+        # Target: $10k-$50k MC range
+        if market_cap < self.filters['min_market_cap']:
+            self._log_filter("mc_too_low", f"${market_cap:,.0f}")
+            return False
+        
+        if market_cap > self.filters['max_market_cap']:
+            self._log_filter("mc_too_high", f"${market_cap:,.0f}")
+            return False
+        
+        logger.info(f"✓ MC check passed: ${market_cap:,.0f} (target: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,})")
+        
         # Filter 8: Helius holder distribution check - CRITICAL
         try:
-            logger.info(f"🔍 Starting holder check for {mint[:8]}...")
+            logger.info(f"🔍 Starting holder check for {mint[:8]}... (age: {age_seconds:.0f}s)")
             
-            # Give network 3 seconds to propagate
+            # Wait 3 seconds to ensure Helius has indexed the token
             await asyncio.sleep(3)
             
-            logger.info(f"🔍 About to call _check_holders_helius...")
+            logger.info(f"🔍 Calling Helius API...")
             holder_check_result = await self._check_holders_helius(mint)
             logger.info(f"🔍 Holder check returned: {holder_check_result}")
             
@@ -293,18 +387,19 @@ class PumpPortalMonitor:
         # All filters passed
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
-        logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | Momentum: {momentum:.1f}x")
+        logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f} | Momentum: {momentum:.1f}x")
         return True
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: 15-60 SOL with STRICT HOLDER CHECKS")
+        logger.info(f"Strategy: PATH B - MC + Holder Verification")
+        logger.info(f"  Bonding Curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL")
+        logger.info(f"  Market Cap: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,}")
+        logger.info(f"  Min Age: {self.filters['min_token_age_seconds']}s (2.5 minutes)")
+        logger.info(f"  Min Holders: {self.filters['min_holders']}, Max Top5: {self.filters['max_top5_concentration']}%")
         logger.info(f"  Momentum: 8x@<35 SOL, 5x@<50 SOL, 3x@50+ SOL")
-        logger.info(f"  Velocity: Max {self.filters['max_velocity_sol_per_sec']} SOL/sec")
-        logger.info(f"  Holders: Min {self.filters['min_holders']}, top 5 <{self.filters['max_top5_concentration']}%")
-        logger.info(f"  Min time: {self.filters['min_time_to_target']}s to reach target SOL")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -356,12 +451,14 @@ class PumpPortalMonitor:
                                     token_data = data.get('data', data)
                                     v_sol = token_data.get('vSolInBondingCurve', 0)
                                     creator_sol = token_data.get('solAmount', 0)
+                                    market_cap = self._calculate_market_cap(token_data)
                                     
                                     logger.info("=" * 60)
                                     logger.info("🚀 TOKEN PASSED ALL FILTERS!")
                                     logger.info(f"📜 Mint: {mint}")
                                     logger.info(f"📊 {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_seen} total")
                                     logger.info(f"💰 Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL")
+                                    logger.info(f"💵 Market Cap: ${market_cap:,.0f}")
                                     logger.info(f"🔥 Momentum: {v_sol/creator_sol if creator_sol > 0 else 0:.1f}x")
                                     logger.info(f"📝 {token_data.get('name', 'Unknown')} ({token_data.get('symbol', 'Unknown')})")
                                     logger.info("=" * 60)
@@ -375,7 +472,8 @@ class PumpPortalMonitor:
                                             'data': data,
                                             'source': 'pumpportal',
                                             'passed_filters': True,
-                                            'strategy': '30-85-enhanced'
+                                            'strategy': 'path_b_mc_holder',
+                                            'market_cap': market_cap
                                         })
                         
                         except asyncio.TimeoutError:
