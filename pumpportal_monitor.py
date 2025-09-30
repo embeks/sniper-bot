@@ -104,10 +104,11 @@ class PumpPortalMonitor:
     async def _check_holders_helius(self, mint: str) -> bool:
         """Use Helius to verify holder distribution - reject concentrated supply"""
         try:
+            logger.info(f"🔍 Checking holders for {mint[:8]}... via Helius")
+            
             async with aiohttp.ClientSession() as session:
                 url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
                 
-                # Use getProgramAccounts to get token holders
                 payload = {
                     "jsonrpc": "2.0",
                     "id": 1,
@@ -118,49 +119,58 @@ class PumpPortalMonitor:
                 timeout = aiohttp.ClientTimeout(total=3)
                 async with session.post(url, json=payload, timeout=timeout) as resp:
                     if resp.status != 200:
-                        logger.debug(f"Helius check failed: HTTP {resp.status}")
-                        return True
+                        logger.warning(f"❌ Helius HTTP error: {resp.status}")
+                        return False  # FAIL CLOSED
                     
                     data = await resp.json()
+                    logger.debug(f"Helius response: {data}")
                     
-                    # Check for RPC errors
                     if 'error' in data:
-                        logger.debug(f"Helius RPC error: {data['error']}")
-                        return True  # Fail open - token might be too new
+                        logger.warning(f"❌ Helius RPC error: {data['error']}")
+                        return False  # FAIL CLOSED
                     
                     if 'result' not in data or 'value' not in data['result']:
-                        logger.debug("No result/value in Helius response")
-                        return True
+                        logger.warning(f"❌ Helius malformed response")
+                        return False  # FAIL CLOSED
                     
                     accounts = data['result']['value']
+                    holder_count = len(accounts)
                     
-                    # Minimum holder requirement
-                    if len(accounts) < self.filters['min_holders']:
-                        logger.info(f"Holder REJECT: only {len(accounts)} holders")
+                    logger.info(f"📊 Found {holder_count} holder accounts")
+                    
+                    if holder_count < self.filters['min_holders']:
+                        logger.warning(f"❌ REJECT: Only {holder_count} holders (need {self.filters['min_holders']})")
                         return False
                     
-                    # Calculate concentration using amounts from largest accounts
+                    if holder_count == 0:
+                        logger.warning(f"❌ REJECT: Zero holders returned")
+                        return False
+                    
                     total_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:20])
                     if total_supply == 0:
-                        logger.debug("Zero total supply, fail open")
-                        return True
+                        logger.warning(f"❌ REJECT: Zero total supply")
+                        return False
                     
                     top_5_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:5])
                     concentration = (top_5_supply / total_supply * 100)
                     
+                    logger.info(f"📊 Top 5 concentration: {concentration:.1f}%")
+                    
                     if concentration > self.filters['max_top5_concentration']:
-                        logger.info(f"Concentration REJECT: top 5 hold {concentration:.1f}%")
+                        logger.warning(f"❌ REJECT: Top 5 hold {concentration:.1f}% (max {self.filters['max_top5_concentration']}%)")
                         return False
                     
-                    logger.debug(f"Holder check PASS: {len(accounts)} holders, top 5: {concentration:.1f}%")
+                    logger.info(f"✅ Holder check PASSED: {holder_count} holders, top 5: {concentration:.1f}%")
                     return True
                     
         except asyncio.TimeoutError:
-            logger.debug("Holder check timeout - fail open")
-            return True
+            logger.warning("❌ Helius timeout (3s)")
+            return False  # FAIL CLOSED
         except Exception as e:
-            logger.error(f"Holder check error: {e}")
-            return True
+            logger.error(f"❌ Helius exception: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False  # FAIL CLOSED
     
     def _log_filter(self, reason: str, detail: str):
         """Track why tokens are filtered"""
