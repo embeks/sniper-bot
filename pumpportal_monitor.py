@@ -248,15 +248,29 @@ class PumpPortalMonitor:
             return False
         
         # Filter 8: Helius holder distribution check - CRITICAL
-        logger.info(f"🔍 Starting holder check for {mint[:8]}...")
-        
-        # Give network 3 seconds to propagate
-        await asyncio.sleep(3)
-        
-        holder_check_result = await self._check_holders_helius(mint)
-        
-        if not holder_check_result:
-            self._log_filter("holder_distribution", "failed holder check")
+        try:
+            logger.info(f"🔍 Starting holder check for {mint[:8]}...")
+            
+            # Give network 3 seconds to propagate
+            await asyncio.sleep(3)
+            
+            logger.info(f"🔍 About to call _check_holders_helius...")
+            holder_check_result = await self._check_holders_helius(mint)
+            logger.info(f"🔍 Holder check returned: {holder_check_result}")
+            
+            if not holder_check_result:
+                self._log_filter("holder_distribution", "failed holder check")
+                logger.warning(f"❌ Token {mint[:8]}... REJECTED by holder check")
+                return False
+            
+            logger.info(f"✅ Token {mint[:8]}... passed holder check")
+            
+        except Exception as e:
+            logger.error(f"❌ CRITICAL: Holder check exception for {mint[:8]}...: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Fail closed on exceptions
+            self._log_filter("holder_distribution", f"exception: {e}")
             return False
         
         # All filters passed
