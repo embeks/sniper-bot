@@ -92,15 +92,12 @@ class PumpPortalMonitor:
             async with aiohttp.ClientSession() as session:
                 url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
                 
+                # Use getProgramAccounts to get token holders
                 payload = {
                     "jsonrpc": "2.0",
-                    "id": "holder-check",
-                    "method": "getTokenAccounts",
-                    "params": {
-                        "mint": mint,
-                        "limit": 50,
-                        "options": {"showZeroBalance": False}
-                    }
+                    "id": 1,
+                    "method": "getTokenLargestAccounts",
+                    "params": [mint]
                 }
                 
                 timeout = aiohttp.ClientTimeout(total=3)
@@ -111,29 +108,29 @@ class PumpPortalMonitor:
                     
                     data = await resp.json()
                     
-                    if 'result' not in data:
-                        logger.debug("No result in Helius response")
+                    # Check for RPC errors
+                    if 'error' in data:
+                        logger.debug(f"Helius RPC error: {data['error']}")
+                        return True  # Fail open - token might be too new
+                    
+                    if 'result' not in data or 'value' not in data['result']:
+                        logger.debug("No result/value in Helius response")
                         return True
                     
-                    accounts = data['result'].get('token_accounts', [])
+                    accounts = data['result']['value']
                     
                     # Minimum holder requirement
                     if len(accounts) < self.filters['min_holders']:
                         logger.info(f"Holder REJECT: only {len(accounts)} holders")
                         return False
                     
-                    # Calculate concentration
-                    sorted_accounts = sorted(
-                        accounts, 
-                        key=lambda x: int(x.get('amount', 0)), 
-                        reverse=True
-                    )
-                    
-                    total_supply = sum(int(acc.get('amount', 0)) for acc in sorted_accounts[:30])
+                    # Calculate concentration using amounts from largest accounts
+                    total_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:20])
                     if total_supply == 0:
+                        logger.debug("Zero total supply, fail open")
                         return True
                     
-                    top_5_supply = sum(int(acc.get('amount', 0)) for acc in sorted_accounts[:5])
+                    top_5_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:5])
                     concentration = (top_5_supply / total_supply * 100)
                     
                     if concentration > self.filters['max_top5_concentration']:
@@ -242,10 +239,12 @@ class PumpPortalMonitor:
             self._log_filter("velocity", "pump too fast")
             return False
         
-        # Filter 8: Helius holder distribution check
-        if not await self._check_holders_helius(mint):
-            self._log_filter("holder_distribution", "concentrated supply")
-            return False
+        # Filter 8: Helius holder distribution check - TEMPORARILY DISABLED
+        # Tokens at 30+ SOL are too new, Helius hasn't indexed holder data yet
+        # TODO: Re-enable after confirming other filters work
+        # if not await self._check_holders_helius(mint):
+        #     self._log_filter("holder_distribution", "concentrated supply")
+        #     return False
         
         # All filters passed
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
