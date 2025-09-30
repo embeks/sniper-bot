@@ -247,43 +247,21 @@ class PumpPortalMonitor:
             self._log_filter("velocity", "too fast or too young")
             return False
         
-        # Filter 8: Helius holder distribution check with smart retry
-        holder_check_passed = False
-        holder_attempts = 0
-        max_attempts = 2
+        # Filter 8: Helius holder distribution check - CRITICAL
+        logger.info(f"🔍 Starting holder check for {mint[:8]}...")
         
-        while not holder_check_passed and holder_attempts < max_attempts:
-            holder_attempts += 1
-            
-            if holder_attempts > 1:
-                # Wait longer on retry
-                await asyncio.sleep(5)
-                logger.debug(f"Holder check retry #{holder_attempts}")
-            else:
-                # Initial check with small delay for RPC propagation
-                await asyncio.sleep(2)
-            
-            holders_result = await self._check_holders_helius(mint)
-            
-            if holders_result:
-                holder_check_passed = True
-                break
-            else:
-                # Check velocity - if velocity is suspicious AND low holders, reject immediately
-                time_elapsed = time.time() - self.token_history[mint][0][0] if mint in self.token_history else 0
-                if time_elapsed < 90:
-                    # Young token with low holders = likely rug, don't retry
-                    logger.info(f"Young token ({time_elapsed:.0f}s) with insufficient holders - reject")
-                    self._log_filter("holder_distribution", "insufficient holders, young token")
-                    return False
+        # Give network 3 seconds to propagate
+        await asyncio.sleep(3)
         
-        if not holder_check_passed:
-            self._log_filter("holder_distribution", "insufficient holders after retries")
+        holder_check_result = await self._check_holders_helius(mint)
+        
+        if not holder_check_result:
+            self._log_filter("holder_distribution", "failed holder check")
             return False
         
         # All filters passed
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
-        logger.info(f"✅ PASSED: {name} ({symbol})")
+        logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | Momentum: {momentum:.1f}x")
         return True
         
