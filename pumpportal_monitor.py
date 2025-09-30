@@ -20,6 +20,13 @@ class PumpPortalMonitor:
         self.seen_tokens = set()
         self.reconnect_count = 0
         
+        # Verify Helius API key is available
+        if not HELIUS_API_KEY:
+            logger.error("❌ CRITICAL: HELIUS_API_KEY not found!")
+            raise ValueError("HELIUS_API_KEY is required for holder checks")
+        else:
+            logger.info(f"✅ Helius API key loaded: {HELIUS_API_KEY[:10]}...")
+        
         # Token velocity tracking
         self.token_history = {}  # {mint: [(timestamp, sol_amount), ...]}
         self.filter_reasons = {}  # Track why tokens were filtered
