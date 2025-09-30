@@ -1,5 +1,5 @@
 """
-Main Orchestrator
+Main Orchestrator - Path B: MC-Based Entry & Tracking
 """
 
 import asyncio
@@ -36,8 +36,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class Position:
-    """Track an active position with multi-target support"""
-    def __init__(self, mint: str, amount_sol: float, tokens: float = 0):
+    """Track an active position with MC-based P&L"""
+    def __init__(self, mint: str, amount_sol: float, tokens: float = 0, entry_market_cap: float = 0):
         self.mint = mint
         self.amount_sol = amount_sol
         self.initial_tokens = tokens
@@ -64,46 +64,44 @@ class Position:
         self.last_valid_balance = tokens
         self.curve_check_retries = 0
         
-        # FIXED: Store initial SOL in curve for better price tracking
+        # NEW: MC-based tracking for Path B
+        self.entry_market_cap = entry_market_cap
+        self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
         
         # Build profit targets from environment
         self.profit_targets = []
         
-        # Check configured targets (2x, 3x, 5x only)
         if 200.0 in PARTIAL_TAKE_PROFIT:
             self.profit_targets.append({
-                'target': 100,  # 100% gain = 2x
+                'target': 100,
                 'sell_percent': PARTIAL_TAKE_PROFIT[200.0] * 100,
                 'name': '2x'
             })
         
         if 300.0 in PARTIAL_TAKE_PROFIT:
             self.profit_targets.append({
-                'target': 200,  # 200% gain = 3x
+                'target': 200,
                 'sell_percent': PARTIAL_TAKE_PROFIT[300.0] * 100,
                 'name': '3x'
             })
         
         if 500.0 in PARTIAL_TAKE_PROFIT:
             self.profit_targets.append({
-                'target': 400,  # 400% gain = 5x
+                'target': 400,
                 'sell_percent': PARTIAL_TAKE_PROFIT[500.0] * 100,
                 'name': '5x'
             })
         
-        # Sort targets by percentage (ascending)
         self.profit_targets.sort(key=lambda x: x['target'])
-        
-        # REMOVED: No fallback targets - rely on env vars only
 
 class SniperBot:
-    """Main sniper bot orchestrator"""
+    """Main sniper bot orchestrator - Path B Strategy"""
     
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - PHASE 1.5")
+        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: MC + HOLDER STRATEGY")
         logger.info("=" * 60)
         
         # Core components
@@ -135,7 +133,7 @@ class SniperBot:
         self.shutdown_requested = False
         self._last_balance_warning = 0
         
-        # Phase 1.5: Track consecutive losses for circuit breaker
+        # Circuit breaker
         self.consecutive_losses = 0
         self.session_loss_count = 0
         
@@ -150,7 +148,9 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - PHASE 1.5:")
+        logger.info(f"📊 STARTUP STATUS - PATH B:")
+        logger.info(f"  • Strategy: MC + Holder Verification")
+        logger.info(f"  • Entry: $10k-$50k MC, 60+ holders, 2.5+ min age")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
@@ -161,6 +161,29 @@ class SniperBot:
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
+    
+    def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float = 250) -> float:
+        """Calculate market cap from bonding curve data"""
+        try:
+            v_sol = curve_data.get('sol_in_curve', 0)
+            v_tokens = curve_data.get('virtual_token_reserves', 0)
+            
+            if v_sol == 0 or v_tokens == 0:
+                return 0
+            
+            # Price per token in SOL
+            price_sol = (v_sol * 1e9) / v_tokens
+            
+            # Total supply (PumpFun standard)
+            total_supply = 1_000_000_000
+            
+            # Market cap in USD
+            market_cap_usd = total_supply * price_sol * sol_price_usd
+            
+            return market_cap_usd
+        except Exception as e:
+            logger.error(f"MC calculation error: {e}")
+            return 0
     
     async def initialize_telegram(self):
         """Initialize Telegram bot after event loop is ready"""
@@ -173,11 +196,13 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - Phase 1.5\n"
+                    "🚀 Bot started - PATH B Strategy\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"📈 Targets: 2x/3x/5x\n"
-                    f"⚡ Min curve: 15 SOL\n"
+                    f"💵 Entry: $10k-$50k MC\n"
+                    f"👥 Min holders: 60\n"
+                    f"⏱️ Min age: 2.5 min\n"
                     f"🛑 Circuit breaker: 3 losses\n"
                     "Type /help for commands"
                 )
@@ -222,7 +247,6 @@ class SniperBot:
         self.paused = False
         self.shutdown_requested = False
         
-        # Reset circuit breaker on fresh start
         self.consecutive_losses = 0
         
         if not self.scanner:
@@ -262,7 +286,7 @@ class SniperBot:
         }
     
     async def on_token_found(self, token_data: Dict):
-        """Handle new token found - CRITICAL: Keep exact logic"""
+        """Handle new token found - PATH B with MC data"""
         detection_start = time.time()
         
         try:
@@ -276,7 +300,7 @@ class SniperBot:
                 self.dex.update_token_data(mint, token_data)
                 logger.debug(f"Updated price data for existing position {mint[:8]}...")
             
-            # Validation checks (keep all existing logic)
+            # Validation checks
             if not self.running or self.paused:
                 return
             
@@ -297,7 +321,7 @@ class SniperBot:
                     self._last_balance_warning = current_time
                 return
             
-            # Phase 1.5: Circuit breaker check
+            # Circuit breaker check
             if self.consecutive_losses >= 3:
                 logger.warning(f"🛑 Circuit breaker activated - 3 consecutive losses")
                 self.paused = True
@@ -309,7 +333,7 @@ class SniperBot:
                     )
                 return
             
-            # Quality filters (keep existing)
+            # Quality filters
             initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
             name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
             
@@ -319,12 +343,16 @@ class SniperBot:
             if len(name) < 3 or 'test' in name.lower():
                 return
             
+            # Extract entry market cap from token_data
+            entry_market_cap = token_data.get('market_cap', 0)
+            
             # Log detection
             detection_time_ms = (time.time() - detection_start) * 1000
             self.tracker.log_token_detection(mint, token_data.get('source', 'pumpportal'), detection_time_ms)
             
             logger.info(f"🎯 Processing new token: {mint}")
             logger.info(f"   Detection latency: {detection_time_ms:.0f}ms")
+            logger.info(f"   Entry MC: ${entry_market_cap:,.0f}")
             
             cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
             
@@ -340,7 +368,6 @@ class SniperBot:
                 if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                     bonding_curve_key = token_data['data']['bondingCurveKey']
                 
-                # Calculate expected tokens
                 expected_tokens = 0
                 if 'data' in token_data:
                     data = token_data['data']
@@ -374,15 +401,15 @@ class SniperBot:
                     execution_time_ms=execution_time_ms
                 )
                 
-                # Create position
-                position = Position(mint, BUY_AMOUNT_SOL, bought_tokens)
+                # Create position with entry MC
+                position = Position(mint, BUY_AMOUNT_SOL, bought_tokens, entry_market_cap)
                 position.buy_signature = signature
                 position.initial_tokens = bought_tokens
                 position.remaining_tokens = bought_tokens
                 position.last_valid_balance = bought_tokens
                 position.entry_time = time.time()
                 
-                # FIXED: Store initial SOL in curve from WebSocket data
+                # Store entry SOL in curve
                 if 'data' in token_data:
                     position.entry_sol_in_curve = token_data['data'].get('vSolInBondingCurve', 30)
                 
@@ -392,6 +419,7 @@ class SniperBot:
                 logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
                 logger.info(f"   Amount: {BUY_AMOUNT_SOL} SOL")
                 logger.info(f"   Tokens: {bought_tokens:,.0f}")
+                logger.info(f"   Entry MC: ${entry_market_cap:,.0f}")
                 logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
                 
                 if self.telegram:
@@ -408,7 +436,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with FIXED profit calculation"""
+        """Monitor position with MC-based P&L tracking"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -419,12 +447,7 @@ class SniperBot:
             await asyncio.sleep(SELL_DELAY_SECONDS)
             
             logger.info(f"📈 Starting active monitoring for {mint[:8]}...")
-            
-            # FIXED: Store entry SOL in curve
-            initial_curve = self.dex.get_bonding_curve_data(mint)
-            if initial_curve:
-                position.entry_sol_in_curve = initial_curve.get('sol_in_curve', position.entry_sol_in_curve)
-                logger.info(f"📍 Entry SOL in curve for {mint[:8]}...: {position.entry_sol_in_curve:.2f} SOL")
+            logger.info(f"   Entry MC: ${position.entry_market_cap:,.0f}")
             
             check_count = 0
             last_notification_pnl = 0
@@ -450,45 +473,44 @@ class SniperBot:
                         break
                     
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
-                        current_sol_in_curve = curve_data.get('sol_in_curve', 0)
+                        # Calculate current MC
+                        current_mc = self._calculate_mc_from_curve(curve_data)
+                        position.current_market_cap = current_mc
                         
-                        # FIXED: Calculate P&L based on SOL in curve change
-                        # If SOL went from 30 to 45, that's a 50% gain
-                        if position.entry_sol_in_curve > 0:
-                            price_change = ((current_sol_in_curve / position.entry_sol_in_curve) - 1) * 100
+                        # Calculate P&L based on MC change
+                        if position.entry_market_cap > 0 and current_mc > 0:
+                            mc_change_pct = ((current_mc / position.entry_market_cap) - 1) * 100
+                            position.pnl_percent = mc_change_pct
                         else:
-                            # Fallback if we don't have entry SOL
-                            price_change = 0
-                        
-                        position.pnl_percent = price_change
-                        position.current_price = current_sol_in_curve  # Store current SOL in curve
+                            mc_change_pct = 0
+                            position.pnl_percent = 0
                         
                         consecutive_data_failures = 0
-                        position.last_valid_price = current_sol_in_curve
                         position.last_price_update = time.time()
                         
                         if check_count % 10 == 1:
-                            self.tracker.log_position_update(mint, price_change, current_sol_in_curve, age)
+                            self.tracker.log_position_update(mint, mc_change_pct, current_mc, age)
                         
                         if check_count % 3 == 1:
                             logger.info(
-                                f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                                f"SOL: {position.entry_sol_in_curve:.1f}→{current_sol_in_curve:.1f} | "
+                                f"📊 {mint[:8]}... | P&L: {mc_change_pct:+.1f}% | "
+                                f"MC: ${position.entry_market_cap:,.0f}→${current_mc:,.0f} | "
                                 f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
                             )
                         
                         # Telegram updates
-                        if self.telegram and abs(price_change - last_notification_pnl) >= 50:
+                        if self.telegram and abs(mc_change_pct - last_notification_pnl) >= 50:
                             update_msg = (
                                 f"📊 Update {mint[:8]}...\n"
-                                f"P&L: {price_change:+.1f}%\n"
+                                f"P&L: {mc_change_pct:+.1f}%\n"
+                                f"MC: ${position.entry_market_cap:,.0f}→${current_mc:,.0f}\n"
                                 f"Remaining: {100 - position.total_sold_percent}%"
                             )
                             await self.telegram.send_message(update_msg)
-                            last_notification_pnl = price_change
+                            last_notification_pnl = mc_change_pct
                         
                         # Check stop loss FIRST
-                        if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
+                        if mc_change_pct <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
                             logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                             await self._close_position_full(mint, reason="stop_loss")
                             break
@@ -499,16 +521,16 @@ class SniperBot:
                             target_pnl = target['target']
                             sell_percent = target['sell_percent']
                             
-                            if price_change >= target_pnl and target_name not in position.partial_sells:
+                            if mc_change_pct >= target_pnl and target_name not in position.partial_sells:
                                 logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                 
                                 success = await self._execute_partial_sell(
-                                    mint, sell_percent, target_name, price_change
+                                    mint, sell_percent, target_name, mc_change_pct
                                 )
                                 
                                 if success:
                                     position.partial_sells[target_name] = {
-                                        'pnl': price_change,
+                                        'pnl': mc_change_pct,
                                         'time': time.time(),
                                         'percent_sold': sell_percent
                                     }
@@ -524,11 +546,9 @@ class SniperBot:
                     else:
                         consecutive_data_failures += 1
                         if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
-                            if position.last_valid_price > 0:
-                                current_sol_in_curve = position.last_valid_price
-                                logger.debug(f"Using last valid SOL in curve: {current_sol_in_curve:.2f}")
-                            else:
-                                continue
+                            logger.warning(f"Too many data failures for {mint[:8]}...")
+                            await asyncio.sleep(1)
+                            continue
                         else:
                             await asyncio.sleep(1)
                             continue
@@ -549,7 +569,7 @@ class SniperBot:
                 await self._close_position_full(mint, reason="monitor_error")
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
-        """Execute a partial sell with FIXED profit calculation"""
+        """Execute a partial sell with MC-based profit calculation"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -574,8 +594,9 @@ class SniperBot:
             
             logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
             logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} tokens)")
+            logger.info(f"   Current MC P&L: {current_pnl:+.1f}%")
             
-            # FIXED: Calculate realistic SOL received based on target multiplier
+            # Calculate realistic SOL received based on MC multiplier
             base_sol_for_portion = BUY_AMOUNT_SOL * (sell_percent / 100)
             
             if target_name == '2x':
@@ -585,11 +606,7 @@ class SniperBot:
             elif target_name == '5x':
                 multiplier = 5.0
             else:
-                # Use actual P&L if it's reasonable (under 10x)
-                if current_pnl < 900:  # Less than 10x
-                    multiplier = 1 + (current_pnl / 100)
-                else:
-                    multiplier = 2.0  # Default to 2x for safety
+                multiplier = 1 + (current_pnl / 100) if current_pnl < 900 else 2.0
             
             sol_received = base_sol_for_portion * multiplier
             profit_sol = sol_received - base_sol_for_portion
@@ -631,7 +648,7 @@ class SniperBot:
                         f"💰 {target_name} TARGET HIT!\n"
                         f"Token: {mint[:16]}...\n"
                         f"Sold: {sell_percent}% of position\n"
-                        f"P&L: {current_pnl:+.1f}%\n"
+                        f"MC P&L: {current_pnl:+.1f}%\n"
                         f"Est. profit: {profit_sol:+.4f} SOL\n"
                         f"TX: https://solscan.io/tx/{signature}"
                     )
@@ -647,7 +664,7 @@ class SniperBot:
             return False
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position with FIXED profit calculation"""
+        """Close remaining position"""
         try:
             position = self.positions.get(mint)
             if not position or position.status != 'active':
@@ -668,19 +685,16 @@ class SniperBot:
             
             logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}...")
             
-            # FIXED: Calculate realistic SOL based on actual P&L
+            # Calculate realistic SOL based on actual MC P&L
             base_sol_for_portion = BUY_AMOUNT_SOL * (remaining_percent / 100)
             
-            # Use reasonable multiplier based on P&L
             if position.pnl_percent > 0:
-                # Cap at 5x for safety
                 multiplier = min(1 + (position.pnl_percent / 100), 5.0)
             else:
-                # Loss scenario
-                multiplier = max(1 + (position.pnl_percent / 100), 0.5)  # At least 0.5x (50% loss)
+                multiplier = max(1 + (position.pnl_percent / 100), 0.5)
             
             if reason == "migration":
-                multiplier *= 0.8  # 20% haircut for migration
+                multiplier *= 0.8
             
             sol_received = base_sol_for_portion * multiplier
             final_pnl = sol_received - base_sol_for_portion
@@ -698,9 +712,6 @@ class SniperBot:
                 
                 token_decimals = self.wallet.get_token_decimals(mint)
                 
-                if is_migrated:
-                    logger.info(f"Token {mint[:8]}... has migrated to Raydium")
-                
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
                     token_amount=ui_token_balance,
@@ -714,9 +725,9 @@ class SniperBot:
                 
                 if position.pnl_percent > 0:
                     self.profitable_trades += 1
-                    self.consecutive_losses = 0  # Reset on profit
+                    self.consecutive_losses = 0
                 else:
-                    self.consecutive_losses += 1  # Increment on loss
+                    self.consecutive_losses += 1
                     self.session_loss_count += 1
                     
                 self.total_pnl += position.pnl_percent
@@ -737,7 +748,7 @@ class SniperBot:
                 
                 logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
                 logger.info(f"   Reason: {reason}")
-                logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
+                logger.info(f"   MC P&L: {position.pnl_percent:+.1f}%")
                 logger.info(f"   Est. realized: {position.realized_pnl_sol:+.4f} SOL")
                 logger.info(f"   Consecutive losses: {self.consecutive_losses}")
                 
@@ -747,7 +758,7 @@ class SniperBot:
                         f"{emoji} POSITION CLOSED\n"
                         f"Token: {mint[:16]}\n"
                         f"Reason: {reason}\n"
-                        f"P&L: {position.pnl_percent:+.1f}%\n"
+                        f"MC P&L: {position.pnl_percent:+.1f}%\n"
                         f"Est. realized: {position.realized_pnl_sol:+.4f} SOL"
                     )
                     if self.consecutive_losses >= 2:
@@ -789,7 +800,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with Phase 1.5 Configuration")
+            logger.info("✅ Bot running with PATH B Configuration")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
@@ -806,7 +817,7 @@ class SniperBot:
                             age = time.time() - pos.entry_time
                             targets_hit = ', '.join(pos.partial_sells.keys()) if pos.partial_sells else 'None'
                             logger.info(
-                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
+                                f"  • {mint[:8]}... | MC P&L: {pos.pnl_percent:+.1f}% | "
                                 f"Sold: {pos.total_sold_percent}% | Targets: {targets_hit} | "
                                 f"Age: {age:.0f}s"
                             )
