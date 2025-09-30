@@ -28,20 +28,22 @@ class PumpPortalMonitor:
         self.filters = {
             'min_creator_sol': 0.7,
             'max_creator_sol': 2.0,
-            'min_curve_sol': 30.0,       
-            'max_curve_sol': 75.0,       
+            'min_curve_sol': 15.0,  # LOWERED from 30 - catch earlier with more holders       
+            'max_curve_sol': 60.0,  # LOWERED from 75 - more safety margin
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 15,
-            'max_top5_concentration': 65,
-            'max_velocity_sol_per_sec': 2.0,
+            'min_holders': 20,  # INCREASED from 15 - need more distribution
+            'max_top5_concentration': 55,  # TIGHTENED from 65 - more strict
+            'max_velocity_sol_per_sec': 1.5,  # TIGHTENED from 2.0
+            'min_time_to_target': 30,  # NEW - must take at least 30 seconds to reach min SOL
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'elon', 'pepe', 'trump', 'doge', 'bonk', 'pump', 
                 'moon', 'ai', 'safe', 'baby', 'inu', 'meta', 'grok',
                 'token', 'coin', 'gem', 'launch', 'stealth', 'fair',
                 'liquidity', 'burned', 'renounced', 'safu', 'based',
-                'dev', 'team', 'official', 'meme', 'shib', 'floki'
+                'dev', 'team', 'official', 'meme', 'shib', 'floki',
+                'cat', 'dog'  # NEW - common low-effort tokens
             ],
             'filters_enabled': True
         }
@@ -52,7 +54,7 @@ class PumpPortalMonitor:
         self.tokens_passed = 0
         
     def _check_velocity(self, mint: str, v_sol: float) -> bool:
-        """Reject instant pumps - organic tokens take time to reach 30+ SOL"""
+        """Reject instant pumps - require minimum time and reasonable growth rate"""
         now = time.time()
         
         if mint not in self.token_history:
@@ -69,21 +71,27 @@ class PumpPortalMonitor:
         if len(history) < 2:
             return True
         
-        # Need at least 5 seconds of data to judge velocity
-        time_span = history[-1][0] - history[0][0]
-        if time_span < 5:
-            logger.debug(f"Velocity check: need more time data ({time_span:.1f}s)")
-            return False
-        
+        # Calculate total time elapsed and growth
+        time_elapsed = history[-1][0] - history[0][0]
         sol_growth = history[-1][1] - history[0][1]
-        rate = sol_growth / time_span if time_span > 0 else 999
         
-        # Organic: 0.3-1.5 SOL/sec, Scams: 2-10+ SOL/sec
-        if rate > self.filters['max_velocity_sol_per_sec']:
-            logger.info(f"Velocity REJECT: {rate:.2f} SOL/sec")
+        # Minimum age requirement: 60 seconds
+        if time_elapsed < 60:
+            logger.debug(f"Velocity: only {time_elapsed:.0f}s old, need 60s minimum")
             return False
         
-        logger.debug(f"Velocity OK: {rate:.2f} SOL/sec")
+        # Calculate average growth rate (SOL per minute)
+        growth_per_minute = (sol_growth / time_elapsed) * 60 if time_elapsed > 0 else 999
+        
+        # Organic tokens: 5-15 SOL/minute
+        # Coordinated pumps: 30-60+ SOL/minute
+        max_sol_per_minute = 20
+        
+        if growth_per_minute > max_sol_per_minute:
+            logger.info(f"Velocity REJECT: {growth_per_minute:.1f} SOL/min (max {max_sol_per_minute})")
+            return False
+        
+        logger.debug(f"Velocity OK: {growth_per_minute:.1f} SOL/min over {time_elapsed:.0f}s")
         return True
     
     async def _check_holders_helius(self, mint: str) -> bool:
@@ -234,17 +242,44 @@ class PumpPortalMonitor:
                 self._log_filter("metadata_blacklist", blacklisted)
                 return False
         
-        # Filter 7: Velocity check
+        # Filter 7: Velocity check - must be at least 60 seconds old
         if not self._check_velocity(mint, v_sol):
-            self._log_filter("velocity", "pump too fast")
+            self._log_filter("velocity", "too fast or too young")
             return False
         
-        # Filter 8: Helius holder distribution check - TEMPORARILY DISABLED
-        # Tokens at 30+ SOL are too new, Helius hasn't indexed holder data yet
-        # TODO: Re-enable after confirming other filters work
-        # if not await self._check_holders_helius(mint):
-        #     self._log_filter("holder_distribution", "concentrated supply")
-        #     return False
+        # Filter 8: Helius holder distribution check with smart retry
+        holder_check_passed = False
+        holder_attempts = 0
+        max_attempts = 2
+        
+        while not holder_check_passed and holder_attempts < max_attempts:
+            holder_attempts += 1
+            
+            if holder_attempts > 1:
+                # Wait longer on retry
+                await asyncio.sleep(5)
+                logger.debug(f"Holder check retry #{holder_attempts}")
+            else:
+                # Initial check with small delay for RPC propagation
+                await asyncio.sleep(2)
+            
+            holders_result = await self._check_holders_helius(mint)
+            
+            if holders_result:
+                holder_check_passed = True
+                break
+            else:
+                # Check velocity - if velocity is suspicious AND low holders, reject immediately
+                time_elapsed = time.time() - self.token_history[mint][0][0] if mint in self.token_history else 0
+                if time_elapsed < 90:
+                    # Young token with low holders = likely rug, don't retry
+                    logger.info(f"Young token ({time_elapsed:.0f}s) with insufficient holders - reject")
+                    self._log_filter("holder_distribution", "insufficient holders, young token")
+                    return False
+        
+        if not holder_check_passed:
+            self._log_filter("holder_distribution", "insufficient holders after retries")
+            return False
         
         # All filters passed
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
@@ -256,10 +291,11 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: 30-85 SOL with ENHANCED FILTERS")
+        logger.info(f"Strategy: 15-60 SOL with STRICT HOLDER CHECKS")
         logger.info(f"  Momentum: 8x@<35 SOL, 5x@<50 SOL, 3x@50+ SOL")
         logger.info(f"  Velocity: Max {self.filters['max_velocity_sol_per_sec']} SOL/sec")
         logger.info(f"  Holders: Min {self.filters['min_holders']}, top 5 <{self.filters['max_top5_concentration']}%")
+        logger.info(f"  Min time: {self.filters['min_time_to_target']}s to reach target SOL")
         
         uri = "wss://pumpportal.fun/api/data"
         
