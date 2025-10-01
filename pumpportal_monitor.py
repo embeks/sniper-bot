@@ -259,12 +259,12 @@ class PumpPortalMonitor:
         if mint not in self.token_first_seen:
             self.token_first_seen[mint] = now
         
-        # Age proxy: Require 30+ SOL in curve (ensures ~2-3 min age and Helius indexing)
-        if v_sol < 30:
-            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 30+ for age verification)")
+        # Age proxy: Require 40+ SOL in curve (ensures ~3-4 min age and Helius indexing)
+        if v_sol < 40:
+            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 40+ for Helius indexing)")
             return False
         
-        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve (30+ threshold passed) - proceeding with filters")
+        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve (40+ threshold passed) - proceeding with filters")
         
         # Filter 1: Creator initial buy amount
         creator_sol = float(token_data.get('solAmount', 0))
