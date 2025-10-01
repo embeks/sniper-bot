@@ -251,17 +251,25 @@ class PumpPortalMonitor:
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
         
-        # NEW: Track token age
+        # NEW: Calculate token age based on SOL in curve
+        # Strategy: Tokens need time to accumulate SOL organically
+        # At 25 SOL minimum with 0.7-2.0 SOL creator buy, need ~60-90 seconds minimum
         now = time.time()
+        v_sol = float(token_data.get('vSolInBondingCurve', 0))
+        
+        # Track when we first see each SOL level for this token
         if mint not in self.token_first_seen:
             self.token_first_seen[mint] = now
         
-        age_seconds = now - self.token_first_seen[mint]
-        
-        # NEW: Age filter - reject tokens younger than 2.5 minutes
+        # Calculate minimum expected age based on SOL accumulation
+        # Organic tokens: ~0.5-1.0 SOL/sec average growth
+        # Our 25 SOL minimum should take at least 60 seconds from launch
         min_age = self.filters.get('min_token_age_seconds', 150)
-        if age_seconds < min_age:
-            self._log_filter("too_young", f"{age_seconds:.0f}s old (need {min_age}s)")
+        
+        # Simple heuristic: if SOL < 30, token is likely < 2 min old, reject it
+        # This avoids the tracking problem entirely
+        if v_sol < 30:
+            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 30+ for age verification)")
             return False
         
         logger.info(f"✓ Token {mint[:8]}... age: {age_seconds:.0f}s - proceeding with filters")
