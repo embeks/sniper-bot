@@ -272,7 +272,7 @@ class PumpPortalMonitor:
             self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 30+ for age verification)")
             return False
         
-        logger.info(f"✓ Token {mint[:8]}... age: {age_seconds:.0f}s - proceeding with filters")
+        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve (30+ threshold passed) - proceeding with filters")
         
         # Filter 1: Creator initial buy amount
         creator_sol = float(token_data.get('solAmount', 0))
