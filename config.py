@@ -33,13 +33,13 @@ BACKUP_RPC_ENDPOINTS = [
 # PHASE 1.5 TRADING PARAMETERS - PATH B
 # ============================================
 # Position sizing
-BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.01'))  # Start small to prove strategy
+BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.01'))
 PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '10'))
-MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.03'))
+MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-# Risk management - PATH B: More conservative
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '35'))  # -35% stop loss
+# Risk management - PATH B
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '35'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Partial profit taking from env
