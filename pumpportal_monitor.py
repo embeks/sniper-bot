@@ -355,35 +355,7 @@ class PumpPortalMonitor:
         
         logger.info(f"✓ MC check passed: ${market_cap:,.0f} (target: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,})")
         
-        # NEW Filter 7.6: Directionality check (simplified version of ChatGPT's suggestion)
-        # Track MC history and require rising trend
-        if mint not in self.token_mc_history:
-            self.token_mc_history[mint] = [(now, market_cap)]
-            # First time seeing - can't check directionality yet
-            self._log_filter("directionality", "first MC snapshot, need history")
-            return False
-        else:
-            # Add current MC to history
-            self.token_mc_history[mint].append((now, market_cap))
-            
-            # Check if we have 2+ minutes of history
-            history = self.token_mc_history[mint]
-            first_time, first_mc = history[0]
-            time_elapsed = now - first_time
-            
-            if time_elapsed >= 120:  # 2 minutes
-                # Require 20% gain over the period
-                mc_gain_pct = ((market_cap - first_mc) / first_mc) * 100 if first_mc > 0 else 0
-                
-                if mc_gain_pct < self.filters['min_mc_gain_2min']:
-                    self._log_filter("directionality", f"MC only +{mc_gain_pct:.1f}% over {time_elapsed:.0f}s (need +{self.filters['min_mc_gain_2min']}%)")
-                    return False
-                
-                logger.info(f"✓ Directionality check passed: MC +{mc_gain_pct:.1f}% over {time_elapsed:.0f}s")
-            else:
-                # Not enough history yet
-                self._log_filter("directionality", f"only {time_elapsed:.0f}s history (need 120s)")
-                return False
+        # DIRECTIONALITY CHECK REMOVED - Testing without it
         
         # Filter 8: Helius holder distribution check - CRITICAL
         try:
