@@ -42,8 +42,8 @@ class PumpPortalMonitor:
         
         # PATH B FILTERS: Optimized based on spec + ChatGPT analysis
         self.filters = {
-            'min_creator_sol': 0.3,  # LOWERED: From 0.5 to catch more tokens
-            'max_creator_sol': 3.0,
+            'min_creator_sol': 0.1,  # LOWERED: From 0.3 - market reality is devs buy less
+            'max_creator_sol': 5.0,  # RAISED: From 3.0 - don't reject higher buys
             'min_curve_sol': 25.0,
             'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
@@ -57,12 +57,9 @@ class PumpPortalMonitor:
             'min_mc_gain_2min': 15,  # LOWERED: From 20% to 15%
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
-                'elon', 'pepe', 'trump', 'doge', 'bonk', 'pump', 
-                'moon', 'ai', 'safe', 'baby', 'inu', 'meta', 'grok',
-                'token', 'coin', 'gem', 'launch', 'stealth', 'fair',
-                'liquidity', 'burned', 'renounced', 'safu', 'based',
-                'dev', 'team', 'official', 'meme', 'shib', 'floki',
-                'cat', 'dog'
+                # REMOVED: pepe, doge, bonk, pump, moon, ai, baby, inu - these are meme meta
+                'stealth', 'fair', 'liquidity', 'burned', 'renounced', 'safu', 
+                'dev', 'team', 'official'
             ],
             'filters_enabled': True
         }
@@ -164,7 +161,7 @@ class PumpPortalMonitor:
         return True
     
     async def _check_holders_helius(self, mint: str) -> bool:
-        """Use Helius to verify holder distribution - FIXED: Top 10 concentration check"""
+        """Use Helius to verify holder distribution - FIXED: Only check concentration, not count"""
         try:
             logger.info(f"🔍 Checking holders for {mint[:8]}... via Helius")
             
@@ -196,34 +193,34 @@ class PumpPortalMonitor:
                         return False
                     
                     accounts = data['result']['value']
-                    holder_count = len(accounts)
+                    account_count = len(accounts)
                     
-                    logger.info(f"📊 Found {holder_count} holder accounts")
+                    # FIXED: getTokenLargestAccounts returns max 20 accounts
+                    # We can't check holder count, only concentration
+                    logger.info(f"📊 Received {account_count} top holder accounts (API limit: 20)")
                     
-                    if holder_count < self.filters['min_holders']:
-                        logger.warning(f"❌ REJECT: Only {holder_count} holders (need {self.filters['min_holders']})")
+                    if account_count == 0:
+                        logger.warning(f"❌ REJECT: Zero accounts returned")
                         return False
                     
-                    if holder_count == 0:
-                        logger.warning(f"❌ REJECT: Zero holders returned")
-                        return False
-                    
-                    # FIXED: Calculate Top 10 concentration instead of Top 5
-                    total_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:20])
+                    # Calculate Top 10 concentration from available accounts
+                    total_supply = sum(float(acc.get('amount', 0)) for acc in accounts)
                     if total_supply == 0:
                         logger.warning(f"❌ REJECT: Zero total supply")
                         return False
                     
-                    top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:10])
+                    # Use min(10, account_count) to handle cases with <10 accounts
+                    top_10_count = min(10, account_count)
+                    top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:top_10_count])
                     concentration = (top_10_supply / total_supply * 100)
                     
-                    logger.info(f"📊 Top 10 concentration: {concentration:.1f}%")
+                    logger.info(f"📊 Top {top_10_count} concentration: {concentration:.1f}%")
                     
                     if concentration > self.filters['max_top10_concentration']:
-                        logger.warning(f"❌ REJECT: Top 10 hold {concentration:.1f}% (max {self.filters['max_top10_concentration']}%)")
+                        logger.warning(f"❌ REJECT: Top {top_10_count} hold {concentration:.1f}% (max {self.filters['max_top10_concentration']}%)")
                         return False
                     
-                    logger.info(f"✅ Holder check PASSED: {holder_count} holders, top 10: {concentration:.1f}%")
+                    logger.info(f"✅ Holder check PASSED: Top {top_10_count} concentration: {concentration:.1f}%")
                     return True
                     
         except asyncio.TimeoutError:
