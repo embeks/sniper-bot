@@ -49,7 +49,7 @@ class PumpPortalMonitor:
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
             'min_holders': 50,  # LOWERED: From 60 to 50
-            'max_top10_concentration': 35,  # RELAXED: From 30% to 35%
+            'max_top10_concentration': 50,  # RELAXED: From 35% to 50% - testing with more lenient filter
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,
             'min_market_cap': 6000,  # LOWERED: From $8k to $6k
