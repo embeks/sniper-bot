@@ -41,8 +41,8 @@ class PumpPortalMonitor:
         
         # PATH B FILTERS: 25-60 SOL with 2.5min minimum age
         self.filters = {
-            'min_creator_sol': 0.7,
-            'max_creator_sol': 2.0,
+            'min_creator_sol': 0.5,
+            'max_creator_sol': 3.0,  # CHANGED: Up from 2.0 - many devs buy more
             'min_curve_sol': 25.0,  # CHANGED: Up from 15 - gives Helius time
             'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
@@ -51,8 +51,8 @@ class PumpPortalMonitor:
             'max_top5_concentration': 55,
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,  # NEW: 2.5 minute minimum
-            'min_market_cap': 10000,  # NEW: $10k minimum MC
-            'max_market_cap': 50000,  # NEW: $50k maximum MC
+            'min_market_cap': 8000,  # CHANGED: Down from 10k - catch more tokens
+            'max_market_cap': 60000,  # CHANGED: Up from 50k - wider range
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'elon', 'pepe', 'trump', 'doge', 'bonk', 'pump', 
