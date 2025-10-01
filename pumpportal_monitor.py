@@ -42,19 +42,19 @@ class PumpPortalMonitor:
         
         # PATH B FILTERS: Optimized based on spec + ChatGPT analysis
         self.filters = {
-            'min_creator_sol': 0.5,
+            'min_creator_sol': 0.3,  # LOWERED: From 0.5 to catch more tokens
             'max_creator_sol': 3.0,
             'min_curve_sol': 25.0,
             'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 60,
-            'max_top10_concentration': 30,  # FIXED: Top 10 instead of Top 5, 30% instead of 55%
+            'min_holders': 50,  # LOWERED: From 60 to 50
+            'max_top10_concentration': 35,  # RELAXED: From 30% to 35%
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,
-            'min_market_cap': 8000,
+            'min_market_cap': 6000,  # LOWERED: From $8k to $6k
             'max_market_cap': 60000,
-            'min_mc_gain_2min': 20,  # NEW: Require 20% MC gain over 2 minutes (directionality)
+            'min_mc_gain_2min': 15,  # LOWERED: From 20% to 15%
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'elon', 'pepe', 'trump', 'doge', 'bonk', 'pump', 
