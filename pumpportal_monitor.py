@@ -387,6 +387,7 @@ class PumpPortalMonitor:
         logger.info(f"✓ MC check passed: ${market_cap:,.0f} (target: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,})")
         
         # Filter 8: Helius holder distribution check - CRITICAL with relaxed limits
+        holder_result = None
         try:
             logger.info(f"🔍 Starting holder check for {mint[:8]}... (SOL in curve: {v_sol:.1f})")
             
@@ -404,6 +405,9 @@ class PumpPortalMonitor:
             
             logger.info(f"✅ Token {mint[:8]}... passed holder check: {holder_result.get('holder_count')} holders, {holder_result.get('concentration', 0):.1f}% concentration")
             
+            # Store for use in callback
+            self._last_holder_result = holder_result
+            
         except Exception as e:
             logger.error(f"❌ CRITICAL: Holder check exception for {mint[:8]}...: {e}")
             import traceback
@@ -414,9 +418,12 @@ class PumpPortalMonitor:
         
         # All filters passed
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
+        holder_count = holder_result.get('holder_count', 0) if holder_result else 0
+        concentration = holder_result.get('concentration', 0) if holder_result else 0
+        
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f} | Momentum: {momentum:.1f}x")
-        logger.info(f"   Holders: {holder_result.get('holder_count')} | Concentration: {holder_result.get('concentration', 0):.1f}%")
+        logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
         return True
         
     async def start(self):
@@ -485,6 +492,12 @@ class PumpPortalMonitor:
                                     creator_sol = token_data.get('solAmount', 0)
                                     market_cap = self._calculate_market_cap(token_data)
                                     
+                                    # Get holder data from filter results (stored during _apply_quality_filters)
+                                    holder_data = getattr(self, '_last_holder_result', {
+                                        'holder_count': 0,
+                                        'concentration': 0
+                                    })
+                                    
                                     logger.info("=" * 60)
                                     logger.info("🚀 TOKEN PASSED ALL FILTERS!")
                                     logger.info(f"📜 Mint: {mint}")
@@ -492,6 +505,7 @@ class PumpPortalMonitor:
                                     logger.info(f"💰 Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL")
                                     logger.info(f"💵 Market Cap: ${market_cap:,.0f}")
                                     logger.info(f"🔥 Momentum: {v_sol/creator_sol if creator_sol > 0 else 0:.1f}x")
+                                    logger.info(f"👥 Holders: {holder_data.get('holder_count', 0)} | Concentration: {holder_data.get('concentration', 0):.1f}%")
                                     logger.info(f"📝 {token_data.get('name', 'Unknown')} ({token_data.get('symbol', 'Unknown')})")
                                     logger.info("=" * 60)
                                     
@@ -506,7 +520,7 @@ class PumpPortalMonitor:
                                             'passed_filters': True,
                                             'strategy': 'path_b_option_2_test_mode',
                                             'market_cap': market_cap,
-                                            'holder_data': holder_result  # NEW: Include holder stats for analysis
+                                            'holder_data': holder_data
                                         })
                         
                         except asyncio.TimeoutError:
