@@ -160,8 +160,8 @@ class PumpPortalMonitor:
         logger.debug(f"Velocity OK: {growth_per_minute:.1f} SOL/min over {time_elapsed:.0f}s")
         return True
     
-    async def _check_holders_helius(self, mint: str) -> bool:
-        """Use Helius to verify holder distribution - FIXED: Only check concentration, not count"""
+    async def _check_holders_helius(self, mint: str, retry: bool = True) -> bool:
+        """Use Helius to verify holder distribution with retry logic for young tokens"""
         try:
             logger.info(f"🔍 Checking holders for {mint[:8]}... via Helius")
             
@@ -185,6 +185,14 @@ class PumpPortalMonitor:
                     logger.debug(f"Helius response: {data}")
                     
                     if 'error' in data:
+                        error_msg = data['error'].get('message', '')
+                        
+                        # Handle "not a Token mint" error with retry
+                        if 'not a Token mint' in error_msg and retry:
+                            logger.info(f"⏳ Token not indexed yet, waiting 10s and retrying...")
+                            await asyncio.sleep(10)
+                            return await self._check_holders_helius(mint, retry=False)
+                        
                         logger.warning(f"❌ Helius RPC error: {data['error']}")
                         return False
                     
@@ -195,8 +203,6 @@ class PumpPortalMonitor:
                     accounts = data['result']['value']
                     account_count = len(accounts)
                     
-                    # FIXED: getTokenLargestAccounts returns max 20 accounts
-                    # We can't check holder count, only concentration
                     logger.info(f"📊 Received {account_count} top holder accounts (API limit: 20)")
                     
                     if account_count == 0:
@@ -209,7 +215,6 @@ class PumpPortalMonitor:
                         logger.warning(f"❌ REJECT: Zero total supply")
                         return False
                     
-                    # Use min(10, account_count) to handle cases with <10 accounts
                     top_10_count = min(10, account_count)
                     top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:top_10_count])
                     concentration = (top_10_supply / total_supply * 100)
@@ -259,12 +264,12 @@ class PumpPortalMonitor:
         if mint not in self.token_first_seen:
             self.token_first_seen[mint] = now
         
-        # Age proxy: Require 40+ SOL in curve (ensures ~3-4 min age and Helius indexing)
-        if v_sol < 40:
-            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 40+ for Helius indexing)")
+        # Age proxy: Require 30+ SOL in curve 
+        if v_sol < 30:
+            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 30+ for age verification)")
             return False
         
-        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve (40+ threshold passed) - proceeding with filters")
+        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve (30+ threshold passed) - proceeding with filters")
         
         # Filter 1: Creator initial buy amount
         creator_sol = float(token_data.get('solAmount', 0))
