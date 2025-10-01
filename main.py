@@ -171,21 +171,13 @@ class SniperBot:
         logger.info("=" * 60)
     
     def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float = 250) -> float:
-        """Calculate market cap from bonding curve data"""
+        """Calculate market cap from bonding curve data for logging purposes"""
         try:
-            # Get raw values from curve data
-            v_sol_raw = curve_data.get('virtual_sol_reserves', 0)
-            v_tokens_raw = curve_data.get('virtual_token_reserves', 0)
+            # Get price directly from curve data (already calculated by dex.py)
+            price_per_token_lamports = curve_data.get('price_per_token', 0)
             
-            # These should already be in lamports/raw units from dex.py
-            # If v_sol_raw is already > 1e9, it's in lamports
-            # If v_tokens_raw is already > 1e9, it's in raw token units
-            
-            if v_sol_raw == 0 or v_tokens_raw == 0:
+            if price_per_token_lamports == 0:
                 return 0
-            
-            # Price per token in lamports
-            price_per_token_lamports = v_sol_raw / v_tokens_raw
             
             # Convert to SOL (1 SOL = 1e9 lamports)
             price_per_token_sol = price_per_token_lamports / 1e9
@@ -491,15 +483,16 @@ class SniperBot:
                         break
                     
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
-                        # Calculate current MC
+                        # Calculate current MC for logging
                         current_mc = self._calculate_mc_from_curve(curve_data, sol_price_usd)
                         position.current_market_cap = current_mc
                         
-                        # FIXED: Calculate YOUR position P&L, not the entire MC change
-                        if current_mc > 0 and position.entry_token_price_sol > 0:
-                            # Calculate current token price from MC
-                            current_token_price_sol = self._calculate_token_price_from_mc(current_mc, sol_price_usd)
-                            
+                        # Get current token price directly from bonding curve (already calculated by dex.py)
+                        price_per_token_lamports = curve_data.get('price_per_token', 0)
+                        current_token_price_sol = price_per_token_lamports / 1e9  # Convert lamports to SOL
+                        
+                        # Calculate YOUR position P&L using actual bonding curve prices
+                        if current_token_price_sol > 0 and position.entry_token_price_sol > 0:
                             # Calculate YOUR position value
                             your_current_value_sol = position.remaining_tokens * current_token_price_sol
                             your_entry_value_sol = position.remaining_tokens * position.entry_token_price_sol
