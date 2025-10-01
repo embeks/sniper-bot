@@ -173,43 +173,32 @@ class SniperBot:
     def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float = 250) -> float:
         """Calculate market cap from bonding curve data"""
         try:
-            v_sol = curve_data.get('sol_in_curve', 0)
-            v_tokens = curve_data.get('virtual_token_reserves', 0)
+            # Get raw values from curve data
+            v_sol_raw = curve_data.get('virtual_sol_reserves', 0)
+            v_tokens_raw = curve_data.get('virtual_token_reserves', 0)
             
-            if v_sol == 0 or v_tokens == 0:
+            # These should already be in lamports/raw units from dex.py
+            # If v_sol_raw is already > 1e9, it's in lamports
+            # If v_tokens_raw is already > 1e9, it's in raw token units
+            
+            if v_sol_raw == 0 or v_tokens_raw == 0:
                 return 0
             
-            # Price per token in SOL
-            price_sol = (v_sol * 1e9) / v_tokens
+            # Price per token in lamports
+            price_per_token_lamports = v_sol_raw / v_tokens_raw
             
-            # Total supply (PumpFun standard)
+            # Convert to SOL (1 SOL = 1e9 lamports)
+            price_per_token_sol = price_per_token_lamports / 1e9
+            
+            # Total supply (PumpFun standard is 1 billion tokens)
             total_supply = 1_000_000_000
             
-            # Market cap in USD
-            market_cap_usd = total_supply * price_sol * sol_price_usd
+            # Market cap = total supply * price per token * SOL price in USD
+            market_cap_usd = total_supply * price_per_token_sol * sol_price_usd
             
             return market_cap_usd
         except Exception as e:
             logger.error(f"MC calculation error: {e}")
-            return 0
-    
-    def _calculate_token_price_from_mc(self, market_cap_usd: float, sol_price_usd: float = 250) -> float:
-        """Calculate token price in SOL from market cap - CRITICAL FOR P&L"""
-        try:
-            if market_cap_usd == 0:
-                return 0
-            
-            total_supply = 1_000_000_000  # PumpFun standard
-            
-            # Price per token in USD
-            price_per_token_usd = market_cap_usd / total_supply
-            
-            # Convert to SOL
-            price_per_token_sol = price_per_token_usd / sol_price_usd
-            
-            return price_per_token_sol
-        except Exception as e:
-            logger.error(f"Token price calculation error: {e}")
             return 0
     
     async def initialize_telegram(self):
@@ -446,7 +435,6 @@ class SniperBot:
                 logger.info(f"   Amount: {BUY_AMOUNT_SOL} SOL")
                 logger.info(f"   Tokens: {bought_tokens:,.0f}")
                 logger.info(f"   Entry MC: ${entry_market_cap:,.0f}")
-                logger.info(f"   Entry Token Price: {position.entry_token_price_sol:.10f} SOL")
                 logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
                 
                 if self.telegram:
