@@ -1,5 +1,5 @@
 """
-PumpPortal WebSocket Monitor - Path B: MC + Holder Strategy with Timing Fixes
+PumpPortal WebSocket Monitor - Path B: MC + Holder Strategy (Fixed & Optimized)
 """
 
 import asyncio
@@ -32,27 +32,29 @@ class PumpPortalMonitor:
         self.token_history = {}
         self.filter_reasons = {}
         
-        # NEW: Token age tracking
+        # Token tracking for age and MC history
         self.token_first_seen = {}
+        self.token_mc_history = {}  # NEW: Track MC over time for directionality
         
-        # NEW: SOL price caching for MC calculations
+        # SOL price caching for MC calculations
         self.sol_price_usd = 250
         self.last_sol_price_update = 0
         
-        # PATH B FILTERS: 25-60 SOL with 2.5min minimum age
+        # PATH B FILTERS: Optimized based on spec + ChatGPT analysis
         self.filters = {
             'min_creator_sol': 0.5,
-            'max_creator_sol': 3.0,  # CHANGED: Up from 2.0 - many devs buy more
-            'min_curve_sol': 25.0,  # CHANGED: Up from 15 - gives Helius time
+            'max_creator_sol': 3.0,
+            'min_curve_sol': 25.0,
             'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 60,  # CHANGED: More realistic for reliable data
-            'max_top5_concentration': 55,
+            'min_holders': 60,
+            'max_top10_concentration': 30,  # FIXED: Top 10 instead of Top 5, 30% instead of 55%
             'max_velocity_sol_per_sec': 1.5,
-            'min_token_age_seconds': 150,  # NEW: 2.5 minute minimum
-            'min_market_cap': 8000,  # CHANGED: Down from 10k - catch more tokens
-            'max_market_cap': 60000,  # CHANGED: Up from 50k - wider range
+            'min_token_age_seconds': 150,
+            'min_market_cap': 8000,
+            'max_market_cap': 60000,
+            'min_mc_gain_2min': 20,  # NEW: Require 20% MC gain over 2 minutes (directionality)
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'elon', 'pepe', 'trump', 'doge', 'bonk', 'pump', 
@@ -162,7 +164,7 @@ class PumpPortalMonitor:
         return True
     
     async def _check_holders_helius(self, mint: str) -> bool:
-        """Use Helius to verify holder distribution - reject concentrated supply"""
+        """Use Helius to verify holder distribution - FIXED: Top 10 concentration check"""
         try:
             logger.info(f"🔍 Checking holders for {mint[:8]}... via Helius")
             
@@ -206,21 +208,22 @@ class PumpPortalMonitor:
                         logger.warning(f"❌ REJECT: Zero holders returned")
                         return False
                     
+                    # FIXED: Calculate Top 10 concentration instead of Top 5
                     total_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:20])
                     if total_supply == 0:
                         logger.warning(f"❌ REJECT: Zero total supply")
                         return False
                     
-                    top_5_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:5])
-                    concentration = (top_5_supply / total_supply * 100)
+                    top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:10])
+                    concentration = (top_10_supply / total_supply * 100)
                     
-                    logger.info(f"📊 Top 5 concentration: {concentration:.1f}%")
+                    logger.info(f"📊 Top 10 concentration: {concentration:.1f}%")
                     
-                    if concentration > self.filters['max_top5_concentration']:
-                        logger.warning(f"❌ REJECT: Top 5 hold {concentration:.1f}% (max {self.filters['max_top5_concentration']}%)")
+                    if concentration > self.filters['max_top10_concentration']:
+                        logger.warning(f"❌ REJECT: Top 10 hold {concentration:.1f}% (max {self.filters['max_top10_concentration']}%)")
                         return False
                     
-                    logger.info(f"✅ Holder check PASSED: {holder_count} holders, top 5: {concentration:.1f}%")
+                    logger.info(f"✅ Holder check PASSED: {holder_count} holders, top 10: {concentration:.1f}%")
                     return True
                     
         except asyncio.TimeoutError:
@@ -251,23 +254,15 @@ class PumpPortalMonitor:
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
         
-        # NEW: Calculate token age based on SOL in curve
-        # Strategy: Tokens need time to accumulate SOL organically
-        # At 25 SOL minimum with 0.7-2.0 SOL creator buy, need ~60-90 seconds minimum
+        # Calculate current time and SOL in curve
         now = time.time()
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
         
-        # Track when we first see each SOL level for this token
+        # Track when we first see this token
         if mint not in self.token_first_seen:
             self.token_first_seen[mint] = now
         
-        # Calculate minimum expected age based on SOL accumulation
-        # Organic tokens: ~0.5-1.0 SOL/sec average growth
-        # Our 25 SOL minimum should take at least 60 seconds from launch
-        min_age = self.filters.get('min_token_age_seconds', 150)
-        
-        # Simple heuristic: if SOL < 30, token is likely < 2 min old, reject it
-        # This avoids the tracking problem entirely
+        # Age proxy: Require 30+ SOL in curve (ensures ~2-3 min age and Helius indexing)
         if v_sol < 30:
             self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 30+ for age verification)")
             return False
@@ -295,9 +290,7 @@ class PumpPortalMonitor:
             self._log_filter("non_ascii", f"{name}/{symbol}")
             return False
         
-        if not symbol.isupper():
-            self._log_filter("symbol_lowercase", symbol)
-            return False
+        # REMOVED: Symbol uppercase requirement (too strict)
         
         # Check blacklist
         name_lower = name.lower()
@@ -307,7 +300,6 @@ class PumpPortalMonitor:
                 return False
         
         # Filter 3: Bonding curve SOL window
-        v_sol = float(token_data.get('vSolInBondingCurve', 0))
         if v_sol < self.filters['min_curve_sol']:
             self._log_filter("curve_low", f"{v_sol:.2f} SOL")
             return False
@@ -347,15 +339,15 @@ class PumpPortalMonitor:
             self._log_filter("velocity", "too fast or too young")
             return False
         
-        # NEW Filter 7.5: Market Cap range check
-        await self._get_sol_price()  # Ensure we have current SOL price
+        # Filter 7.5: Market Cap range check
+        await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
         
         if market_cap == 0:
             self._log_filter("mc_calculation_failed", "Could not calculate MC")
             return False
         
-        # Target: $10k-$50k MC range
+        # Target: $8k-$60k MC range
         if market_cap < self.filters['min_market_cap']:
             self._log_filter("mc_too_low", f"${market_cap:,.0f}")
             return False
@@ -366,9 +358,40 @@ class PumpPortalMonitor:
         
         logger.info(f"✓ MC check passed: ${market_cap:,.0f} (target: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,})")
         
+        # NEW Filter 7.6: Directionality check (simplified version of ChatGPT's suggestion)
+        # Track MC history and require rising trend
+        if mint not in self.token_mc_history:
+            self.token_mc_history[mint] = [(now, market_cap)]
+            # First time seeing - can't check directionality yet
+            self._log_filter("directionality", "first MC snapshot, need history")
+            return False
+        else:
+            # Add current MC to history
+            self.token_mc_history[mint].append((now, market_cap))
+            
+            # Check if we have 2+ minutes of history
+            history = self.token_mc_history[mint]
+            first_time, first_mc = history[0]
+            time_elapsed = now - first_time
+            
+            if time_elapsed >= 120:  # 2 minutes
+                # Require 20% gain over the period
+                mc_gain_pct = ((market_cap - first_mc) / first_mc) * 100 if first_mc > 0 else 0
+                
+                if mc_gain_pct < self.filters['min_mc_gain_2min']:
+                    self._log_filter("directionality", f"MC only +{mc_gain_pct:.1f}% over {time_elapsed:.0f}s (need +{self.filters['min_mc_gain_2min']}%)")
+                    return False
+                
+                logger.info(f"✓ Directionality check passed: MC +{mc_gain_pct:.1f}% over {time_elapsed:.0f}s")
+            else:
+                # Not enough history yet
+                self._log_filter("directionality", f"only {time_elapsed:.0f}s history (need 120s)")
+                return False
+        
         # Filter 8: Helius holder distribution check - CRITICAL
         try:
-            logger.info(f"🔍 Starting holder check for {mint[:8]}... (age: {age_seconds:.0f}s)")
+            # FIXED: Removed age_seconds reference
+            logger.info(f"🔍 Starting holder check for {mint[:8]}... (SOL in curve: {v_sol:.1f})")
             
             # Wait 3 seconds to ensure Helius has indexed the token
             await asyncio.sleep(3)
@@ -402,11 +425,12 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: PATH B - MC + Holder Verification")
+        logger.info(f"Strategy: PATH B - MC + Holder + Directionality")
         logger.info(f"  Bonding Curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL")
         logger.info(f"  Market Cap: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,}")
-        logger.info(f"  Min Age: {self.filters['min_token_age_seconds']}s (2.5 minutes)")
-        logger.info(f"  Min Holders: {self.filters['min_holders']}, Max Top5: {self.filters['max_top5_concentration']}%")
+        logger.info(f"  Min Age: 30+ SOL in curve (~2-3 minutes)")
+        logger.info(f"  Min Holders: {self.filters['min_holders']}, Max Top10: {self.filters['max_top10_concentration']}%")
+        logger.info(f"  Directionality: +{self.filters['min_mc_gain_2min']}% MC over 2 minutes")
         logger.info(f"  Momentum: 8x@<35 SOL, 5x@<50 SOL, 3x@50+ SOL")
         
         uri = "wss://pumpportal.fun/api/data"
@@ -480,7 +504,7 @@ class PumpPortalMonitor:
                                             'data': data,
                                             'source': 'pumpportal',
                                             'passed_filters': True,
-                                            'strategy': 'path_b_mc_holder',
+                                            'strategy': 'path_b_mc_holder_directionality',
                                             'market_cap': market_cap
                                         })
                         
