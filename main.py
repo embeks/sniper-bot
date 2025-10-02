@@ -514,7 +514,7 @@ class SniperBot:
                             
                             # Calculate YOUR position value
                             your_current_value_sol = position.remaining_tokens * current_token_price_sol
-                            your_entry_value_sol = position.remaining_tokens * position.entry_token_price_sol
+                            your_entry_value_sol = position.initial_tokens * position.entry_token_price_sol
                             
                             # Calculate YOUR actual P&L
                             if your_entry_value_sol > 0:
