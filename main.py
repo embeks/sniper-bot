@@ -69,13 +69,11 @@ class Position:
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
         
-        # CRITICAL: Store entry token price for accurate P&L
-        self.entry_token_price_sol = 0
-        if entry_market_cap > 0 and tokens > 0:
-            # Calculate entry price per token
-            total_supply = 1_000_000_000
-            sol_price_usd = 250
-            self.entry_token_price_sol = (entry_market_cap / sol_price_usd) / total_supply
+        # FIXED: Calculate actual price paid per token from your transaction
+        if tokens > 0:
+            self.entry_token_price_sol = amount_sol / tokens
+        else:
+            self.entry_token_price_sol = 0
         
         # Build profit targets from environment
         self.profit_targets = []
