@@ -1,5 +1,5 @@
 """
-PumpPortal Trader
+PumpPortal Trader - FIXED decimals handling
 """
 
 import aiohttp
@@ -90,12 +90,8 @@ class PumpPortalTrader:
                         try:
                             from solders.transaction import VersionedTransaction
                             
-                            # Parse the unsigned v0 transaction to get the message
                             unsigned_tx = VersionedTransaction.from_bytes(raw_tx_bytes)
                             message = unsigned_tx.message
-                            
-                            # Create a NEW VersionedTransaction with the message and keypair
-                            # This constructor signs the message with your keypair
                             signed_tx = VersionedTransaction(message, [self.wallet.keypair])
                             signed_tx_bytes = bytes(signed_tx)
                             
@@ -105,7 +101,7 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions (517 bytes for sells) - KEEP EXISTING WORKING CODE
+                        # Legacy transactions
                         logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
                         try:
                             from solana.transaction import Transaction
@@ -115,7 +111,6 @@ class PumpPortalTrader:
                             logger.info("Signed legacy transaction")
                         except Exception as e:
                             logger.error(f"Failed to sign legacy transaction: {e}")
-                            # Try sending as-is - PumpPortal might have pre-signed it
                             logger.info("Attempting to send without signing...")
                             signed_tx_bytes = raw_tx_bytes
                     
@@ -131,7 +126,7 @@ class PumpPortalTrader:
                             logger.warning("Transaction failed - received invalid signature")
                             raise Exception("Invalid signature returned")
                         
-                        logger.info(f"✅ Transaction sent successfully: {sig}")
+                        logger.info(f"Transaction sent successfully: {sig}")
                         return sig
                         
                     except Exception as e:
@@ -145,7 +140,7 @@ class PumpPortalTrader:
                                 logger.error("Transaction failed - received invalid signature on retry")
                                 return None
                             
-                            logger.info(f"✅ Transaction sent on retry: {sig}")
+                            logger.info(f"Transaction sent on retry: {sig}")
                             return sig
                             
                         except Exception as e2:
@@ -175,9 +170,8 @@ class PumpPortalTrader:
                 logger.error(f"Invalid UI amount: {ui_amount}")
                 return None
             
-            # Handle decimals - it might be a tuple (decimals, source) or just an int
-            if isinstance(token_decimals, tuple):
-                token_decimals = token_decimals[0]  # Extract just the decimals value
+            # CRITICAL FIX: Remove tuple check - get_token_decimals now returns just int
+            # token_decimals is already an int, no need to unpack
             
             logger.info(f"=== SELL TRANSACTION ===")
             logger.info(f"Token: {mint[:8]}...")
@@ -251,12 +245,8 @@ class PumpPortalTrader:
                         try:
                             from solders.transaction import VersionedTransaction
                             
-                            # Parse the unsigned v0 transaction to get the message
                             unsigned_tx = VersionedTransaction.from_bytes(raw_tx_bytes)
                             message = unsigned_tx.message
-                            
-                            # Create a NEW VersionedTransaction with the message and keypair
-                            # This constructor signs the message with your keypair
                             signed_tx = VersionedTransaction(message, [self.wallet.keypair])
                             signed_tx_bytes = bytes(signed_tx)
                             
@@ -266,8 +256,7 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transaction from PumpPortal. Always re-sign correctly:
-                        # parse compact-u16 sig_count, extract message, sign, and repack.
+                        # Legacy transaction - manual signing with robust varint parse
                         logger.info("Legacy transaction - manual signing (robust varint parse + re-pack)")
                         try:
                             b = raw_tx_bytes
@@ -275,7 +264,7 @@ class PumpPortalTrader:
                                 logger.error(f"Legacy tx too small ({len(b)} bytes)")
                                 return None
                             
-                            # --- parse compact-u16 signature count (little-endian varint) ---
+                            # Parse compact-u16 signature count (little-endian varint)
                             idx = 0
                             val = 0
                             shift = 0
@@ -289,7 +278,7 @@ class PumpPortalTrader:
                                 if byte < 0x80:
                                     break
                                 shift += 7
-                                if shift > 14:  # guardrail
+                                if shift > 14:
                                     logger.error("sig_count varint too long")
                                     return None
                             sig_count = val
@@ -306,7 +295,7 @@ class PumpPortalTrader:
                                 return None
                             
                             # Sign the message with our keypair
-                            signature = self.wallet.keypair.sign_message(msg_bytes)  # 64 bytes
+                            signature = self.wallet.keypair.sign_message(msg_bytes)
                             
                             # Repack: [sig_count=1 (0x01)] + [signature] + [message]
                             signed_tx_bytes = bytes([0x01]) + bytes(signature) + msg_bytes
@@ -328,7 +317,7 @@ class PumpPortalTrader:
                             logger.warning("Transaction failed - received invalid signature")
                             raise Exception("Invalid signature returned")
                         
-                        logger.info(f"✅ Sell transaction sent successfully: {sig}")
+                        logger.info(f"Sell transaction sent successfully: {sig}")
                         
                         # Quick, non-blocking confirmation check
                         try:
@@ -352,7 +341,7 @@ class PumpPortalTrader:
                                 logger.error("Transaction failed - received invalid signature on retry")
                                 return None
                             
-                            logger.info(f"✅ Sell transaction sent on retry: {sig}")
+                            logger.info(f"Sell transaction sent on retry: {sig}")
                             return sig
                             
                         except Exception as e2:
