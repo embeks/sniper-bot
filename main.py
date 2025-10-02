@@ -483,72 +483,44 @@ class SniperBot:
                         break
                     
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
-                        # Get current token price directly from bonding curve
-                        price_per_token_lamports = curve_data.get('price_per_token', 0)
+                        current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # CRITICAL: Validate price data before calculating P&L
-                        if price_per_token_lamports <= 0:
-                            consecutive_data_failures += 1
-                            logger.warning(f"⚠️ Invalid price data for {mint[:8]}... (attempt {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
-                            
-                            if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
-                                logger.error(f"Too many consecutive data failures for {mint[:8]}...")
-                                await self._close_position_full(mint, reason="no_data")
-                                break
-                            
-                            await asyncio.sleep(MONITOR_CHECK_INTERVAL)
-                            continue
-                        
-                        # Calculate current MC for logging
-                        current_mc = self._calculate_mc_from_curve(curve_data, sol_price_usd)
-                        position.current_market_cap = current_mc
-                        
-                        # Convert price from lamports to SOL
-                        current_token_price_sol = price_per_token_lamports / 1e9
-                        
-                        # Calculate YOUR position P&L using actual bonding curve prices
-                        if current_token_price_sol > 0 and position.entry_token_price_sol > 0:
-                            # Calculate YOUR position value
-                            your_current_value_sol = position.remaining_tokens * current_token_price_sol
-                            your_entry_value_sol = position.remaining_tokens * position.entry_token_price_sol
-                            
-                            # Calculate YOUR actual P&L
-                            if your_entry_value_sol > 0:
-                                position.pnl_percent = ((your_current_value_sol / your_entry_value_sol) - 1) * 100
-                            else:
-                                position.pnl_percent = 0
-                            
-                            # Store current price
-                            position.current_price = current_token_price_sol
+                        # YOUR ORIGINAL WORKING METHOD: P&L based on SOL in curve change
+                        if position.entry_sol_in_curve > 0:
+                            price_change = ((current_sol_in_curve / position.entry_sol_in_curve) - 1) * 100
                         else:
-                            position.pnl_percent = 0
+                            # Fallback if we don't have entry SOL
+                            price_change = 0
+                        
+                        position.pnl_percent = price_change
+                        position.current_price = current_sol_in_curve  # Store current SOL in curve
                         
                         consecutive_data_failures = 0
+                        position.last_valid_price = current_sol_in_curve
                         position.last_price_update = time.time()
                         
                         if check_count % 10 == 1:
-                            self.tracker.log_position_update(mint, position.pnl_percent, current_mc, age)
+                            self.tracker.log_position_update(mint, price_change, current_sol_in_curve, age)
                         
                         if check_count % 3 == 1:
                             logger.info(
-                                f"📊 {mint[:8]}... | YOUR P&L: {position.pnl_percent:+.1f}% | "
-                                f"MC: ${position.entry_market_cap:,.0f}→${current_mc:,.0f} | "
+                                f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                                f"SOL: {position.entry_sol_in_curve:.1f}→{current_sol_in_curve:.1f} | "
                                 f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
                             )
                         
                         # Telegram updates
-                        if self.telegram and abs(position.pnl_percent - last_notification_pnl) >= 50:
+                        if self.telegram and abs(price_change - last_notification_pnl) >= 50:
                             update_msg = (
                                 f"📊 Update {mint[:8]}...\n"
-                                f"YOUR P&L: {position.pnl_percent:+.1f}%\n"
-                                f"MC: ${position.entry_market_cap:,.0f}→${current_mc:,.0f}\n"
+                                f"P&L: {price_change:+.1f}%\n"
                                 f"Remaining: {100 - position.total_sold_percent}%"
                             )
                             await self.telegram.send_message(update_msg)
-                            last_notification_pnl = position.pnl_percent
+                            last_notification_pnl = price_change
                         
                         # Check stop loss FIRST
-                        if position.pnl_percent <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
+                        if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
                             logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                             await self._close_position_full(mint, reason="stop_loss")
                             break
@@ -559,16 +531,16 @@ class SniperBot:
                             target_pnl = target['target']
                             sell_percent = target['sell_percent']
                             
-                            if position.pnl_percent >= target_pnl and target_name not in position.partial_sells:
+                            if price_change >= target_pnl and target_name not in position.partial_sells:
                                 logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                 
                                 success = await self._execute_partial_sell(
-                                    mint, sell_percent, target_name, position.pnl_percent
+                                    mint, sell_percent, target_name, price_change
                                 )
                                 
                                 if success:
                                     position.partial_sells[target_name] = {
-                                        'pnl': position.pnl_percent,
+                                        'pnl': price_change,
                                         'time': time.time(),
                                         'percent_sold': sell_percent
                                     }
