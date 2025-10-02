@@ -483,13 +483,28 @@ class SniperBot:
                         break
                     
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
+                        # Get current token price directly from bonding curve
+                        price_per_token_lamports = curve_data.get('price_per_token', 0)
+                        
+                        # CRITICAL: Validate price data before calculating P&L
+                        if price_per_token_lamports <= 0:
+                            consecutive_data_failures += 1
+                            logger.warning(f"⚠️ Invalid price data for {mint[:8]}... (attempt {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                            
+                            if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
+                                logger.error(f"Too many consecutive data failures for {mint[:8]}...")
+                                await self._close_position_full(mint, reason="no_data")
+                                break
+                            
+                            await asyncio.sleep(MONITOR_CHECK_INTERVAL)
+                            continue
+                        
                         # Calculate current MC for logging
                         current_mc = self._calculate_mc_from_curve(curve_data, sol_price_usd)
                         position.current_market_cap = current_mc
                         
-                        # Get current token price directly from bonding curve (already calculated by dex.py)
-                        price_per_token_lamports = curve_data.get('price_per_token', 0)
-                        current_token_price_sol = price_per_token_lamports / 1e9  # Convert lamports to SOL
+                        # Convert price from lamports to SOL
+                        current_token_price_sol = price_per_token_lamports / 1e9
                         
                         # Calculate YOUR position P&L using actual bonding curve prices
                         if current_token_price_sol > 0 and position.entry_token_price_sol > 0:
@@ -570,10 +585,10 @@ class SniperBot:
                         consecutive_data_failures += 1
                         if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
                             logger.warning(f"Too many data failures for {mint[:8]}...")
-                            await asyncio.sleep(1)
-                            continue
+                            await self._close_position_full(mint, reason="no_data")
+                            break
                         else:
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(MONITOR_CHECK_INTERVAL)
                             continue
                 
                 except Exception as e:
