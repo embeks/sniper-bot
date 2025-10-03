@@ -495,6 +495,23 @@ class SniperBot:
                     # Get current price data
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
+                    # Check if we got valid data
+                    if not curve_data:
+                        consecutive_data_failures += 1
+                        logger.warning(f"No price data available for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                        
+                        if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
+                            logger.error(f"❌ Too many data failures for {mint[:8]}..., using last known price")
+                            if position.last_valid_price > 0:
+                                logger.debug(f"Using last valid token price: {position.last_valid_price:.10f}")
+                            else:
+                                logger.warning(f"No last valid price available, skipping cycle")
+                                await asyncio.sleep(1)
+                                continue
+                        else:
+                            await asyncio.sleep(1)
+                            continue
+                    
                     if curve_data and curve_data.get('is_migrated'):
                         logger.warning(f"❌ Token {mint[:8]}... has migrated")
                         await self._close_position_full(mint, reason="migration")
@@ -586,28 +603,21 @@ class SniperBot:
                                             position.status = 'completed'
                                             break
                         else:
-                            # No valid reserve data
+                            # No valid reserve data - mark as data failure
                             consecutive_data_failures += 1
+                            logger.warning(f"Invalid reserve data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                            
                             if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
                                 if position.last_valid_price > 0:
-                                    current_token_price_sol = position.last_valid_price
-                                    logger.debug(f"Using last valid token price: {current_token_price_sol:.10f}")
+                                    logger.debug(f"Using last valid token price: {position.last_valid_price:.10f}")
+                                    # Continue with last known price for now
                                 else:
+                                    logger.warning(f"No valid price available, skipping cycle")
+                                    await asyncio.sleep(1)
                                     continue
                             else:
                                 await asyncio.sleep(1)
                                 continue
-                    else:
-                        consecutive_data_failures += 1
-                        if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
-                            if position.last_valid_price > 0:
-                                current_token_price_sol = position.last_valid_price
-                                logger.debug(f"Using last valid token price: {current_token_price_sol:.10f}")
-                            else:
-                                continue
-                        else:
-                            await asyncio.sleep(1)
-                            continue
                 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
