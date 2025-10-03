@@ -503,13 +503,20 @@ class SniperBot:
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # FIXED: Calculate actual token price from bonding curve
-                        v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
-                        v_token_reserves = curve_data.get('virtual_token_reserves', 0)
+                        # FIXED: Calculate actual token price in human-readable SOL
+                        # Get reserves in raw units
+                        v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)  # in lamports
+                        v_token_reserves = curve_data.get('virtual_token_reserves', 0)  # in raw atoms
                         
                         if v_token_reserves > 0 and v_sol_reserves > 0:
-                            # Calculate current price per token in SOL
-                            current_token_price_sol = v_sol_reserves / v_token_reserves
+                            # Convert to human-readable units and calculate price
+                            # v_sol_reserves is in lamports (1e9 per SOL)
+                            # v_token_reserves is in atoms (1e6 per token for 6 decimals)
+                            sol_human = v_sol_reserves / 1e9
+                            tokens_human = v_token_reserves / 1e6
+                            
+                            # Price per token in SOL
+                            current_token_price_sol = sol_human / tokens_human
                             
                             # YOUR actual P&L based on YOUR entry price vs current price
                             if position.entry_token_price_sol > 0:
@@ -518,7 +525,7 @@ class SniperBot:
                                 price_change = 0
                             
                             position.pnl_percent = price_change
-                            position.current_price = current_token_price_sol  # Store actual token price
+                            position.current_price = current_token_price_sol
                             
                             consecutive_data_failures = 0
                             position.last_valid_price = current_token_price_sol
@@ -530,7 +537,7 @@ class SniperBot:
                             if check_count % 3 == 1:
                                 logger.info(
                                     f"📊 {mint[:8]}... | YOUR P&L: {price_change:+.1f}% | "
-                                    f"SOL: {position.entry_sol_in_curve:.1f}→{current_sol_in_curve:.1f} | "
+                                    f"Price: {position.entry_token_price_sol:.10f}→{current_token_price_sol:.10f} SOL | "
                                     f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
                                 )
                             
