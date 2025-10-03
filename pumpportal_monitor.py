@@ -1,5 +1,5 @@
 """
-PumpPortal WebSocket Monitor - Path B: MC + Holder Strategy (Option B - Adjusted)
+PumpPortal WebSocket Monitor - Path B: MC + Holder Strategy (Concentration ENABLED)
 """
 
 import asyncio
@@ -40,7 +40,7 @@ class PumpPortalMonitor:
         self.sol_price_usd = 250
         self.last_sol_price_update = 0
         
-        # PATH B FILTERS: Option 2 - Test Mode (Concentration Check DISABLED)
+        # PATH B FILTERS: Concentration Check ENABLED
         self.filters = {
             'min_creator_sol': 0.1,
             'max_creator_sol': 5.0,
@@ -49,8 +49,8 @@ class PumpPortalMonitor:
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
             'min_holders': 5,  # CRITICAL: Minimum 5 holders required
-            'check_concentration': False,  # DISABLED FOR TESTING - Will re-enable after data collection
-            'max_top10_concentration': 85,  # Not enforced when check_concentration=False
+            'check_concentration': True,  # ENABLED - Reject concentrated tokens
+            'max_top10_concentration': 85,  # Enforced when check_concentration=True
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,
             'min_market_cap': 6000,
@@ -230,7 +230,7 @@ class PumpPortalMonitor:
                     
                     logger.info(f"📊 Top {top_10_count} concentration: {concentration:.1f}%")
                     
-                    # CRITICAL CHECK 2: Concentration limit (DISABLED IN TEST MODE)
+                    # CRITICAL CHECK 2: Concentration limit - NOW ENABLED
                     if self.filters.get('check_concentration', True):
                         if concentration > self.filters['max_top10_concentration']:
                             logger.warning(f"❌ REJECT: Top {top_10_count} hold {concentration:.1f}% (max {self.filters['max_top10_concentration']}%)")
@@ -238,10 +238,9 @@ class PumpPortalMonitor:
                                 'passed': False,
                                 'holder_count': account_count,
                                 'concentration': concentration,
-                                'reason': f'concentration {concentration:.1f}%'
+                                'reason': f'concentration {concentration:.1f}% exceeds {self.filters["max_top10_concentration"]}%'
                             }
-                    else:
-                        logger.warning(f"⚠️  CONCENTRATION CHECK DISABLED: Top {top_10_count} = {concentration:.1f}% (normally max {self.filters['max_top10_concentration']}%)")
+                        logger.info(f"✅ Concentration OK: {concentration:.1f}% (max {self.filters['max_top10_concentration']}%)")
                     
                     logger.info(f"✅ Holder check PASSED: {account_count} holders, Top {top_10_count} concentration: {concentration:.1f}%")
                     return {
@@ -386,7 +385,7 @@ class PumpPortalMonitor:
         
         logger.info(f"✓ MC check passed: ${market_cap:,.0f} (target: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,})")
         
-        # Filter 8: Helius holder distribution check - CRITICAL with relaxed limits
+        # Filter 8: Helius holder distribution check - CRITICAL with concentration ENABLED
         holder_result = None
         try:
             logger.info(f"🔍 Starting holder check for {mint[:8]}... (SOL in curve: {v_sol:.1f})")
@@ -430,15 +429,14 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: PATH B - Option 2 (TEST MODE - Concentration Check DISABLED)")
-        logger.info(f"  ⚠️  TESTING: Concentration check disabled for data collection")
+        logger.info(f"Strategy: PATH B - Concentration Check ENABLED")
+        logger.info(f"  ✅ Concentration check: ACTIVE (max {self.filters['max_top10_concentration']}%)")
         logger.info(f"  Bonding Curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL")
         logger.info(f"  Market Cap: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,}")
         logger.info(f"  Min Age: 30+ SOL in curve (~2-3 minutes)")
         logger.info(f"  Max Age: {self.filters['max_token_age_minutes']} minutes")
-        logger.info(f"  Min Holders: {self.filters['min_holders']} (concentration NOT checked)")
+        logger.info(f"  Min Holders: {self.filters['min_holders']}")
         logger.info(f"  Momentum: 8x@<35 SOL, 5x@<50 SOL, 3x@50+ SOL")
-        logger.info(f"  🎯 Goal: Collect 20-30 trades to analyze concentration vs rug correlation")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -518,7 +516,7 @@ class PumpPortalMonitor:
                                             'data': data,
                                             'source': 'pumpportal',
                                             'passed_filters': True,
-                                            'strategy': 'path_b_option_2_test_mode',
+                                            'strategy': 'path_b_concentration_enabled',
                                             'market_cap': market_cap,
                                             'holder_data': holder_data
                                         })
