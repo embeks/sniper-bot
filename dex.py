@@ -1,9 +1,9 @@
 """
-DEX - PumpFun Bonding Curves
+DEX - PumpFun Bonding Curves with Real-Time Price Parsing
 """
 
 import time
-import base64
+import struct
 import logging
 from typing import Optional, Dict, Tuple
 from solders.pubkey import Pubkey
@@ -15,7 +15,7 @@ from config import (
 logger = logging.getLogger(__name__)
 
 class PumpFunDEX:
-    """PumpFun bonding curve integration - minimal version"""
+    """PumpFun bonding curve integration - with real-time price parsing"""
     
     def __init__(self, wallet_manager):
         """Initialize with wallet manager"""
@@ -54,15 +54,58 @@ class PumpFunDEX:
         seeds = [b"bonding-curve", bytes(mint)]
         return Pubkey.find_program_address(seeds, PUMPFUN_PROGRAM_ID)
     
+    def _parse_bonding_curve_account(self, account_data: bytes) -> Optional[Dict]:
+        """Parse raw bonding curve account data to extract reserves"""
+        try:
+            if not account_data or len(account_data) < 40:
+                logger.debug(f"Account data too short: {len(account_data) if account_data else 0} bytes")
+                return None
+            
+            # PumpFun bonding curve layout (little-endian):
+            # 0-8: discriminator
+            # 8-16: virtual_token_reserves (u64)
+            # 16-24: virtual_sol_reserves (u64)
+            # 24-32: real_token_reserves (u64)
+            # 32-40: real_sol_reserves (u64)
+            
+            virtual_token_reserves = struct.unpack('<Q', account_data[8:16])[0]
+            virtual_sol_reserves = struct.unpack('<Q', account_data[16:24])[0]
+            real_token_reserves = struct.unpack('<Q', account_data[24:32])[0]
+            real_sol_reserves = struct.unpack('<Q', account_data[32:40])[0]
+            
+            # Calculate SOL in curve (convert lamports to SOL)
+            sol_in_curve = virtual_sol_reserves / 1e9
+            
+            # Check for migration
+            is_migrated = sol_in_curve >= MIGRATION_THRESHOLD_SOL
+            
+            logger.debug(f"Parsed bonding curve: {sol_in_curve:.2f} SOL, {virtual_token_reserves:,} tokens")
+            
+            return {
+                'virtual_token_reserves': virtual_token_reserves,
+                'virtual_sol_reserves': virtual_sol_reserves,
+                'real_token_reserves': real_token_reserves,
+                'real_sol_reserves': real_sol_reserves,
+                'sol_in_curve': sol_in_curve,
+                'is_migrated': is_migrated,
+                'is_valid': True,
+                'from_chain': True
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to parse bonding curve account: {e}")
+            return None
+    
     def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
         """Get bonding curve data - CRITICAL METHOD for price monitoring"""
         try:
-            # First check WebSocket data
+            # First check WebSocket data (most recent)
             if mint in self.token_websocket_data:
                 ws_data = self.token_websocket_data[mint]
                 data_age = time.time() - ws_data['timestamp']
                 
-                if data_age < 60:  # Use if less than 60 seconds old
+                # Use WebSocket data if less than 5 minutes old
+                if data_age < 300:
                     token_data = ws_data['data']
                     if 'data' in token_data:
                         token_data = token_data['data']
@@ -107,51 +150,51 @@ class PumpFunDEX:
                     logger.debug(f"Using WebSocket data for {mint[:8]}... (age: {data_age:.1f}s)")
                     return curve_data
             
-            # Check cache
-            if mint in self.bonding_curves_cache:
-                cached = self.bonding_curves_cache[mint]
-                cache_age = time.time() - cached['timestamp']
-                if cache_age < 10:
-                    logger.debug(f"Using cached bonding curve for {mint[:8]}...")
-                    return cached['data']
+            # WebSocket data expired or unavailable - query chain directly via Helius
+            logger.debug(f"WebSocket data expired for {mint[:8]}..., querying chain via Helius")
             
-            # Try chain query as fallback
             mint_pubkey = Pubkey.from_string(mint)
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
             
+            # Query the bonding curve account
             response = self.client.get_account_info(bonding_curve)
-            if response.value and response.value.data:
-                logger.warning(f"Chain query for {mint[:8]}... - using estimate")
-                
-                curve_data = {
-                    'bonding_curve': str(bonding_curve),
-                    'virtual_token_reserves': 1_000_000_000_000,
-                    'virtual_sol_reserves': 30_000_000_000,
-                    'real_token_reserves': 1_000_000_000_000,
-                    'real_sol_reserves': 30_000_000_000,
-                    'price_per_token': 0.00003,
-                    'sol_in_curve': 30,
-                    'is_migrating': False,
-                    'can_buy': True,
-                    'from_websocket': False,
-                    'is_estimate': True,
-                    'is_valid': True,
-                    'needs_retry': False
-                }
-                
-                self.bonding_curves_cache[mint] = {
-                    'data': curve_data,
-                    'timestamp': time.time()
-                }
-                
-                self.last_good_prices[mint] = {
-                    'data': curve_data.copy(),
-                    'timestamp': time.time()
-                }
-                
-                return curve_data
             
-            # Check persistent cache
+            if response.value and response.value.data:
+                # Parse the actual account data
+                parsed_data = self._parse_bonding_curve_account(response.value.data)
+                
+                if parsed_data:
+                    # Successfully parsed real chain data
+                    parsed_data['bonding_curve'] = str(bonding_curve)
+                    parsed_data['price_per_token'] = (
+                        parsed_data['virtual_sol_reserves'] / parsed_data['virtual_token_reserves']
+                        if parsed_data['virtual_token_reserves'] > 0 else 0
+                    )
+                    parsed_data['is_migrating'] = False
+                    parsed_data['can_buy'] = True
+                    parsed_data['from_websocket'] = False
+                    parsed_data['needs_retry'] = False
+                    
+                    # Cache it
+                    self.bonding_curves_cache[mint] = {
+                        'data': parsed_data,
+                        'timestamp': time.time()
+                    }
+                    
+                    # Save to persistent cache
+                    self.last_good_prices[mint] = {
+                        'data': parsed_data.copy(),
+                        'timestamp': time.time()
+                    }
+                    
+                    logger.info(f"✅ Real-time chain data for {mint[:8]}...: {parsed_data['sol_in_curve']:.2f} SOL")
+                    return parsed_data
+                else:
+                    logger.warning(f"Failed to parse bonding curve data for {mint[:8]}...")
+            else:
+                logger.debug(f"No bonding curve account found for {mint[:8]}...")
+            
+            # Check persistent cache as last resort
             if mint in self.last_good_prices:
                 cached_price = self.last_good_prices[mint]
                 cache_age = time.time() - cached_price['timestamp']
@@ -164,35 +207,14 @@ class PumpFunDEX:
                     price_data['needs_retry'] = False
                     return price_data
             
-            # Return safe placeholder
-            logger.debug(f"No bonding curve account found for {mint[:8]}...")
-            curve_data = {
-                'bonding_curve': str(bonding_curve) if 'bonding_curve' in locals() else '',
-                'virtual_token_reserves': 1_000_000_000_000,
-                'virtual_sol_reserves': 30_000_000_000,
-                'real_token_reserves': 1_000_000_000_000,
-                'real_sol_reserves': 30_000_000_000,
-                'price_per_token': 0.00003,
-                'sol_in_curve': 30,
-                'is_migrating': False,
-                'can_buy': True,
-                'from_websocket': False,
-                'is_estimate': True,
-                'is_valid': True,
-                'needs_retry': False,
-                'no_data_available': True
-            }
-            
-            self.bonding_curves_cache[mint] = {
-                'data': curve_data,
-                'timestamp': time.time()
-            }
-            
-            return curve_data
+            # No data available at all
+            logger.warning(f"❌ No price data available for {mint[:8]}... - cannot calculate P&L")
+            return None
             
         except Exception as e:
             logger.error(f"Failed to get bonding curve data for {mint[:8]}...: {e}")
             
+            # Check persistent cache on error
             if mint in self.last_good_prices:
                 cached_price = self.last_good_prices[mint]
                 logger.info(f"Error fetching price, using last good price")
@@ -201,19 +223,4 @@ class PumpFunDEX:
                 price_data['needs_retry'] = False
                 return price_data
             
-            return {
-                'bonding_curve': '',
-                'virtual_token_reserves': 1_000_000_000_000,
-                'virtual_sol_reserves': 30_000_000_000,
-                'real_token_reserves': 1_000_000_000_000,
-                'real_sol_reserves': 30_000_000_000,
-                'price_per_token': 0.00003,
-                'sol_in_curve': 30,
-                'is_migrating': False,
-                'can_buy': True,
-                'from_websocket': False,
-                'is_estimate': True,
-                'is_valid': True,
-                'needs_retry': False,
-                'error': str(e)
-            }
+            return None
