@@ -40,7 +40,7 @@ class PumpPortalMonitor:
         self.sol_price_usd = 250
         self.last_sol_price_update = 0
         
-        # PATH B FILTERS: Concentration Check ENABLED
+        # PATH B FILTERS: 
         self.filters = {
             'min_creator_sol': 0.1,
             'max_creator_sol': 5.0,
@@ -49,8 +49,8 @@ class PumpPortalMonitor:
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
             'min_holders': 6,  # ADJUSTED
-            'check_concentration': True,  # ENABLED - Reject concentrated tokens
-            'max_top10_concentration': 85,  # Enforced when check_concentration=True
+            'check_concentration': False,  #
+            'max_top10_concentration': 85,  
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,
             'min_market_cap': 6000,
