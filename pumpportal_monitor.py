@@ -48,7 +48,7 @@ class PumpPortalMonitor:
             'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 3,  # ADJUSTED: Minimum 3 holders (realistic for entry range)
+            'min_holders': 6,  # ADJUSTED
             'check_concentration': True,  # ENABLED - Reject concentrated tokens
             'max_top10_concentration': 85,  # Enforced when check_concentration=True
             'max_velocity_sol_per_sec': 1.5,
