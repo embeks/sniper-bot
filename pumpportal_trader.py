@@ -21,7 +21,7 @@ class PumpPortalTrader:
         self.client = client
         self.api_url = "https://pumpportal.fun/api/trade-local"
     
-    async def confirm_transaction(self, signature: str, max_attempts: int = 15, timeout_seconds: int = 30) -> Tuple[bool, Optional[str]]:
+    async def confirm_transaction(self, signature: str, max_attempts: int = 20, timeout_seconds: int = 60) -> Tuple[bool, Optional[str]]:
         """
         Confirm a transaction was successful on-chain
         Returns: (success: bool, error_message: Optional[str])
@@ -59,8 +59,8 @@ class PumpPortalTrader:
             except Exception as e:
                 logger.warning(f"Confirmation check attempt {attempt + 1} failed: {e}")
             
-            # Wait before retry (exponential backoff capped at 3s)
-            wait_time = min(2 ** attempt * 0.5, 3.0)
+            # Wait before retry (exponential backoff capped at 4s)
+            wait_time = min(2 ** attempt * 0.5, 4.0)
             await asyncio.sleep(wait_time)
         
         logger.error(f"Transaction {signature[:8]}... not confirmed after {max_attempts} attempts")
