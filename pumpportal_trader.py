@@ -1,23 +1,67 @@
 """
-PumpPortal Trader
+PumpPortal Trader - WITH TRANSACTION CONFIRMATION
 """
 
 import aiohttp
+import asyncio
 import base64
 import json
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 from solana.rpc.types import TxOpts
 
 logger = logging.getLogger(__name__)
 
 class PumpPortalTrader:
-    """Use PumpPortal's API for transaction creation"""
+    """Use PumpPortal's API for transaction creation with confirmation checking"""
     
     def __init__(self, wallet_manager, client):
         self.wallet = wallet_manager
         self.client = client
         self.api_url = "https://pumpportal.fun/api/trade-local"
+    
+    async def confirm_transaction(self, signature: str, max_attempts: int = 15, timeout_seconds: int = 30) -> Tuple[bool, Optional[str]]:
+        """
+        Confirm a transaction was successful on-chain
+        Returns: (success: bool, error_message: Optional[str])
+        """
+        start_time = asyncio.get_event_loop().time()
+        
+        for attempt in range(max_attempts):
+            try:
+                # Check if we've exceeded timeout
+                if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+                    logger.error(f"Transaction {signature[:8]}... confirmation timeout after {timeout_seconds}s")
+                    return False, "Confirmation timeout"
+                
+                response = self.client.get_signature_statuses([signature])
+                
+                if response and response.value and response.value[0]:
+                    status = response.value[0]
+                    
+                    # Check if confirmed or finalized
+                    if status.confirmation_status in ['confirmed', 'finalized']:
+                        # Check for errors
+                        if status.err:
+                            error_msg = str(status.err)
+                            logger.error(f"Transaction {signature[:8]}... FAILED on-chain: {error_msg}")
+                            return False, error_msg
+                        
+                        logger.info(f"✅ Transaction {signature[:8]}... confirmed successfully")
+                        return True, None
+                    
+                    # Still processing
+                    logger.debug(f"Transaction {signature[:8]}... status: {status.confirmation_status} (attempt {attempt + 1}/{max_attempts})")
+                
+            except Exception as e:
+                logger.warning(f"Confirmation check attempt {attempt + 1} failed: {e}")
+            
+            # Wait before retry (exponential backoff capped at 3s)
+            wait_time = min(2 ** attempt * 0.5, 3.0)
+            await asyncio.sleep(wait_time)
+        
+        logger.error(f"Transaction {signature[:8]}... not confirmed after {max_attempts} attempts")
+        return False, "Not confirmed after max attempts"
     
     async def create_buy_transaction(
         self, 
@@ -26,7 +70,7 @@ class PumpPortalTrader:
         bonding_curve_key: str = None,
         slippage: int = 50
     ) -> Optional[str]:
-        """Get a buy transaction from PumpPortal API"""
+        """Get a buy transaction from PumpPortal API and confirm it"""
         try:
             wallet_pubkey = str(self.wallet.pubkey)
             
@@ -122,6 +166,7 @@ class PumpPortalTrader:
                     logger.info(f"Sending transaction for {mint[:8]}...")
                     
                     # Send with retry logic
+                    signature = None
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
                         response = self.client.send_raw_transaction(signed_tx_bytes, opts)
@@ -131,8 +176,8 @@ class PumpPortalTrader:
                             logger.warning("Transaction failed - received invalid signature")
                             raise Exception("Invalid signature returned")
                         
-                        logger.info(f"✅ Transaction sent successfully: {sig}")
-                        return sig
+                        signature = sig
+                        logger.info(f"Transaction sent, awaiting confirmation: {signature}")
                         
                     except Exception as e:
                         logger.warning(f"First send attempt failed: {e}")
@@ -145,12 +190,25 @@ class PumpPortalTrader:
                                 logger.error("Transaction failed - received invalid signature on retry")
                                 return None
                             
-                            logger.info(f"✅ Transaction sent on retry: {sig}")
-                            return sig
+                            signature = sig
+                            logger.info(f"Transaction sent on retry, awaiting confirmation: {signature}")
                             
                         except Exception as e2:
                             logger.error(f"Both send attempts failed: {e2}")
                             return None
+                    
+                    # CRITICAL: Confirm the transaction actually succeeded
+                    if signature:
+                        confirmed, error = await self.confirm_transaction(signature)
+                        
+                        if confirmed:
+                            logger.info(f"✅ Buy transaction CONFIRMED: {signature}")
+                            return signature
+                        else:
+                            logger.error(f"❌ Buy transaction FAILED: {error}")
+                            return None
+                    
+                    return None
                         
         except Exception as e:
             logger.error(f"Failed to create buy transaction: {e}")
@@ -166,7 +224,7 @@ class PumpPortalTrader:
         slippage: int = 50,
         token_decimals: int = 6
     ) -> Optional[str]:
-        """Get a sell transaction from PumpPortal API - expects UI token amounts"""
+        """Get a sell transaction from PumpPortal API and confirm it - expects UI token amounts"""
         try:
             wallet_pubkey = str(self.wallet.pubkey)
             ui_amount = float(token_amount)
@@ -319,6 +377,7 @@ class PumpPortalTrader:
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
                     
                     # Send with retry logic
+                    signature = None
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
                         response = self.client.send_raw_transaction(signed_tx_bytes, opts)
@@ -328,18 +387,8 @@ class PumpPortalTrader:
                             logger.warning("Transaction failed - received invalid signature")
                             raise Exception("Invalid signature returned")
                         
-                        logger.info(f"✅ Sell transaction sent successfully: {sig}")
-                        
-                        # Quick, non-blocking confirmation check
-                        try:
-                            st = self.client.get_signature_statuses([sig]).value
-                            ok = (st and st[0] and (st[0].confirmation_status in ("confirmed", "finalized")))
-                            if not ok:
-                                logger.warning(f"Sell not confirmed yet; status={st}")
-                        except Exception as _e:
-                            logger.debug(f"Status check skipped: {_e}")
-                        
-                        return sig
+                        signature = sig
+                        logger.info(f"Sell transaction sent, awaiting confirmation: {signature}")
                         
                     except Exception as e:
                         logger.warning(f"First send attempt failed: {e}")
@@ -352,12 +401,26 @@ class PumpPortalTrader:
                                 logger.error("Transaction failed - received invalid signature on retry")
                                 return None
                             
-                            logger.info(f"✅ Sell transaction sent on retry: {sig}")
-                            return sig
+                            signature = sig
+                            logger.info(f"Sell transaction sent on retry, awaiting confirmation: {signature}")
                             
                         except Exception as e2:
                             logger.error(f"Both send attempts failed: {e2}")
                             return None
+                    
+                    # CRITICAL: Confirm the transaction actually succeeded
+                    if signature:
+                        confirmed, error = await self.confirm_transaction(signature)
+                        
+                        if confirmed:
+                            logger.info(f"✅ Sell transaction CONFIRMED: {signature}")
+                            return signature
+                        else:
+                            logger.error(f"❌ Sell transaction FAILED: {error}")
+                            # Return None so the bot knows the sell failed and doesn't update position
+                            return None
+                    
+                    return None
                         
         except Exception as e:
             logger.error(f"Failed to create sell transaction: {e}")
