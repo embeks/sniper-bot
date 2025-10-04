@@ -493,7 +493,9 @@ class SniperBot:
                 
                 try:
                     # Get current price data
+                    logger.info(f"🔍 Fetching price data for {mint[:8]}... (age: {age:.0f}s)")
                     curve_data = self.dex.get_bonding_curve_data(mint)
+                    logger.info(f"📊 Received curve_data: {curve_data is not None}, from_websocket: {curve_data.get('from_websocket') if curve_data else 'N/A'}, sol_in_curve: {curve_data.get('sol_in_curve', 'N/A') if curve_data else 'N/A'}")
                     
                     # Check if we got valid data
                     if not curve_data:
