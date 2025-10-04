@@ -64,6 +64,10 @@ class Position:
         self.last_valid_balance = tokens
         self.curve_check_retries = 0
         
+        # Volume and momentum tracking
+        self.consecutive_no_movement = 0
+        self.last_checked_price = 0
+        
         # MC-based tracking for Path B
         self.entry_market_cap = entry_market_cap
         self.current_market_cap = entry_market_cap
@@ -549,6 +553,28 @@ class SniperBot:
                             consecutive_data_failures = 0
                             position.last_valid_price = current_token_price_sol
                             position.last_price_update = time.time()
+                            
+                            # Volume-based exit: Check for stagnant price (no buyers)
+                            if position.last_checked_price == 0:
+                                position.last_checked_price = current_token_price_sol
+                            
+                            if abs(current_token_price_sol - position.last_checked_price) < (position.last_checked_price * 0.001):  # Less than 0.1% change
+                                position.consecutive_no_movement += 1
+                            else:
+                                position.consecutive_no_movement = 0
+                                position.last_checked_price = current_token_price_sol
+                            
+                            # Exit if no price movement for 15 seconds (7-8 cycles at 2s interval)
+                            if position.consecutive_no_movement >= 7:
+                                logger.warning(f"🚫 NO VOLUME for 15s - exiting {mint[:8]}...")
+                                await self._close_position_full(mint, reason="no_volume")
+                                break
+                            
+                            # Momentum-based exit: Early dump detection (first 30 seconds)
+                            if age < 30 and price_change < -3:  # Down more than 3% in first 30s
+                                logger.warning(f"🚫 EARLY MOMENTUM FAILURE ({price_change:.1f}%) - exiting {mint[:8]}...")
+                                await self._close_position_full(mint, reason="early_dump")
+                                break
                             
                             if check_count % 10 == 1:
                                 self.tracker.log_position_update(mint, price_change, current_sol_in_curve, age)
