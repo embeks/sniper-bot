@@ -1,5 +1,5 @@
 """
-PumpPortal Trader - WITH TRANSACTION CONFIRMATION
+PumpPortal Trader - WITH TRANSACTION CONFIRMATION (Fixed)
 """
 
 import aiohttp
@@ -9,6 +9,7 @@ import json
 import logging
 from typing import Optional, Tuple
 from solana.rpc.types import TxOpts
+from solders.signature import Signature
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ class PumpPortalTrader:
                     logger.error(f"Transaction {signature[:8]}... confirmation timeout after {timeout_seconds}s")
                     return False, "Confirmation timeout"
                 
-                response = self.client.get_signature_statuses([signature])
+                # Convert string signature to Signature object
+                sig_obj = Signature.from_string(signature)
+                response = self.client.get_signature_statuses([sig_obj])
                 
                 if response and response.value and response.value[0]:
                     status = response.value[0]
