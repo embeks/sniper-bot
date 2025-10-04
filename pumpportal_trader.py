@@ -1,5 +1,5 @@
 """
-PumpPortal Trader - WITH TRANSACTION CONFIRMATION (Fixed)
+PumpPortal Trader - with confirmation checking
 """
 
 import aiohttp
@@ -21,49 +21,52 @@ class PumpPortalTrader:
         self.client = client
         self.api_url = "https://pumpportal.fun/api/trade-local"
     
-    async def confirm_transaction(self, signature: str, max_attempts: int = 20, timeout_seconds: int = 60) -> Tuple[bool, Optional[str]]:
+    async def _confirm_transaction(
+        self,
+        signature_str: str,
+        max_attempts: int = 20,
+        timeout_seconds: int = 60
+    ) -> Tuple[bool, Optional[str]]:
         """
-        Confirm a transaction was successful on-chain
-        Returns: (success: bool, error_message: Optional[str])
+        Poll the chain until the tx is confirmed/finalized or errors out.
+        Returns (success, err_msg)
         """
-        start_time = asyncio.get_event_loop().time()
-        
-        for attempt in range(max_attempts):
+        start = asyncio.get_event_loop().time()
+        sig = Signature.from_string(signature_str)
+
+        for attempt in range(1, max_attempts + 1):
+            # timeout guard
+            if asyncio.get_event_loop().time() - start > timeout_seconds:
+                logger.error(f"Tx {signature_str[:8]}... confirmation timeout after {timeout_seconds}s")
+                return False, "Confirmation timeout"
+
             try:
-                # Check if we've exceeded timeout
-                if asyncio.get_event_loop().time() - start_time > timeout_seconds:
-                    logger.error(f"Transaction {signature[:8]}... confirmation timeout after {timeout_seconds}s")
-                    return False, "Confirmation timeout"
-                
-                # Convert string signature to Signature object
-                sig_obj = Signature.from_string(signature)
-                response = self.client.get_signature_statuses([sig_obj])
-                
-                if response and response.value and response.value[0]:
-                    status = response.value[0]
-                    
-                    # Check if confirmed or finalized
-                    if status.confirmation_status in ['confirmed', 'finalized']:
-                        # Check for errors
+                resp = self.client.get_signature_statuses([sig])
+                # SDK returns an object with .value -> list[Optional[Status]]
+                status = resp.value[0] if (resp and resp.value) else None
+
+                if status is not None:
+                    # accepted values: processed/confirmed/finalized
+                    cs = status.confirmation_status
+                    if cs in ("confirmed", "finalized"):
                         if status.err:
-                            error_msg = str(status.err)
-                            logger.error(f"Transaction {signature[:8]}... FAILED on-chain: {error_msg}")
-                            return False, error_msg
-                        
-                        logger.info(f"✅ Transaction {signature[:8]}... confirmed successfully")
+                            # on-chain failure (e.g., custom program error 6023)
+                            err_msg = str(status.err)
+                            logger.error(f"Tx {signature_str[:8]}... FAILED on-chain: {err_msg}")
+                            return False, err_msg
+                        logger.info(f"✅ Tx {signature_str[:8]}... confirmed ({cs})")
                         return True, None
-                    
-                    # Still processing
-                    logger.debug(f"Transaction {signature[:8]}... status: {status.confirmation_status} (attempt {attempt + 1}/{max_attempts})")
-                
+
+                    # still "processed" (not enough); keep polling
+                    logger.debug(f"Tx {signature_str[:8]}... status={cs} (attempt {attempt}/{max_attempts})")
+
             except Exception as e:
-                logger.warning(f"Confirmation check attempt {attempt + 1} failed: {e}")
-            
-            # Wait before retry (exponential backoff capped at 4s)
-            wait_time = min(2 ** attempt * 0.5, 4.0)
-            await asyncio.sleep(wait_time)
-        
-        logger.error(f"Transaction {signature[:8]}... not confirmed after {max_attempts} attempts")
+                logger.warning(f"Confirm check attempt {attempt} error: {e}")
+
+            # backoff (cap at 4s)
+            await asyncio.sleep(min(0.5 * (2 ** (attempt - 1)), 4.0))
+
+        logger.error(f"Tx {signature_str[:8]}... not confirmed after {max_attempts} attempts")
         return False, "Not confirmed after max attempts"
     
     async def create_buy_transaction(
@@ -142,7 +145,6 @@ class PumpPortalTrader:
                             message = unsigned_tx.message
                             
                             # Create a NEW VersionedTransaction with the message and keypair
-                            # This constructor signs the message with your keypair
                             signed_tx = VersionedTransaction(message, [self.wallet.keypair])
                             signed_tx_bytes = bytes(signed_tx)
                             
@@ -152,7 +154,7 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions (517 bytes for sells) - KEEP EXISTING WORKING CODE
+                        # Legacy transactions
                         logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
                         try:
                             from solana.transaction import Transaction
@@ -162,13 +164,12 @@ class PumpPortalTrader:
                             logger.info("Signed legacy transaction")
                         except Exception as e:
                             logger.error(f"Failed to sign legacy transaction: {e}")
-                            # Try sending as-is - PumpPortal might have pre-signed it
                             logger.info("Attempting to send without signing...")
                             signed_tx_bytes = raw_tx_bytes
                     
                     logger.info(f"Sending transaction for {mint[:8]}...")
                     
-                    # Send with retry logic
+                    # Send transaction
                     signature = None
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
@@ -200,16 +201,14 @@ class PumpPortalTrader:
                             logger.error(f"Both send attempts failed: {e2}")
                             return None
                     
-                    # CRITICAL: Confirm the transaction actually succeeded
+                    # Confirm the transaction
                     if signature:
-                        confirmed, error = await self.confirm_transaction(signature)
-                        
-                        if confirmed:
-                            logger.info(f"✅ Buy transaction CONFIRMED: {signature}")
-                            return signature
-                        else:
-                            logger.error(f"❌ Buy transaction FAILED: {error}")
+                        ok, err = await self._confirm_transaction(signature)
+                        if not ok:
+                            logger.error(f"❌ Buy transaction FAILED: {err}")
                             return None
+                        logger.info(f"✅ Buy transaction CONFIRMED: {signature}")
+                        return signature
                     
                     return None
                         
@@ -238,7 +237,7 @@ class PumpPortalTrader:
             
             # Handle decimals - it might be a tuple (decimals, source) or just an int
             if isinstance(token_decimals, tuple):
-                token_decimals = token_decimals[0]  # Extract just the decimals value
+                token_decimals = token_decimals[0]
             
             logger.info(f"=== SELL TRANSACTION ===")
             logger.info(f"Token: {mint[:8]}...")
@@ -312,12 +311,8 @@ class PumpPortalTrader:
                         try:
                             from solders.transaction import VersionedTransaction
                             
-                            # Parse the unsigned v0 transaction to get the message
                             unsigned_tx = VersionedTransaction.from_bytes(raw_tx_bytes)
                             message = unsigned_tx.message
-                            
-                            # Create a NEW VersionedTransaction with the message and keypair
-                            # This constructor signs the message with your keypair
                             signed_tx = VersionedTransaction(message, [self.wallet.keypair])
                             signed_tx_bytes = bytes(signed_tx)
                             
@@ -327,8 +322,7 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transaction from PumpPortal. Always re-sign correctly:
-                        # parse compact-u16 sig_count, extract message, sign, and repack.
+                        # Legacy transaction - manual signing with robust varint parse
                         logger.info("Legacy transaction - manual signing (robust varint parse + re-pack)")
                         try:
                             b = raw_tx_bytes
@@ -336,7 +330,7 @@ class PumpPortalTrader:
                                 logger.error(f"Legacy tx too small ({len(b)} bytes)")
                                 return None
                             
-                            # --- parse compact-u16 signature count (little-endian varint) ---
+                            # Parse compact-u16 signature count
                             idx = 0
                             val = 0
                             shift = 0
@@ -350,7 +344,7 @@ class PumpPortalTrader:
                                 if byte < 0x80:
                                     break
                                 shift += 7
-                                if shift > 14:  # guardrail
+                                if shift > 14:
                                     logger.error("sig_count varint too long")
                                     return None
                             sig_count = val
@@ -360,16 +354,12 @@ class PumpPortalTrader:
                                 logger.error("Malformed legacy tx: signatures section extends past end")
                                 return None
                             
-                            # Message is everything after the signature section
                             msg_bytes = b[sig_section_end:]
                             if not msg_bytes:
                                 logger.error("Empty legacy message bytes")
                                 return None
                             
-                            # Sign the message with our keypair
-                            signature = self.wallet.keypair.sign_message(msg_bytes)  # 64 bytes
-                            
-                            # Repack: [sig_count=1 (0x01)] + [signature] + [message]
+                            signature = self.wallet.keypair.sign_message(msg_bytes)
                             signed_tx_bytes = bytes([0x01]) + bytes(signature) + msg_bytes
                             
                             logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
@@ -379,7 +369,7 @@ class PumpPortalTrader:
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
                     
-                    # Send with retry logic
+                    # Send transaction
                     signature = None
                     try:
                         opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
@@ -411,17 +401,14 @@ class PumpPortalTrader:
                             logger.error(f"Both send attempts failed: {e2}")
                             return None
                     
-                    # CRITICAL: Confirm the transaction actually succeeded
+                    # Confirm the transaction
                     if signature:
-                        confirmed, error = await self.confirm_transaction(signature)
-                        
-                        if confirmed:
-                            logger.info(f"✅ Sell transaction CONFIRMED: {signature}")
-                            return signature
-                        else:
-                            logger.error(f"❌ Sell transaction FAILED: {error}")
-                            # Return None so the bot knows the sell failed and doesn't update position
+                        ok, err = await self._confirm_transaction(signature)
+                        if not ok:
+                            logger.error(f"❌ Sell transaction FAILED: {err}")
                             return None
+                        logger.info(f"✅ Sell transaction CONFIRMED: {signature}")
+                        return signature
                     
                     return None
                         
