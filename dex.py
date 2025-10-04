@@ -104,8 +104,9 @@ class PumpFunDEX:
                 ws_data = self.token_websocket_data[mint]
                 data_age = time.time() - ws_data['timestamp']
                 
-                # Use WebSocket data if less than 5 minutes old
-                if data_age < 300:
+                # Use WebSocket data only if fresh (under 10 seconds)
+                # After 10s, query blockchain for real-time updates
+                if data_age < 10:
                     token_data = ws_data['data']
                     if 'data' in token_data:
                         token_data = token_data['data']
