@@ -1,6 +1,7 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED P&L Tracking
 WITH CRITICAL FIXES: Async confirmation, race protection, stop-loss priority, dynamic fees
+HOTFIX: Removed broken API call, added retry limit to prevent infinite loops
 """
 
 import asyncio
@@ -61,6 +62,9 @@ class Position:
         
         # CRITICAL FIX: Prevent multiple simultaneous closes
         self.is_closing = False
+        
+        # CRITICAL HOTFIX: Track retry attempts to prevent infinite loops
+        self.retry_counts = {}
         
         # Price tracking
         self.last_valid_price = 0
@@ -136,6 +140,7 @@ class SniperBot:
         
         # Positions and stats
         self.positions: Dict[str, Position] = {}
+        self.pending_buys = 0  # CRITICAL FIX: Track in-flight buy transactions
         self.total_trades = 0
         self.profitable_trades = 0
         self.total_pnl = 0
@@ -340,8 +345,11 @@ class SniperBot:
             if mint in BLACKLISTED_TOKENS:
                 return
             
-            if len(self.positions) >= MAX_POSITIONS:
-                logger.warning(f"Max positions reached ({MAX_POSITIONS})")
+            # CRITICAL FIX: Check total positions (active + pending buys)
+            total_positions = len(self.positions) + self.pending_buys
+            
+            if total_positions >= MAX_POSITIONS:
+                logger.warning(f"Max positions reached ({len(self.positions)} active + {self.pending_buys} pending = {total_positions}/{MAX_POSITIONS})")
                 return
             
             if mint in self.positions:
@@ -375,6 +383,10 @@ class SniperBot:
             
             if len(name) < 3 or 'test' in name.lower():
                 return
+            
+            # CRITICAL FIX: Increment pending buys immediately after all checks pass
+            self.pending_buys += 1
+            logger.debug(f"Pending buys: {self.pending_buys}, Active: {len(self.positions)}")
             
             # Extract entry market cap from token_data
             entry_market_cap = token_data.get('market_cap', 0)
@@ -445,6 +457,9 @@ class SniperBot:
                 self.positions[mint] = position
                 self.total_trades += 1
                 
+                # CRITICAL FIX: Decrement pending buys since position is now active
+                self.pending_buys -= 1
+                
                 logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
                 logger.info(f"   Amount: {BUY_AMOUNT_SOL} SOL")
                 logger.info(f"   Tokens: {bought_tokens:,.0f}")
@@ -459,9 +474,13 @@ class SniperBot:
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
             else:
+                # CRITICAL FIX: Buy failed - decrement pending buys
+                self.pending_buys -= 1
                 self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, "Transaction failed")
                 
         except Exception as e:
+            # CRITICAL FIX: Error occurred - decrement pending buys
+            self.pending_buys = max(0, self.pending_buys - 1)
             logger.error(f"Failed to process token: {e}")
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
@@ -786,6 +805,10 @@ class SniperBot:
                 # Reset consecutive losses on profit
                 self.consecutive_losses = 0
                 
+                # HOTFIX: Clear retry count for this target
+                if target_name in position.retry_counts:
+                    del position.retry_counts[target_name]
+                
                 self.tracker.log_partial_sell(
                     mint=mint,
                     target_name=target_name,
@@ -816,12 +839,24 @@ class SniperBot:
                     position.status = 'completed'
                     
             else:
-                # Transaction failed or timeout - retry
+                # Transaction failed or timeout
                 logger.warning(f"⚠️ {target_name} sell confirmation timeout/failure for {mint[:8]}")
                 position.pending_sells.remove(target_name)
                 
-                # Auto-retry
-                await self._retry_sell(mint, sell_percent, target_name, current_pnl)
+                # CRITICAL HOTFIX: Check retry count to prevent infinite loops
+                retry_count = position.retry_counts.get(target_name, 0)
+                
+                if retry_count < 2:  # Max 2 retries
+                    position.retry_counts[target_name] = retry_count + 1
+                    logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
+                    await self._retry_sell(mint, sell_percent, target_name, current_pnl, attempt=retry_count + 1)
+                else:
+                    logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
+                    if self.telegram:
+                        await self.telegram.send_message(
+                            f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
+                            f"Max retries exceeded - may need manual intervention"
+                        )
                 
         except Exception as e:
             logger.error(f"Confirmation error for {mint[:8]}: {e}")
@@ -829,8 +864,6 @@ class SniperBot:
                 position = self.positions[mint]
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
-                # Retry on error
-                await self._retry_sell(mint, sell_percent, target_name, current_pnl)
     
     async def _retry_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float, attempt: int = 1):
         """
@@ -839,7 +872,7 @@ class SniperBot:
         MAX_RETRIES = 2
         
         if attempt > MAX_RETRIES:
-            logger.error(f"❌ Max retries for {target_name} on {mint[:8]}")
+            logger.error(f"❌ Max retries ({MAX_RETRIES}) exceeded for {target_name} on {mint[:8]}")
             if self.telegram:
                 await self.telegram.send_message(
                     f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
