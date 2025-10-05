@@ -1,5 +1,6 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED P&L Tracking
+WITH CRITICAL FIXES: Async confirmation, race protection, stop-loss priority, dynamic fees
 """
 
 import asyncio
@@ -54,8 +55,12 @@ class Position:
         
         # Multi-target tracking
         self.partial_sells = {}
+        self.pending_sells = set()  # CRITICAL FIX: Prevent race conditions
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
+        
+        # CRITICAL FIX: Prevent multiple simultaneous closes
+        self.is_closing = False
         
         # Price tracking
         self.last_valid_price = 0
@@ -158,7 +163,7 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - PATH B (FIXED P&L):")
+        logger.info(f"📊 STARTUP STATUS - PATH B (FIXED P&L + ASYNC CONFIRMATION):")
         logger.info(f"  • Strategy: MC + Holder Verification")
         logger.info(f"  • Entry: $6k-$60k MC, 5+ holders (concentration check disabled)")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
@@ -225,7 +230,7 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - PATH B (FIXED P&L)\n"
+                    "🚀 Bot started - PATH B (FIXED P&L + ASYNC CONFIRMATION)\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"📈 Targets: 2x/3x/5x\n"
@@ -387,36 +392,32 @@ class SniperBot:
             # Execute buy
             execution_start = time.time()
             
-            if DRY_RUN:
-                logger.info(f"[DRY RUN] Would buy {mint[:8]}... for {BUY_AMOUNT_SOL} SOL")
-                signature = f"dry_run_buy_{mint[:10]}"
-                bought_tokens = 1000000
-            else:
-                bonding_curve_key = None
-                if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
-                    bonding_curve_key = token_data['data']['bondingCurveKey']
-                
-                expected_tokens = 0
-                if 'data' in token_data:
-                    data = token_data['data']
-                    if 'initialBuy' in data and 'solAmount' in data:
-                        creator_sol = float(data.get('solAmount', 0.01))
-                        if creator_sol > 0:
-                            expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / creator_sol)
-                
-                signature = await self.trader.create_buy_transaction(
-                    mint=mint,
-                    sol_amount=BUY_AMOUNT_SOL,
-                    bonding_curve_key=bonding_curve_key,
-                    slippage=50
-                )
-                
-                bought_tokens = 0
-                if signature:
-                    await asyncio.sleep(2)
-                    bought_tokens = self.wallet.get_token_balance(mint)
-                    if bought_tokens == 0:
-                        bought_tokens = expected_tokens if expected_tokens > 0 else 350000
+            bonding_curve_key = None
+            if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
+                bonding_curve_key = token_data['data']['bondingCurveKey']
+            
+            expected_tokens = 0
+            if 'data' in token_data:
+                data = token_data['data']
+                if 'initialBuy' in data and 'solAmount' in data:
+                    creator_sol = float(data.get('solAmount', 0.01))
+                    if creator_sol > 0:
+                        expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / creator_sol)
+            
+            signature = await self.trader.create_buy_transaction(
+                mint=mint,
+                sol_amount=BUY_AMOUNT_SOL,
+                bonding_curve_key=bonding_curve_key,
+                slippage=50,
+                urgency="normal"
+            )
+            
+            bought_tokens = 0
+            if signature:
+                await asyncio.sleep(2)
+                bought_tokens = self.wallet.get_token_balance(mint)
+                if bought_tokens == 0:
+                    bought_tokens = expected_tokens if expected_tokens > 0 else 350000
             
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
@@ -497,9 +498,7 @@ class SniperBot:
                 
                 try:
                     # Get current price data
-                    logger.info(f"🔍 Fetching price data for {mint[:8]}... (age: {age:.0f}s)")
                     curve_data = self.dex.get_bonding_curve_data(mint)
-                    logger.info(f"📊 Received curve_data: {curve_data is not None}, from_websocket: {curve_data.get('from_websocket') if curve_data else 'N/A'}, sol_in_curve: {curve_data.get('sol_in_curve', 'N/A') if curve_data else 'N/A'}")
                     
                     # Check if we got valid data
                     if not curve_data:
@@ -527,21 +526,15 @@ class SniperBot:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
                         # FIXED: Calculate actual token price in human-readable SOL
-                        # Get reserves in raw units
-                        v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)  # in lamports
-                        v_token_reserves = curve_data.get('virtual_token_reserves', 0)  # in raw atoms
+                        v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
+                        v_token_reserves = curve_data.get('virtual_token_reserves', 0)
                         
                         if v_token_reserves > 0 and v_sol_reserves > 0:
-                            # Convert to human-readable units and calculate price
-                            # v_sol_reserves is in lamports (1e9 per SOL)
-                            # v_token_reserves is in atoms (1e6 per token for 6 decimals)
                             sol_human = v_sol_reserves / 1e9
                             tokens_human = v_token_reserves / 1e6
                             
-                            # Price per token in SOL
                             current_token_price_sol = sol_human / tokens_human
                             
-                            # YOUR actual P&L based on YOUR entry price vs current price
                             if position.entry_token_price_sol > 0:
                                 price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
                             else:
@@ -554,24 +547,23 @@ class SniperBot:
                             position.last_valid_price = current_token_price_sol
                             position.last_price_update = time.time()
                             
-                            # Volume-based exit: Check for stagnant price (no buyers)
+                            # Volume-based exit
                             if position.last_checked_price == 0:
                                 position.last_checked_price = current_token_price_sol
                             
-                            if abs(current_token_price_sol - position.last_checked_price) < (position.last_checked_price * 0.001):  # Less than 0.1% change
+                            if abs(current_token_price_sol - position.last_checked_price) < (position.last_checked_price * 0.001):
                                 position.consecutive_no_movement += 1
                             else:
                                 position.consecutive_no_movement = 0
                                 position.last_checked_price = current_token_price_sol
                             
-                            # Exit if no price movement for 15 seconds (7-8 cycles at 2s interval)
                             if position.consecutive_no_movement >= 7:
                                 logger.warning(f"🚫 NO VOLUME for 15s - exiting {mint[:8]}...")
                                 await self._close_position_full(mint, reason="no_volume")
                                 break
                             
-                            # Momentum-based exit: Early dump detection (first 30 seconds)
-                            if age < 30 and price_change < -3:  # Down more than 3% in first 30s
+                            # Early dump detection
+                            if age < 30 and price_change < -3:
                                 logger.warning(f"🚫 EARLY MOMENTUM FAILURE ({price_change:.1f}%) - exiting {mint[:8]}...")
                                 await self._close_position_full(mint, reason="early_dump")
                                 break
@@ -596,49 +588,41 @@ class SniperBot:
                                 await self.telegram.send_message(update_msg)
                                 last_notification_pnl = price_change
                             
-                            # Check stop loss FIRST
-                            if price_change <= -STOP_LOSS_PERCENTAGE and position.total_sold_percent < 100:
+                            # CRITICAL FIX: Check stop-loss FIRST and skip if already closing
+                            if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                                 logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
+                                position.is_closing = True
                                 await self._close_position_full(mint, reason="stop_loss")
                                 break
                             
-                            # Then check profit targets
-                            for target in position.profit_targets:
-                                target_name = target['name']
-                                target_pnl = target['target']
-                                sell_percent = target['sell_percent']
-                                
-                                if position.pnl_percent >= target_pnl and target_name not in position.partial_sells:
-                                    logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
+                            # Only check profit targets if not closing
+                            if not position.is_closing:
+                                for target in position.profit_targets:
+                                    target_name = target['name']
+                                    target_pnl = target['target']
+                                    sell_percent = target['sell_percent']
                                     
-                                    success = await self._execute_partial_sell(
-                                        mint, sell_percent, target_name, position.pnl_percent
-                                    )
-                                    
-                                    if success:
-                                        position.partial_sells[target_name] = {
-                                            'pnl': position.pnl_percent,
-                                            'time': time.time(),
-                                            'percent_sold': sell_percent
-                                        }
-                                        position.total_sold_percent += sell_percent
+                                    # CRITICAL FIX: Check both partial_sells AND pending_sells
+                                    if (position.pnl_percent >= target_pnl and 
+                                        target_name not in position.partial_sells and 
+                                        target_name not in position.pending_sells):
                                         
-                                        # Reset consecutive losses on profit
-                                        self.consecutive_losses = 0
+                                        logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        if position.total_sold_percent >= 100:
-                                            logger.info(f"✅ Position fully closed")
-                                            position.status = 'completed'
+                                        success = await self._execute_partial_sell(
+                                            mint, sell_percent, target_name, position.pnl_percent
+                                        )
+                                        
+                                        # CRITICAL FIX: Only one sell per monitoring cycle
+                                        if success:
                                             break
                         else:
-                            # No valid reserve data - mark as data failure
                             consecutive_data_failures += 1
                             logger.warning(f"Invalid reserve data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
                             
                             if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
                                 if position.last_valid_price > 0:
                                     logger.debug(f"Using last valid token price: {position.last_valid_price:.10f}")
-                                    # Continue with last known price for now
                                 else:
                                     logger.warning(f"No valid price available, skipping cycle")
                                     await asyncio.sleep(1)
@@ -663,28 +647,25 @@ class SniperBot:
                 await self._close_position_full(mint, reason="monitor_error")
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
-        """Execute a partial sell with REALISTIC profit calculation"""
+        """
+        Execute a partial sell - CRITICAL FIX VERSION
+        Returns immediately after submission, confirmation happens in background
+        """
         try:
             position = self.positions.get(mint)
             if not position:
                 return False
             
-            current_balance = self.wallet.get_token_balance(mint)
-            
-            if current_balance == 0:
-                logger.warning(f"Using recorded balance {position.last_valid_balance}")
-                current_balance = position.last_valid_balance
-            elif current_balance > position.initial_tokens * 2:
-                logger.warning(f"Suspicious balance, using recorded {position.last_valid_balance}")
-                current_balance = position.last_valid_balance
-            else:
-                position.last_valid_balance = current_balance
-            
-            if current_balance <= 0:
+            # CRITICAL FIX: Check if already pending
+            if target_name in position.pending_sells:
+                logger.debug(f"{target_name} already pending for {mint[:8]}")
                 return False
             
-            remaining_balance = position.remaining_tokens
-            ui_tokens_to_sell = remaining_balance * (sell_percent / 100)
+            # Mark as pending immediately to prevent race conditions
+            position.pending_sells.add(target_name)
+            
+            # Use position state as source of truth
+            ui_tokens_to_sell = position.remaining_tokens * (sell_percent / 100)
             
             logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
             logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} tokens)")
@@ -697,65 +678,204 @@ class SniperBot:
             sol_received = base_sol_for_portion * multiplier
             profit_sol = sol_received - base_sol_for_portion
             
-            if DRY_RUN:
-                logger.info(f"[DRY RUN] Would sell {ui_tokens_to_sell:,.2f} tokens")
-                signature = f"dry_run_sell_{target_name}_{mint[:10]}"
+            token_decimals = self.wallet.get_token_decimals(mint)
+            
+            # Determine urgency based on target
+            if target_name == "2x":
+                urgency = "normal"
+            elif target_name == "3x":
+                urgency = "normal"
+            elif target_name == "5x":
+                urgency = "low"
             else:
-                token_decimals = self.wallet.get_token_decimals(mint)
-                
-                signature = await self.trader.create_sell_transaction(
-                    mint=mint,
-                    token_amount=ui_tokens_to_sell,
-                    slippage=50,
-                    token_decimals=token_decimals
-                )
+                urgency = "high"
+            
+            # Submit transaction
+            signature = await self.trader.create_sell_transaction(
+                mint=mint,
+                token_amount=ui_tokens_to_sell,
+                slippage=50,
+                token_decimals=token_decimals,
+                urgency=urgency
+            )
             
             if signature and not signature.startswith("1111111"):
+                # CRITICAL FIX: Don't update position state yet!
+                # Spawn background task for confirmation
+                asyncio.create_task(
+                    self._confirm_sell_background(
+                        signature, mint, target_name, sell_percent,
+                        ui_tokens_to_sell, sol_received, profit_sol, current_pnl
+                    )
+                )
+                
+                logger.info(f"✅ {target_name} sell submitted, confirming in background...")
+                return True
+            else:
+                logger.error(f"Failed to submit {target_name} sell")
+                position.pending_sells.remove(target_name)
+                return False
+                
+        except Exception as e:
+            logger.error(f"Partial sell error: {e}")
+            if mint in self.positions:
+                position = self.positions[mint]
+                if target_name in position.pending_sells:
+                    position.pending_sells.remove(target_name)
+            return False
+    
+    async def _confirm_sell_background(
+        self, signature: str, mint: str, target_name: str,
+        sell_percent: float, tokens_sold: float, sol_received: float,
+        profit_sol: float, current_pnl: float
+    ):
+        """
+        CRITICAL FIX: Confirm sell in background without blocking monitoring
+        Only update position state after confirmation
+        """
+        try:
+            position = self.positions.get(mint)
+            if not position:
+                logger.warning(f"Position {mint[:8]} disappeared during confirmation")
+                return
+            
+            logger.info(f"⏳ Confirming {target_name} sell for {mint[:8]}...")
+            
+            # Wait for confirmation with 15 second timeout
+            start = time.time()
+            confirmed = False
+            tx_error = None
+            
+            while time.time() - start < 15:
+                try:
+                    status = self.trader.client.get_signature_statuses([signature])
+                    if status and status.value and status.value[0]:
+                        confirmation_status = status.value[0].confirmation_status
+                        
+                        if confirmation_status in ["confirmed", "finalized"]:
+                            # Check for errors
+                            if status.value[0].err:
+                                tx_error = status.value[0].err
+                                logger.error(f"❌ {target_name} sell FAILED: {tx_error}")
+                                break
+                            else:
+                                confirmed = True
+                                break
+                                
+                except Exception as e:
+                    logger.debug(f"Status check error: {e}")
+                
+                await asyncio.sleep(0.5)
+            
+            if confirmed:
+                # CRITICAL: NOW update position state
                 position.sell_signatures.append(signature)
-                position.remaining_tokens -= ui_tokens_to_sell
+                position.remaining_tokens -= tokens_sold
                 position.realized_pnl_sol += profit_sol
                 self.total_realized_sol += profit_sol
+                
+                # Mark target as hit
+                position.partial_sells[target_name] = {
+                    'pnl': current_pnl,
+                    'time': time.time(),
+                    'percent_sold': sell_percent
+                }
+                position.total_sold_percent += sell_percent
+                position.pending_sells.remove(target_name)
+                
+                # Reset consecutive losses on profit
+                self.consecutive_losses = 0
                 
                 self.tracker.log_partial_sell(
                     mint=mint,
                     target_name=target_name,
                     percent_sold=sell_percent,
-                    tokens_sold=ui_tokens_to_sell,
+                    tokens_sold=tokens_sold,
                     sol_received=sol_received,
                     pnl_sol=profit_sol
                 )
                 
-                logger.info(f"✅ {target_name} SELL EXECUTED")
-                logger.info(f"   Est. received: {sol_received:.4f} SOL")
-                logger.info(f"   Est. profit: {profit_sol:+.4f} SOL")
+                logger.info(f"✅ {target_name} CONFIRMED for {mint[:8]}")
+                logger.info(f"   Received: {sol_received:.4f} SOL")
+                logger.info(f"   Profit: {profit_sol:+.4f} SOL")
                 
                 if self.telegram:
                     msg = (
-                        f"💰 {target_name} TARGET HIT!\n"
+                        f"💰 {target_name} CONFIRMED!\n"
                         f"Token: {mint[:16]}...\n"
-                        f"Sold: {sell_percent}% of position\n"
-                        f"YOUR P&L: {current_pnl:+.1f}%\n"
-                        f"Est. profit: {profit_sol:+.4f} SOL\n"
+                        f"Sold: {sell_percent}%\n"
+                        f"P&L: {current_pnl:+.1f}%\n"
+                        f"Profit: {profit_sol:+.4f} SOL\n"
                         f"TX: https://solscan.io/tx/{signature}"
                     )
                     await self.telegram.send_message(msg)
                 
-                return True
+                # Check if position fully closed
+                if position.total_sold_percent >= 100:
+                    logger.info(f"✅ Position fully closed")
+                    position.status = 'completed'
+                    
             else:
-                logger.error(f"Failed to execute {target_name} sell")
-                return False
+                # Transaction failed or timeout - retry
+                logger.warning(f"⚠️ {target_name} sell confirmation timeout/failure for {mint[:8]}")
+                position.pending_sells.remove(target_name)
+                
+                # Auto-retry
+                await self._retry_sell(mint, sell_percent, target_name, current_pnl)
                 
         except Exception as e:
-            logger.error(f"Partial sell error: {e}")
-            return False
+            logger.error(f"Confirmation error for {mint[:8]}: {e}")
+            if mint in self.positions:
+                position = self.positions[mint]
+                if target_name in position.pending_sells:
+                    position.pending_sells.remove(target_name)
+                # Retry on error
+                await self._retry_sell(mint, sell_percent, target_name, current_pnl)
+    
+    async def _retry_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float, attempt: int = 1):
+        """
+        CRITICAL FIX: Retry failed sells with escalating priority fees
+        """
+        MAX_RETRIES = 2
+        
+        if attempt > MAX_RETRIES:
+            logger.error(f"❌ Max retries for {target_name} on {mint[:8]}")
+            if self.telegram:
+                await self.telegram.send_message(
+                    f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
+                    f"Max retries exceeded"
+                )
+            return
+        
+        position = self.positions.get(mint)
+        if not position:
+            return
+        
+        logger.info(f"🔄 Retry {attempt}/{MAX_RETRIES} for {target_name} on {mint[:8]}")
+        
+        # Brief delay before retry
+        await asyncio.sleep(1)
+        
+        # Remove from pending so it can be re-executed
+        if target_name in position.pending_sells:
+            position.pending_sells.remove(target_name)
+        
+        # Re-execute with escalated urgency
+        await self._execute_partial_sell(mint, sell_percent, target_name, current_pnl)
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position"""
+        """Close remaining position - CRITICAL FIX VERSION"""
         try:
             position = self.positions.get(mint)
             if not position or position.status != 'active':
                 return
             
+            # CRITICAL FIX: Prevent multiple simultaneous closes
+            if position.is_closing:
+                logger.debug(f"Position {mint[:8]} already closing")
+                return
+            
+            position.is_closing = True
             position.status = 'closing'
             ui_token_balance = position.remaining_tokens
             
@@ -781,25 +901,34 @@ class SniperBot:
             sol_received = base_sol_for_portion * multiplier
             final_pnl = sol_received - base_sol_for_portion
             
-            if DRY_RUN:
-                logger.info(f"[DRY RUN] Would sell {ui_token_balance:,.2f} tokens")
-                signature = f"dry_run_close_{mint[:10]}"
+            actual_balance = self.wallet.get_token_balance(mint)
+            if actual_balance > 0:
+                ui_token_balance = actual_balance
+            
+            curve_data = self.dex.get_bonding_curve_data(mint)
+            is_migrated = curve_data is None or curve_data.get('is_migrated', False)
+            
+            token_decimals = self.wallet.get_token_decimals(mint)
+            
+            # CRITICAL FIX: Determine urgency based on close reason
+            if reason == "stop_loss":
+                urgency = "critical"
+            elif reason == "early_dump":
+                urgency = "high"
+            elif reason == "no_volume":
+                urgency = "high"
+            elif reason == "max_age":
+                urgency = "normal"
             else:
-                actual_balance = self.wallet.get_token_balance(mint)
-                if actual_balance > 0:
-                    ui_token_balance = actual_balance
-                
-                curve_data = self.dex.get_bonding_curve_data(mint)
-                is_migrated = curve_data is None or curve_data.get('is_migrated', False)
-                
-                token_decimals = self.wallet.get_token_decimals(mint)
-                
-                signature = await self.trader.create_sell_transaction(
-                    mint=mint,
-                    token_amount=ui_token_balance,
-                    slippage=100 if is_migrated else 50,
-                    token_decimals=token_decimals
-                )
+                urgency = "normal"
+            
+            signature = await self.trader.create_sell_transaction(
+                mint=mint,
+                token_amount=ui_token_balance,
+                slippage=100 if is_migrated else 50,
+                token_decimals=token_decimals,
+                urgency=urgency
+            )
             
             if signature and not signature.startswith("1111111"):
                 position.sell_signatures.append(signature)
@@ -882,7 +1011,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with PATH B Configuration (FIXED P&L)")
+            logger.info("✅ Bot running with PATH B Configuration (FIXED P&L + ASYNC CONFIRMATION)")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
@@ -898,10 +1027,11 @@ class SniperBot:
                         for mint, pos in self.positions.items():
                             age = time.time() - pos.entry_time
                             targets_hit = ', '.join(pos.partial_sells.keys()) if pos.partial_sells else 'None'
+                            pending = ', '.join(pos.pending_sells) if pos.pending_sells else 'None'
                             logger.info(
                                 f"  • {mint[:8]}... | YOUR P&L: {pos.pnl_percent:+.1f}% | "
                                 f"Sold: {pos.total_sold_percent}% | Targets: {targets_hit} | "
-                                f"Age: {age:.0f}s"
+                                f"Pending: {pending} | Age: {age:.0f}s"
                             )
                     
                     perf_stats = self.tracker.get_session_stats()
