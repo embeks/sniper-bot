@@ -22,60 +22,26 @@ class PumpPortalTrader:
     
     async def get_priority_fee(self, urgency: str = "normal") -> float:
         """
-        CRITICAL FIX: Get dynamic priority fee based on network conditions
+        CRITICAL FIX: Get priority fee based on urgency
         
         urgency levels:
         - "low": 0.0001 SOL (5x target, price still climbing)
         - "normal": 0.0005 SOL (2x/3x targets, regular buys)
         - "high": 0.001 SOL (stop-loss, early dump, no volume)
         - "critical": 0.002 SOL (retries, must execute immediately)
+        
+        Note: solana-py doesn't support get_recent_prioritization_fees
         """
-        try:
-            # Try to get recent prioritization fees from network
-            recent_fees = self.client.get_recent_prioritization_fees(limit=20)
-            
-            if recent_fees and recent_fees.value:
-                fees_lamports = [fee.prioritization_fee for fee in recent_fees.value]
-                avg_fee_lamports = sum(fees_lamports) / len(fees_lamports)
-                avg_fee_sol = avg_fee_lamports / 1e9
-                
-                # Scale based on urgency
-                urgency_multipliers = {
-                    "low": 1.0,
-                    "normal": 2.0,
-                    "high": 3.0,
-                    "critical": 5.0
-                }
-                
-                multiplier = urgency_multipliers.get(urgency, 2.0)
-                calculated_fee = max(0.0001, avg_fee_sol * multiplier)
-                
-                # Cap at reasonable max to prevent excessive fees
-                final_fee = min(calculated_fee, 0.005)
-                
-                logger.debug(f"Dynamic fee ({urgency}): {final_fee:.6f} SOL (network avg: {avg_fee_sol:.6f})")
-                return final_fee
-            else:
-                # Fallback to static urgency-based fees if can't get network data
-                fallback_fees = {
-                    "low": 0.0001,
-                    "normal": 0.0005,
-                    "high": 0.001,
-                    "critical": 0.002
-                }
-                fee = fallback_fees.get(urgency, 0.0005)
-                logger.debug(f"Using fallback fee ({urgency}): {fee:.6f} SOL")
-                return fee
-                
-        except Exception as e:
-            logger.warning(f"Failed to get dynamic fee: {e}, using fallback")
-            fallback_fees = {
-                "low": 0.0001,
-                "normal": 0.0005,
-                "high": 0.001,
-                "critical": 0.002
-            }
-            return fallback_fees.get(urgency, 0.0005)
+        urgency_fees = {
+            "low": 0.0001,
+            "normal": 0.0005,
+            "high": 0.001,
+            "critical": 0.002
+        }
+        
+        fee = urgency_fees.get(urgency, 0.0005)
+        logger.debug(f"Priority fee ({urgency}): {fee:.6f} SOL")
+        return fee
     
     async def create_buy_transaction(
         self, 
