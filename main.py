@@ -2,6 +2,7 @@
 Main Orchestrator - Path B: MC-Based Entry & FIXED P&L Tracking
 WITH CRITICAL FIXES: Async confirmation, race protection, stop-loss priority, dynamic fees
 HOTFIX: Removed broken API call, added retry limit to prevent infinite loops
+SURGICAL FIX: Prevent duplicate sell triggers by setting pending_sells synchronously
 """
 
 import asyncio
@@ -485,7 +486,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with CORRECTED P&L tracking"""
+        """Monitor position with CORRECTED P&L tracking and FIXED duplicate sell prevention"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -614,26 +615,37 @@ class SniperBot:
                                 await self._close_position_full(mint, reason="stop_loss")
                                 break
                             
-                            # Only check profit targets if not closing
+                            # SURGICAL FIX: Improved profit target checking with synchronous pending_sells
                             if not position.is_closing:
                                 for target in position.profit_targets:
                                     target_name = target['name']
                                     target_pnl = target['target']
                                     sell_percent = target['sell_percent']
                                     
-                                    # CRITICAL FIX: Check both partial_sells AND pending_sells
                                     if (position.pnl_percent >= target_pnl and 
-                                        target_name not in position.partial_sells and 
-                                        target_name not in position.pending_sells):
+                                        target_name not in position.partial_sells):
+                                        
+                                        # CRITICAL: Check pending AGAIN right before execution
+                                        if target_name in position.pending_sells:
+                                            logger.debug(f"{target_name} already pending for {mint[:8]}, skipping")
+                                            continue
                                         
                                         logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        success = await self._execute_partial_sell(
-                                            mint, sell_percent, target_name, position.pnl_percent
-                                        )
+                                        # CRITICAL: Add to pending BEFORE any async call
+                                        position.pending_sells.add(target_name)
                                         
-                                        # CRITICAL FIX: Only one sell per monitoring cycle
-                                        if success:
+                                        try:
+                                            success = await self._execute_partial_sell(
+                                                mint, sell_percent, target_name, position.pnl_percent
+                                            )
+                                            if not success:
+                                                # Only remove if execution failed
+                                                position.pending_sells.discard(target_name)
+                                            break  # One sell per cycle
+                                        except Exception as e:
+                                            position.pending_sells.discard(target_name)
+                                            logger.error(f"Sell execution error: {e}")
                                             break
                         else:
                             consecutive_data_failures += 1
@@ -667,21 +679,17 @@ class SniperBot:
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
         """
-        Execute a partial sell - CRITICAL FIX VERSION
+        Execute a partial sell - FIXED VERSION without duplicate pending_sells.add()
         Returns immediately after submission, confirmation happens in background
+        Note: pending_sells.add() is now handled in the monitoring loop before calling this
         """
         try:
             position = self.positions.get(mint)
             if not position:
                 return False
             
-            # CRITICAL FIX: Check if already pending
-            if target_name in position.pending_sells:
-                logger.debug(f"{target_name} already pending for {mint[:8]}")
-                return False
-            
-            # Mark as pending immediately to prevent race conditions
-            position.pending_sells.add(target_name)
+            # NO CHECK for pending_sells here - already handled in monitor
+            # NO pending_sells.add() here - already done in monitoring loop
             
             # Use position state as source of truth
             ui_tokens_to_sell = position.remaining_tokens * (sell_percent / 100)
@@ -732,15 +740,12 @@ class SniperBot:
                 return True
             else:
                 logger.error(f"Failed to submit {target_name} sell")
-                position.pending_sells.remove(target_name)
+                # Note: pending_sells removal is handled in monitoring loop
                 return False
                 
         except Exception as e:
             logger.error(f"Partial sell error: {e}")
-            if mint in self.positions:
-                position = self.positions[mint]
-                if target_name in position.pending_sells:
-                    position.pending_sells.remove(target_name)
+            # Note: pending_sells removal is handled in monitoring loop
             return False
     
     async def _confirm_sell_background(
@@ -868,6 +873,7 @@ class SniperBot:
     async def _retry_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float, attempt: int = 1):
         """
         CRITICAL FIX: Retry failed sells with escalating priority fees
+        Note: No need to handle pending_sells here - it's managed by the monitoring loop
         """
         MAX_RETRIES = 2
         
@@ -889,12 +895,10 @@ class SniperBot:
         # Brief delay before retry
         await asyncio.sleep(1)
         
-        # Remove from pending so it can be re-executed
+        # The monitoring loop will re-trigger the sell on next cycle
+        # We just need to remove from pending to allow re-execution
         if target_name in position.pending_sells:
             position.pending_sells.remove(target_name)
-        
-        # Re-execute with escalated urgency
-        await self._execute_partial_sell(mint, sell_percent, target_name, current_pnl)
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
         """Close remaining position - CRITICAL FIX VERSION"""
