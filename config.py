@@ -69,7 +69,7 @@ PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBE
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
 # Bonding curve parameters - PATH B: Higher minimums
-MIN_BONDING_CURVE_SOL = 25.0  # CHANGED: Up from 1.5 - wait for Helius indexing
+MIN_BONDING_CURVE_SOL = 40.0  # CHANGED: Up from 1.5 - wait for Helius indexing
 MAX_BONDING_CURVE_SOL = 60.0  # CHANGED: Down from 85 - exit before peak
 MIGRATION_THRESHOLD_SOL = 85
 
