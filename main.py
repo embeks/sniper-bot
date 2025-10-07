@@ -1,9 +1,6 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED P&L Tracking
-WITH CRITICAL FIXES: Async confirmation, race protection, stop-loss priority, dynamic fees
-HOTFIX: Removed broken API call, added retry limit to prevent infinite loops
-SURGICAL FIX: Prevent duplicate sell triggers by setting pending_sells synchronously
-BALANCE FIX: Check actual wallet balance to handle RPC timeouts where tx succeeded
+CRITICAL FIX: Prevent 2x/3x/5x from executing simultaneously by tracking pending token amounts
 """
 
 import asyncio
@@ -58,7 +55,8 @@ class Position:
         
         # Multi-target tracking
         self.partial_sells = {}
-        self.pending_sells = set()  # CRITICAL FIX: Prevent race conditions
+        self.pending_sells = set()  # CRITICAL: Track which targets are pending
+        self.pending_token_amounts = {}  # NEW: Track token amounts for each pending sell
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
         
@@ -170,15 +168,15 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - PATH B (FIXED P&L + ASYNC CONFIRMATION):")
+        logger.info(f"📊 STARTUP STATUS - PATH B (FIXED RACE CONDITION):")
         logger.info(f"  • Strategy: MC + Holder Verification")
-        logger.info(f"  • Entry: $6k-$60k MC, 5+ holders (concentration check disabled)")
+        logger.info(f"  • Entry: $6k-$60k MC, 8+ holders")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Targets: 2x/3x/5x")
+        logger.info(f"  • Targets: 2x/3x/5x (RACE CONDITION FIXED)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
@@ -237,12 +235,12 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - PATH B (FIXED P&L + ASYNC CONFIRMATION)\n"
+                    "🚀 Bot started - PATH B (RACE CONDITION FIXED)\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"📈 Targets: 2x/3x/5x\n"
+                    f"📈 Targets: 2x/3x/5x (NO CONFLICTS)\n"
                     f"💵 Entry: $6k-$60k MC\n"
-                    f"👥 Min holders: 5\n"
+                    f"👥 Min holders: 8\n"
                     f"🛑 Circuit breaker: 3 losses\n"
                     "Type /help for commands"
                 )
@@ -487,7 +485,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with CORRECTED P&L tracking and FIXED duplicate sell prevention"""
+        """Monitor position with CORRECTED P&L tracking and FIXED race condition prevention"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -609,14 +607,14 @@ class SniperBot:
                                 await self.telegram.send_message(update_msg)
                                 last_notification_pnl = price_change
                             
-                            # CRITICAL FIX: Check stop-loss FIRST and skip if already closing
+                            # CRITICAL: Check stop-loss FIRST and skip if already closing
                             if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                                 logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                                 position.is_closing = True
                                 await self._close_position_full(mint, reason="stop_loss")
                                 break
                             
-                            # SURGICAL FIX: Improved profit target checking with synchronous pending_sells
+                            # CRITICAL FIX: Improved profit target checking with race condition prevention
                             if not position.is_closing:
                                 for target in position.profit_targets:
                                     target_name = target['name']
@@ -626,26 +624,49 @@ class SniperBot:
                                     if (position.pnl_percent >= target_pnl and 
                                         target_name not in position.partial_sells):
                                         
-                                        # CRITICAL: Check pending AGAIN right before execution
+                                        # CRITICAL: Check if already pending
                                         if target_name in position.pending_sells:
                                             logger.debug(f"{target_name} already pending for {mint[:8]}, skipping")
                                             continue
                                         
+                                        # NEW FIX: Calculate pending token amounts
+                                        pending_token_amount = 0
+                                        for pending_target_name in position.pending_sells:
+                                            if pending_target_name in position.pending_token_amounts:
+                                                pending_token_amount += position.pending_token_amounts[pending_target_name]
+                                        
+                                        # Calculate available tokens after pending sells
+                                        available_tokens = position.remaining_tokens - pending_token_amount
+                                        tokens_needed = position.remaining_tokens * (sell_percent / 100)
+                                        
+                                        # Check if we have enough tokens
+                                        if available_tokens < tokens_needed * 0.95:  # 5% tolerance
+                                            logger.warning(
+                                                f"⚠️ Not enough tokens for {target_name} on {mint[:8]}: "
+                                                f"Available: {available_tokens:,.0f}, Need: {tokens_needed:,.0f}"
+                                            )
+                                            continue
+                                        
                                         logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        # CRITICAL: Add to pending BEFORE any async call
+                                        # CRITICAL: Add to pending BEFORE async call AND track token amount
                                         position.pending_sells.add(target_name)
+                                        position.pending_token_amounts[target_name] = tokens_needed
                                         
                                         try:
                                             success = await self._execute_partial_sell(
                                                 mint, sell_percent, target_name, position.pnl_percent
                                             )
                                             if not success:
-                                                # Only remove if execution failed
+                                                # Remove from pending if execution failed
                                                 position.pending_sells.discard(target_name)
+                                                if target_name in position.pending_token_amounts:
+                                                    del position.pending_token_amounts[target_name]
                                             break  # One sell per cycle
                                         except Exception as e:
                                             position.pending_sells.discard(target_name)
+                                            if target_name in position.pending_token_amounts:
+                                                del position.pending_token_amounts[target_name]
                                             logger.error(f"Sell execution error: {e}")
                                             break
                         else:
@@ -680,17 +701,13 @@ class SniperBot:
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
         """
-        Execute a partial sell - FIXED VERSION without duplicate pending_sells.add()
+        Execute a partial sell - FIXED VERSION with race condition prevention
         Returns immediately after submission, confirmation happens in background
-        Note: pending_sells.add() is now handled in the monitoring loop before calling this
         """
         try:
             position = self.positions.get(mint)
             if not position:
                 return False
-            
-            # NO CHECK for pending_sells here - already handled in monitor
-            # NO pending_sells.add() here - already done in monitoring loop
             
             # Use position state as source of truth
             ui_tokens_to_sell = position.remaining_tokens * (sell_percent / 100)
@@ -728,7 +745,6 @@ class SniperBot:
             )
             
             if signature and not signature.startswith("1111111"):
-                # CRITICAL FIX: Don't update position state yet!
                 # Spawn background task for confirmation
                 asyncio.create_task(
                     self._confirm_sell_background(
@@ -741,12 +757,10 @@ class SniperBot:
                 return True
             else:
                 logger.error(f"Failed to submit {target_name} sell")
-                # Note: pending_sells removal is handled in monitoring loop
                 return False
                 
         except Exception as e:
             logger.error(f"Partial sell error: {e}")
-            # Note: pending_sells removal is handled in monitoring loop
             return False
     
     async def _confirm_sell_background(
@@ -836,8 +850,11 @@ class SniperBot:
                 }
                 position.total_sold_percent += sell_percent
                 
+                # CRITICAL FIX: Remove from pending AND clear pending token amount
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
+                if target_name in position.pending_token_amounts:
+                    del position.pending_token_amounts[target_name]
                 
                 self.consecutive_losses = 0
                 if target_name in position.retry_counts:
@@ -874,14 +891,16 @@ class SniperBot:
                 # Transaction failed
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
+                # CRITICAL FIX: Remove from pending AND clear pending token amount
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
+                if target_name in position.pending_token_amounts:
+                    del position.pending_token_amounts[target_name]
                 
                 retry_count = position.retry_counts.get(target_name, 0)
                 if retry_count < 2:
                     position.retry_counts[target_name] = retry_count + 1
                     logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
-                    await self._retry_sell(mint, sell_percent, target_name, current_pnl, attempt=retry_count + 1)
                 else:
                     logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
                     position.partial_sells[target_name] = {
@@ -904,6 +923,8 @@ class SniperBot:
                 position = self.positions[mint]
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
+                if target_name in position.pending_token_amounts:
+                    del position.pending_token_amounts[target_name]
                 
                 position.partial_sells[target_name] = {
                     'pnl': current_pnl,
@@ -912,36 +933,6 @@ class SniperBot:
                     'status': 'error',
                     'error': str(e)
                 }
-    
-    async def _retry_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float, attempt: int = 1):
-        """
-        CRITICAL FIX: Retry failed sells with escalating priority fees
-        Note: No need to handle pending_sells here - it's managed by the monitoring loop
-        """
-        MAX_RETRIES = 2
-        
-        if attempt > MAX_RETRIES:
-            logger.error(f"❌ Max retries ({MAX_RETRIES}) exceeded for {target_name} on {mint[:8]}")
-            if self.telegram:
-                await self.telegram.send_message(
-                    f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
-                    f"Max retries exceeded"
-                )
-            return
-        
-        position = self.positions.get(mint)
-        if not position:
-            return
-        
-        logger.info(f"🔄 Retry {attempt}/{MAX_RETRIES} for {target_name} on {mint[:8]}")
-        
-        # Brief delay before retry
-        await asyncio.sleep(1)
-        
-        # The monitoring loop will re-trigger the sell on next cycle
-        # We just need to remove from pending to allow re-execution
-        if target_name in position.pending_sells:
-            position.pending_sells.remove(target_name)
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
         """Close remaining position - CRITICAL FIX VERSION"""
@@ -1091,7 +1082,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with PATH B Configuration (FIXED P&L + ASYNC CONFIRMATION)")
+            logger.info("✅ Bot running with PATH B Configuration (RACE CONDITION FIXED)")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
