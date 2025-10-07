@@ -45,7 +45,7 @@ class PumpPortalMonitor:
         self.filters = {
             'min_creator_sol': 0.1,
             'max_creator_sol': 5.0,
-            'min_curve_sol': 25.0,
+            'min_curve_sol': 40.0,
             'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
