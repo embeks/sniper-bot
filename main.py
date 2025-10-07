@@ -1,6 +1,6 @@
 """
-Main Orchestrator - Path B: MC-Based Entry & FIXED P&L Tracking
-CRITICAL FIX: Prevent 2x/3x/5x from executing simultaneously by tracking pending token amounts
+Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
+CRITICAL FIX: Balance verification now uses expected_remaining instead of initial balance
 """
 
 import asyncio
@@ -55,8 +55,8 @@ class Position:
         
         # Multi-target tracking
         self.partial_sells = {}
-        self.pending_sells = set()  # CRITICAL: Track which targets are pending
-        self.pending_token_amounts = {}  # NEW: Track token amounts for each pending sell
+        self.pending_sells = set()
+        self.pending_token_amounts = {}
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
         
@@ -120,7 +120,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: FIXED P&L VERSION")
+        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: FIXED BALANCE VERIFICATION")
         logger.info("=" * 60)
         
         # Core components
@@ -140,7 +140,7 @@ class SniperBot:
         
         # Positions and stats
         self.positions: Dict[str, Position] = {}
-        self.pending_buys = 0  # CRITICAL FIX: Track in-flight buy transactions
+        self.pending_buys = 0
         self.total_trades = 0
         self.profitable_trades = 0
         self.total_pnl = 0
@@ -168,7 +168,7 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - PATH B (FIXED RACE CONDITION):")
+        logger.info(f"📊 STARTUP STATUS - PATH B (FIXED BALANCE VERIFICATION):")
         logger.info(f"  • Strategy: MC + Holder Verification")
         logger.info(f"  • Entry: $6k-$60k MC, 8+ holders")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
@@ -176,7 +176,7 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Targets: 2x/3x/5x (RACE CONDITION FIXED)")
+        logger.info(f"  • Targets: 2x/3x/5x (BALANCE CHECK FIXED)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
@@ -235,7 +235,7 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - PATH B (RACE CONDITION FIXED)\n"
+                    "🚀 Bot started - PATH B (BALANCE CHECK FIXED)\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"📈 Targets: 2x/3x/5x (NO CONFLICTS)\n"
@@ -345,7 +345,7 @@ class SniperBot:
             if mint in BLACKLISTED_TOKENS:
                 return
             
-            # CRITICAL FIX: Check total positions (active + pending buys)
+            # Check total positions (active + pending buys)
             total_positions = len(self.positions) + self.pending_buys
             
             if total_positions >= MAX_POSITIONS:
@@ -384,7 +384,7 @@ class SniperBot:
             if len(name) < 3 or 'test' in name.lower():
                 return
             
-            # CRITICAL FIX: Increment pending buys immediately after all checks pass
+            # Increment pending buys immediately after all checks pass
             self.pending_buys += 1
             logger.debug(f"Pending buys: {self.pending_buys}, Active: {len(self.positions)}")
             
@@ -457,7 +457,7 @@ class SniperBot:
                 self.positions[mint] = position
                 self.total_trades += 1
                 
-                # CRITICAL FIX: Decrement pending buys since position is now active
+                # Decrement pending buys since position is now active
                 self.pending_buys -= 1
                 
                 logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
@@ -474,12 +474,12 @@ class SniperBot:
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
             else:
-                # CRITICAL FIX: Buy failed - decrement pending buys
+                # Buy failed - decrement pending buys
                 self.pending_buys -= 1
                 self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, "Transaction failed")
                 
         except Exception as e:
-            # CRITICAL FIX: Error occurred - decrement pending buys
+            # Error occurred - decrement pending buys
             self.pending_buys = max(0, self.pending_buys - 1)
             logger.error(f"Failed to process token: {e}")
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
@@ -544,7 +544,7 @@ class SniperBot:
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # FIXED: Calculate actual token price in human-readable SOL
+                        # Calculate actual token price in human-readable SOL
                         v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
                         v_token_reserves = curve_data.get('virtual_token_reserves', 0)
                         
@@ -607,14 +607,14 @@ class SniperBot:
                                 await self.telegram.send_message(update_msg)
                                 last_notification_pnl = price_change
                             
-                            # CRITICAL: Check stop-loss FIRST and skip if already closing
+                            # Check stop-loss FIRST and skip if already closing
                             if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                                 logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                                 position.is_closing = True
                                 await self._close_position_full(mint, reason="stop_loss")
                                 break
                             
-                            # CRITICAL FIX: Improved profit target checking with race condition prevention
+                            # FIXED: Improved profit target checking with race condition prevention
                             if not position.is_closing:
                                 for target in position.profit_targets:
                                     target_name = target['name']
@@ -624,12 +624,12 @@ class SniperBot:
                                     if (position.pnl_percent >= target_pnl and 
                                         target_name not in position.partial_sells):
                                         
-                                        # CRITICAL: Check if already pending
+                                        # Check if already pending
                                         if target_name in position.pending_sells:
                                             logger.debug(f"{target_name} already pending for {mint[:8]}, skipping")
                                             continue
                                         
-                                        # NEW FIX: Calculate pending token amounts
+                                        # Calculate pending token amounts
                                         pending_token_amount = 0
                                         for pending_target_name in position.pending_sells:
                                             if pending_target_name in position.pending_token_amounts:
@@ -649,7 +649,7 @@ class SniperBot:
                                         
                                         logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        # CRITICAL: Add to pending BEFORE async call AND track token amount
+                                        # Add to pending BEFORE async call AND track token amount
                                         position.pending_sells.add(target_name)
                                         position.pending_token_amounts[target_name] = tokens_needed
                                         
@@ -769,9 +769,8 @@ class SniperBot:
         profit_sol: float, current_pnl: float
     ):
         """
-        Confirm sell in background without blocking monitoring
-        Only update position state after confirmation
-        Check actual wallet balance to handle RPC timeouts
+        CRITICAL FIX: Balance verification now uses expected_remaining instead of initial balance
+        This fixes the race condition where multiple sells read the same initial balance
         """
         try:
             position = self.positions.get(mint)
@@ -782,8 +781,8 @@ class SniperBot:
             logger.info(f"⏳ Confirming {target_name} sell for {mint[:8]}...")
             logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
             
-            # Store initial balance for comparison
-            initial_token_balance = self.wallet.get_token_balance(mint)
+            # CRITICAL FIX: Store expected state BEFORE confirmation
+            expected_remaining = position.remaining_tokens - tokens_sold
             
             # Track when transaction first appears in RPC
             first_seen = None
@@ -821,20 +820,20 @@ class SniperBot:
                 else:
                     logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
                 
-                # Check actual balance to determine if tx succeeded
+                # CRITICAL FIX: Check wallet balance against EXPECTED state
                 await asyncio.sleep(2)
-                current_token_balance = self.wallet.get_token_balance(mint)
-                logger.info(f"Balance: {initial_token_balance:,.0f} → {current_token_balance:,.0f}")
+                actual_balance = self.wallet.get_token_balance(mint)
+                logger.info(f"Expected: {expected_remaining:,.0f}, Actual: {actual_balance:,.0f}")
                 
-                # Check if balance decreased as expected (5% tolerance)
-                expected_reduction = tokens_sold * 0.95
-                actual_reduction = initial_token_balance - current_token_balance
+                # Verify balance matches expected (10% tolerance for rounding)
+                tolerance = tokens_sold * 0.1
+                balance_diff = abs(actual_balance - expected_remaining)
                 
-                if actual_reduction >= expected_reduction:
-                    logger.info(f"✅ {target_name} succeeded (balance verified)")
+                if balance_diff <= tolerance:
+                    logger.info(f"✅ {target_name} succeeded (balance matches expected)")
                     confirmed = True
                 else:
-                    logger.warning(f"❌ {target_name} failed - balance unchanged")
+                    logger.warning(f"❌ {target_name} failed - balance mismatch (diff: {balance_diff:,.0f})")
             
             if confirmed:
                 # Update position state
@@ -850,7 +849,7 @@ class SniperBot:
                 }
                 position.total_sold_percent += sell_percent
                 
-                # CRITICAL FIX: Remove from pending AND clear pending token amount
+                # Remove from pending AND clear pending token amount
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
                 if target_name in position.pending_token_amounts:
@@ -891,7 +890,7 @@ class SniperBot:
                 # Transaction failed
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
-                # CRITICAL FIX: Remove from pending AND clear pending token amount
+                # Remove from pending AND clear pending token amount
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
                 if target_name in position.pending_token_amounts:
@@ -935,13 +934,13 @@ class SniperBot:
                 }
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position - CRITICAL FIX VERSION"""
+        """Close remaining position"""
         try:
             position = self.positions.get(mint)
             if not position or position.status != 'active':
                 return
             
-            # CRITICAL FIX: Prevent multiple simultaneous closes
+            # Prevent multiple simultaneous closes
             if position.is_closing:
                 logger.debug(f"Position {mint[:8]} already closing")
                 return
@@ -981,7 +980,7 @@ class SniperBot:
             
             token_decimals = self.wallet.get_token_decimals(mint)
             
-            # CRITICAL FIX: Determine urgency based on close reason
+            # Determine urgency based on close reason
             if reason == "stop_loss":
                 urgency = "critical"
             elif reason == "early_dump":
@@ -1082,7 +1081,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with PATH B Configuration (RACE CONDITION FIXED)")
+            logger.info("✅ Bot running with PATH B Configuration (BALANCE VERIFICATION FIXED)")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
