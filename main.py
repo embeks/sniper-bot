@@ -3,6 +3,7 @@ Main Orchestrator - Path B: MC-Based Entry & FIXED P&L Tracking
 WITH CRITICAL FIXES: Async confirmation, race protection, stop-loss priority, dynamic fees
 HOTFIX: Removed broken API call, added retry limit to prevent infinite loops
 SURGICAL FIX: Prevent duplicate sell triggers by setting pending_sells synchronously
+BALANCE FIX: Check actual wallet balance to handle RPC timeouts where tx succeeded
 """
 
 import asyncio
@@ -754,8 +755,9 @@ class SniperBot:
         profit_sol: float, current_pnl: float
     ):
         """
-        CRITICAL FIX: Confirm sell in background without blocking monitoring
+        Confirm sell in background without blocking monitoring
         Only update position state after confirmation
+        Check actual wallet balance to handle RPC timeouts
         """
         try:
             position = self.positions.get(mint)
@@ -764,8 +766,13 @@ class SniperBot:
                 return
             
             logger.info(f"⏳ Confirming {target_name} sell for {mint[:8]}...")
+            logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
             
-            # Wait for confirmation with 15 second timeout
+            # Store initial balance for comparison
+            initial_token_balance = self.wallet.get_token_balance(mint)
+            
+            # Track when transaction first appears in RPC
+            first_seen = None
             start = time.time()
             confirmed = False
             tx_error = None
@@ -774,10 +781,12 @@ class SniperBot:
                 try:
                     status = self.trader.client.get_signature_statuses([signature])
                     if status and status.value and status.value[0]:
-                        confirmation_status = status.value[0].confirmation_status
+                        # Transaction found in RPC
+                        if first_seen is None:
+                            first_seen = time.time() - start
                         
+                        confirmation_status = status.value[0].confirmation_status
                         if confirmation_status in ["confirmed", "finalized"]:
-                            # Check for errors
                             if status.value[0].err:
                                 tx_error = status.value[0].err
                                 logger.error(f"❌ {target_name} sell FAILED: {tx_error}")
@@ -785,32 +794,52 @@ class SniperBot:
                             else:
                                 confirmed = True
                                 break
-                                
                 except Exception as e:
                     logger.debug(f"Status check error: {e}")
                 
                 await asyncio.sleep(0.5)
             
+            # Timeout diagnostic
+            if not confirmed:
+                elapsed = time.time() - start
+                if first_seen is None:
+                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s - likely RPC lag OR low priority fee")
+                else:
+                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
+                
+                # Check actual balance to determine if tx succeeded
+                await asyncio.sleep(2)
+                current_token_balance = self.wallet.get_token_balance(mint)
+                logger.info(f"Balance: {initial_token_balance:,.0f} → {current_token_balance:,.0f}")
+                
+                # Check if balance decreased as expected (5% tolerance)
+                expected_reduction = tokens_sold * 0.95
+                actual_reduction = initial_token_balance - current_token_balance
+                
+                if actual_reduction >= expected_reduction:
+                    logger.info(f"✅ {target_name} succeeded (balance verified)")
+                    confirmed = True
+                else:
+                    logger.warning(f"❌ {target_name} failed - balance unchanged")
+            
             if confirmed:
-                # CRITICAL: NOW update position state
+                # Update position state
                 position.sell_signatures.append(signature)
                 position.remaining_tokens -= tokens_sold
                 position.realized_pnl_sol += profit_sol
                 self.total_realized_sol += profit_sol
                 
-                # Mark target as hit
                 position.partial_sells[target_name] = {
                     'pnl': current_pnl,
                     'time': time.time(),
                     'percent_sold': sell_percent
                 }
                 position.total_sold_percent += sell_percent
-                position.pending_sells.remove(target_name)
                 
-                # Reset consecutive losses on profit
+                if target_name in position.pending_sells:
+                    position.pending_sells.remove(target_name)
+                
                 self.consecutive_losses = 0
-                
-                # HOTFIX: Clear retry count for this target
                 if target_name in position.retry_counts:
                     del position.retry_counts[target_name]
                 
@@ -838,29 +867,35 @@ class SniperBot:
                     )
                     await self.telegram.send_message(msg)
                 
-                # Check if position fully closed
                 if position.total_sold_percent >= 100:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
-                    
             else:
-                # Transaction failed or timeout
-                logger.warning(f"⚠️ {target_name} sell confirmation timeout/failure for {mint[:8]}")
-                position.pending_sells.remove(target_name)
+                # Transaction failed
+                logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
-                # CRITICAL HOTFIX: Check retry count to prevent infinite loops
+                if target_name in position.pending_sells:
+                    position.pending_sells.remove(target_name)
+                
                 retry_count = position.retry_counts.get(target_name, 0)
-                
-                if retry_count < 2:  # Max 2 retries
+                if retry_count < 2:
                     position.retry_counts[target_name] = retry_count + 1
                     logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
                     await self._retry_sell(mint, sell_percent, target_name, current_pnl, attempt=retry_count + 1)
                 else:
                     logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
+                    position.partial_sells[target_name] = {
+                        'pnl': current_pnl,
+                        'time': time.time(),
+                        'percent_sold': 0,
+                        'status': 'failed',
+                        'attempts': retry_count + 1
+                    }
+                    
                     if self.telegram:
                         await self.telegram.send_message(
                             f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
-                            f"Max retries exceeded - may need manual intervention"
+                            f"Max retries exceeded - manual intervention needed"
                         )
                 
         except Exception as e:
@@ -869,6 +904,14 @@ class SniperBot:
                 position = self.positions[mint]
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
+                
+                position.partial_sells[target_name] = {
+                    'pnl': current_pnl,
+                    'time': time.time(),
+                    'percent_sold': 0,
+                    'status': 'error',
+                    'error': str(e)
+                }
     
     async def _retry_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float, attempt: int = 1):
         """
