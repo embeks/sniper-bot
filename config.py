@@ -50,11 +50,11 @@ tp2, sp2 = os.getenv('TAKE_PROFIT_2'), os.getenv('SELL_PERCENT_2')
 tp3, sp3 = os.getenv('TAKE_PROFIT_3'), os.getenv('SELL_PERCENT_3')
 
 if tp1 and sp1:
-    PARTIAL_TAKE_PROFIT[float(tp1) * 100] = float(sp1) / 100.0
+    PARTIAL_TAKE_PROFIT[float(tp1)] = float(sp1) / 100.0  # REMOVED * 100
 if tp2 and sp2:
-    PARTIAL_TAKE_PROFIT[float(tp2) * 100] = float(sp2) / 100.0
+    PARTIAL_TAKE_PROFIT[float(tp2)] = float(sp2) / 100.0  # REMOVED * 100
 if tp3 and sp3:
-    PARTIAL_TAKE_PROFIT[float(tp3) * 100] = float(sp3) / 100.0
+    PARTIAL_TAKE_PROFIT[float(tp3)] = float(sp3) / 100.0  # REMOVED * 100
 
 # Timing - PATH B
 SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '15'))
