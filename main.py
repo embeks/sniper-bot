@@ -745,11 +745,15 @@ class SniperBot:
             )
             
             if signature and not signature.startswith("1111111"):
+                # CRITICAL FIX: Calculate expected balance NOW, before position.remaining_tokens changes
+                expected_remaining_after_this_sell = position.remaining_tokens - ui_tokens_to_sell
+                
                 # Spawn background task for confirmation
                 asyncio.create_task(
                     self._confirm_sell_background(
                         signature, mint, target_name, sell_percent,
-                        ui_tokens_to_sell, sol_received, profit_sol, current_pnl
+                        ui_tokens_to_sell, sol_received, profit_sol, current_pnl,
+                        expected_remaining_after_this_sell
                     )
                 )
                 
@@ -766,11 +770,11 @@ class SniperBot:
     async def _confirm_sell_background(
         self, signature: str, mint: str, target_name: str,
         sell_percent: float, tokens_sold: float, sol_received: float,
-        profit_sol: float, current_pnl: float
+        profit_sol: float, current_pnl: float, expected_remaining: float
     ):
         """
-        CRITICAL FIX: Balance verification now uses expected_remaining instead of initial balance
-        This fixes the race condition where multiple sells read the same initial balance
+        CRITICAL FIX: expected_remaining is now passed as parameter (captured at submission time)
+        This prevents race conditions where multiple sells execute before confirmations update position state
         """
         try:
             position = self.positions.get(mint)
@@ -780,9 +784,6 @@ class SniperBot:
             
             logger.info(f"⏳ Confirming {target_name} sell for {mint[:8]}...")
             logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
-            
-            # CRITICAL FIX: Store expected state BEFORE confirmation
-            expected_remaining = position.remaining_tokens - tokens_sold
             
             # Track when transaction first appears in RPC
             first_seen = None
@@ -887,34 +888,86 @@ class SniperBot:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
             else:
-                # Transaction failed
+                # Transaction failed - but check if it actually executed anyway
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
-                # Remove from pending AND clear pending token amount
-                if target_name in position.pending_sells:
-                    position.pending_sells.remove(target_name)
-                if target_name in position.pending_token_amounts:
-                    del position.pending_token_amounts[target_name]
+                # CRITICAL FIX: Check if transaction actually executed before retrying
+                await asyncio.sleep(1)
+                actual_balance = self.wallet.get_token_balance(mint)
+                balance_tolerance = tokens_sold * 0.15  # 15% tolerance for slippage/fees
                 
-                retry_count = position.retry_counts.get(target_name, 0)
-                if retry_count < 2:
-                    position.retry_counts[target_name] = retry_count + 1
-                    logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
-                else:
-                    logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
+                if abs(actual_balance - expected_remaining) <= balance_tolerance:
+                    # Transaction actually worked! Mark as confirmed
+                    logger.info(f"🔍 Transaction actually executed! Balance: {actual_balance:,.0f}, Expected: {expected_remaining:,.0f}")
+                    confirmed = True
+                    
+                    # Update position state
+                    position.sell_signatures.append(signature)
+                    position.remaining_tokens -= tokens_sold
+                    position.realized_pnl_sol += profit_sol
+                    self.total_realized_sol += profit_sol
+                    
                     position.partial_sells[target_name] = {
                         'pnl': current_pnl,
                         'time': time.time(),
-                        'percent_sold': 0,
-                        'status': 'failed',
-                        'attempts': retry_count + 1
+                        'percent_sold': sell_percent
                     }
+                    position.total_sold_percent += sell_percent
                     
-                    if self.telegram:
-                        await self.telegram.send_message(
-                            f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
-                            f"Max retries exceeded - manual intervention needed"
-                        )
+                    if target_name in position.pending_sells:
+                        position.pending_sells.remove(target_name)
+                    if target_name in position.pending_token_amounts:
+                        del position.pending_token_amounts[target_name]
+                    
+                    self.consecutive_losses = 0
+                    if target_name in position.retry_counts:
+                        del position.retry_counts[target_name]
+                    
+                    self.tracker.log_partial_sell(
+                        mint=mint,
+                        target_name=target_name,
+                        percent_sold=sell_percent,
+                        tokens_sold=tokens_sold,
+                        sol_received=sol_received,
+                        pnl_sol=profit_sol
+                    )
+                    
+                    logger.info(f"✅ {target_name} CONFIRMED for {mint[:8]} (late detection)")
+                    logger.info(f"   Received: {sol_received:.4f} SOL")
+                    logger.info(f"   Profit: {profit_sol:+.4f} SOL")
+                    
+                    if position.total_sold_percent >= 100:
+                        logger.info(f"✅ Position fully closed")
+                        position.status = 'completed'
+                else:
+                    # Transaction truly failed - safe to retry
+                    logger.info(f"🔍 Balance unchanged ({actual_balance:,.0f}), transaction truly failed")
+                    
+                    # Remove from pending AND clear pending token amount
+                    if target_name in position.pending_sells:
+                        position.pending_sells.remove(target_name)
+                    if target_name in position.pending_token_amounts:
+                        del position.pending_token_amounts[target_name]
+                    
+                    retry_count = position.retry_counts.get(target_name, 0)
+                    if retry_count < 2:
+                        position.retry_counts[target_name] = retry_count + 1
+                        logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
+                    else:
+                        logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
+                        position.partial_sells[target_name] = {
+                            'pnl': current_pnl,
+                            'time': time.time(),
+                            'percent_sold': 0,
+                            'status': 'failed',
+                            'attempts': retry_count + 1
+                        }
+                        
+                        if self.telegram:
+                            await self.telegram.send_message(
+                                f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
+                                f"Max retries exceeded - manual intervention needed"
+                            )
                 
         except Exception as e:
             logger.error(f"Confirmation error for {mint[:8]}: {e}")
