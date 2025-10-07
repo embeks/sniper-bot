@@ -45,7 +45,7 @@ class PumpPortalMonitor:
         self.filters = {
             'min_creator_sol': 0.1,
             'max_creator_sol': 5.0,
-            'min_curve_sol': 42.0,
+            'min_curve_sol': 35.0,
             'max_curve_sol': 60.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
@@ -54,7 +54,7 @@ class PumpPortalMonitor:
             'max_top10_concentration': 85,  # Not enforced when check_concentration=False
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,
-            'min_market_cap': 10000,
+            'min_market_cap': 8000,
             'max_market_cap': 60000,
             'min_mc_gain_2min': 15,
             'max_token_age_minutes': 8,  # Reject tokens older than 8 minutes
