@@ -54,7 +54,7 @@ class PumpPortalMonitor:
             'max_top10_concentration': 85,  # Not enforced when check_concentration=False
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,
-            'min_market_cap': 6000,
+            'min_market_cap': 10000,
             'max_market_cap': 60000,
             'min_mc_gain_2min': 15,
             'max_token_age_minutes': 8,  # Reject tokens older than 8 minutes
