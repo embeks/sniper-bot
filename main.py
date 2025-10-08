@@ -1,6 +1,6 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
-CRITICAL FIX: Balance verification now uses expected_remaining instead of initial balance
+CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's simpler fix)
 """
 
 import asyncio
@@ -120,7 +120,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: FIXED BALANCE VERIFICATION")
+        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: CHATGPT BALANCE FIX")
         logger.info("=" * 60)
         
         # Core components
@@ -168,7 +168,7 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - PATH B (FIXED BALANCE VERIFICATION):")
+        logger.info(f"📊 STARTUP STATUS - PATH B (CHATGPT BALANCE FIX):")
         logger.info(f"  • Strategy: MC + Holder Verification")
         logger.info(f"  • Entry: $6k-$60k MC, 8+ holders")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
@@ -176,7 +176,7 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Targets: 2x/3x/5x (BALANCE CHECK FIXED)")
+        logger.info(f"  • Targets: 2x/3x/5x (PRE-BALANCE CHECK)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
@@ -235,10 +235,10 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - PATH B (BALANCE CHECK FIXED)\n"
+                    "🚀 Bot started - PATH B (CHATGPT FIX)\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"📈 Targets: 2x/3x/5x (NO CONFLICTS)\n"
+                    f"📈 Targets: 2x/3x/5x (PRE-BALANCE)\n"
                     f"💵 Entry: $6k-$60k MC\n"
                     f"👥 Min holders: 8\n"
                     f"🛑 Circuit breaker: 3 losses\n"
@@ -416,12 +416,12 @@ class SniperBot:
                     if creator_sol > 0:
                         expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / creator_sol)
             
+            # FIXED: Remove urgency parameter - not supported
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
                 sol_amount=BUY_AMOUNT_SOL,
                 bonding_curve_key=bonding_curve_key,
-                slippage=50,
-                urgency="normal"
+                slippage=50
             )
             
             bought_tokens = 0
@@ -701,7 +701,7 @@ class SniperBot:
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
         """
-        Execute a partial sell - FIXED VERSION with race condition prevention
+        Execute a partial sell - CHATGPT'S FIXED VERSION with pre_balance
         Returns immediately after submission, confirmation happens in background
         """
         try:
@@ -725,35 +725,24 @@ class SniperBot:
             
             token_decimals = self.wallet.get_token_decimals(mint)
             
-            # Determine urgency based on target
-            if target_name == "2x":
-                urgency = "normal"
-            elif target_name == "3x":
-                urgency = "normal"
-            elif target_name == "5x":
-                urgency = "low"
-            else:
-                urgency = "high"
+            # CHATGPT FIX: Capture wallet balance BEFORE transaction
+            pre_balance = self.wallet.get_token_balance(mint)
             
-            # Submit transaction
+            # Submit transaction (FIXED: Remove urgency parameter - not supported)
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_tokens_to_sell,
                 slippage=50,
-                token_decimals=token_decimals,
-                urgency=urgency
+                token_decimals=token_decimals
             )
             
             if signature and not signature.startswith("1111111"):
-                # CRITICAL FIX: Calculate expected balance NOW, before position.remaining_tokens changes
-                expected_remaining_after_this_sell = position.remaining_tokens - ui_tokens_to_sell
-                
                 # Spawn background task for confirmation
                 asyncio.create_task(
                     self._confirm_sell_background(
                         signature, mint, target_name, sell_percent,
                         ui_tokens_to_sell, sol_received, profit_sol, current_pnl,
-                        expected_remaining_after_this_sell
+                        pre_balance
                     )
                 )
                 
@@ -770,11 +759,11 @@ class SniperBot:
     async def _confirm_sell_background(
         self, signature: str, mint: str, target_name: str,
         sell_percent: float, tokens_sold: float, sol_received: float,
-        profit_sol: float, current_pnl: float, expected_remaining: float
+        profit_sol: float, current_pnl: float, pre_balance: float
     ):
         """
-        CRITICAL FIX: expected_remaining is now passed as parameter (captured at submission time)
-        This prevents race conditions where multiple sells execute before confirmations update position state
+        CHATGPT'S FIX: Compare actual balance decrease against pre_balance
+        This is race-condition proof because we only check if balance decreased by at least our amount
         """
         try:
             position = self.positions.get(mint)
@@ -821,20 +810,19 @@ class SniperBot:
                 else:
                     logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
                 
-                # CRITICAL FIX: Check wallet balance against EXPECTED state
+                # CHATGPT FIX: Check if balance decreased by at least tokens_sold
                 await asyncio.sleep(2)
                 actual_balance = self.wallet.get_token_balance(mint)
-                logger.info(f"Expected: {expected_remaining:,.0f}, Actual: {actual_balance:,.0f}")
+                balance_decrease = pre_balance - actual_balance
+                expected_decrease = tokens_sold * 0.9  # 10% tolerance
                 
-                # Verify balance matches expected (10% tolerance for rounding)
-                tolerance = tokens_sold * 0.1
-                balance_diff = abs(actual_balance - expected_remaining)
+                logger.info(f"Pre-balance: {pre_balance:,.0f}, Actual: {actual_balance:,.0f}, Decrease: {balance_decrease:,.0f}")
                 
-                if balance_diff <= tolerance:
-                    logger.info(f"✅ {target_name} succeeded (balance matches expected)")
+                if balance_decrease >= expected_decrease:
+                    logger.info(f"✅ {target_name} succeeded (balance decreased by {balance_decrease:,.0f})")
                     confirmed = True
                 else:
-                    logger.warning(f"❌ {target_name} failed - balance mismatch (diff: {balance_diff:,.0f})")
+                    logger.warning(f"❌ {target_name} failed - insufficient balance decrease (only {balance_decrease:,.0f})")
             
             if confirmed:
                 # Update position state
@@ -888,86 +876,34 @@ class SniperBot:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
             else:
-                # Transaction failed - but check if it actually executed anyway
+                # Transaction failed
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
-                # CRITICAL FIX: Check if transaction actually executed before retrying
-                await asyncio.sleep(1)
-                actual_balance = self.wallet.get_token_balance(mint)
-                balance_tolerance = tokens_sold * 0.15  # 15% tolerance for slippage/fees
+                # Remove from pending AND clear pending token amount
+                if target_name in position.pending_sells:
+                    position.pending_sells.remove(target_name)
+                if target_name in position.pending_token_amounts:
+                    del position.pending_token_amounts[target_name]
                 
-                if abs(actual_balance - expected_remaining) <= balance_tolerance:
-                    # Transaction actually worked! Mark as confirmed
-                    logger.info(f"🔍 Transaction actually executed! Balance: {actual_balance:,.0f}, Expected: {expected_remaining:,.0f}")
-                    confirmed = True
-                    
-                    # Update position state
-                    position.sell_signatures.append(signature)
-                    position.remaining_tokens -= tokens_sold
-                    position.realized_pnl_sol += profit_sol
-                    self.total_realized_sol += profit_sol
-                    
+                retry_count = position.retry_counts.get(target_name, 0)
+                if retry_count < 2:
+                    position.retry_counts[target_name] = retry_count + 1
+                    logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
+                else:
+                    logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
                     position.partial_sells[target_name] = {
                         'pnl': current_pnl,
                         'time': time.time(),
-                        'percent_sold': sell_percent
+                        'percent_sold': 0,
+                        'status': 'failed',
+                        'attempts': retry_count + 1
                     }
-                    position.total_sold_percent += sell_percent
                     
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-                    
-                    self.consecutive_losses = 0
-                    if target_name in position.retry_counts:
-                        del position.retry_counts[target_name]
-                    
-                    self.tracker.log_partial_sell(
-                        mint=mint,
-                        target_name=target_name,
-                        percent_sold=sell_percent,
-                        tokens_sold=tokens_sold,
-                        sol_received=sol_received,
-                        pnl_sol=profit_sol
-                    )
-                    
-                    logger.info(f"✅ {target_name} CONFIRMED for {mint[:8]} (late detection)")
-                    logger.info(f"   Received: {sol_received:.4f} SOL")
-                    logger.info(f"   Profit: {profit_sol:+.4f} SOL")
-                    
-                    if position.total_sold_percent >= 100:
-                        logger.info(f"✅ Position fully closed")
-                        position.status = 'completed'
-                else:
-                    # Transaction truly failed - safe to retry
-                    logger.info(f"🔍 Balance unchanged ({actual_balance:,.0f}), transaction truly failed")
-                    
-                    # Remove from pending AND clear pending token amount
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-                    
-                    retry_count = position.retry_counts.get(target_name, 0)
-                    if retry_count < 2:
-                        position.retry_counts[target_name] = retry_count + 1
-                        logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
-                    else:
-                        logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
-                        position.partial_sells[target_name] = {
-                            'pnl': current_pnl,
-                            'time': time.time(),
-                            'percent_sold': 0,
-                            'status': 'failed',
-                            'attempts': retry_count + 1
-                        }
-                        
-                        if self.telegram:
-                            await self.telegram.send_message(
-                                f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
-                                f"Max retries exceeded - manual intervention needed"
-                            )
+                    if self.telegram:
+                        await self.telegram.send_message(
+                            f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
+                            f"Max retries exceeded - manual intervention needed"
+                        )
                 
         except Exception as e:
             logger.error(f"Confirmation error for {mint[:8]}: {e}")
@@ -1033,24 +969,12 @@ class SniperBot:
             
             token_decimals = self.wallet.get_token_decimals(mint)
             
-            # Determine urgency based on close reason
-            if reason == "stop_loss":
-                urgency = "critical"
-            elif reason == "early_dump":
-                urgency = "high"
-            elif reason == "no_volume":
-                urgency = "high"
-            elif reason == "max_age":
-                urgency = "normal"
-            else:
-                urgency = "normal"
-            
+            # FIXED: Remove urgency parameter - not supported
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
                 slippage=100 if is_migrated else 50,
-                token_decimals=token_decimals,
-                urgency=urgency
+                token_decimals=token_decimals
             )
             
             if signature and not signature.startswith("1111111"):
@@ -1134,7 +1058,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with PATH B Configuration (BALANCE VERIFICATION FIXED)")
+            logger.info("✅ Bot running with PATH B Configuration (CHATGPT BALANCE FIX)")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
