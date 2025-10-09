@@ -855,8 +855,8 @@ class SniperBot:
             start = time.time()
             confirmed = False
             
-            # FIXED: Poll for up to 15 seconds (not 30)
-            while time.time() - start < 15:
+            # Poll for up to 25 seconds to handle RPC lag
+            while time.time() - start < 25:
                 try:
                     status = self.trader.client.get_signature_statuses([signature])
                     if status and status.value and status.value[0]:
@@ -875,7 +875,7 @@ class SniperBot:
                 except Exception as e:
                     logger.debug(f"Status check error: {e}")
                 
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)  # Check every 1s instead of 0.5s
             
             # Timeout diagnostic
             if not confirmed:
