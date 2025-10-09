@@ -40,7 +40,7 @@ MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '10'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
 # Risk management - PATH B
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '35'))
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '20'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Partial profit taking from env
