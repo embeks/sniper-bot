@@ -1,6 +1,7 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
 CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's simpler fix)
+UPDATED: PnL now tracks ACTUAL SOL received from wallet balance changes
 """
 
 import asyncio
@@ -120,7 +121,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: CHATGPT BALANCE FIX")
+        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: ACTUAL PNL TRACKING")
         logger.info("=" * 60)
         
         # Core components
@@ -168,7 +169,7 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - PATH B (CHATGPT BALANCE FIX):")
+        logger.info(f"📊 STARTUP STATUS - PATH B (ACTUAL PNL TRACKING):")
         logger.info(f"  • Strategy: MC + Holder Verification")
         logger.info(f"  • Entry: $6k-$60k MC, 8+ holders")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
@@ -176,7 +177,7 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Targets: 2x/3x/5x (PRE-BALANCE CHECK)")
+        logger.info(f"  • Targets: 2x/3x/5x (REAL SOL TRACKING)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
@@ -235,10 +236,10 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - PATH B (CHATGPT FIX)\n"
+                    "🚀 Bot started - PATH B (REAL PNL)\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"📈 Targets: 2x/3x/5x (PRE-BALANCE)\n"
+                    f"📈 Targets: 2x/3x/5x (REAL SOL)\n"
                     f"💵 Entry: $6k-$60k MC\n"
                     f"👥 Min holders: 8\n"
                     f"🛑 Circuit breaker: 3 losses\n"
@@ -416,7 +417,6 @@ class SniperBot:
                     if creator_sol > 0:
                         expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / creator_sol)
             
-            # FIXED: Remove urgency parameter - not supported
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
                 sol_amount=BUY_AMOUNT_SOL,
@@ -701,7 +701,7 @@ class SniperBot:
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
         """
-        Execute a partial sell - CHATGPT'S FIXED VERSION with pre_balance
+        Execute a partial sell with REAL SOL tracking
         Returns immediately after submission, confirmation happens in background
         """
         try:
@@ -716,19 +716,13 @@ class SniperBot:
             logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} tokens)")
             logger.info(f"   YOUR P&L: {current_pnl:+.1f}%")
             
-            # Calculate realistic SOL received based on YOUR actual P&L
-            base_sol_for_portion = position.amount_sol * (sell_percent / 100)
-            multiplier = 1 + (current_pnl / 100)
-            
-            sol_received = base_sol_for_portion * multiplier
-            profit_sol = sol_received - base_sol_for_portion
-            
             token_decimals = self.wallet.get_token_decimals(mint)
             
-            # CHATGPT FIX: Capture wallet balance BEFORE transaction
-            pre_balance = self.wallet.get_token_balance(mint)
+            # FIXED: Capture SOL balance BEFORE transaction
+            pre_sol_balance = self.wallet.get_sol_balance()
+            pre_token_balance = self.wallet.get_token_balance(mint)
             
-            # Submit transaction (FIXED: Remove urgency parameter - not supported)
+            # Submit transaction
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_tokens_to_sell,
@@ -741,8 +735,8 @@ class SniperBot:
                 asyncio.create_task(
                     self._confirm_sell_background(
                         signature, mint, target_name, sell_percent,
-                        ui_tokens_to_sell, sol_received, profit_sol, current_pnl,
-                        pre_balance
+                        ui_tokens_to_sell, current_pnl,
+                        pre_sol_balance, pre_token_balance
                     )
                 )
                 
@@ -758,12 +752,11 @@ class SniperBot:
     
     async def _confirm_sell_background(
         self, signature: str, mint: str, target_name: str,
-        sell_percent: float, tokens_sold: float, sol_received: float,
-        profit_sol: float, current_pnl: float, pre_balance: float
+        sell_percent: float, tokens_sold: float, current_pnl: float,
+        pre_sol_balance: float, pre_token_balance: float
     ):
         """
-        CHATGPT'S FIX: Compare actual balance decrease against pre_balance
-        This is race-condition proof because we only check if balance decreased by at least our amount
+        FIXED: Track ACTUAL SOL received from wallet balance changes
         """
         try:
             position = self.positions.get(mint)
@@ -810,13 +803,13 @@ class SniperBot:
                 else:
                     logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
                 
-                # CHATGPT FIX: Check if balance decreased by at least tokens_sold
+                # Check if balance decreased by at least tokens_sold
                 await asyncio.sleep(2)
-                actual_balance = self.wallet.get_token_balance(mint)
-                balance_decrease = pre_balance - actual_balance
+                actual_token_balance = self.wallet.get_token_balance(mint)
+                balance_decrease = pre_token_balance - actual_token_balance
                 expected_decrease = tokens_sold * 0.9  # 10% tolerance
                 
-                logger.info(f"Pre-balance: {pre_balance:,.0f}, Actual: {actual_balance:,.0f}, Decrease: {balance_decrease:,.0f}")
+                logger.info(f"Pre-balance: {pre_token_balance:,.0f}, Actual: {actual_token_balance:,.0f}, Decrease: {balance_decrease:,.0f}")
                 
                 if balance_decrease >= expected_decrease:
                     logger.info(f"✅ {target_name} succeeded (balance decreased by {balance_decrease:,.0f})")
@@ -825,11 +818,22 @@ class SniperBot:
                     logger.warning(f"❌ {target_name} failed - insufficient balance decrease (only {balance_decrease:,.0f})")
             
             if confirmed:
+                # FIXED: Get ACTUAL SOL received from wallet balance
+                await asyncio.sleep(2)
+                post_sol_balance = self.wallet.get_sol_balance()
+                actual_sol_received = post_sol_balance - pre_sol_balance
+                
+                # Calculate base investment for this portion
+                base_sol_for_portion = position.amount_sol * (sell_percent / 100)
+                
+                # Calculate REAL profit
+                actual_profit_sol = actual_sol_received - base_sol_for_portion
+                
                 # Update position state
                 position.sell_signatures.append(signature)
                 position.remaining_tokens -= tokens_sold
-                position.realized_pnl_sol += profit_sol
-                self.total_realized_sol += profit_sol
+                position.realized_pnl_sol += actual_profit_sol
+                self.total_realized_sol += actual_profit_sol
                 
                 position.partial_sells[target_name] = {
                     'pnl': current_pnl,
@@ -838,7 +842,7 @@ class SniperBot:
                 }
                 position.total_sold_percent += sell_percent
                 
-                # Remove from pending AND clear pending token amount
+                # Remove from pending
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
                 if target_name in position.pending_token_amounts:
@@ -853,13 +857,13 @@ class SniperBot:
                     target_name=target_name,
                     percent_sold=sell_percent,
                     tokens_sold=tokens_sold,
-                    sol_received=sol_received,
-                    pnl_sol=profit_sol
+                    sol_received=actual_sol_received,
+                    pnl_sol=actual_profit_sol
                 )
                 
                 logger.info(f"✅ {target_name} CONFIRMED for {mint[:8]}")
-                logger.info(f"   Received: {sol_received:.4f} SOL")
-                logger.info(f"   Profit: {profit_sol:+.4f} SOL")
+                logger.info(f"   Received: {actual_sol_received:.4f} SOL")
+                logger.info(f"   Profit: {actual_profit_sol:+.4f} SOL")
                 
                 if self.telegram:
                     msg = (
@@ -867,7 +871,7 @@ class SniperBot:
                         f"Token: {mint[:16]}...\n"
                         f"Sold: {sell_percent}%\n"
                         f"P&L: {current_pnl:+.1f}%\n"
-                        f"Profit: {profit_sol:+.4f} SOL\n"
+                        f"Profit: {actual_profit_sol:+.4f} SOL\n"
                         f"TX: https://solscan.io/tx/{signature}"
                     )
                     await self.telegram.send_message(msg)
@@ -879,7 +883,7 @@ class SniperBot:
                 # Transaction failed
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
-                # Remove from pending AND clear pending token amount
+                # Remove from pending
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
                 if target_name in position.pending_token_amounts:
@@ -923,7 +927,7 @@ class SniperBot:
                 }
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position"""
+        """Close remaining position with REAL SOL tracking"""
         try:
             position = self.positions.get(mint)
             if not position or position.status != 'active':
@@ -950,15 +954,8 @@ class SniperBot:
             
             logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}...")
             
-            # Calculate realistic SOL based on YOUR actual P&L
-            base_sol_for_portion = position.amount_sol * (remaining_percent / 100)
-            multiplier = 1 + (position.pnl_percent / 100)
-            
-            if reason == "migration":
-                multiplier *= 0.8
-            
-            sol_received = base_sol_for_portion * multiplier
-            final_pnl = sol_received - base_sol_for_portion
+            # FIXED: Capture SOL balance BEFORE final sell
+            pre_sol_balance = self.wallet.get_sol_balance()
             
             actual_balance = self.wallet.get_token_balance(mint)
             if actual_balance > 0:
@@ -969,7 +966,6 @@ class SniperBot:
             
             token_decimals = self.wallet.get_token_decimals(mint)
             
-            # FIXED: Remove urgency parameter - not supported
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
@@ -978,6 +974,19 @@ class SniperBot:
             )
             
             if signature and not signature.startswith("1111111"):
+                # Wait for confirmation
+                await asyncio.sleep(3)
+                
+                # FIXED: Get ACTUAL SOL received
+                post_sol_balance = self.wallet.get_sol_balance()
+                actual_sol_received = post_sol_balance - pre_sol_balance
+                
+                # Calculate base investment for remaining portion
+                base_sol_for_portion = position.amount_sol * (remaining_percent / 100)
+                
+                # Calculate REAL profit for this final sell
+                final_pnl_sol = actual_sol_received - base_sol_for_portion
+                
                 position.sell_signatures.append(signature)
                 position.status = 'closed'
                 
@@ -990,14 +999,15 @@ class SniperBot:
                     
                 self.total_pnl += position.pnl_percent
                 
-                position.realized_pnl_sol += final_pnl
-                self.total_realized_sol += final_pnl
+                # Add REAL final profit to total
+                position.realized_pnl_sol += final_pnl_sol
+                self.total_realized_sol += final_pnl_sol
                 
                 self.tracker.log_sell_executed(
                     mint=mint,
                     tokens_sold=ui_token_balance,
                     signature=signature,
-                    sol_received=sol_received,
+                    sol_received=actual_sol_received,
                     pnl_sol=position.realized_pnl_sol,
                     pnl_percent=position.pnl_percent,
                     hold_time_seconds=hold_time,
@@ -1058,7 +1068,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with PATH B Configuration (CHATGPT BALANCE FIX)")
+            logger.info("✅ Bot running with PATH B Configuration (REAL PNL TRACKING)")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
