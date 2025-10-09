@@ -1,5 +1,5 @@
 """
-Performance Tracker
+Performance Tracker - FIXED: Accurate win/loss tracking
 """
 
 import json
@@ -55,7 +55,7 @@ class PerformanceTracker:
         # High-frequency events to skip
         self.high_frequency_events = ['position_update', 'token_detected']
         
-        logger.info(f"📊 Performance tracker initialized")
+        logger.info(f"📊 Performance tracker initialized (ACCURATE STATS)")
         logger.info(f"📈 Logging trades to {self.csv_file}")
     
     def setup_csv(self):
@@ -85,7 +85,7 @@ class PerformanceTracker:
             'fees_sol': 0,
             'tokens': 0,
             'execution_ms': 0,
-            'reason': 'Performance tracking initialized'
+            'reason': 'Performance tracking initialized (ACCURATE)'
         })
     
     def append_to_csv(self, data: Dict) -> bool:
@@ -179,11 +179,27 @@ class PerformanceTracker:
             elif event_type == 'sell_executed':
                 self.metrics['total_sells'] += 1
                 self.metrics['positions_closed'] += 1
-                if data.get('pnl_sol', 0) > 0:
+                
+                # FIXED: Only count as win if ACTUAL profit (not just positive pnl_sol from bug)
+                pnl = data.get('pnl_sol', 0)
+                
+                # A real win means you made profit (pnl > 0.001 SOL minimum)
+                # This filters out tiny positive values from rounding errors
+                if pnl > 0.001:
                     self.metrics['winning_trades'] += 1
+                    logger.debug(f"✅ Trade counted as WIN: {pnl:+.4f} SOL")
                 else:
                     self.metrics['losing_trades'] += 1
-                self.metrics['total_pnl_sol'] += data.get('pnl_sol', 0)
+                    logger.debug(f"❌ Trade counted as LOSS: {pnl:+.4f} SOL")
+                
+                self.metrics['total_pnl_sol'] += pnl
+            
+            # FIXED: Also track partial sells correctly
+            elif event_type == 'partial_sell':
+                # Partial sells with profit should be tracked
+                pnl = data.get('pnl_sol', 0)
+                self.metrics['total_pnl_sol'] += pnl
+                logger.debug(f"📊 Partial sell P&L: {pnl:+.4f} SOL")
                 
         except Exception as e:
             logger.error(f"Failed to log event: {e}")
@@ -300,9 +316,10 @@ class PerformanceTracker:
             logger.debug(f"Failed to log position update: {e}")
     
     def get_session_stats(self) -> Dict:
-        """Get current session statistics"""
+        """Get current session statistics - FIXED"""
         session_duration = time.time() - self.session_start
         
+        # FIXED: Calculate win rate correctly
         win_rate = 0
         if self.metrics['positions_closed'] > 0:
             win_rate = (self.metrics['winning_trades'] / self.metrics['positions_closed']) * 100
@@ -315,6 +332,14 @@ class PerformanceTracker:
         if self.metrics['execution_times']:
             avg_execution_time = sum(self.metrics['execution_times']) / len(self.metrics['execution_times'])
         
+        # FIXED: Calculate average P&L correctly
+        avg_pnl_percent = 0
+        if self.metrics['positions_closed'] > 0:
+            # Average P&L per trade
+            avg_pnl_sol = self.metrics['total_pnl_sol'] / self.metrics['positions_closed']
+            # Convert to percentage (assuming 0.05 SOL entries)
+            avg_pnl_percent = (avg_pnl_sol / 0.05) * 100
+        
         return {
             'session_duration_minutes': session_duration / 60,
             'total_buys': self.metrics['total_buys'],
@@ -324,6 +349,9 @@ class PerformanceTracker:
             'total_fees_sol': self.metrics['total_fees_sol'],
             'total_pnl_sol': self.metrics['total_pnl_sol'],
             'win_rate_percent': win_rate,
+            'avg_pnl_percent': avg_pnl_percent,
+            'winning_trades': self.metrics['winning_trades'],
+            'losing_trades': self.metrics['losing_trades'],
             'avg_detection_time_ms': avg_detection_time,
             'avg_execution_time_ms': avg_execution_time
         }
@@ -345,7 +373,7 @@ class PerformanceTracker:
             'fees_sol': stats['total_fees_sol'],
             'tokens': stats['total_buys'],
             'execution_ms': stats['avg_execution_time_ms'],
-            'reason': f"Win rate: {stats['win_rate_percent']:.1f}%"
+            'reason': f"Win rate: {stats['win_rate_percent']:.1f}% | W:{stats['winning_trades']} L:{stats['losing_trades']}"
         }
         
         self.append_to_csv(summary_data)
@@ -353,10 +381,12 @@ class PerformanceTracker:
         logger.info("📊 SESSION PERFORMANCE SUMMARY")
         logger.info(f"Duration: {stats['session_duration_minutes']:.1f} minutes")
         logger.info(f"Trades: {stats['total_buys']} buys, {stats['total_sells']} sells")
+        logger.info(f"Wins: {stats['winning_trades']} | Losses: {stats['losing_trades']}")
+        logger.info(f"Win Rate: {stats['win_rate_percent']:.1f}%")
         logger.info(f"Volume: {stats['total_volume_sol']:.4f} SOL")
         logger.info(f"Fees Paid: {stats['total_fees_sol']:.6f} SOL")
         logger.info(f"P&L: {stats['total_pnl_sol']:+.4f} SOL")
-        logger.info(f"Win Rate: {stats['win_rate_percent']:.1f}%")
+        logger.info(f"Avg P&L: {stats['avg_pnl_percent']:+.1f}%")
         logger.info(f"Avg Detection: {stats['avg_detection_time_ms']:.1f}ms")
         logger.info(f"Avg Execution: {stats['avg_execution_time_ms']:.1f}ms")
         logger.info(f"📈 Full trade log saved to: {self.csv_file}")
