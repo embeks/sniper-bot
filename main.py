@@ -3,6 +3,7 @@ Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
 CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's simpler fix)
 UPDATED: PnL now tracks ACTUAL SOL received from wallet balance changes
 FIXED: Multiple partial sells can trigger independently with priority fees
+FINAL FIX: Proper RPC calls and transaction metadata parsing
 """
 
 import asyncio
@@ -226,60 +227,78 @@ class SniperBot:
             logger.error(f"Token price calculation error: {e}")
             return 0
     
-    def _get_transaction_deltas(self, signature: str, mint: str) -> dict:
+    async def _get_transaction_deltas(self, signature: str, mint: str) -> dict:
         """
-        Return dict with {"confirmed": bool, "sol_delta": float, "token_delta": float}
+        FIXED: Read transaction metadata directly from blockchain
+        Returns: {"confirmed": bool, "sol_delta": float, "token_delta": float}
         """
         try:
-            tx = self.trader.client.get_transaction(
-                signature,
+            # FIXED: Import and convert string signature to Signature object
+            from solders.signature import Signature as SoldersSignature
+            
+            tx_sig = SoldersSignature.from_string(signature)
+            
+            # FIXED: Proper RPC call
+            tx_response = self.trader.client.get_transaction(
+                tx_sig,
                 encoding="jsonParsed",
-                commitment="confirmed",
                 max_supported_transaction_version=0
             )
-            if not tx or not tx.value or not tx.value.transaction:
+            
+            if not tx_response or not tx_response.value:
                 return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
-            meta = tx.value.transaction.meta
-            if not meta:
+            
+            tx = tx_response.value
+            
+            # Check if transaction succeeded
+            if tx.transaction.meta is None or tx.transaction.meta.err is not None:
                 return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
-
+            
+            meta = tx.transaction.meta
             my_pubkey_str = str(self.wallet.pubkey)
+            
+            # Calculate SOL delta
             sol_delta = 0.0
-            found_balance = False
-            account_keys = getattr(tx.value.transaction.transaction.message, "account_keys", [])
-            for i, account_key in enumerate(account_keys):
-                if str(account_key) == my_pubkey_str:
-                    pre = meta.pre_balances[i] / 1e9
-                    post = meta.post_balances[i] / 1e9
-                    sol_delta = post - pre
-                    found_balance = True
-                    break
-            if not found_balance:
-                logger.warning(f"Wallet pubkey {my_pubkey_str} not found in tx account keys")
-
+            
+            # FIXED: Correct attribute path and convert to strings
+            account_keys = [str(key) for key in tx.transaction.transaction.message.account_keys]
+            
+            try:
+                wallet_index = account_keys.index(my_pubkey_str)
+                pre_sol_lamports = meta.pre_balances[wallet_index]
+                post_sol_lamports = meta.post_balances[wallet_index]
+                sol_delta = (post_sol_lamports - pre_sol_lamports) / 1e9
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Wallet not found in transaction accounts: {e}")
+            
+            # Calculate token delta
             token_delta = 0.0
-            pre_map, post_map = {}, {}
-            for b in getattr(meta, "pre_token_balances", []) or []:
-                if getattr(b, "mint", None) == mint and getattr(b, "owner", None) == my_pubkey_str:
-                    pre_map[(b.mint, b.owner)] = float(
-                        getattr(b.ui_token_amount, "ui_amount", 0)
-                        or getattr(b.ui_token_amount, "ui_amount_string", 0)
-                        or 0
-                    )
-            for b in getattr(meta, "post_token_balances", []) or []:
-                if getattr(b, "mint", None) == mint and getattr(b, "owner", None) == my_pubkey_str:
-                    post_map[(b.mint, b.owner)] = float(
-                        getattr(b.ui_token_amount, "ui_amount", 0)
-                        or getattr(b.ui_token_amount, "ui_amount_string", 0)
-                        or 0
-                    )
-            pre_amt = pre_map.get((mint, my_pubkey_str), 0.0)
-            post_amt = post_map.get((mint, my_pubkey_str), 0.0)
-            token_delta = post_amt - pre_amt
-
+            
+            # Find our token balance changes
+            pre_token_amount = 0.0
+            post_token_amount = 0.0
+            
+            # FIXED: Proper None handling for token balances
+            for balance in (meta.pre_token_balances or []):
+                if balance.mint == mint and balance.owner == my_pubkey_str:
+                    ui_amount = balance.ui_token_amount.ui_amount
+                    pre_token_amount = float(ui_amount) if ui_amount is not None else 0.0
+                    break
+            
+            for balance in (meta.post_token_balances or []):
+                if balance.mint == mint and balance.owner == my_pubkey_str:
+                    ui_amount = balance.ui_token_amount.ui_amount
+                    post_token_amount = float(ui_amount) if ui_amount is not None else 0.0
+                    break
+            
+            token_delta = post_token_amount - pre_token_amount
+            
             return {"confirmed": True, "sol_delta": sol_delta, "token_delta": token_delta}
+            
         except Exception as e:
             logger.error(f"Error getting transaction deltas: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
     
     async def initialize_telegram(self):
@@ -835,10 +854,9 @@ class SniperBot:
             first_seen = None
             start = time.time()
             confirmed = False
-            tx_error = None
             
-            # Poll for up to 30 seconds
-            while time.time() - start < 30:
+            # FIXED: Poll for up to 15 seconds (not 30)
+            while time.time() - start < 15:
                 try:
                     status = self.trader.client.get_signature_statuses([signature])
                     if status and status.value and status.value[0]:
@@ -849,8 +867,7 @@ class SniperBot:
                         confirmation_status = status.value[0].confirmation_status
                         if confirmation_status in ["confirmed", "finalized"]:
                             if status.value[0].err:
-                                tx_error = status.value[0].err
-                                logger.error(f"❌ {target_name} sell FAILED: {tx_error}")
+                                logger.error(f"❌ {target_name} sell FAILED: {status.value[0].err}")
                                 break
                             else:
                                 confirmed = True
@@ -867,38 +884,30 @@ class SniperBot:
                     logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s - likely RPC lag OR low priority fee")
                 else:
                     logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
-                
-                # Check if balance decreased by at least tokens_sold
-                await asyncio.sleep(2)
-                actual_token_balance = self.wallet.get_token_balance(mint)
-                balance_decrease = pre_token_balance - actual_token_balance
-                expected_decrease = tokens_sold * 0.9  # 10% tolerance
-                
-                logger.info(f"Pre-balance: {pre_token_balance:,.0f}, Actual: {actual_token_balance:,.0f}, Decrease: {balance_decrease:,.0f}")
-                
-                if balance_decrease >= expected_decrease:
-                    logger.info(f"✅ {target_name} succeeded (balance decreased by {balance_decrease:,.0f})")
-                    confirmed = True
-                else:
-                    logger.warning(f"❌ {target_name} failed - insufficient balance decrease (only {balance_decrease:,.0f})")
+                # REMOVED: Broken balance check fallback - transaction must confirm
             
             if confirmed:
-                # Get transaction deltas for accurate PnL (prefer tx meta)
-                txd = self._get_transaction_deltas(signature, mint)
+                # FIXED: await the async function
+                txd = await self._get_transaction_deltas(signature, mint)
                 if txd["confirmed"]:
                     actual_sol_received = txd["sol_delta"] if txd["sol_delta"] > 0 else None
                     actual_tokens_sold = abs(txd["token_delta"]) if txd["token_delta"] < 0 else None
                 else:
                     actual_sol_received, actual_tokens_sold = None, None
 
+                # Fallback to wallet balance if tx metadata failed
                 if actual_sol_received is None:
+                    logger.warning(f"Failed to get SOL delta from tx metadata, using wallet balance")
                     await asyncio.sleep(2)
                     post_sol_balance = self.wallet.get_sol_balance()
                     actual_sol_received = post_sol_balance - pre_sol_balance
 
                 if actual_tokens_sold is None:
+                    logger.warning(f"Failed to get token delta from tx metadata, using wallet balance")
+                    await asyncio.sleep(2)
                     current_token_balance = self.wallet.get_token_balance(mint)
-                    actual_tokens_sold = max(0.0, pre_token_balance - current_token_balance)
+                    balance_decrease = pre_token_balance - current_token_balance
+                    actual_tokens_sold = max(0.0, balance_decrease)
                     position.remaining_tokens = max(0.0, current_token_balance)
                 else:
                     position.remaining_tokens = max(0.0, position.remaining_tokens - actual_tokens_sold)
@@ -956,19 +965,8 @@ class SniperBot:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
             else:
-                # Transaction failed - retry logic
+                # Transaction failed or timeout - retry with higher fees
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
-                
-                # Check actual wallet balance to avoid duplicate sells
-                actual_token_balance = self.wallet.get_token_balance(mint)
-                if actual_token_balance < pre_token_balance * 0.9:
-                    logger.warning(f"Tokens already sold despite timeout - not retrying")
-                    # Remove from pending
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-                    return
                 
                 retry_count = position.retry_counts.get(target_name, 0)
                 if retry_count < 2:
@@ -1098,8 +1096,8 @@ class SniperBot:
                 # Wait for confirmation
                 await asyncio.sleep(3)
                 
-                # Prefer tx deltas; fallback to wallet balance
-                txd = self._get_transaction_deltas(signature, mint)
+                # FIXED: await the async function
+                txd = await self._get_transaction_deltas(signature, mint)
                 actual_tokens_sold = None
                 if txd["confirmed"] and txd["sol_delta"] > 0:
                     actual_sol_received = txd["sol_delta"]
