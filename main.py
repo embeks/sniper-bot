@@ -1,7 +1,6 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
 CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's simpler fix)
-ACCURACY FIX: P&L tracking now uses actual SOL received from blockchain, not estimates
 """
 
 import asyncio
@@ -738,8 +737,7 @@ class SniperBot:
             )
             
             if signature and not signature.startswith("1111111"):
-                # Spawn background task for confirmation WITH ESTIMATED VALUES
-                # The background task will fetch ACTUAL values from blockchain
+                # Spawn background task for confirmation
                 asyncio.create_task(
                     self._confirm_sell_background(
                         signature, mint, target_name, sell_percent,
@@ -827,50 +825,11 @@ class SniperBot:
                     logger.warning(f"❌ {target_name} failed - insufficient balance decrease (only {balance_decrease:,.0f})")
             
             if confirmed:
-                # CRITICAL FIX: Fetch ACTUAL SOL received from blockchain transaction
-                actual_sol_received = await self.trader.get_sol_received_from_sell(signature)
-                
-                if actual_sol_received > 0:
-                    # Calculate REAL profit from actual SOL received
-                    base_cost = position.amount_sol * (sell_percent / 100)
-                    actual_profit = actual_sol_received - base_cost
-                    
-                    logger.info(f"📊 Estimated profit: {profit_sol:+.4f} SOL")
-                    logger.info(f"💰 ACTUAL profit: {actual_profit:+.4f} SOL")
-                    if abs(profit_sol - actual_profit) > 0.001:
-                        logger.info(f"📉 Slippage cost: {(profit_sol - actual_profit):+.4f} SOL")
-                    
-                    # Use ACTUAL profit, not estimate
-                    position.realized_pnl_sol += actual_profit
-                    self.total_realized_sol += actual_profit
-                    
-                    # Log to tracker with ACTUAL numbers for accurate CSV
-                    self.tracker.log_partial_sell(
-                        mint=mint,
-                        target_name=target_name,
-                        percent_sold=sell_percent,
-                        tokens_sold=tokens_sold,
-                        sol_received=actual_sol_received,  # ← REAL from blockchain
-                        pnl_sol=actual_profit  # ← REAL profit
-                    )
-                else:
-                    # Fallback to estimate if we can't fetch actual
-                    logger.warning("⚠️ Could not fetch actual SOL from blockchain, using estimate")
-                    position.realized_pnl_sol += profit_sol
-                    self.total_realized_sol += profit_sol
-                    
-                    self.tracker.log_partial_sell(
-                        mint=mint,
-                        target_name=target_name,
-                        percent_sold=sell_percent,
-                        tokens_sold=tokens_sold,
-                        sol_received=sol_received,  # ← Estimate
-                        pnl_sol=profit_sol  # ← Estimate
-                    )
-                
                 # Update position state
                 position.sell_signatures.append(signature)
                 position.remaining_tokens -= tokens_sold
+                position.realized_pnl_sol += profit_sol
+                self.total_realized_sol += profit_sol
                 
                 position.partial_sells[target_name] = {
                     'pnl': current_pnl,
@@ -889,23 +848,26 @@ class SniperBot:
                 if target_name in position.retry_counts:
                     del position.retry_counts[target_name]
                 
+                self.tracker.log_partial_sell(
+                    mint=mint,
+                    target_name=target_name,
+                    percent_sold=sell_percent,
+                    tokens_sold=tokens_sold,
+                    sol_received=sol_received,
+                    pnl_sol=profit_sol
+                )
+                
                 logger.info(f"✅ {target_name} CONFIRMED for {mint[:8]}")
-                if actual_sol_received > 0:
-                    logger.info(f"   Received: {actual_sol_received:.4f} SOL (actual)")
-                    logger.info(f"   Profit: {actual_profit:+.4f} SOL (actual)")
-                else:
-                    logger.info(f"   Received: {sol_received:.4f} SOL (estimate)")
-                    logger.info(f"   Profit: {profit_sol:+.4f} SOL (estimate)")
+                logger.info(f"   Received: {sol_received:.4f} SOL")
+                logger.info(f"   Profit: {profit_sol:+.4f} SOL")
                 
                 if self.telegram:
-                    # Use actual profit if available
-                    display_profit = actual_profit if actual_sol_received > 0 else profit_sol
                     msg = (
                         f"💰 {target_name} CONFIRMED!\n"
                         f"Token: {mint[:16]}...\n"
                         f"Sold: {sell_percent}%\n"
                         f"P&L: {current_pnl:+.1f}%\n"
-                        f"Profit: {display_profit:+.4f} SOL\n"
+                        f"Profit: {profit_sol:+.4f} SOL\n"
                         f"TX: https://solscan.io/tx/{signature}"
                     )
                     await self.telegram.send_message(msg)
@@ -1019,56 +981,6 @@ class SniperBot:
                 position.sell_signatures.append(signature)
                 position.status = 'closed'
                 
-                # CRITICAL FIX: Fetch ACTUAL SOL received from blockchain
-                actual_sol_received = await self.trader.get_sol_received_from_sell(signature, timeout=20)
-                
-                if actual_sol_received > 0:
-                    # Calculate REAL final P&L
-                    base_cost = position.amount_sol * (remaining_percent / 100)
-                    actual_final_pnl = actual_sol_received - base_cost
-                    actual_total_realized = position.realized_pnl_sol + actual_final_pnl
-                    
-                    logger.info(f"📊 Estimated close profit: {final_pnl:+.4f} SOL")
-                    logger.info(f"💰 ACTUAL close profit: {actual_final_pnl:+.4f} SOL")
-                    if abs(final_pnl - actual_final_pnl) > 0.001:
-                        logger.info(f"📉 Slippage cost: {(final_pnl - actual_final_pnl):+.4f} SOL")
-                    
-                    # Use ACTUAL profit
-                    position.realized_pnl_sol += actual_final_pnl
-                    self.total_realized_sol += actual_final_pnl
-                    
-                    # Log to tracker with ACTUAL numbers
-                    self.tracker.log_sell_executed(
-                        mint=mint,
-                        tokens_sold=ui_token_balance,
-                        signature=signature,
-                        sol_received=actual_sol_received,  # ← REAL
-                        pnl_sol=actual_total_realized,  # ← REAL total
-                        pnl_percent=position.pnl_percent,
-                        hold_time_seconds=hold_time,
-                        reason=reason
-                    )
-                    
-                    display_realized = actual_total_realized
-                else:
-                    # Fallback to estimate
-                    logger.warning("⚠️ Could not fetch actual SOL from blockchain, using estimate")
-                    position.realized_pnl_sol += final_pnl
-                    self.total_realized_sol += final_pnl
-                    
-                    self.tracker.log_sell_executed(
-                        mint=mint,
-                        tokens_sold=ui_token_balance,
-                        signature=signature,
-                        sol_received=sol_received,  # ← Estimate
-                        pnl_sol=position.realized_pnl_sol,  # ← Estimate
-                        pnl_percent=position.pnl_percent,
-                        hold_time_seconds=hold_time,
-                        reason=reason
-                    )
-                    
-                    display_realized = position.realized_pnl_sol
-                
                 if position.pnl_percent > 0:
                     self.profitable_trades += 1
                     self.consecutive_losses = 0
@@ -1078,20 +990,34 @@ class SniperBot:
                     
                 self.total_pnl += position.pnl_percent
                 
+                position.realized_pnl_sol += final_pnl
+                self.total_realized_sol += final_pnl
+                
+                self.tracker.log_sell_executed(
+                    mint=mint,
+                    tokens_sold=ui_token_balance,
+                    signature=signature,
+                    sol_received=sol_received,
+                    pnl_sol=position.realized_pnl_sol,
+                    pnl_percent=position.pnl_percent,
+                    hold_time_seconds=hold_time,
+                    reason=reason
+                )
+                
                 logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
                 logger.info(f"   Reason: {reason}")
                 logger.info(f"   YOUR P&L: {position.pnl_percent:+.1f}%")
-                logger.info(f"   Realized: {display_realized:+.4f} SOL")
+                logger.info(f"   Est. realized: {position.realized_pnl_sol:+.4f} SOL")
                 logger.info(f"   Consecutive losses: {self.consecutive_losses}")
                 
                 if self.telegram:
-                    emoji = "💰" if display_realized > 0 else "🔴"
+                    emoji = "💰" if position.realized_pnl_sol > 0 else "🔴"
                     msg = (
                         f"{emoji} POSITION CLOSED\n"
                         f"Token: {mint[:16]}\n"
                         f"Reason: {reason}\n"
                         f"YOUR P&L: {position.pnl_percent:+.1f}%\n"
-                        f"Realized: {display_realized:+.4f} SOL"
+                        f"Est. realized: {position.realized_pnl_sol:+.4f} SOL"
                     )
                     if self.consecutive_losses >= 2:
                         msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
