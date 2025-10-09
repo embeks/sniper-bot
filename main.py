@@ -2,6 +2,7 @@
 Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
 CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's simpler fix)
 UPDATED: PnL now tracks ACTUAL SOL received from wallet balance changes
+FIXED: Multiple partial sells can trigger independently with priority fees
 """
 
 import asyncio
@@ -224,6 +225,62 @@ class SniperBot:
         except Exception as e:
             logger.error(f"Token price calculation error: {e}")
             return 0
+    
+    def _get_transaction_deltas(self, signature: str, mint: str) -> dict:
+        """
+        Return dict with {"confirmed": bool, "sol_delta": float, "token_delta": float}
+        """
+        try:
+            tx = self.trader.client.get_transaction(
+                signature,
+                encoding="jsonParsed",
+                commitment="confirmed",
+                max_supported_transaction_version=0
+            )
+            if not tx or not tx.value or not tx.value.transaction:
+                return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
+            meta = tx.value.transaction.meta
+            if not meta:
+                return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
+
+            my_pubkey_str = str(self.wallet.pubkey)
+            sol_delta = 0.0
+            found_balance = False
+            account_keys = getattr(tx.value.transaction.transaction.message, "account_keys", [])
+            for i, account_key in enumerate(account_keys):
+                if str(account_key) == my_pubkey_str:
+                    pre = meta.pre_balances[i] / 1e9
+                    post = meta.post_balances[i] / 1e9
+                    sol_delta = post - pre
+                    found_balance = True
+                    break
+            if not found_balance:
+                logger.warning(f"Wallet pubkey {my_pubkey_str} not found in tx account keys")
+
+            token_delta = 0.0
+            pre_map, post_map = {}, {}
+            for b in getattr(meta, "pre_token_balances", []) or []:
+                if getattr(b, "mint", None) == mint and getattr(b, "owner", None) == my_pubkey_str:
+                    pre_map[(b.mint, b.owner)] = float(
+                        getattr(b.ui_token_amount, "ui_amount", 0)
+                        or getattr(b.ui_token_amount, "ui_amount_string", 0)
+                        or 0
+                    )
+            for b in getattr(meta, "post_token_balances", []) or []:
+                if getattr(b, "mint", None) == mint and getattr(b, "owner", None) == my_pubkey_str:
+                    post_map[(b.mint, b.owner)] = float(
+                        getattr(b.ui_token_amount, "ui_amount", 0)
+                        or getattr(b.ui_token_amount, "ui_amount_string", 0)
+                        or 0
+                    )
+            pre_amt = pre_map.get((mint, my_pubkey_str), 0.0)
+            post_amt = post_map.get((mint, my_pubkey_str), 0.0)
+            token_delta = post_amt - pre_amt
+
+            return {"confirmed": True, "sol_delta": sol_delta, "token_delta": token_delta}
+        except Exception as e:
+            logger.error(f"Error getting transaction deltas: {e}")
+            return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
     
     async def initialize_telegram(self):
         """Initialize Telegram bot after event loop is ready"""
@@ -701,7 +758,7 @@ class SniperBot:
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
         """
-        Execute a partial sell with REAL SOL tracking
+        Execute a partial sell with REAL SOL tracking and priority fees
         Returns immediately after submission, confirmation happens in background
         """
         try:
@@ -709,25 +766,32 @@ class SniperBot:
             if not position:
                 return False
             
-            # Use position state as source of truth
-            ui_tokens_to_sell = position.remaining_tokens * (sell_percent / 100)
+            # Get token decimals and FLOOR the amount to base units to avoid oversell
+            from decimal import Decimal, ROUND_DOWN
+            token_decimals = self.wallet.get_token_decimals(mint)
+            raw = Decimal(str(position.remaining_tokens)) * Decimal(str(sell_percent)) / Decimal("100")
+            units = (raw * (Decimal(10) ** token_decimals)).quantize(Decimal("1"), rounding=ROUND_DOWN)
+            ui_tokens_to_sell = float(units / (Decimal(10) ** token_decimals))
+            
+            if ui_tokens_to_sell <= 0:
+                logger.warning(f"{target_name}: computed 0 tokens to sell after flooring; skipping")
+                return False
             
             logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
             logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} tokens)")
             logger.info(f"   YOUR P&L: {current_pnl:+.1f}%")
             
-            token_decimals = self.wallet.get_token_decimals(mint)
-            
             # FIXED: Capture SOL balance BEFORE transaction
             pre_sol_balance = self.wallet.get_sol_balance()
             pre_token_balance = self.wallet.get_token_balance(mint)
             
-            # Submit transaction
+            # Submit transaction with high urgency for partial sells
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_tokens_to_sell,
                 slippage=50,
-                token_decimals=token_decimals
+                token_decimals=token_decimals,
+                urgency="high"
             )
             
             if signature and not signature.startswith("1111111"):
@@ -756,7 +820,7 @@ class SniperBot:
         pre_sol_balance: float, pre_token_balance: float
     ):
         """
-        FIXED: Track ACTUAL SOL received from wallet balance changes
+        FIXED: Track ACTUAL SOL received from wallet balance changes with retry logic
         """
         try:
             position = self.positions.get(mint)
@@ -773,7 +837,8 @@ class SniperBot:
             confirmed = False
             tx_error = None
             
-            while time.time() - start < 15:
+            # Poll for up to 30 seconds
+            while time.time() - start < 30:
                 try:
                     status = self.trader.client.get_signature_statuses([signature])
                     if status and status.value and status.value[0]:
@@ -818,20 +883,30 @@ class SniperBot:
                     logger.warning(f"❌ {target_name} failed - insufficient balance decrease (only {balance_decrease:,.0f})")
             
             if confirmed:
-                # FIXED: Get ACTUAL SOL received from wallet balance
-                await asyncio.sleep(2)
-                post_sol_balance = self.wallet.get_sol_balance()
-                actual_sol_received = post_sol_balance - pre_sol_balance
+                # Get transaction deltas for accurate PnL (prefer tx meta)
+                txd = self._get_transaction_deltas(signature, mint)
+                if txd["confirmed"]:
+                    actual_sol_received = txd["sol_delta"] if txd["sol_delta"] > 0 else None
+                    actual_tokens_sold = abs(txd["token_delta"]) if txd["token_delta"] < 0 else None
+                else:
+                    actual_sol_received, actual_tokens_sold = None, None
+
+                if actual_sol_received is None:
+                    await asyncio.sleep(2)
+                    post_sol_balance = self.wallet.get_sol_balance()
+                    actual_sol_received = post_sol_balance - pre_sol_balance
+
+                if actual_tokens_sold is None:
+                    current_token_balance = self.wallet.get_token_balance(mint)
+                    actual_tokens_sold = max(0.0, pre_token_balance - current_token_balance)
+                    position.remaining_tokens = max(0.0, current_token_balance)
+                else:
+                    position.remaining_tokens = max(0.0, position.remaining_tokens - actual_tokens_sold)
                 
-                # Calculate base investment for this portion
                 base_sol_for_portion = position.amount_sol * (sell_percent / 100)
-                
-                # Calculate REAL profit
                 actual_profit_sol = actual_sol_received - base_sol_for_portion
                 
-                # Update position state
                 position.sell_signatures.append(signature)
-                position.remaining_tokens -= tokens_sold
                 position.realized_pnl_sol += actual_profit_sol
                 self.total_realized_sol += actual_profit_sol
                 
@@ -856,7 +931,8 @@ class SniperBot:
                     mint=mint,
                     target_name=target_name,
                     percent_sold=sell_percent,
-                    tokens_sold=tokens_sold,
+                    # log the actual on-chain amount sold, not the requested amount
+                    tokens_sold=actual_tokens_sold,
                     sol_received=actual_sol_received,
                     pnl_sol=actual_profit_sol
                 )
@@ -880,21 +956,64 @@ class SniperBot:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
             else:
-                # Transaction failed
+                # Transaction failed - retry logic
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
-                # Remove from pending
-                if target_name in position.pending_sells:
-                    position.pending_sells.remove(target_name)
-                if target_name in position.pending_token_amounts:
-                    del position.pending_token_amounts[target_name]
+                # Check actual wallet balance to avoid duplicate sells
+                actual_token_balance = self.wallet.get_token_balance(mint)
+                if actual_token_balance < pre_token_balance * 0.9:
+                    logger.warning(f"Tokens already sold despite timeout - not retrying")
+                    # Remove from pending
+                    if target_name in position.pending_sells:
+                        position.pending_sells.remove(target_name)
+                    if target_name in position.pending_token_amounts:
+                        del position.pending_token_amounts[target_name]
+                    return
                 
                 retry_count = position.retry_counts.get(target_name, 0)
                 if retry_count < 2:
                     position.retry_counts[target_name] = retry_count + 1
-                    logger.info(f"Will retry {target_name} (attempt {retry_count + 1}/2)")
+                    logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3) with critical urgency")
+                    
+                    # Remove from pending before retry
+                    if target_name in position.pending_sells:
+                        position.pending_sells.remove(target_name)
+                    if target_name in position.pending_token_amounts:
+                        del position.pending_token_amounts[target_name]
+                    
+                    # Retry with critical urgency
+                    token_decimals = self.wallet.get_token_decimals(mint)
+                    ui_tokens_to_sell = round(position.remaining_tokens * (sell_percent / 100), token_decimals)
+                    
+                    retry_signature = await self.trader.create_sell_transaction(
+                        mint=mint,
+                        token_amount=ui_tokens_to_sell,
+                        slippage=50,
+                        token_decimals=token_decimals,
+                        urgency="critical"
+                    )
+                    
+                    if retry_signature and not retry_signature.startswith("1111111"):
+                        # Re-add to pending and spawn new confirmation task
+                        position.pending_sells.add(target_name)
+                        position.pending_token_amounts[target_name] = ui_tokens_to_sell
+                        
+                        asyncio.create_task(
+                            self._confirm_sell_background(
+                                retry_signature, mint, target_name, sell_percent,
+                                ui_tokens_to_sell, current_pnl,
+                                pre_sol_balance, pre_token_balance
+                            )
+                        )
                 else:
                     logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
+                    
+                    # Remove from pending
+                    if target_name in position.pending_sells:
+                        position.pending_sells.remove(target_name)
+                    if target_name in position.pending_token_amounts:
+                        del position.pending_token_amounts[target_name]
+                    
                     position.partial_sells[target_name] = {
                         'pnl': current_pnl,
                         'time': time.time(),
@@ -927,7 +1046,7 @@ class SniperBot:
                 }
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position with REAL SOL tracking"""
+        """Close remaining position with REAL SOL tracking and critical urgency"""
         try:
             position = self.positions.get(mint)
             if not position or position.status != 'active':
@@ -966,20 +1085,37 @@ class SniperBot:
             
             token_decimals = self.wallet.get_token_decimals(mint)
             
+            # Use critical urgency for full position closes
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
                 slippage=100 if is_migrated else 50,
-                token_decimals=token_decimals
+                token_decimals=token_decimals,
+                urgency="critical"
             )
             
             if signature and not signature.startswith("1111111"):
                 # Wait for confirmation
                 await asyncio.sleep(3)
                 
-                # FIXED: Get ACTUAL SOL received
-                post_sol_balance = self.wallet.get_sol_balance()
-                actual_sol_received = post_sol_balance - pre_sol_balance
+                # Prefer tx deltas; fallback to wallet balance
+                txd = self._get_transaction_deltas(signature, mint)
+                actual_tokens_sold = None
+                if txd["confirmed"] and txd["sol_delta"] > 0:
+                    actual_sol_received = txd["sol_delta"]
+                    # if token_delta is present, track the actual amount sold
+                    if txd.get("token_delta", 0.0) < 0:
+                        actual_tokens_sold = abs(txd["token_delta"])
+                else:
+                    post_sol_balance = self.wallet.get_sol_balance()
+                    actual_sol_received = post_sol_balance - pre_sol_balance
+                
+                # If token delta wasn't available, fall back to the wallet balance delta
+                if actual_tokens_sold is None:
+                    before_tokens = ui_token_balance
+                    after_tokens = self.wallet.get_token_balance(mint)
+                    # best-effort estimation; clamp to non-negative
+                    actual_tokens_sold = max(0.0, before_tokens - after_tokens)
                 
                 # Calculate base investment for remaining portion
                 base_sol_for_portion = position.amount_sol * (remaining_percent / 100)
@@ -1005,7 +1141,8 @@ class SniperBot:
                 
                 self.tracker.log_sell_executed(
                     mint=mint,
-                    tokens_sold=ui_token_balance,
+                    # log the actual on-chain amount sold when available
+                    tokens_sold=actual_tokens_sold,
                     signature=signature,
                     sol_received=actual_sol_received,
                     pnl_sol=position.realized_pnl_sol,
