@@ -1,5 +1,5 @@
 """
-PumpPortal WebSocket Monitor - OPTION 3: MOMENTUM SCALPER
+PumpPortal WebSocket Monitor - Path B: MC + Holder Strategy (Option B - Adjusted)
 """
 
 import asyncio
@@ -32,7 +32,7 @@ class PumpPortalMonitor:
         self.token_history = {}
         self.filter_reasons = {}
         
-        # Token tracking for age and MC history - OPTION 3
+        # Token tracking for age and MC history
         self.token_first_seen = {}
         self.token_mc_history = {}
         
@@ -40,25 +40,23 @@ class PumpPortalMonitor:
         self.sol_price_usd = 250
         self.last_sol_price_update = 0
         
-        # OPTION 3: MOMENTUM SCALPER FILTERS
+        # PATH B FILTERS: Option 2 - Test Mode (Concentration Check DISABLED)
         self.filters = {
             'min_creator_sol': 0.1,
             'max_creator_sol': 5.0,
-            'min_curve_sol': 15.0,  # OPTION 3: EARLIER ENTRY
-            'max_curve_sol': 45.0,  # OPTION 3: EXIT SOONER
+            'min_curve_sol': 15.0,
+            'max_curve_sol': 45.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 8,  # Keep at 8 for volume
-            'check_concentration': False,  # Keep disabled for volume
-            'max_top10_concentration': 85,  # Not enforced when disabled
-            'max_velocity_sol_per_sec': 2.0,  # Slightly higher tolerance
-            'min_token_age_seconds': 0,  # Remove minimum age requirement
-            'min_market_cap': 4000,  # OPTION 3: LOWER FLOOR - $4k
-            'max_market_cap': 35000,  # OPTION 3: LOWER CEILING - $35k
-            'max_token_age_seconds': 240,  # OPTION 3: 4 minutes max age
-            'min_time_to_30_sol': 60,  # Must take at least 60s to reach 30 SOL
-            'max_time_to_30_sol': 240,  # But not more than 4 minutes
-            'min_momentum_multiplier': 6,  # OPTION 3: 6x creator buy minimum
+            'min_holders': 8,  # CRITICAL: Minimum 5 holders required
+            'check_concentration': False,  # DISABLED FOR TESTING - Will re-enable after data collection
+            'max_top10_concentration': 85,  # Not enforced when check_concentration=False
+            'max_velocity_sol_per_sec': 1.5,
+            'min_token_age_seconds': 150,
+            'min_market_cap': 4000,
+            'max_market_cap': 35000,
+            'min_mc_gain_2min': 15,
+            'max_token_age_minutes': 8,  # Reject tokens older than 8 minutes
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'stealth', 'fair', 'liquidity', 'burned', 'renounced', 'safu', 
@@ -152,8 +150,9 @@ class PumpPortalMonitor:
         # Calculate average growth rate (SOL per minute)
         growth_per_minute = (sol_growth / time_elapsed) * 60 if time_elapsed > 0 else 999
         
-        # OPTION 3: More tolerant velocity (25 SOL/min instead of 20)
-        max_sol_per_minute = 25
+        # Organic tokens: 5-15 SOL/minute
+        # Coordinated pumps: 30-60+ SOL/minute
+        max_sol_per_minute = 20
         
         if growth_per_minute > max_sol_per_minute:
             logger.info(f"Velocity REJECT: {growth_per_minute:.1f} SOL/min (max {max_sol_per_minute})")
@@ -161,77 +160,6 @@ class PumpPortalMonitor:
         
         logger.debug(f"Velocity OK: {growth_per_minute:.1f} SOL/min over {time_elapsed:.0f}s")
         return True
-    
-    def _check_token_freshness(self, mint: str, v_sol: float) -> dict:
-        """
-        OPTION 3 CRITICAL: Track token age and growth rate
-        Returns: {'passed': bool, 'reason': str, 'age': float, 'growth_rate': float}
-        """
-        now = time.time()
-        
-        # First time seeing this token
-        if mint not in self.token_first_seen:
-            self.token_first_seen[mint] = now
-            self.token_mc_history[mint] = [(now, v_sol)]
-            return {'passed': True, 'reason': 'first_seen', 'age': 0, 'growth_rate': 0}
-        
-        first_seen = self.token_first_seen[mint]
-        age = now - first_seen
-        
-        # Update history
-        self.token_mc_history[mint].append((now, v_sol))
-        
-        # Clean up old history (keep last 5 minutes)
-        cutoff = now - 300
-        self.token_mc_history[mint] = [(t, s) for t, s in self.token_mc_history[mint] if t > cutoff]
-        
-        # CRITICAL CHECK 1: Token too old (>4 minutes)
-        if age > self.filters['max_token_age_seconds']:
-            return {
-                'passed': False,
-                'reason': f'too_old ({age:.0f}s)',
-                'age': age,
-                'growth_rate': 0
-            }
-        
-        # CRITICAL CHECK 2: Growth rate analysis
-        history = self.token_mc_history[mint]
-        if len(history) >= 2:
-            time_elapsed = history[-1][0] - history[0][0]
-            sol_growth = history[-1][1] - history[0][1]
-            
-            # If token is at 30+ SOL, check how long it took
-            if v_sol >= 30 and time_elapsed > 0:
-                # Reject if pumped too fast (<60 sec to 30 SOL = coordinated)
-                if time_elapsed < self.filters['min_time_to_30_sol']:
-                    return {
-                        'passed': False,
-                        'reason': f'pumped_too_fast ({time_elapsed:.0f}s to 30 SOL)',
-                        'age': age,
-                        'growth_rate': sol_growth / time_elapsed if time_elapsed > 0 else 999
-                    }
-                
-                # Reject if too slow (>4 min to 30 SOL = dead token)
-                if time_elapsed > self.filters['max_time_to_30_sol']:
-                    return {
-                        'passed': False,
-                        'reason': f'too_slow ({time_elapsed:.0f}s to 30 SOL)',
-                        'age': age,
-                        'growth_rate': sol_growth / time_elapsed if time_elapsed > 0 else 0
-                    }
-            
-            growth_rate = sol_growth / time_elapsed if time_elapsed > 0 else 0
-            
-            logger.debug(f"Token {mint[:8]} age: {age:.0f}s, growth: {sol_growth:.1f} SOL in {time_elapsed:.0f}s ({growth_rate:.2f} SOL/s)")
-            
-            return {
-                'passed': True,
-                'reason': 'fresh_and_healthy',
-                'age': age,
-                'growth_rate': growth_rate
-            }
-        
-        return {'passed': True, 'reason': 'insufficient_data', 'age': age, 'growth_rate': 0}
     
     async def _check_holders_helius(self, mint: str, retry: bool = True) -> dict:
         """
@@ -358,12 +286,18 @@ class PumpPortalMonitor:
         if mint not in self.token_first_seen:
             self.token_first_seen[mint] = now
         
-        # OPTION 3: Remove minimum age requirement - can enter as soon as 15 SOL
-        if v_sol < self.filters['min_curve_sol']:
-            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need {self.filters['min_curve_sol']}+)")
+        # Age proxy: Require 30+ SOL in curve 
+        if v_sol < 30:
+            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 30+ for age verification)")
             return False
         
-        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve - proceeding with filters")
+        # NEW: Max age check - reject tokens older than 8 minutes (prevents late buys)
+        token_age_minutes = (now - self.token_first_seen[mint]) / 60
+        if token_age_minutes > self.filters['max_token_age_minutes']:
+            self._log_filter("too_old", f"{token_age_minutes:.1f} minutes old (max {self.filters['max_token_age_minutes']})")
+            return False
+        
+        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve, age: {token_age_minutes:.1f}m - proceeding with filters")
         
         # Filter 1: Creator initial buy amount
         creator_sol = float(token_data.get('solAmount', 0))
@@ -401,15 +335,18 @@ class PumpPortalMonitor:
             self._log_filter("curve_high", f"{v_sol:.2f} SOL")
             return False
         
-        # Filter 4: OPTION 3 - Simplified momentum check (6x across the board)
-        required_multiplier = self.filters['min_momentum_multiplier']  # 6x
+        # Filter 4: ENHANCED momentum check
+        if v_sol < 35:
+            required_multiplier = 8
+        elif v_sol < 50:
+            required_multiplier = 5
+        else:
+            required_multiplier = 3
         
         required_sol = creator_sol * required_multiplier
         if v_sol < required_sol:
             self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f} needed ({required_multiplier}x)")
             return False
-        
-        logger.debug(f"✓ Momentum check passed: {v_sol:.2f} SOL ({v_sol/creator_sol:.1f}x creator buy)")
         
         # Filter 5: Virtual token reserves sanity check
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
@@ -425,21 +362,12 @@ class PumpPortalMonitor:
                 self._log_filter("metadata_blacklist", blacklisted)
                 return False
         
-        # Filter 7: Velocity check
+        # Filter 7: Velocity check - must be at least 60 seconds old
         if not self._check_velocity(mint, v_sol):
             self._log_filter("velocity", "too fast or too young")
             return False
         
-        # Filter 7.5: OPTION 3 CRITICAL - Token freshness and growth rate check
-        freshness_check = self._check_token_freshness(mint, v_sol)
-        if not freshness_check['passed']:
-            self._log_filter("freshness", freshness_check['reason'])
-            logger.info(f"❌ Token {mint[:8]} REJECTED: {freshness_check['reason']}")
-            return False
-        
-        logger.debug(f"✓ Freshness check passed: age {freshness_check['age']:.0f}s, growth {freshness_check['growth_rate']:.2f} SOL/s")
-        
-        # Filter 8: Market Cap range check
+        # Filter 7.5: Market Cap range check
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
         
@@ -447,7 +375,7 @@ class PumpPortalMonitor:
             self._log_filter("mc_calculation_failed", "Could not calculate MC")
             return False
         
-        # OPTION 3: Target $4k-$35k MC range
+        # Target: $6k-$60k MC range
         if market_cap < self.filters['min_market_cap']:
             self._log_filter("mc_too_low", f"${market_cap:,.0f}")
             return False
@@ -458,7 +386,7 @@ class PumpPortalMonitor:
         
         logger.info(f"✓ MC check passed: ${market_cap:,.0f} (target: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,})")
         
-        # Filter 9: Helius holder distribution check
+        # Filter 8: Helius holder distribution check - CRITICAL with relaxed limits
         holder_result = None
         try:
             logger.info(f"🔍 Starting holder check for {mint[:8]}... (SOL in curve: {v_sol:.1f})")
@@ -492,24 +420,25 @@ class PumpPortalMonitor:
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
         holder_count = holder_result.get('holder_count', 0) if holder_result else 0
         concentration = holder_result.get('concentration', 0) if holder_result else 0
-        age = freshness_check.get('age', 0)
         
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f} | Momentum: {momentum:.1f}x")
-        logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}% | Age: {age:.0f}s")
+        logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
         return True
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTION 3 - MOMENTUM SCALPER")
-        logger.info(f"  ⚡ EARLIER ENTRY: 15-45 SOL (vs 30-60)")
-        logger.info(f"  🎯 MC Range: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,}")
-        logger.info(f"  ⏱️  Age window: 60-240s to reach 30 SOL")
-        logger.info(f"  📊 Min Holders: {self.filters['min_holders']} (concentration not checked)")
-        logger.info(f"  🔥 Momentum: {self.filters['min_momentum_multiplier']}x creator buy minimum")
-        logger.info(f"  🎯 Goal: Win rate 30-40%, faster exits at 90s")
+        logger.info(f"Strategy: PATH B - Option 2 (TEST MODE - Concentration Check DISABLED)")
+        logger.info(f"  ⚠️  TESTING: Concentration check disabled for data collection")
+        logger.info(f"  Bonding Curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL")
+        logger.info(f"  Market Cap: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,}")
+        logger.info(f"  Min Age: 30+ SOL in curve (~2-3 minutes)")
+        logger.info(f"  Max Age: {self.filters['max_token_age_minutes']} minutes")
+        logger.info(f"  Min Holders: {self.filters['min_holders']} (concentration NOT checked)")
+        logger.info(f"  Momentum: 8x@<35 SOL, 5x@<50 SOL, 3x@50+ SOL")
+        logger.info(f"  🎯 Goal: Collect 20-30 trades to analyze concentration vs rug correlation")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -538,11 +467,6 @@ class PumpPortalMonitor:
                             if self._is_new_token(data):
                                 mint = self._extract_mint(data)
                                 
-                                # Validate mint address
-                                if not mint or not isinstance(mint, str) or len(mint) < 32:
-                                    logger.debug(f"Invalid mint address: {mint}")
-                                    continue
-                                
                                 if mint and mint not in self.seen_tokens:
                                     self.seen_tokens.add(mint)
                                     self.tokens_seen += 1
@@ -568,14 +492,14 @@ class PumpPortalMonitor:
                                     creator_sol = token_data.get('solAmount', 0)
                                     market_cap = self._calculate_market_cap(token_data)
                                     
-                                    # Get holder data from filter results
+                                    # Get holder data from filter results (stored during _apply_quality_filters)
                                     holder_data = getattr(self, '_last_holder_result', {
                                         'holder_count': 0,
                                         'concentration': 0
                                     })
                                     
                                     logger.info("=" * 60)
-                                    logger.info("🚀 TOKEN PASSED ALL FILTERS - OPTION 3!")
+                                    logger.info("🚀 TOKEN PASSED ALL FILTERS!")
                                     logger.info(f"📜 Mint: {mint}")
                                     logger.info(f"📊 {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_seen} total")
                                     logger.info(f"💰 Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL")
@@ -586,23 +510,18 @@ class PumpPortalMonitor:
                                     logger.info("=" * 60)
                                     
                                     if self.callback:
-                                        try:
-                                            await self.callback({
-                                                'mint': mint,
-                                                'signature': data.get('signature', 'unknown'),
-                                                'type': 'pumpfun_launch',
-                                                'timestamp': datetime.now().isoformat(),
-                                                'data': data,
-                                                'source': 'pumpportal',
-                                                'passed_filters': True,
-                                                'strategy': 'option_3_momentum_scalper',
-                                                'market_cap': market_cap,
-                                                'holder_data': holder_data
-                                            })
-                                        except Exception as callback_error:
-                                            logger.error(f"Callback error for {mint[:8]}: {callback_error}")
-                                            import traceback
-                                            logger.debug(traceback.format_exc())
+                                        await self.callback({
+                                            'mint': mint,
+                                            'signature': data.get('signature', 'unknown'),
+                                            'type': 'pumpfun_launch',
+                                            'timestamp': datetime.now().isoformat(),
+                                            'data': data,
+                                            'source': 'pumpportal',
+                                            'passed_filters': True,
+                                            'strategy': 'path_b_option_2_test_mode',
+                                            'market_cap': market_cap,
+                                            'holder_data': holder_data
+                                        })
                         
                         except asyncio.TimeoutError:
                             await websocket.ping()
