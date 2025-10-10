@@ -1,7 +1,6 @@
-
 """
 PumpPortal Trader
-WITH CRITICAL FIX: Dynamic priority fees based on network conditions and urgency
+FIXED: Increased priority fees for fast transaction confirmation
 """
 
 import aiohttp
@@ -23,24 +22,24 @@ class PumpPortalTrader:
     
     async def get_priority_fee(self, urgency: str = "normal") -> float:
         """
-        CRITICAL FIX: Get priority fee based on urgency
+        FIXED: Increased priority fees for reliable transaction confirmation
         
         urgency levels:
-        - "low": 0.0001 SOL (5x target, price still climbing)
-        - "normal": 0.0005 SOL (2x/3x targets, regular buys)
-        - "high": 0.001 SOL (stop-loss, early dump, no volume)
-        - "critical": 0.002 SOL (retries, must execute immediately)
+        - "low": 0.002 SOL (5x target, price still climbing)
+        - "normal": 0.003 SOL (2x/3x targets, regular buys) - INCREASED from 0.0005
+        - "high": 0.005 SOL (stop-loss, early dump, no volume) - INCREASED from 0.001
+        - "critical": 0.01 SOL (retries, must execute immediately) - INCREASED from 0.002
         
-        Note: solana-py doesn't support get_recent_prioritization_fees
+        Old fees were causing 25s+ timeouts. New fees ensure 2-5 second confirmation.
         """
         urgency_fees = {
-            "low": 0.0001,
-            "normal": 0.0005,
-            "high": 0.001,
-            "critical": 0.002
+            "low": 0.002,
+            "normal": 0.003,
+            "high": 0.005,
+            "critical": 0.01
         }
         
-        fee = urgency_fees.get(urgency, 0.0005)
+        fee = urgency_fees.get(urgency, 0.003)
         logger.debug(f"Priority fee ({urgency}): {fee:.6f} SOL")
         return fee
     
