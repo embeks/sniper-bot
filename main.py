@@ -694,9 +694,8 @@ class SniperBot:
                                 await self._close_position_full(mint, reason="stop_loss")
                                 break
                             
-                            # CRITICAL FIX: Only check profit targets if NOT closing and NO pending sells
-                            if not position.is_closing and not position.pending_sells:
-                                # Only process if no sells are currently pending
+                            # FIXED: Allow multiple targets to trigger simultaneously with token reservation
+                            if not position.is_closing:
                                 for target in position.profit_targets:
                                     target_name = target['name']
                                     target_pnl = target['target']
@@ -706,23 +705,44 @@ class SniperBot:
                                     if target_name in position.partial_sells:
                                         continue
                                     
+                                    # Skip if THIS specific target is already pending
+                                    if target_name in position.pending_sells:
+                                        continue
+                                    
+                                    # Calculate reserved tokens from OTHER pending sells
+                                    reserved_tokens = sum(
+                                        amount for name, amount in position.pending_token_amounts.items()
+                                        if name != target_name
+                                    )
+                                    
+                                    # Calculate tokens available after reservations
+                                    available_tokens = position.remaining_tokens - reserved_tokens
+                                    
+                                    # Calculate tokens needed for THIS target (% of INITIAL tokens)
+                                    tokens_needed = position.initial_tokens * (sell_percent / 100)
+                                    
+                                    # Check if we have enough tokens available
+                                    if available_tokens < tokens_needed * 0.95:  # 5% tolerance
+                                        logger.debug(
+                                            f"⚠️ Not enough tokens for {target_name}: "
+                                            f"available={available_tokens:.0f}, need={tokens_needed:.0f}"
+                                        )
+                                        continue
+                                    
                                     # Check if target hit
                                     if position.pnl_percent >= target_pnl:
                                         logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        # Mark as pending BEFORE starting execution
+                                        # Reserve tokens for this sell
                                         position.pending_sells.add(target_name)
-                                        
-                                        # Calculate tokens to sell
-                                        tokens_needed = position.remaining_tokens * (sell_percent / 100)
                                         position.pending_token_amounts[target_name] = tokens_needed
                                         
+                                        # Execute sell (doesn't block other targets)
                                         try:
                                             success = await self._execute_partial_sell(
                                                 mint, sell_percent, target_name, position.pnl_percent
                                             )
                                             if not success:
-                                                # Remove from pending if execution failed immediately
                                                 position.pending_sells.discard(target_name)
                                                 if target_name in position.pending_token_amounts:
                                                     del position.pending_token_amounts[target_name]
@@ -732,8 +752,7 @@ class SniperBot:
                                                 del position.pending_token_amounts[target_name]
                                             logger.error(f"Sell execution error: {e}")
                                         
-                                        # Only process ONE target per monitoring cycle
-                                        break
+                                        # NO break - continue checking other targets
                         else:
                             consecutive_data_failures += 1
                             logger.warning(f"Invalid reserve data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
