@@ -4,6 +4,7 @@ CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's si
 UPDATED: PnL now tracks ACTUAL SOL received from wallet balance changes
 FIXED: Multiple partial sells can trigger independently with priority fees
 FINAL FIX: Proper RPC calls and transaction metadata parsing
+PROFIT TARGET FIX: Now correctly reads all targets from config
 """
 
 import asyncio
@@ -91,31 +92,27 @@ class Position:
         else:
             self.entry_token_price_sol = 0
         
-        # Build profit targets from environment
+        # Build profit targets from environment - FIXED
         self.profit_targets = []
         
-        if 200.0 in PARTIAL_TAKE_PROFIT:
+        # TAKE_PROFIT values are multipliers (200 = 2x = +100% PnL)
+        # Convert multiplier to percentage gain
+        for multiplier, sell_fraction in sorted(PARTIAL_TAKE_PROFIT.items()):
+            pnl_threshold = ((multiplier / 100) - 1) * 100  # 200 -> 100%, 300 -> 200%, 500 -> 400%
             self.profit_targets.append({
-                'target': 100,
-                'sell_percent': PARTIAL_TAKE_PROFIT[200.0] * 100,
-                'name': '2x'
-            })
-        
-        if 300.0 in PARTIAL_TAKE_PROFIT:
-            self.profit_targets.append({
-                'target': 200,
-                'sell_percent': PARTIAL_TAKE_PROFIT[300.0] * 100,
-                'name': '3x'
-            })
-        
-        if 500.0 in PARTIAL_TAKE_PROFIT:
-            self.profit_targets.append({
-                'target': 400,
-                'sell_percent': PARTIAL_TAKE_PROFIT[500.0] * 100,
-                'name': '5x'
+                'target': pnl_threshold,
+                'sell_percent': sell_fraction * 100,
+                'name': f'{int(multiplier/100)}x'
             })
         
         self.profit_targets.sort(key=lambda x: x['target'])
+        
+        # Log configured targets
+        if self.profit_targets:
+            targets_str = ', '.join([f"{t['name']} at +{t['target']:.0f}% ({t['sell_percent']:.0f}%)" for t in self.profit_targets])
+            logger.info(f"Profit targets configured: {targets_str}")
+        else:
+            logger.warning("No profit targets configured - will only use stop-loss and max-age exits")
 
 class SniperBot:
     """Main sniper bot orchestrator - Path B Strategy with FIXED P&L"""
@@ -884,7 +881,6 @@ class SniperBot:
                     logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s - likely RPC lag OR low priority fee")
                 else:
                     logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
-                # REMOVED: Broken balance check fallback - transaction must confirm
             
             if confirmed:
                 # FIXED: await the async function
