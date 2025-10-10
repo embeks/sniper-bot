@@ -564,9 +564,12 @@ class SniperBot:
             if not position:
                 return
             
-            # Grace period
-            logger.info(f"⏳ Grace period {SELL_DELAY_SECONDS}s for {mint[:8]}...")
-            await asyncio.sleep(SELL_DELAY_SECONDS)
+            # Grace period REMOVED - start monitoring immediately for fast dump detection
+            if SELL_DELAY_SECONDS > 0:
+                logger.info(f"⏳ Grace period {SELL_DELAY_SECONDS}s for {mint[:8]}...")
+                await asyncio.sleep(SELL_DELAY_SECONDS)
+            else:
+                logger.info(f"⚡ No grace period - monitoring immediately for {mint[:8]}...")
             
             logger.info(f"📈 Starting active monitoring for {mint[:8]}...")
             logger.info(f"   Entry MC: ${position.entry_market_cap:,.0f}")
@@ -680,7 +683,15 @@ class SniperBot:
                                 await self.telegram.send_message(update_msg)
                                 last_notification_pnl = price_change
                             
-                            # Check stop-loss FIRST and skip if already closing
+                            # CRITICAL: Fast dump detection - exit immediately if token dumps early
+                            # This catches dead-on-arrival tokens before they bleed to full stop loss
+                            if age < 15 and price_change < -8 and not position.is_closing:
+                                logger.warning(f"🚫 FAST DUMP DETECTED ({price_change:.1f}%) in first 15s - emergency exit")
+                                position.is_closing = True
+                                await self._close_position_full(mint, reason="fast_dump")
+                                break
+                            
+                            # Check stop-loss AFTER fast dump check
                             if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                                 logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                                 position.is_closing = True
