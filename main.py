@@ -1,9 +1,9 @@
 """
-Main Orchestrator - OPTION 3: MOMENTUM SCALPER
-CRITICAL FIXES: 
-- Race condition in partial sells (only process one target per cycle, check pending_sells)
-- Accurate P&L tracking with transaction metadata
-- Updated entry/exit parameters for earlier entries
+Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
+CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's simpler fix)
+UPDATED: PnL now tracks ACTUAL SOL received from wallet balance changes
+FIXED: Multiple partial sells can trigger independently with priority fees
+FINAL FIX: Proper RPC calls and transaction metadata parsing
 """
 
 import asyncio
@@ -40,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class Position:
-    """Track an active position with CORRECT P&L calculation - OPTION 3"""
+    """Track an active position with CORRECT P&L calculation"""
     def __init__(self, mint: str, amount_sol: float, tokens: float = 0, entry_market_cap: float = 0):
         self.mint = mint
         self.amount_sol = amount_sol
@@ -58,7 +58,7 @@ class Position:
         
         # Multi-target tracking
         self.partial_sells = {}
-        self.pending_sells = set()  # FIXED: Track pending sells to prevent race conditions
+        self.pending_sells = set()
         self.pending_token_amounts = {}
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
@@ -80,7 +80,7 @@ class Position:
         self.consecutive_no_movement = 0
         self.last_checked_price = 0
         
-        # MC-based tracking
+        # MC-based tracking for Path B
         self.entry_market_cap = entry_market_cap
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
@@ -91,39 +91,39 @@ class Position:
         else:
             self.entry_token_price_sol = 0
         
-        # OPTION 3: Build profit targets from environment
+        # Build profit targets from environment
         self.profit_targets = []
         
-        if 180.0 in PARTIAL_TAKE_PROFIT:
+        if 200.0 in PARTIAL_TAKE_PROFIT:
             self.profit_targets.append({
-                'target': 80,  # 1.8x = 80% profit
-                'sell_percent': PARTIAL_TAKE_PROFIT[180.0] * 100,
-                'name': '1.8x'
+                'target': 100,
+                'sell_percent': PARTIAL_TAKE_PROFIT[200.0] * 100,
+                'name': '2x'
             })
         
-        if 280.0 in PARTIAL_TAKE_PROFIT:
+        if 300.0 in PARTIAL_TAKE_PROFIT:
             self.profit_targets.append({
-                'target': 180,  # 2.8x = 180% profit
-                'sell_percent': PARTIAL_TAKE_PROFIT[280.0] * 100,
-                'name': '2.8x'
+                'target': 200,
+                'sell_percent': PARTIAL_TAKE_PROFIT[300.0] * 100,
+                'name': '3x'
             })
         
-        if 450.0 in PARTIAL_TAKE_PROFIT:
+        if 500.0 in PARTIAL_TAKE_PROFIT:
             self.profit_targets.append({
-                'target': 350,  # 4.5x = 350% profit
-                'sell_percent': PARTIAL_TAKE_PROFIT[450.0] * 100,
-                'name': '4.5x'
+                'target': 400,
+                'sell_percent': PARTIAL_TAKE_PROFIT[500.0] * 100,
+                'name': '5x'
             })
         
         self.profit_targets.sort(key=lambda x: x['target'])
 
 class SniperBot:
-    """Main sniper bot orchestrator - OPTION 3: MOMENTUM SCALPER"""
+    """Main sniper bot orchestrator - Path B Strategy with FIXED P&L"""
     
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - OPTION 3: MOMENTUM SCALPER")
+        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: ACTUAL PNL TRACKING")
         logger.info("=" * 60)
         
         # Core components
@@ -165,23 +165,21 @@ class SniperBot:
         self._log_startup_info()
     
     def _log_startup_info(self):
-        """Log startup information - OPTION 3"""
+        """Log startup information"""
         sol_balance = self.wallet.get_sol_balance()
         tradeable_balance = max(0, sol_balance - MIN_SOL_BALANCE)
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - OPTION 3: MOMENTUM SCALPER:")
-        logger.info(f"  • Strategy: Earlier Entry + Fast Exits")
-        logger.info(f"  • Entry: $4k-$35k MC (15-45 SOL), 8+ holders")
-        logger.info(f"  • Entry timing: 60-240s to reach 30 SOL, 6x momentum")
+        logger.info(f"📊 STARTUP STATUS - PATH B (ACTUAL PNL TRACKING):")
+        logger.info(f"  • Strategy: MC + Holder Verification")
+        logger.info(f"  • Entry: $6k-$60k MC, 8+ holders")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Targets: 1.8x(50%)/2.8x(30%)/4.5x(20%)")
-        logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS} seconds")
+        logger.info(f"  • Targets: 2x/3x/5x (REAL SOL TRACKING)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
@@ -314,15 +312,13 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - OPTION 3: MOMENTUM SCALPER\n"
+                    "🚀 Bot started - PATH B (REAL PNL)\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"📈 Targets: 1.8x(50%)/2.8x(30%)/4.5x(20%)\n"
-                    f"💵 Entry: $4k-$35k MC (15-45 SOL)\n"
+                    f"📈 Targets: 2x/3x/5x (REAL SOL)\n"
+                    f"💵 Entry: $6k-$60k MC\n"
                     f"👥 Min holders: 8\n"
-                    f"⏱️ Max hold: {MAX_POSITION_AGE_SECONDS}s\n"
-                    f"🛑 Stop loss: -{STOP_LOSS_PERCENTAGE}%\n"
-                    f"🔄 Circuit breaker: 3 losses\n"
+                    f"🛑 Circuit breaker: 3 losses\n"
                     "Type /help for commands"
                 )
                 await self.telegram.send_message(startup_msg)
@@ -405,23 +401,11 @@ class SniperBot:
         }
     
     async def on_token_found(self, token_data: Dict):
-        """Handle new token found - OPTION 3 with MC data"""
+        """Handle new token found - PATH B with MC data"""
         detection_start = time.time()
         
         try:
-            # Safely extract mint address
-            if isinstance(token_data, str):
-                logger.error(f"Received string instead of dict: {token_data}")
-                return
-            
-            mint = token_data.get('mint')
-            if not mint:
-                logger.error(f"No mint in token_data: {token_data.keys()}")
-                return
-            
-            if not isinstance(mint, str) or len(mint) < 32:
-                logger.error(f"Invalid mint format: {mint}")
-                return
+            mint = token_data['mint']
             
             # Update DEX with WebSocket data
             self.dex.update_token_data(mint, token_data)
@@ -706,65 +690,61 @@ class SniperBot:
                                 await self._close_position_full(mint, reason="stop_loss")
                                 break
                             
-                            # FIXED: Allow multiple targets to trigger simultaneously with token reservation
+                            # FIXED: Improved profit target checking with race condition prevention
                             if not position.is_closing:
                                 for target in position.profit_targets:
                                     target_name = target['name']
                                     target_pnl = target['target']
                                     sell_percent = target['sell_percent']
                                     
-                                    # Skip if already executed
-                                    if target_name in position.partial_sells:
-                                        continue
-                                    
-                                    # Skip if THIS specific target is already pending
-                                    if target_name in position.pending_sells:
-                                        continue
-                                    
-                                    # Calculate reserved tokens from OTHER pending sells
-                                    reserved_tokens = sum(
-                                        amount for name, amount in position.pending_token_amounts.items()
-                                        if name != target_name
-                                    )
-                                    
-                                    # Calculate tokens available after reservations
-                                    available_tokens = position.remaining_tokens - reserved_tokens
-                                    
-                                    # Calculate tokens needed for THIS target (% of INITIAL tokens)
-                                    tokens_needed = position.initial_tokens * (sell_percent / 100)
-                                    
-                                    # Check if we have enough tokens available
-                                    if available_tokens < tokens_needed * 0.95:  # 5% tolerance
-                                        logger.debug(
-                                            f"⚠️ Not enough tokens for {target_name}: "
-                                            f"available={available_tokens:.0f}, need={tokens_needed:.0f}"
-                                        )
-                                        continue
-                                    
-                                    # Check if target hit
-                                    if position.pnl_percent >= target_pnl:
+                                    if (position.pnl_percent >= target_pnl and 
+                                        target_name not in position.partial_sells):
+                                        
+                                        # Check if already pending
+                                        if target_name in position.pending_sells:
+                                            logger.debug(f"{target_name} already pending for {mint[:8]}, skipping")
+                                            continue
+                                        
+                                        # Calculate pending token amounts
+                                        pending_token_amount = 0
+                                        for pending_target_name in position.pending_sells:
+                                            if pending_target_name in position.pending_token_amounts:
+                                                pending_token_amount += position.pending_token_amounts[pending_target_name]
+                                        
+                                        # Calculate available tokens after pending sells
+                                        available_tokens = position.remaining_tokens - pending_token_amount
+                                        tokens_needed = position.remaining_tokens * (sell_percent / 100)
+                                        
+                                        # Check if we have enough tokens
+                                        if available_tokens < tokens_needed * 0.95:  # 5% tolerance
+                                            logger.warning(
+                                                f"⚠️ Not enough tokens for {target_name} on {mint[:8]}: "
+                                                f"Available: {available_tokens:,.0f}, Need: {tokens_needed:,.0f}"
+                                            )
+                                            continue
+                                        
                                         logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        # Reserve tokens for this sell
+                                        # Add to pending BEFORE async call AND track token amount
                                         position.pending_sells.add(target_name)
                                         position.pending_token_amounts[target_name] = tokens_needed
                                         
-                                        # Execute sell (doesn't block other targets)
                                         try:
                                             success = await self._execute_partial_sell(
                                                 mint, sell_percent, target_name, position.pnl_percent
                                             )
                                             if not success:
+                                                # Remove from pending if execution failed
                                                 position.pending_sells.discard(target_name)
                                                 if target_name in position.pending_token_amounts:
                                                     del position.pending_token_amounts[target_name]
+                                            break  # One sell per cycle
                                         except Exception as e:
                                             position.pending_sells.discard(target_name)
                                             if target_name in position.pending_token_amounts:
                                                 del position.pending_token_amounts[target_name]
                                             logger.error(f"Sell execution error: {e}")
-                                        
-                                        # NO break - continue checking other targets
+                                            break
                         else:
                             consecutive_data_failures += 1
                             logger.warning(f"Invalid reserve data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
@@ -895,7 +875,7 @@ class SniperBot:
                 except Exception as e:
                     logger.debug(f"Status check error: {e}")
                 
-                await asyncio.sleep(1)  # Check every 1s
+                await asyncio.sleep(1)  # Check every 1s instead of 0.5s
             
             # Timeout diagnostic
             if not confirmed:
@@ -904,6 +884,7 @@ class SniperBot:
                     logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s - likely RPC lag OR low priority fee")
                 else:
                     logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
+                # REMOVED: Broken balance check fallback - transaction must confirm
             
             if confirmed:
                 # FIXED: await the async function
@@ -959,6 +940,7 @@ class SniperBot:
                     mint=mint,
                     target_name=target_name,
                     percent_sold=sell_percent,
+                    # log the actual on-chain amount sold, not the requested amount
                     tokens_sold=actual_tokens_sold,
                     sol_received=actual_sol_received,
                     pnl_sol=actual_profit_sol
@@ -1119,15 +1101,18 @@ class SniperBot:
                 actual_tokens_sold = None
                 if txd["confirmed"] and txd["sol_delta"] > 0:
                     actual_sol_received = txd["sol_delta"]
+                    # if token_delta is present, track the actual amount sold
                     if txd.get("token_delta", 0.0) < 0:
                         actual_tokens_sold = abs(txd["token_delta"])
                 else:
                     post_sol_balance = self.wallet.get_sol_balance()
                     actual_sol_received = post_sol_balance - pre_sol_balance
                 
+                # If token delta wasn't available, fall back to the wallet balance delta
                 if actual_tokens_sold is None:
                     before_tokens = ui_token_balance
                     after_tokens = self.wallet.get_token_balance(mint)
+                    # best-effort estimation; clamp to non-negative
                     actual_tokens_sold = max(0.0, before_tokens - after_tokens)
                 
                 # Calculate base investment for remaining portion
@@ -1154,6 +1139,7 @@ class SniperBot:
                 
                 self.tracker.log_sell_executed(
                     mint=mint,
+                    # log the actual on-chain amount sold when available
                     tokens_sold=actual_tokens_sold,
                     signature=signature,
                     sol_received=actual_sol_received,
@@ -1217,7 +1203,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running - OPTION 3: MOMENTUM SCALPER")
+            logger.info("✅ Bot running with PATH B Configuration (REAL PNL TRACKING)")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
