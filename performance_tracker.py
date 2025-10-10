@@ -1,5 +1,5 @@
 """
-Performance Tracker - FIXED: Accurate win/loss tracking
+Performance Tracker - FIXED: Accurate win/loss tracking for OPTION 3
 """
 
 import json
@@ -55,7 +55,7 @@ class PerformanceTracker:
         # High-frequency events to skip
         self.high_frequency_events = ['position_update', 'token_detected']
         
-        logger.info(f"📊 Performance tracker initialized (ACCURATE STATS)")
+        logger.info(f"📊 Performance tracker initialized (OPTION 3 - ACCURATE STATS)")
         logger.info(f"📈 Logging trades to {self.csv_file}")
     
     def setup_csv(self):
@@ -85,7 +85,7 @@ class PerformanceTracker:
             'fees_sol': 0,
             'tokens': 0,
             'execution_ms': 0,
-            'reason': 'Performance tracking initialized (ACCURATE)'
+            'reason': 'OPTION 3: Momentum Scalper initialized'
         })
     
     def append_to_csv(self, data: Dict) -> bool:
@@ -180,26 +180,31 @@ class PerformanceTracker:
                 self.metrics['total_sells'] += 1
                 self.metrics['positions_closed'] += 1
                 
-                # FIXED: Only count as win if ACTUAL profit (not just positive pnl_sol from bug)
+                # CRITICAL FIX: Only count full position closes as wins/losses
+                # Partial sells are NOT wins/losses - they're profit taking
                 pnl = data.get('pnl_sol', 0)
+                reason = data.get('reason', '')
                 
-                # A real win means you made profit (pnl > 0.001 SOL minimum)
-                # This filters out tiny positive values from rounding errors
-                if pnl > 0.001:
-                    self.metrics['winning_trades'] += 1
-                    logger.debug(f"✅ Trade counted as WIN: {pnl:+.4f} SOL")
-                else:
-                    self.metrics['losing_trades'] += 1
-                    logger.debug(f"❌ Trade counted as LOSS: {pnl:+.4f} SOL")
+                # Check if this was a full close (not a partial sell that became a full close)
+                # We identify this by checking if reason indicates final close
+                is_final_close = reason in ['stop_loss', 'max_age', 'no_volume', 'early_dump', 'migration', 'manual_force_sell', 'shutdown', 'monitor_error', 'force_sell_all']
+                
+                if is_final_close:
+                    # This is a full position close - count as win or loss
+                    if pnl > 0.001:  # Profit > 0.001 SOL after all sells
+                        self.metrics['winning_trades'] += 1
+                        logger.debug(f"✅ Position closed as WIN: {pnl:+.4f} SOL (reason: {reason})")
+                    else:
+                        self.metrics['losing_trades'] += 1
+                        logger.debug(f"❌ Position closed as LOSS: {pnl:+.4f} SOL (reason: {reason})")
                 
                 self.metrics['total_pnl_sol'] += pnl
             
-            # FIXED: Also track partial sells correctly
             elif event_type == 'partial_sell':
-                # Partial sells with profit should be tracked
+                # Partial sells add to total P&L but don't count as wins/losses yet
                 pnl = data.get('pnl_sol', 0)
                 self.metrics['total_pnl_sol'] += pnl
-                logger.debug(f"📊 Partial sell P&L: {pnl:+.4f} SOL")
+                logger.debug(f"📊 Partial sell P&L: {pnl:+.4f} SOL (not counted as win/loss yet)")
                 
         except Exception as e:
             logger.error(f"Failed to log event: {e}")
@@ -277,7 +282,7 @@ class PerformanceTracker:
             'reason': reason
         })
         
-        logger.info(f"📊 Sell logged to CSV for {mint[:8]}... P&L: {pnl_sol:+.4f} SOL")
+        logger.info(f"📊 Sell logged to CSV for {mint[:8]}... P&L: {pnl_sol:+.4f} SOL (reason: {reason})")
     
     def log_partial_sell(self, mint: str, target_name: str, percent_sold: float,
                         tokens_sold: float, sol_received: float, pnl_sol: float):
@@ -319,7 +324,7 @@ class PerformanceTracker:
         """Get current session statistics - FIXED"""
         session_duration = time.time() - self.session_start
         
-        # FIXED: Calculate win rate correctly
+        # FIXED: Calculate win rate correctly (only count closed positions)
         win_rate = 0
         if self.metrics['positions_closed'] > 0:
             win_rate = (self.metrics['winning_trades'] / self.metrics['positions_closed']) * 100
@@ -335,10 +340,10 @@ class PerformanceTracker:
         # FIXED: Calculate average P&L correctly
         avg_pnl_percent = 0
         if self.metrics['positions_closed'] > 0:
-            # Average P&L per trade
+            # Average P&L per closed trade
             avg_pnl_sol = self.metrics['total_pnl_sol'] / self.metrics['positions_closed']
-            # Convert to percentage (assuming 0.05 SOL entries)
-            avg_pnl_percent = (avg_pnl_sol / 0.05) * 100
+            # Convert to percentage (assuming 0.03 SOL entries for Option 3)
+            avg_pnl_percent = (avg_pnl_sol / 0.03) * 100
         
         return {
             'session_duration_minutes': session_duration / 60,
@@ -378,7 +383,7 @@ class PerformanceTracker:
         
         self.append_to_csv(summary_data)
         
-        logger.info("📊 SESSION PERFORMANCE SUMMARY")
+        logger.info("📊 SESSION PERFORMANCE SUMMARY - OPTION 3")
         logger.info(f"Duration: {stats['session_duration_minutes']:.1f} minutes")
         logger.info(f"Trades: {stats['total_buys']} buys, {stats['total_sells']} sells")
         logger.info(f"Wins: {stats['winning_trades']} | Losses: {stats['losing_trades']}")
