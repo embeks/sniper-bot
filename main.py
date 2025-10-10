@@ -409,7 +409,19 @@ class SniperBot:
         detection_start = time.time()
         
         try:
-            mint = token_data['mint']
+            # Safely extract mint address
+            if isinstance(token_data, str):
+                logger.error(f"Received string instead of dict: {token_data}")
+                return
+            
+            mint = token_data.get('mint')
+            if not mint:
+                logger.error(f"No mint in token_data: {token_data.keys()}")
+                return
+            
+            if not isinstance(mint, str) or len(mint) < 32:
+                logger.error(f"Invalid mint format: {mint}")
+                return
             
             # Update DEX with WebSocket data
             self.dex.update_token_data(mint, token_data)
