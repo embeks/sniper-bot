@@ -538,6 +538,11 @@ class PumpPortalMonitor:
                             if self._is_new_token(data):
                                 mint = self._extract_mint(data)
                                 
+                                # Validate mint address
+                                if not mint or not isinstance(mint, str) or len(mint) < 32:
+                                    logger.debug(f"Invalid mint address: {mint}")
+                                    continue
+                                
                                 if mint and mint not in self.seen_tokens:
                                     self.seen_tokens.add(mint)
                                     self.tokens_seen += 1
@@ -581,18 +586,23 @@ class PumpPortalMonitor:
                                     logger.info("=" * 60)
                                     
                                     if self.callback:
-                                        await self.callback({
-                                            'mint': mint,
-                                            'signature': data.get('signature', 'unknown'),
-                                            'type': 'pumpfun_launch',
-                                            'timestamp': datetime.now().isoformat(),
-                                            'data': data,
-                                            'source': 'pumpportal',
-                                            'passed_filters': True,
-                                            'strategy': 'option_3_momentum_scalper',
-                                            'market_cap': market_cap,
-                                            'holder_data': holder_data
-                                        })
+                                        try:
+                                            await self.callback({
+                                                'mint': mint,
+                                                'signature': data.get('signature', 'unknown'),
+                                                'type': 'pumpfun_launch',
+                                                'timestamp': datetime.now().isoformat(),
+                                                'data': data,
+                                                'source': 'pumpportal',
+                                                'passed_filters': True,
+                                                'strategy': 'option_3_momentum_scalper',
+                                                'market_cap': market_cap,
+                                                'holder_data': holder_data
+                                            })
+                                        except Exception as callback_error:
+                                            logger.error(f"Callback error for {mint[:8]}: {callback_error}")
+                                            import traceback
+                                            logger.debug(traceback.format_exc())
                         
                         except asyncio.TimeoutError:
                             await websocket.ping()
