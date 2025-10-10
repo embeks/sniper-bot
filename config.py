@@ -51,17 +51,17 @@ tp3, sp3 = os.getenv('TAKE_PROFIT_3'), os.getenv('SELL_PERCENT_3')
 if tp1 and sp1:
     PARTIAL_TAKE_PROFIT[float(tp1)] = float(sp1) / 100.0
 else:
-    PARTIAL_TAKE_PROFIT[180.0] = 0.50  # OPTION 3: 1.8x → sell 50%
+    PARTIAL_TAKE_PROFIT[200.0] = 0.50  # OPTION 3: 2x → sell 50%
 
 if tp2 and sp2:
     PARTIAL_TAKE_PROFIT[float(tp2)] = float(sp2) / 100.0
 else:
-    PARTIAL_TAKE_PROFIT[280.0] = 0.30  # OPTION 3: 2.8x → sell 30%
+    PARTIAL_TAKE_PROFIT[300.0] = 0.30  # OPTION 3: 3x → sell 30%
 
 if tp3 and sp3:
     PARTIAL_TAKE_PROFIT[float(tp3)] = float(sp3) / 100.0
 else:
-    PARTIAL_TAKE_PROFIT[450.0] = 0.20  # OPTION 3: 4.5x → sell 20%
+    PARTIAL_TAKE_PROFIT[500.0] = 0.20  # OPTION 3: 5x → sell 20%
 
 # Timing - OPTION 3: FASTER EXECUTION
 SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '8'))  # OPTION 3: Shorter grace period
