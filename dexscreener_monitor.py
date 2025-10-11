@@ -81,8 +81,8 @@ class DexScreenerMonitor:
             if elapsed < self.min_request_interval:
                 return
             
-            # Get recently updated pools (sorted by pool_created_at desc)
-            url = f"https://api.geckoterminal.com/api/v2/networks/{self.network_id}/new_pools"
+            # Use TRENDING endpoint instead of new_pools for real-time discovery
+            url = f"https://api.geckoterminal.com/api/v2/networks/{self.network_id}/trending_pools"
             
             # Add headers as recommended by GeckoTerminal
             headers = {
@@ -104,7 +104,7 @@ class DexScreenerMonitor:
                     logger.debug("No pools returned from GeckoTerminal")
                     return
                 
-                logger.debug(f"Received {len(pools)} new pools from GeckoTerminal")
+                logger.debug(f"Received {len(pools)} trending pools from GeckoTerminal")
                 
                 # Process each pool
                 for pool in pools:
