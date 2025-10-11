@@ -207,8 +207,14 @@ class DexScreenerMonitor:
             # Log every token we see
             logger.info(f"🔍 Checking: {pool_name} ({pool_address}...) | DEX: {dex_id} | Liq: ${liquidity:,.0f} | Vol(5m): ${volume_5m:,.0f} | Txns: {total_txns} (B:{buys}/S:{sells})")
             
-            # Filter 1: DEX whitelist
-            if dex_id not in self.dex_config['allowed_dexs']:
+            # Filter 1: DEX whitelist (partial match for raydium-clmm, meteora-dbc, etc)
+            dex_allowed = False
+            for allowed_dex in self.dex_config['allowed_dexs']:
+                if allowed_dex in dex_id:  # Partial match
+                    dex_allowed = True
+                    break
+            
+            if not dex_allowed:
                 logger.info(f"   ❌ FILTERED: DEX '{dex_id}' not in whitelist {self.dex_config['allowed_dexs']}")
                 return False
             
