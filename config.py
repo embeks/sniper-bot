@@ -71,22 +71,31 @@ MONITOR_CHECK_INTERVAL = int(os.getenv('MONITOR_CHECK_INTERVAL', '2'))
 DATA_FAILURE_TOLERANCE = int(os.getenv('DATA_FAILURE_TOLERANCE', '10'))
 
 # ============================================
-# DEX CONFIGURATION (DEXScreener + Jupiter)
+# BIRDEYE CONFIGURATION (Fresh Pair Detection)
 # ============================================
-DEX_CONFIG = {
+BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY', '')
+if not BIRDEYE_API_KEY:
+    raise ValueError("BIRDEYE_API_KEY not found in environment variables")
+
+BIRDEYE_CONFIG = {
     # Polling
-    'poll_interval': int(os.getenv('DEX_POLL_INTERVAL', '4')),  # seconds
+    'poll_interval': int(os.getenv('BIRDEYE_POLL_INTERVAL', '3')),  # seconds
     
     # Pair filters
     'allowed_dexs': ['raydium', 'meteora', 'orca'],
-    'min_liquidity_usd': float(os.getenv('MIN_LP_USD', '50000')),
+    'min_liquidity_usd': float(os.getenv('MIN_LP_USD', '15000')),
     'max_pair_age_seconds': int(os.getenv('MAX_PAIR_AGE_SEC', '600')),  # 10 minutes
     
     # Volume filters
-    'min_volume_5m': float(os.getenv('MIN_VOLUME_USD', '5000')),
-    'min_txns_5m': int(os.getenv('MIN_TXNS_5M', '20')),
+    'min_volume_5m': float(os.getenv('MIN_VOLUME_USD', '3000')),
+    'min_txns_5m': int(os.getenv('MIN_TXNS_5M', '25')),
     'min_buys_5m': int(os.getenv('MIN_BUYS_5M', '15')),
 }
+
+# ============================================
+# DEX CONFIGURATION (Legacy - Removed)
+# ============================================
+# Removed DEX_CONFIG - now using BIRDEYE_CONFIG
 
 # ============================================
 # PUMPFUN SPECIFIC CONFIGURATION (Legacy)
