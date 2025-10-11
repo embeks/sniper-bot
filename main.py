@@ -720,6 +720,26 @@ class SniperBot:
                             logger.info(f"  • {mint[:8]}... | Age: {age:.0f}s")
                     
                     last_stats_time = time.time()
+                
+                # Check scanner health
+                if self.scanner_task and self.scanner_task.done():
+                    if not self.shutdown_requested:
+                        exc = self.scanner_task.exception()
+                        if exc:
+                            logger.error(f"Scanner died: {exc}")
+                            logger.info("Restarting scanner...")
+                            self.scanner_task = asyncio.create_task(self.scanner.start(self.on_token_found))
+            
+            # Idle if shutdown requested
+            if self.shutdown_requested:
+                logger.info("Bot stopped - idling")
+                while self.shutdown_requested:
+                    await asyncio.sleep(10)
+                    if not self.shutdown_requested:
+                        logger.info("Resuming from idle...")
+                        if not self.scanner_task or self.scanner_task.done():
+                            self.scanner_task = asyncio.create_task(self.scanner.start(self.on_token_found))
+                        continue
             
         except KeyboardInterrupt:
             logger.info("\n🛑 Shutting down...")
