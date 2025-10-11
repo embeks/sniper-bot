@@ -78,6 +78,7 @@ class BirdeyeMonitor:
             # Birdeye new tokens endpoint
             url = "https://public-api.birdeye.so/defi/v3/token/new-listing"
             
+            # FIXED: Correct header format for Birdeye API
             headers = {
                 'X-API-KEY': self.api_key,
                 'accept': 'application/json'
@@ -93,6 +94,7 @@ class BirdeyeMonitor:
                 
                 if resp.status == 401:
                     logger.error("❌ Birdeye API authentication failed - check your API key")
+                    logger.error(f"   Using API key: {self.api_key[:10]}..." if self.api_key else "   No API key found!")
                     return
                 
                 if resp.status == 429:
@@ -117,7 +119,7 @@ class BirdeyeMonitor:
                     logger.debug("No new tokens from Birdeye")
                     return
                 
-                logger.debug(f"Received {len(tokens)} new tokens from Birdeye")
+                logger.info(f"✅ Received {len(tokens)} new tokens from Birdeye")
                 
                 # Process each token
                 for token in tokens:
