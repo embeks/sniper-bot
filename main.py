@@ -231,7 +231,7 @@ class SniperBot:
         
         if not self.scanner:
             import config
-            self.scanner = DexScreenerMonitor(config)
+            self.scanner = BirdeyeMonitor(config)
         
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
