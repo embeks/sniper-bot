@@ -21,7 +21,7 @@ from config import (
 )
 
 from wallet import WalletManager
-from dexscreener_monitor import DexScreenerMonitor
+from birdeye_monitor import BirdeyeMonitor
 from jupiter_swapper import JupiterSwapper
 from performance_tracker import PerformanceTracker
 
@@ -755,8 +755,21 @@ class SniperBot:
         self.running = False
         logger.info("Starting shutdown...")
         
+        self.tracker.log_session_summary()
+        
+        if self.telegram and not self.shutdown_requested:
+            await self.telegram.send_message(
+                f"🛑 Bot shutting down\n"
+                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
+                f"Session losses: {self.session_loss_count}"
+            )
+        
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
+            try:
+                await self.scanner_task
+            except asyncio.CancelledError:
+                pass
         
         if self.scanner:
             self.scanner.stop()
@@ -765,6 +778,24 @@ class SniperBot:
             logger.info(f"Closing {len(self.positions)} positions...")
             for mint in list(self.positions.keys()):
                 await self._close_position_full(mint, reason="shutdown")
+        
+        if self.telegram_polling_task and not self.telegram_polling_task.done():
+            self.telegram_polling_task.cancel()
+            try:
+                await self.telegram_polling_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.telegram:
+            self.telegram.stop()
+        
+        if self.total_trades > 0:
+            win_rate = (self.profitable_trades / self.total_trades * 100)
+            logger.info(f"📊 Final Stats:")
+            logger.info(f"  • Trades: {self.total_trades}")
+            logger.info(f"  • Win rate: {win_rate:.1f}%")
+            logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
+            logger.info(f"  • Session losses: {self.session_loss_count}")
         
         logger.info("✅ Shutdown complete")
 
