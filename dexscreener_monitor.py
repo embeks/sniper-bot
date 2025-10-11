@@ -179,6 +179,8 @@ class DexScreenerMonitor:
         """Apply quality filters to pool"""
         try:
             # Extract data
+            pool_name = pool_attrs.get('name', 'Unknown')
+            pool_address = pool_attrs.get('address', '')[:8]
             dex_id = pool_attrs.get('dex_id', '').lower()
             liquidity = float(pool_attrs.get('reserve_in_usd', 0))
             volume_5m = float(pool_attrs.get('volume_usd', {}).get('m5', 0))
@@ -188,17 +190,21 @@ class DexScreenerMonitor:
             sells = txns.get('sells', 0)
             total_txns = buys + sells
             
+            # Log every token we see
+            logger.info(f"🔍 Checking: {pool_name} ({pool_address}...) | DEX: {dex_id} | Liq: ${liquidity:,.0f} | Vol(5m): ${volume_5m:,.0f} | Txns: {total_txns} (B:{buys}/S:{sells})")
+            
             # Filter 1: DEX whitelist
             if dex_id not in self.dex_config['allowed_dexs']:
-                logger.debug(f"Filtered: DEX {dex_id} not in whitelist")
+                logger.info(f"   ❌ FILTERED: DEX '{dex_id}' not in whitelist {self.dex_config['allowed_dexs']}")
                 return False
             
             # Filter 2: Minimum liquidity
             if liquidity < self.dex_config['min_liquidity_usd']:
-                logger.debug(f"Filtered: Liquidity ${liquidity:,.0f} < ${self.dex_config['min_liquidity_usd']:,}")
+                logger.info(f"   ❌ FILTERED: Liquidity ${liquidity:,.0f} < ${self.dex_config['min_liquidity_usd']:,}")
                 return False
             
             # Filter 3: Pool age (freshness check)
+            age_seconds = None
             if pool_created_at:
                 try:
                     # Parse ISO timestamp
@@ -207,27 +213,30 @@ class DexScreenerMonitor:
                     age_seconds = (datetime.now(created_dt.tzinfo) - created_dt).total_seconds()
                     
                     if age_seconds > self.dex_config['max_pair_age_seconds']:
-                        logger.debug(f"Filtered: Age {age_seconds:.0f}s > {self.dex_config['max_pair_age_seconds']}s")
+                        logger.info(f"   ❌ FILTERED: Age {age_seconds:.0f}s > {self.dex_config['max_pair_age_seconds']}s (too old)")
                         return False
                 except Exception as e:
-                    logger.debug(f"Filtered: Could not parse pool age: {e}")
+                    logger.info(f"   ❌ FILTERED: Could not parse pool age: {e}")
                     return False
             
             # Filter 4: Minimum volume
             if volume_5m < self.dex_config['min_volume_5m']:
-                logger.debug(f"Filtered: Volume ${volume_5m:,.0f} < ${self.dex_config['min_volume_5m']:,}")
+                logger.info(f"   ❌ FILTERED: Volume ${volume_5m:,.0f} < ${self.dex_config['min_volume_5m']:,}")
                 return False
             
             # Filter 5: Minimum transactions
             if total_txns < self.dex_config['min_txns_5m']:
-                logger.debug(f"Filtered: Txns {total_txns} < {self.dex_config['min_txns_5m']}")
+                logger.info(f"   ❌ FILTERED: Txns {total_txns} < {self.dex_config['min_txns_5m']}")
                 return False
             
             # Filter 6: Minimum buys
             if buys < self.dex_config['min_buys_5m']:
-                logger.debug(f"Filtered: Buys {buys} < {self.dex_config['min_buys_5m']}")
+                logger.info(f"   ❌ FILTERED: Buys {buys} < {self.dex_config['min_buys_5m']}")
                 return False
             
+            # PASSED ALL FILTERS
+            age_str = f"{age_seconds:.0f}s" if age_seconds else "unknown"
+            logger.info(f"   ✅ PASSED ALL FILTERS! Age: {age_str}")
             return True
             
         except Exception as e:
