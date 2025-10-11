@@ -128,6 +128,20 @@ class DexScreenerMonitor:
             
             self.pairs_seen += 1
             
+            # CRITICAL FIX: Extract DEX ID from relationships, not attributes
+            dex_id = ''
+            relationships = pool.get('relationships', {})
+            dex_data = relationships.get('dex', {}).get('data', {})
+            if dex_data:
+                dex_id = dex_data.get('id', '').lower()
+            
+            # If still empty, try from attributes
+            if not dex_id:
+                dex_id = pool_attrs.get('dex_id', '').lower()
+            
+            # Add dex_id to pool_attrs for filtering
+            pool_attrs['dex_id'] = dex_id
+            
             # Apply filters
             if not self._apply_filters(pool_attrs):
                 self.pairs_filtered += 1
@@ -145,7 +159,7 @@ class DexScreenerMonitor:
                 'token_address': pool_attrs.get('base_token_address'),
                 'token_name': pool_attrs.get('name', '').split('/')[0].strip(),
                 'token_symbol': pool_attrs.get('base_token_symbol', ''),
-                'dex_id': pool_attrs.get('dex_id', '').lower(),
+                'dex_id': dex_id,
                 'liquidity_usd': float(pool_attrs.get('reserve_in_usd', 0)),
                 'volume_5m': float(pool_attrs.get('volume_usd', {}).get('m5', 0)),
                 'price_usd': float(base_token) if base_token else 0,
