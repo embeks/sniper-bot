@@ -68,72 +68,86 @@ class BirdeyeMonitor:
                 await self.session.close()
     
     async def _poll_birdeye(self):
-        """Poll Birdeye API for new Solana tokens using token_trending"""
+        """Poll Birdeye for fresh SOL tokens (SIMPLE TEST VERSION)."""
         try:
-            # Rate limiting
-            elapsed = time.time() - self.last_request_time
-            if elapsed < self.min_request_interval:
+            # Simple rate limiting
+            if time.time() - self.last_request_time < self.min_request_interval:
                 return
+
+            # HARDCODED URL - NO PARAMS OBJECT
+            url = "https://public-api.birdeye.so/defi/token_trending?limit=10&offset=0"
             
-            # Use token_trending endpoint which is publicly available
-            url = "https://public-api.birdeye.so/defi/token_trending"
-            
-            # FIXED: Correct header format for Birdeye API
             headers = {
-                'X-API-KEY': self.api_key,
-                'accept': 'application/json'
+                "X-API-KEY": self.api_key,
+                "x-chain": "solana",
+                "accept": "application/json",
             }
             
-            params = {
-                'sort_by': 'rank',
-                'sort_type': 'asc',
-                'offset': 0,
-                'limit': 50
-            }
+            logger.info(f"🔍 TESTING URL: {url}")
+            logger.info(f"📋 Headers: X-API-KEY={self.api_key[:10]}..., x-chain=solana")
             
-            async with self.session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 self.last_request_time = time.time()
                 
-                if resp.status == 401:
-                    logger.error("❌ Birdeye API authentication failed - check your API key")
-                    logger.error(f"   Using API key: {self.api_key[:10]}..." if self.api_key else "   No API key found!")
-                    return
+                logger.info(f"📊 Response status: {resp.status}")
                 
+                if resp.status == 401:
+                    logger.error("❌ Birdeye API authentication failed (401) – check your API key")
+                    return
+                    
                 if resp.status == 429:
-                    logger.warning("⚠️ Birdeye rate limit hit - waiting 10s")
+                    logger.warning("⚠️ Birdeye rate limit (429) – backing off 10s")
                     await asyncio.sleep(10)
                     return
-                
+                    
                 if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.warning(f"Birdeye API error {resp.status}: {error_text[:200]}")
+                    txt = await resp.text()
+                    logger.error(f"❌ Birdeye API error {resp.status}: {txt[:300]}")
                     return
-                
+                    
                 data = await resp.json()
+                logger.info(f"✅ SUCCESS! Got data: {str(data)[:200]}")
                 
-                if not data.get('success'):
-                    logger.warning(f"Birdeye API returned success=false: {data}")
+                if not data or data.get("success") is False:
+                    logger.warning(f"Birdeye returned success=false or empty: {data}")
                     return
                 
-                # token_trending returns a simpler structure
-                tokens = data.get('data', {}).get('items', [])
+                # token_trending keeps the array under data.items
+                items = (data.get('data', {}) or {}).get('items', []) or []
                 
-                if not tokens:
-                    logger.debug("No trending tokens from Birdeye")
+                if not items:
+                    logger.info("No tokens returned")
                     return
+                    
+                logger.info(f"✅ Birdeye returned {len(items)} tokens!")
+                logger.info(f"First token: {items[0] if items else 'none'}")
                 
-                logger.info(f"✅ Received {len(tokens)} new tokens from Birdeye")
-                
-                # Process each token
-                for token in tokens:
-                    await self._process_token(token)
+                # Process tokens
+                for raw in items:
+                    await self._process_token_simple(raw)
                     
         except asyncio.TimeoutError:
             logger.warning("Birdeye API timeout")
         except Exception as e:
             logger.error(f"Failed to poll Birdeye: {e}")
             import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
+    
+    async def _process_token_simple(self, token: Dict):
+        """Simple token processing for testing"""
+        try:
+            address = token.get('address') or token.get('mint') or ''
+            if not address or address in self.seen_pairs:
+                return
+                
+            self.seen_pairs.add(address)
+            self.pairs_seen += 1
+            
+            symbol = token.get('symbol', 'UNKNOWN')
+            logger.info(f"  📍 Token {self.pairs_seen}: {symbol} ({address[:8]}...)")
+            
+        except Exception as e:
+            logger.error(f"Error processing token: {e}")
     
     async def _process_token(self, token: Dict):
         """Process a single token from Birdeye"""
