@@ -112,11 +112,15 @@ class BirdeyeMonitor:
                     logger.warning(f"Birdeye returned success=false or empty: {data}")
                     return
                 
-                # token_trending keeps the array under data.items
-                items = (data.get('data', {}) or {}).get('items', []) or []
+                # token_trending returns tokens under data.tokens (NOT data.items!)
+                items = data.get('data', {}).get('tokens', []) or []
+                
+                logger.info(f"📦 Raw data keys: {list(data.keys())}")
+                if 'data' in data:
+                    logger.info(f"📦 Data keys: {list(data['data'].keys())}")
                 
                 if not items:
-                    logger.info("No tokens returned")
+                    logger.info("No tokens in response")
                     return
                     
                 logger.info(f"✅ Birdeye returned {len(items)} tokens!")
