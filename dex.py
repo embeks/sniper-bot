@@ -1,5 +1,6 @@
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
+FIXED: Consistent raw reserve format from both WebSocket and blockchain
 """
 
 import time
@@ -114,8 +115,17 @@ class PumpFunDEX:
                     v_sol = token_data.get('vSolInBondingCurve', 0)
                     v_tokens = token_data.get('vTokensInBondingCurve', 0)
                     
+                    # ✅ CRITICAL FIX: Get actual token decimals instead of hardcoding
+                    # WebSocket gives human-readable values, we need raw format
+                    token_decimals = self.wallet.get_token_decimals(mint)
+                    if isinstance(token_decimals, tuple):
+                        token_decimals = token_decimals[0]
+                    if not token_decimals or token_decimals == 0:
+                        token_decimals = 6  # PumpFun default
+                    
+                    # Convert to raw format (matching blockchain data format)
                     v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
-                    v_tokens_raw = int(v_tokens * 1e6) if v_tokens > 0 else 0
+                    v_tokens_raw = int(v_tokens * (10 ** token_decimals)) if v_tokens > 0 else 0
                     
                     # Check migration
                     is_migrated = v_sol >= MIGRATION_THRESHOLD_SOL
@@ -148,7 +158,7 @@ class PumpFunDEX:
                         'timestamp': time.time()
                     }
                     
-                    logger.debug(f"Using WebSocket data for {mint[:8]}... (age: {data_age:.1f}s)")
+                    logger.debug(f"Using WebSocket data for {mint[:8]}... (age: {data_age:.1f}s, decimals: {token_decimals})")
                     return curve_data
             
             # WebSocket data expired or unavailable - query chain directly via Helius
