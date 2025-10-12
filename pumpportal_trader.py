@@ -1,6 +1,6 @@
 """
 PumpPortal Trader
-FIXED: Increased priority fees for fast transaction confirmation
+UPDATED: Tighter slippage now that we validate liquidity first
 """
 
 import aiohttp
@@ -22,15 +22,13 @@ class PumpPortalTrader:
     
     async def get_priority_fee(self, urgency: str = "normal") -> float:
         """
-        FIXED: Increased priority fees for reliable transaction confirmation
+        Dynamic priority fees for reliable confirmation
         
         urgency levels:
-        - "low": 0.002 SOL (5x target, price still climbing)
-        - "normal": 0.003 SOL (2x/3x targets, regular buys) - INCREASED from 0.0005
-        - "high": 0.005 SOL (stop-loss, early dump, no volume) - INCREASED from 0.001
-        - "critical": 0.01 SOL (retries, must execute immediately) - INCREASED from 0.002
-        
-        Old fees were causing 25s+ timeouts. New fees ensure 2-5 second confirmation.
+        - "low": 0.002 SOL (5x target)
+        - "normal": 0.003 SOL (regular buys, 2x/3x targets)
+        - "high": 0.005 SOL (stop-loss, early dump)
+        - "critical": 0.01 SOL (retries, must execute)
         """
         urgency_fees = {
             "low": 0.002,
@@ -48,7 +46,7 @@ class PumpPortalTrader:
         mint: str, 
         sol_amount: float,
         bonding_curve_key: str = None,
-        slippage: int = 50,
+        slippage: int = 30,  # UPDATED: Tighter default (0.3%) since we validate liquidity
         urgency: str = "normal"
     ) -> Optional[str]:
         """Get a buy transaction from PumpPortal API with dynamic fees"""
@@ -64,7 +62,7 @@ class PumpPortalTrader:
                 "mint": mint,
                 "denominatedInSol": "true",
                 "amount": sol_amount,
-                "slippage": slippage,
+                "slippage": slippage,  # Basis points (30 = 0.3%)
                 "priorityFee": priority_fee,
                 "pool": "pump"
             }
@@ -73,7 +71,7 @@ class PumpPortalTrader:
                 payload["bondingCurveKey"] = bonding_curve_key
             
             logger.info(f"Requesting buy transaction for {mint[:8]}... amount: {sol_amount} SOL")
-            logger.info(f"Priority fee: {priority_fee:.6f} SOL ({urgency})")
+            logger.info(f"Priority fee: {priority_fee:.6f} SOL ({urgency}), Slippage: {slippage} BPS")
             logger.debug(f"Using wallet: {wallet_pubkey}")
             
             async with aiohttp.ClientSession() as session:
@@ -119,12 +117,8 @@ class PumpPortalTrader:
                         try:
                             from solders.transaction import VersionedTransaction
                             
-                            # Parse the unsigned v0 transaction to get the message
                             unsigned_tx = VersionedTransaction.from_bytes(raw_tx_bytes)
                             message = unsigned_tx.message
-                            
-                            # Create a NEW VersionedTransaction with the message and keypair
-                            # This constructor signs the message with your keypair
                             signed_tx = VersionedTransaction(message, [self.wallet.keypair])
                             signed_tx_bytes = bytes(signed_tx)
                             
@@ -134,7 +128,7 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions (517 bytes for sells) - KEEP EXISTING WORKING CODE
+                        # Legacy transactions - use existing working code
                         logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
                         try:
                             from solana.transaction import Transaction
@@ -144,7 +138,6 @@ class PumpPortalTrader:
                             logger.info("Signed legacy transaction")
                         except Exception as e:
                             logger.error(f"Failed to sign legacy transaction: {e}")
-                            # Try sending as-is - PumpPortal might have pre-signed it
                             logger.info("Attempting to send without signing...")
                             signed_tx_bytes = raw_tx_bytes
                     
@@ -190,11 +183,11 @@ class PumpPortalTrader:
     async def create_sell_transaction(
         self,
         mint: str,
-        token_amount: float,  # UI amount
+        token_amount: float,
         bonding_curve_key: str = None,
         slippage: int = 50,
         token_decimals: int = 6,
-        urgency: str = "normal"  # CRITICAL FIX: Added urgency parameter
+        urgency: str = "normal"
     ) -> Optional[str]:
         """Get a sell transaction from PumpPortal API with dynamic fees - expects UI token amounts"""
         try:
@@ -207,7 +200,7 @@ class PumpPortalTrader:
             
             # Handle decimals - it might be a tuple (decimals, source) or just an int
             if isinstance(token_decimals, tuple):
-                token_decimals = token_decimals[0]  # Extract just the decimals value
+                token_decimals = token_decimals[0]
             
             # Get dynamic priority fee based on urgency
             priority_fee = await self.get_priority_fee(urgency)
@@ -227,7 +220,7 @@ class PumpPortalTrader:
                 "denominatedInSol": "false",
                 "amount": ui_amount,
                 "slippage": slippage,
-                "priorityFee": priority_fee,  # CRITICAL FIX: Dynamic fee
+                "priorityFee": priority_fee,
                 "pool": "pump",
                 "tokenDecimals": token_decimals
             }
@@ -277,7 +270,7 @@ class PumpPortalTrader:
                         logger.error(f"Transaction too small: {len(raw_tx_bytes)} bytes")
                         return None
                     
-                    # Check if it's a v0 transaction (544 bytes or high bit set)
+                    # Check if it's a v0 transaction
                     is_v0 = len(raw_tx_bytes) == 544 or (raw_tx_bytes[0] & 0x80) != 0
                     
                     if is_v0:
@@ -285,12 +278,8 @@ class PumpPortalTrader:
                         try:
                             from solders.transaction import VersionedTransaction
                             
-                            # Parse the unsigned v0 transaction to get the message
                             unsigned_tx = VersionedTransaction.from_bytes(raw_tx_bytes)
                             message = unsigned_tx.message
-                            
-                            # Create a NEW VersionedTransaction with the message and keypair
-                            # This constructor signs the message with your keypair
                             signed_tx = VersionedTransaction(message, [self.wallet.keypair])
                             signed_tx_bytes = bytes(signed_tx)
                             
@@ -300,8 +289,7 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transaction from PumpPortal. Always re-sign correctly:
-                        # parse compact-u16 sig_count, extract message, sign, and repack.
+                        # Legacy transaction - manual signing
                         logger.info("Legacy transaction - manual signing (robust varint parse + re-pack)")
                         try:
                             b = raw_tx_bytes
@@ -309,7 +297,7 @@ class PumpPortalTrader:
                                 logger.error(f"Legacy tx too small ({len(b)} bytes)")
                                 return None
                             
-                            # --- parse compact-u16 signature count (little-endian varint) ---
+                            # Parse compact-u16 signature count
                             idx = 0
                             val = 0
                             shift = 0
@@ -323,31 +311,31 @@ class PumpPortalTrader:
                                 if byte < 0x80:
                                     break
                                 shift += 7
-                                if shift > 14:  # guardrail
+                                if shift > 14:
                                     logger.error("sig_count varint too long")
                                     return None
                             sig_count = val
                             sig_section_end = idx + 64 * sig_count
                             
                             if sig_section_end > len(b):
-                                logger.error("Malformed legacy tx: signatures section extends past end")
+                                logger.error("Malformed legacy tx")
                                 return None
                             
-                            # Message is everything after the signature section
+                            # Message is everything after signatures
                             msg_bytes = b[sig_section_end:]
                             if not msg_bytes:
                                 logger.error("Empty legacy message bytes")
                                 return None
                             
-                            # Sign the message with our keypair
-                            signature = self.wallet.keypair.sign_message(msg_bytes)  # 64 bytes
+                            # Sign the message
+                            signature = self.wallet.keypair.sign_message(msg_bytes)
                             
-                            # Repack: [sig_count=1 (0x01)] + [signature] + [message]
+                            # Repack: [sig_count=1] + [signature] + [message]
                             signed_tx_bytes = bytes([0x01]) + bytes(signature) + msg_bytes
                             
                             logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
                         except Exception as e:
-                            logger.error(f"Failed to sign legacy transaction (manual pack): {e}")
+                            logger.error(f"Failed to sign legacy transaction: {e}")
                             return None
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
