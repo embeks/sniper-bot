@@ -68,15 +68,15 @@ class BirdeyeMonitor:
                 await self.session.close()
     
     async def _poll_birdeye(self):
-        """Poll Birdeye API for new Solana tokens"""
+        """Poll Birdeye API for new Solana tokens using token_trending"""
         try:
             # Rate limiting
             elapsed = time.time() - self.last_request_time
             if elapsed < self.min_request_interval:
                 return
             
-            # FIXED: Use correct Birdeye endpoint - token_list sorted by creation time
-            url = "https://public-api.birdeye.so/defi/token_list"
+            # Use token_trending endpoint which is publicly available
+            url = "https://public-api.birdeye.so/defi/token_trending"
             
             # FIXED: Correct header format for Birdeye API
             headers = {
@@ -85,8 +85,8 @@ class BirdeyeMonitor:
             }
             
             params = {
-                'sort_by': 'creation_time',
-                'sort_type': 'desc',
+                'sort_by': 'rank',
+                'sort_type': 'asc',
                 'offset': 0,
                 'limit': 50
             }
@@ -115,11 +115,11 @@ class BirdeyeMonitor:
                     logger.warning(f"Birdeye API returned success=false: {data}")
                     return
                 
-                # FIXED: Correct response structure for token_list endpoint
-                tokens = data.get('data', {}).get('tokens', [])
+                # token_trending returns a simpler structure
+                tokens = data.get('data', {}).get('items', [])
                 
                 if not tokens:
-                    logger.debug("No new tokens from Birdeye")
+                    logger.debug("No trending tokens from Birdeye")
                     return
                 
                 logger.info(f"✅ Received {len(tokens)} new tokens from Birdeye")
@@ -154,23 +154,52 @@ class BirdeyeMonitor:
             self.seen_pairs.add(token_address)
             self.pairs_passed += 1
             
-            # Extract relevant data
-            liquidity_info = token.get('liquidity', {})
-            volume_info = token.get('trade', {})
+            # Extract relevant data - defensive parsing
+            liquidity_usd = 0
+            volume_5m = 0
+            buys_5m = 0
+            sells_5m = 0
+            
+            # Try multiple possible field names for liquidity
+            if 'liquidity' in token:
+                liq = token['liquidity']
+                if isinstance(liq, dict):
+                    liquidity_usd = float(liq.get('usd', 0) or liq.get('v24hUSD', 0))
+                else:
+                    liquidity_usd = float(liq or 0)
+            
+            # Try multiple possible field names for volume/trades
+            if 'trade' in token:
+                trade = token['trade']
+                volume_5m = float(trade.get('v5m', 0))
+                buys_5m = int(trade.get('b5m', 0))
+                sells_5m = int(trade.get('s5m', 0))
+            elif 'volume' in token:
+                vol = token['volume']
+                if isinstance(vol, dict):
+                    volume_5m = float(vol.get('m5', 0) or vol.get('v5m', 0))
+            
+            if 'txns' in token:
+                txns = token['txns']
+                if isinstance(txns, dict):
+                    m5 = txns.get('m5', {})
+                    if isinstance(m5, dict):
+                        buys_5m = int(m5.get('buys', 0) or m5.get('b5m', 0))
+                        sells_5m = int(m5.get('sells', 0) or m5.get('s5m', 0))
             
             pair_data = {
-                'pair_address': token_address,  # Birdeye uses token address as identifier
+                'pair_address': token_address,
                 'token_address': token_address,
                 'token_name': token.get('name', ''),
                 'token_symbol': token.get('symbol', ''),
                 'dex_id': token.get('source', '').lower(),
-                'liquidity_usd': float(liquidity_info.get('v24hUSD', 0)),
-                'volume_5m': float(volume_info.get('v5m', 0)),
+                'liquidity_usd': liquidity_usd,
+                'volume_5m': volume_5m,
                 'price_usd': float(token.get('price', 0)),
                 'pair_created_at': token.get('createdAt'),
-                'txns_5m_buys': int(volume_info.get('b5m', 0)),
-                'txns_5m_sells': int(volume_info.get('s5m', 0)),
-                'price_change_5m': float(token.get('priceChange', {}).get('m5', 0)),
+                'txns_5m_buys': buys_5m,
+                'txns_5m_sells': sells_5m,
+                'price_change_5m': float(token.get('priceChange', {}).get('m5', 0) if isinstance(token.get('priceChange'), dict) else 0),
                 'source': 'birdeye'
             }
             
@@ -196,20 +225,46 @@ class BirdeyeMonitor:
     def _apply_filters(self, token: Dict) -> bool:
         """Apply quality filters to token"""
         try:
-            # Extract data
+            # Extract data - defensive parsing
             token_name = token.get('name', 'Unknown')
             token_address = token.get('address', '')[:8]
             source = token.get('source', '').lower()
             
-            liquidity_info = token.get('liquidity', {})
-            volume_info = token.get('trade', {})
+            # Parse liquidity - try multiple field names
+            liquidity_usd = 0
+            if 'liquidity' in token:
+                liq = token['liquidity']
+                if isinstance(liq, dict):
+                    liquidity_usd = float(liq.get('usd', 0) or liq.get('v24hUSD', 0))
+                else:
+                    liquidity_usd = float(liq or 0)
             
-            liquidity_usd = float(liquidity_info.get('v24hUSD', 0))
-            volume_5m = float(volume_info.get('v5m', 0))
+            # Parse volume - try multiple field names
+            volume_5m = 0
+            if 'trade' in token:
+                volume_5m = float(token['trade'].get('v5m', 0))
+            elif 'volume' in token:
+                vol = token['volume']
+                if isinstance(vol, dict):
+                    volume_5m = float(vol.get('m5', 0) or vol.get('v5m', 0))
+            
             created_at = token.get('createdAt')
             
-            buys_5m = int(volume_info.get('b5m', 0))
-            sells_5m = int(volume_info.get('s5m', 0))
+            # Parse txns - try multiple field names
+            buys_5m = 0
+            sells_5m = 0
+            if 'trade' in token:
+                trade = token['trade']
+                buys_5m = int(trade.get('b5m', 0))
+                sells_5m = int(trade.get('s5m', 0))
+            elif 'txns' in token:
+                txns = token['txns']
+                if isinstance(txns, dict):
+                    m5 = txns.get('m5', {})
+                    if isinstance(m5, dict):
+                        buys_5m = int(m5.get('buys', 0) or m5.get('b5m', 0))
+                        sells_5m = int(m5.get('sells', 0) or m5.get('s5m', 0))
+            
             total_txns = buys_5m + sells_5m
             
             # Log every token we see
