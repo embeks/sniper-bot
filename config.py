@@ -1,5 +1,5 @@
 """
-config - Updated for DEXScreener + Jupiter
+config - Path B: MC + Holder Strategy
 """
 
 import os
@@ -30,82 +30,46 @@ BACKUP_RPC_ENDPOINTS = [
 ]
 
 # ============================================
-# TRADING PARAMETERS - DEX MODE
+# PHASE 1.5 TRADING PARAMETERS - PATH B
 # ============================================
 # Position sizing
-BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
+BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.03'))
+PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-# Risk management
+# Risk management - PATH B
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
+TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Partial profit taking from env
 PARTIAL_TAKE_PROFIT = {}
 tp1, sp1 = os.getenv('TAKE_PROFIT_1'), os.getenv('SELL_PERCENT_1')
 tp2, sp2 = os.getenv('TAKE_PROFIT_2'), os.getenv('SELL_PERCENT_2')
 tp3, sp3 = os.getenv('TAKE_PROFIT_3'), os.getenv('SELL_PERCENT_3')
-tp4, sp4 = os.getenv('TAKE_PROFIT_4'), os.getenv('SELL_PERCENT_4')
 
 if tp1 and sp1:
-    PARTIAL_TAKE_PROFIT[float(tp1)] = float(sp1) / 100.0
+    PARTIAL_TAKE_PROFIT[float(tp1)] = float(sp1) / 100.0  # REMOVED * 100
 if tp2 and sp2:
-    PARTIAL_TAKE_PROFIT[float(tp2)] = float(sp2) / 100.0
+    PARTIAL_TAKE_PROFIT[float(tp2)] = float(sp2) / 100.0  # REMOVED * 100
 if tp3 and sp3:
-    PARTIAL_TAKE_PROFIT[float(tp3)] = float(sp3) / 100.0
-if tp4 and sp4:
-    PARTIAL_TAKE_PROFIT[float(tp4)] = float(sp4) / 100.0
+    PARTIAL_TAKE_PROFIT[float(tp3)] = float(sp3) / 100.0  # REMOVED * 100
 
-# Add 10x target if not present
-if not any(k == 1000 for k in PARTIAL_TAKE_PROFIT.keys()):
-    PARTIAL_TAKE_PROFIT[1000] = 0.20  # 10x → sell 20%
-
-# Trailing stop
-TRAILING_STOP_PERCENT = float(os.getenv('TRAILING_STOP_PERCENT', '15'))
-TRAILING_STOP_ACTIVATION = 200  # Activate after 2x
-
-# Timing - Extended for DEX
+# Timing - PATH B
 SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '15'))
-MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '7200'))  # 2 hours
+MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '90'))
 MONITOR_CHECK_INTERVAL = int(os.getenv('MONITOR_CHECK_INTERVAL', '2'))
 DATA_FAILURE_TOLERANCE = int(os.getenv('DATA_FAILURE_TOLERANCE', '10'))
 
 # ============================================
-# BIRDEYE CONFIGURATION (Fresh Pair Detection)
-# ============================================
-BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY', '')
-if not BIRDEYE_API_KEY:
-    raise ValueError("BIRDEYE_API_KEY not found in environment variables")
-
-BIRDEYE_CONFIG = {
-    # Polling
-    'poll_interval': int(os.getenv('BIRDEYE_POLL_INTERVAL', '3')),  # seconds
-    
-    # Pair filters
-    'allowed_dexs': ['raydium', 'meteora', 'orca'],
-    'min_liquidity_usd': float(os.getenv('MIN_LP_USD', '15000')),
-    'max_pair_age_seconds': int(os.getenv('MAX_PAIR_AGE_SEC', '600')),  # 10 minutes
-    
-    # Volume filters
-    'min_volume_5m': float(os.getenv('MIN_VOLUME_USD', '3000')),
-    'min_txns_5m': int(os.getenv('MIN_TXNS_5M', '25')),
-    'min_buys_5m': int(os.getenv('MIN_BUYS_5M', '15')),
-}
-
-# ============================================
-# DEX CONFIGURATION (Legacy - Removed)
-# ============================================
-# Removed DEX_CONFIG - now using BIRDEYE_CONFIG
-
-# ============================================
-# PUMPFUN SPECIFIC CONFIGURATION (Legacy)
+# PUMPFUN SPECIFIC CONFIGURATION
 # ============================================
 PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
-# Bonding curve parameters
-MIN_BONDING_CURVE_SOL = 15.0
-MAX_BONDING_CURVE_SOL = 45.0
+# Bonding curve parameters - PATH B: Higher minimums
+MIN_BONDING_CURVE_SOL = 15.0  # CHANGED: Down from 40 - enter earlier
+MAX_BONDING_CURVE_SOL = 45.0  # CHANGED: Down from 60 - tighter window
 MIGRATION_THRESHOLD_SOL = 85
 
 # Buy criteria
@@ -116,10 +80,9 @@ MAX_PRICE_IMPACT_PERCENTAGE = 5
 # Auto buy setting
 AUTO_BUY = os.getenv('AUTO_BUY', 'true').lower() == 'true'
 PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
-PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 
 # ============================================
-# DEX PROGRAM IDS
+# DEX CONFIGURATION
 # ============================================
 # Raydium
 RAYDIUM_PROGRAM_ID = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
@@ -134,13 +97,13 @@ RENT_PROGRAM_ID = Pubkey.from_string("SysvarRent11111111111111111111111111111111
 # ============================================
 # MONITORING CONFIGURATION
 # ============================================
-# WebSocket subscriptions (legacy)
+# WebSocket subscriptions
 MONITOR_PROGRAMS = [
     str(PUMPFUN_PROGRAM_ID),
     str(RAYDIUM_PROGRAM_ID)
 ]
 
-# Log filters (legacy)
+# Log filters
 LOG_CONTAINS_FILTERS = [
     "Program log: Instruction: InitializeBondingCurve",
     "Program log: Instruction: Buy",
@@ -149,7 +112,7 @@ LOG_CONTAINS_FILTERS = [
 ]
 
 # ============================================
-# TOKEN FILTERS
+# TOKEN FILTERS (PATH B - MC + HOLDER BASED)
 # ============================================
 # Blacklisted tokens (known rugs/scams)
 BLACKLISTED_TOKENS = set()
@@ -157,7 +120,7 @@ BLACKLISTED_TOKENS = set()
 # Required token metadata
 REQUIRE_METADATA = True
 REQUIRE_SOCIAL_LINKS = False
-MIN_HOLDER_COUNT = 10
+MIN_HOLDER_COUNT = 60  # CHANGED: Up from 0 - require real distribution
 
 # ============================================
 # PERFORMANCE TRACKING
