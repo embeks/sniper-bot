@@ -392,3 +392,4 @@ class PerformanceTracker:
         logger.info(f"📈 Full trade log saved to: {self.csv_file}")
         
         return stats
+
