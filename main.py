@@ -562,19 +562,16 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with CORRECTED P&L tracking"""
+        """Monitor position with RUG TRAP during grace period"""
         try:
             position = self.positions.get(mint)
             if not position:
                 return
             
-            if SELL_DELAY_SECONDS > 0:
-                logger.info(f"⏳ Grace period {SELL_DELAY_SECONDS}s for {mint[:8]}...")
-                await asyncio.sleep(SELL_DELAY_SECONDS)
-            else:
-                logger.info(f"⚡ No grace period - monitoring immediately for {mint[:8]}...")
+            # Calculate grace period end time
+            grace_end_time = position.entry_time + SELL_DELAY_SECONDS
             
-            logger.info(f"📈 Starting active monitoring for {mint[:8]}...")
+            logger.info(f"📈 Starting monitoring for {mint[:8]}... (grace: {SELL_DELAY_SECONDS}s)")
             logger.info(f"   Entry MC: ${position.entry_market_cap:,.0f}")
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} SOL per token")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
@@ -586,6 +583,7 @@ class SniperBot:
             while mint in self.positions and position.status == 'active':
                 check_count += 1
                 age = time.time() - position.entry_time
+                in_grace_period = time.time() < grace_end_time
                 
                 # Check age limit
                 if age > MAX_POSITION_AGE_SECONDS:
@@ -641,6 +639,42 @@ class SniperBot:
                             consecutive_data_failures = 0
                             position.last_valid_price = current_token_price_sol
                             position.last_price_update = time.time()
+                            
+                            # ===================================================================
+                            # 🚨 RUG TRAP - ALWAYS ACTIVE (even during grace period)
+                            # ===================================================================
+                            
+                            if price_change <= -10 and not position.is_closing:
+                                if in_grace_period:
+                                    logger.warning(f"🚨 RUG TRAP TRIGGERED in grace period ({price_change:.1f}%) - immediate exit!")
+                                else:
+                                    logger.warning(f"🚨 MAJOR DUMP ({price_change:.1f}%) - immediate exit!")
+                                
+                                position.is_closing = True
+                                await self._close_position_full(mint, reason="rug_trap")
+                                break
+                            
+                            # ===================================================================
+                            # GRACE PERIOD: Only log, no other actions
+                            # ===================================================================
+                            
+                            if in_grace_period:
+                                # During grace: only monitor, no profit-taking or other exits
+                                remaining_grace = grace_end_time - time.time()
+                                
+                                if check_count % 3 == 1:
+                                    logger.info(
+                                        f"⏳ GRACE {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                                        f"Remaining: {remaining_grace:.1f}s"
+                                    )
+                                
+                                # Skip all other checks during grace
+                                await asyncio.sleep(MONITOR_CHECK_INTERVAL)
+                                continue
+                            
+                            # ===================================================================
+                            # AFTER GRACE: Normal monitoring logic
+                            # ===================================================================
                             
                             # Volume-based exit
                             if position.last_checked_price == 0:
@@ -1329,4 +1363,3 @@ if __name__ == "__main__":
         logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc()
-
