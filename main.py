@@ -1,6 +1,6 @@
 """
-Main Orchestrator - COMPLETE P&L FIX
-CRITICAL FIX: Correct decimals in BOTH entry price AND current price calculations
+Main Orchestrator - MINIMAL P&L FIX
+FIXED: Simplified price calculation, removed over-engineering
 """
 
 import asyncio
@@ -84,7 +84,7 @@ class Position:
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
         
-        # FIXED: Calculate actual price paid
+        # ✅ FIXED: Calculate actual price paid
         if tokens > 0:
             self.entry_token_price_sol = amount_sol / tokens
         else:
@@ -115,7 +115,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - COMPLETE P&L FIX")
+        logger.info("🚀 INITIALIZING SNIPER BOT - MINIMAL P&L FIX")
         logger.info("=" * 60)
         
         # Core components
@@ -177,7 +177,7 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Targets: 2x/3x/5x (REAL SOL TRACKING)")
+        logger.info(f"  • Targets: 2x/3x/5x (ACCURATE TRACKING)")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
@@ -218,44 +218,41 @@ class SniperBot:
     
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
         """
-        CRITICAL FIX: Calculate current token price with CORRECT decimals
-        This is used by BOTH grace period and monitoring loop
+        ✅ FIXED: Calculate current token price with correct decimal handling
+        Both entry and current prices now use the same basis
         """
         try:
             if not curve_data:
                 return None
             
-            # Get actual token decimals
-            token_decimals = self.wallet.get_token_decimals(mint)
-            
-            # Handle tuple response (decimals, source)
-            if isinstance(token_decimals, tuple):
-                token_decimals = token_decimals[0]
-            
-            # Default to 6 if lookup fails
-            if not token_decimals or token_decimals == 0:
-                logger.warning(f"Could not get decimals for {mint[:8]}, defaulting to 6")
-                token_decimals = 6
-            
-            # Get reserves
+            # Get reserves (now consistently raw from dex.py fix)
             v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
             v_token_reserves = curve_data.get('virtual_token_reserves', 0)
             
             if v_token_reserves <= 0 or v_sol_reserves <= 0:
                 return None
             
-            # Calculate with CORRECT decimals
-            sol_human = v_sol_reserves / 1e9
-            tokens_human = v_token_reserves / (10 ** token_decimals)  # ✅ FIXED
+            # Get token decimals
+            token_decimals = self.wallet.get_token_decimals(mint)
+            if isinstance(token_decimals, tuple):
+                token_decimals = token_decimals[0]
+            if not token_decimals or token_decimals == 0:
+                token_decimals = 6
             
+            # Convert to human-readable
+            sol_human = v_sol_reserves / 1e9
+            tokens_human = v_token_reserves / (10 ** token_decimals)
+            
+            # Calculate price
             current_token_price_sol = sol_human / tokens_human
             
-            logger.debug(f"🔍 Price calc for {mint[:8]}: decimals={token_decimals}, price={current_token_price_sol:.10f}")
+            if current_token_price_sol <= 0:
+                return None
             
             return current_token_price_sol
             
         except Exception as e:
-            logger.error(f"Error calculating token price: {e}")
+            logger.error(f"Error calculating token price for {mint[:8]}: {e}")
             return None
     
     async def _get_transaction_deltas(self, signature: str, mint: str) -> dict:
@@ -332,7 +329,7 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - COMPLETE P&L FIX\n"
+                    "🚀 Bot started - P&L FIXED\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"🛡️ Liquidity: {LIQUIDITY_MULTIPLIER}x\n"
@@ -660,7 +657,7 @@ class SniperBot:
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # ✅ CRITICAL FIX: Use centralized price calculation function
+                        # ✅ FIXED: Use centralized price calculation function
                         current_token_price_sol = self._get_current_token_price(mint, curve_data)
                         
                         if current_token_price_sol is None:
@@ -778,12 +775,6 @@ class SniperBot:
                         if position.consecutive_no_movement >= 7:
                             logger.warning(f"🚫 NO VOLUME for 15s - exiting {mint[:8]}...")
                             await self._close_position_full(mint, reason="no_volume")
-                            break
-                        
-                        # Early dump detection (AFTER GRACE ONLY)
-                        if age < 30 and price_change < -3:
-                            logger.warning(f"🚫 EARLY DUMP ({price_change:.1f}%) - exiting {mint[:8]}...")
-                            await self._close_position_full(mint, reason="early_dump")
                             break
                         
                         if check_count % 10 == 1:
@@ -1165,9 +1156,13 @@ class SniperBot:
             
             pre_sol_balance = self.wallet.get_sol_balance()
             
+            # CRITICAL FIX: Always use actual wallet balance to avoid rounding dust
             actual_balance = self.wallet.get_token_balance(mint)
             if actual_balance > 0:
                 ui_token_balance = actual_balance
+                logger.info(f"💰 Selling actual balance: {actual_balance:,.2f} tokens (avoiding dust)")
+            else:
+                logger.warning(f"No tokens in wallet - using position balance: {ui_token_balance:,.2f}")
             
             curve_data = self.dex.get_bonding_curve_data(mint)
             is_migrated = curve_data is None or curve_data.get('is_migrated', False)
@@ -1282,7 +1277,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with COMPLETE P&L FIX")
+            logger.info("✅ Bot running with MINIMAL P&L FIX")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
