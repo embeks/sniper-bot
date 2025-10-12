@@ -1,6 +1,6 @@
 """
-Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
-CRITICAL FIX: Correct token decimals in P&L calculation
+Main Orchestrator - COMPLETE P&L FIX
+CRITICAL FIX: Correct decimals in BOTH entry price AND current price calculations
 """
 
 import asyncio
@@ -115,7 +115,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - WITH LIQUIDITY VALIDATION")
+        logger.info("🚀 INITIALIZING SNIPER BOT - COMPLETE P&L FIX")
         logger.info("=" * 60)
         
         # Core components
@@ -169,7 +169,7 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: MC + Holder + Liquidity Validation")
+        logger.info(f"  • Strategy: MC + Holder + Liquidity + FIXED P&L")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
         logger.info(f"  • Max slippage: {MAX_SLIPPAGE_PERCENT}%")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
@@ -215,6 +215,48 @@ class SniperBot:
         except Exception as e:
             logger.error(f"Token price calculation error: {e}")
             return 0
+    
+    def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
+        """
+        CRITICAL FIX: Calculate current token price with CORRECT decimals
+        This is used by BOTH grace period and monitoring loop
+        """
+        try:
+            if not curve_data:
+                return None
+            
+            # Get actual token decimals
+            token_decimals = self.wallet.get_token_decimals(mint)
+            
+            # Handle tuple response (decimals, source)
+            if isinstance(token_decimals, tuple):
+                token_decimals = token_decimals[0]
+            
+            # Default to 6 if lookup fails
+            if not token_decimals or token_decimals == 0:
+                logger.warning(f"Could not get decimals for {mint[:8]}, defaulting to 6")
+                token_decimals = 6
+            
+            # Get reserves
+            v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
+            v_token_reserves = curve_data.get('virtual_token_reserves', 0)
+            
+            if v_token_reserves <= 0 or v_sol_reserves <= 0:
+                return None
+            
+            # Calculate with CORRECT decimals
+            sol_human = v_sol_reserves / 1e9
+            tokens_human = v_token_reserves / (10 ** token_decimals)  # ✅ FIXED
+            
+            current_token_price_sol = sol_human / tokens_human
+            
+            logger.debug(f"🔍 Price calc for {mint[:8]}: decimals={token_decimals}, price={current_token_price_sol:.10f}")
+            
+            return current_token_price_sol
+            
+        except Exception as e:
+            logger.error(f"Error calculating token price: {e}")
+            return None
     
     async def _get_transaction_deltas(self, signature: str, mint: str) -> dict:
         """Read transaction metadata from blockchain"""
@@ -290,7 +332,7 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - WITH LIQUIDITY VALIDATION\n"
+                    "🚀 Bot started - COMPLETE P&L FIX\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"🛡️ Liquidity: {LIQUIDITY_MULTIPLIER}x\n"
@@ -562,7 +604,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with RUG TRAP during grace period - FIXED P&L CALCULATION"""
+        """Monitor position - USES FIXED PRICE CALCULATION"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -618,241 +660,221 @@ class SniperBot:
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # CRITICAL FIX: Get actual token decimals
-                        token_decimals = self.wallet.get_token_decimals(mint)
+                        # ✅ CRITICAL FIX: Use centralized price calculation function
+                        current_token_price_sol = self._get_current_token_price(mint, curve_data)
                         
-                        # Handle tuple response (decimals, source)
-                        if isinstance(token_decimals, tuple):
-                            token_decimals = token_decimals[0]
+                        if current_token_price_sol is None:
+                            consecutive_data_failures += 1
+                            logger.warning(f"Could not calculate price (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                            await asyncio.sleep(1)
+                            continue
                         
-                        # Default to 6 if lookup fails
-                        if not token_decimals or token_decimals == 0:
-                            logger.warning(f"Could not get decimals for {mint[:8]}, defaulting to 6")
-                            token_decimals = 6
+                        # Calculate P&L
+                        if position.entry_token_price_sol > 0:
+                            price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
+                        else:
+                            price_change = 0
                         
-                        # Calculate actual token price WITH CORRECT DECIMALS
-                        v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
-                        v_token_reserves = curve_data.get('virtual_token_reserves', 0)
+                        position.pnl_percent = price_change
+                        position.current_price = current_token_price_sol
                         
-                        if v_token_reserves > 0 and v_sol_reserves > 0:
-                            sol_human = v_sol_reserves / 1e9
-                            tokens_human = v_token_reserves / (10 ** token_decimals)  # ✅ FIXED
-                            
-                            current_token_price_sol = sol_human / tokens_human
-                            
-                            if position.entry_token_price_sol > 0:
-                                price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
-                            else:
-                                price_change = 0
-                            
-                            position.pnl_percent = price_change
-                            position.current_price = current_token_price_sol
-                            
-                            consecutive_data_failures = 0
-                            position.last_valid_price = current_token_price_sol
-                            position.last_price_update = time.time()
-                            
-                            # ===================================================================
-                            # 🚨 RUG TRAP - ALWAYS ACTIVE (even during grace period)
-                            # Catches catastrophic dumps (-40%+) but allows normal volatility
-                            # ===================================================================
-                            
-                            if price_change <= -40 and not position.is_closing:
-                                if in_grace_period:
-                                    logger.warning(f"🚨 RUG TRAP TRIGGERED in grace period ({price_change:.1f}%) - immediate exit!")
-                                else:
-                                    logger.warning(f"🚨 CATASTROPHIC DUMP ({price_change:.1f}%) - immediate exit!")
-                                
-                                position.is_closing = True
-                                
-                                # Execute sell immediately
-                                actual_balance = self.wallet.get_token_balance(mint)
-                                
-                                if actual_balance > 0:
-                                    logger.info(f"💰 Rug trap selling {actual_balance:,.0f} tokens immediately")
-                                    
-                                    token_decimals_sell = self.wallet.get_token_decimals(mint)
-                                    
-                                    # Force sell with critical priority and high slippage for emergency
-                                    signature = await self.trader.create_sell_transaction(
-                                        mint=mint,
-                                        token_amount=actual_balance,
-                                        slippage=100,  # High slippage for emergency exit
-                                        token_decimals=token_decimals_sell,
-                                        urgency="critical"
-                                    )
-                                    
-                                    if signature and not signature.startswith("1111111"):
-                                        logger.info(f"✅ Rug trap sell submitted: {signature}")
-                                        position.status = 'closed'
-                                        
-                                        if self.telegram:
-                                            await self.telegram.send_message(
-                                                f"🚨 RUG TRAP ACTIVATED!\n"
-                                                f"Token: {mint[:16]}...\n"
-                                                f"Dump: {price_change:.1f}%\n"
-                                                f"Sold all tokens\n"
-                                                f"TX: https://solscan.io/tx/{signature}"
-                                            )
-                                    else:
-                                        logger.error(f"❌ RUG TRAP SELL FAILED - signature invalid")
-                                        
-                                        if self.telegram:
-                                            await self.telegram.send_message(
-                                                f"⚠️ RUG TRAP SELL FAILED!\n"
-                                                f"Token: {mint[:16]}...\n"
-                                                f"Dump: {price_change:.1f}%\n"
-                                                f"Manual intervention needed"
-                                            )
-                                else:
-                                    logger.warning(f"No tokens found to sell for rug trap")
-                                
-                                # Remove from positions
-                                if mint in self.positions:
-                                    del self.positions[mint]
-                                
-                                break
-                            
-                            # ===================================================================
-                            # GRACE PERIOD: Only log, no other actions
-                            # ===================================================================
-                            
+                        consecutive_data_failures = 0
+                        position.last_valid_price = current_token_price_sol
+                        position.last_price_update = time.time()
+                        
+                        # ===================================================================
+                        # 🚨 RUG TRAP - ALWAYS ACTIVE (even during grace period)
+                        # Catches catastrophic dumps (-40%+) but allows normal volatility
+                        # ===================================================================
+                        
+                        if price_change <= -40 and not position.is_closing:
                             if in_grace_period:
-                                # During grace: only monitor, no profit-taking or other exits
-                                remaining_grace = grace_end_time - time.time()
-                                
-                                if check_count % 3 == 1:
-                                    logger.info(
-                                        f"⏳ GRACE {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                                        f"Remaining: {remaining_grace:.1f}s"
-                                    )
-                                
-                                # Skip all other checks during grace
-                                await asyncio.sleep(MONITOR_CHECK_INTERVAL)
-                                continue
-                            
-                            # ===================================================================
-                            # AFTER GRACE: Normal monitoring logic
-                            # ===================================================================
-                            
-                            # Volume-based exit
-                            if position.last_checked_price == 0:
-                                position.last_checked_price = current_token_price_sol
-                            
-                            if abs(current_token_price_sol - position.last_checked_price) < (position.last_checked_price * 0.001):
-                                position.consecutive_no_movement += 1
+                                logger.warning(f"🚨 RUG TRAP TRIGGERED in grace period ({price_change:.1f}%) - immediate exit!")
                             else:
-                                position.consecutive_no_movement = 0
-                                position.last_checked_price = current_token_price_sol
+                                logger.warning(f"🚨 CATASTROPHIC DUMP ({price_change:.1f}%) - immediate exit!")
                             
-                            if position.consecutive_no_movement >= 7:
-                                logger.warning(f"🚫 NO VOLUME for 15s - exiting {mint[:8]}...")
-                                await self._close_position_full(mint, reason="no_volume")
-                                break
+                            position.is_closing = True
                             
-                            # Early dump detection
-                            if age < 30 and price_change < -3:
-                                logger.warning(f"🚫 EARLY DUMP ({price_change:.1f}%) - exiting {mint[:8]}...")
-                                await self._close_position_full(mint, reason="early_dump")
-                                break
+                            # Execute sell immediately
+                            actual_balance = self.wallet.get_token_balance(mint)
                             
-                            if check_count % 10 == 1:
-                                self.tracker.log_position_update(mint, price_change, current_sol_in_curve, age)
+                            if actual_balance > 0:
+                                logger.info(f"💰 Rug trap selling {actual_balance:,.0f} tokens immediately")
+                                
+                                token_decimals_sell = self.wallet.get_token_decimals(mint)
+                                
+                                # Force sell with critical priority and high slippage for emergency
+                                signature = await self.trader.create_sell_transaction(
+                                    mint=mint,
+                                    token_amount=actual_balance,
+                                    slippage=100,  # High slippage for emergency exit
+                                    token_decimals=token_decimals_sell,
+                                    urgency="critical"
+                                )
+                                
+                                if signature and not signature.startswith("1111111"):
+                                    logger.info(f"✅ Rug trap sell submitted: {signature}")
+                                    position.status = 'closed'
+                                    
+                                    if self.telegram:
+                                        await self.telegram.send_message(
+                                            f"🚨 RUG TRAP ACTIVATED!\n"
+                                            f"Token: {mint[:16]}...\n"
+                                            f"Dump: {price_change:.1f}%\n"
+                                            f"Sold all tokens\n"
+                                            f"TX: https://solscan.io/tx/{signature}"
+                                        )
+                                else:
+                                    logger.error(f"❌ RUG TRAP SELL FAILED - signature invalid")
+                                    
+                                    if self.telegram:
+                                        await self.telegram.send_message(
+                                            f"⚠️ RUG TRAP SELL FAILED!\n"
+                                            f"Token: {mint[:16]}...\n"
+                                            f"Dump: {price_change:.1f}%\n"
+                                            f"Manual intervention needed"
+                                        )
+                            else:
+                                logger.warning(f"No tokens found to sell for rug trap")
+                            
+                            # Remove from positions
+                            if mint in self.positions:
+                                del self.positions[mint]
+                            
+                            break
+                        
+                        # ===================================================================
+                        # GRACE PERIOD: Only log, no other actions
+                        # ===================================================================
+                        
+                        if in_grace_period:
+                            # During grace: only monitor, no profit-taking or other exits
+                            remaining_grace = grace_end_time - time.time()
                             
                             if check_count % 3 == 1:
                                 logger.info(
-                                    f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                                    f"Price: {position.entry_token_price_sol:.10f}→{current_token_price_sol:.10f} SOL | "
-                                    f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
+                                    f"⏳ GRACE {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                                    f"Remaining: {remaining_grace:.1f}s"
                                 )
                             
-                            # Telegram updates
-                            if self.telegram and abs(price_change - last_notification_pnl) >= 50:
-                                update_msg = (
-                                    f"📊 Update {mint[:8]}...\n"
-                                    f"P&L: {price_change:+.1f}%\n"
-                                    f"Remaining: {100 - position.total_sold_percent}%"
-                                )
-                                await self.telegram.send_message(update_msg)
-                                last_notification_pnl = price_change
-                            
-                            # Fast dump detection
-                            if age < 15 and price_change < -8 and not position.is_closing:
-                                logger.warning(f"🚫 FAST DUMP ({price_change:.1f}%) - emergency exit")
-                                position.is_closing = True
-                                await self._close_position_full(mint, reason="fast_dump")
-                                break
-                            
-                            # Stop-loss
-                            if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
-                                logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
-                                position.is_closing = True
-                                await self._close_position_full(mint, reason="stop_loss")
-                                break
-                            
-                            # Profit targets
-                            if not position.is_closing:
-                                for target in position.profit_targets:
-                                    target_name = target['name']
-                                    target_pnl = target['target']
-                                    sell_percent = target['sell_percent']
+                            # Skip all other checks during grace
+                            await asyncio.sleep(MONITOR_CHECK_INTERVAL)
+                            continue
+                        
+                        # ===================================================================
+                        # AFTER GRACE: Normal monitoring logic
+                        # ===================================================================
+                        
+                        # Volume-based exit
+                        if position.last_checked_price == 0:
+                            position.last_checked_price = current_token_price_sol
+                        
+                        if abs(current_token_price_sol - position.last_checked_price) < (position.last_checked_price * 0.001):
+                            position.consecutive_no_movement += 1
+                        else:
+                            position.consecutive_no_movement = 0
+                            position.last_checked_price = current_token_price_sol
+                        
+                        if position.consecutive_no_movement >= 7:
+                            logger.warning(f"🚫 NO VOLUME for 15s - exiting {mint[:8]}...")
+                            await self._close_position_full(mint, reason="no_volume")
+                            break
+                        
+                        # Early dump detection (AFTER GRACE ONLY)
+                        if age < 30 and price_change < -3:
+                            logger.warning(f"🚫 EARLY DUMP ({price_change:.1f}%) - exiting {mint[:8]}...")
+                            await self._close_position_full(mint, reason="early_dump")
+                            break
+                        
+                        if check_count % 10 == 1:
+                            self.tracker.log_position_update(mint, price_change, current_sol_in_curve, age)
+                        
+                        if check_count % 3 == 1:
+                            logger.info(
+                                f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                                f"Price: {position.entry_token_price_sol:.10f}→{current_token_price_sol:.10f} SOL | "
+                                f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
+                            )
+                        
+                        # Telegram updates
+                        if self.telegram and abs(price_change - last_notification_pnl) >= 50:
+                            update_msg = (
+                                f"📊 Update {mint[:8]}...\n"
+                                f"P&L: {price_change:+.1f}%\n"
+                                f"Remaining: {100 - position.total_sold_percent}%"
+                            )
+                            await self.telegram.send_message(update_msg)
+                            last_notification_pnl = price_change
+                        
+                        # Fast dump detection
+                        if age < 15 and price_change < -8 and not position.is_closing:
+                            logger.warning(f"🚫 FAST DUMP ({price_change:.1f}%) - emergency exit")
+                            position.is_closing = True
+                            await self._close_position_full(mint, reason="fast_dump")
+                            break
+                        
+                        # Stop-loss
+                        if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
+                            logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
+                            position.is_closing = True
+                            await self._close_position_full(mint, reason="stop_loss")
+                            break
+                        
+                        # Profit targets
+                        if not position.is_closing:
+                            for target in position.profit_targets:
+                                target_name = target['name']
+                                target_pnl = target['target']
+                                sell_percent = target['sell_percent']
+                                
+                                if (position.pnl_percent >= target_pnl and 
+                                    target_name not in position.partial_sells):
                                     
-                                    if (position.pnl_percent >= target_pnl and 
-                                        target_name not in position.partial_sells):
-                                        
-                                        if target_name in position.pending_sells:
-                                            logger.debug(f"{target_name} already pending, skipping")
-                                            continue
-                                        
-                                        # Calculate available tokens
-                                        pending_token_amount = 0
-                                        for pending_target_name in position.pending_sells:
-                                            if pending_target_name in position.pending_token_amounts:
-                                                pending_token_amount += position.pending_token_amounts[pending_target_name]
-                                        
-                                        available_tokens = position.remaining_tokens - pending_token_amount
-                                        tokens_needed = position.remaining_tokens * (sell_percent / 100)
-                                        
-                                        if available_tokens < tokens_needed * 0.95:
-                                            logger.warning(
-                                                f"⚠️ Not enough tokens for {target_name}: "
-                                                f"Available: {available_tokens:,.0f}, Need: {tokens_needed:,.0f}"
-                                            )
-                                            continue
-                                        
-                                        logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
-                                        
-                                        position.pending_sells.add(target_name)
-                                        position.pending_token_amounts[target_name] = tokens_needed
-                                        
-                                        try:
-                                            success = await self._execute_partial_sell(
-                                                mint, sell_percent, target_name, position.pnl_percent
-                                            )
-                                            if not success:
-                                                position.pending_sells.discard(target_name)
-                                                if target_name in position.pending_token_amounts:
-                                                    del position.pending_token_amounts[target_name]
-                                            break
-                                        except Exception as e:
+                                    if target_name in position.pending_sells:
+                                        logger.debug(f"{target_name} already pending, skipping")
+                                        continue
+                                    
+                                    # Calculate available tokens
+                                    pending_token_amount = 0
+                                    for pending_target_name in position.pending_sells:
+                                        if pending_target_name in position.pending_token_amounts:
+                                            pending_token_amount += position.pending_token_amounts[pending_target_name]
+                                    
+                                    available_tokens = position.remaining_tokens - pending_token_amount
+                                    tokens_needed = position.remaining_tokens * (sell_percent / 100)
+                                    
+                                    if available_tokens < tokens_needed * 0.95:
+                                        logger.warning(
+                                            f"⚠️ Not enough tokens for {target_name}: "
+                                            f"Available: {available_tokens:,.0f}, Need: {tokens_needed:,.0f}"
+                                        )
+                                        continue
+                                    
+                                    logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
+                                    
+                                    position.pending_sells.add(target_name)
+                                    position.pending_token_amounts[target_name] = tokens_needed
+                                    
+                                    try:
+                                        success = await self._execute_partial_sell(
+                                            mint, sell_percent, target_name, position.pnl_percent
+                                        )
+                                        if not success:
                                             position.pending_sells.discard(target_name)
                                             if target_name in position.pending_token_amounts:
                                                 del position.pending_token_amounts[target_name]
-                                            logger.error(f"Sell execution error: {e}")
-                                            break
-                        else:
-                            consecutive_data_failures += 1
-                            logger.warning(f"Invalid reserve data (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
-                            
-                            if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
-                                if position.last_valid_price > 0:
-                                    logger.debug(f"Using last valid price: {position.last_valid_price:.10f}")
-                                else:
-                                    await asyncio.sleep(1)
-                                    continue
-                            else:
-                                await asyncio.sleep(1)
-                                continue
+                                        break
+                                    except Exception as e:
+                                        position.pending_sells.discard(target_name)
+                                        if target_name in position.pending_token_amounts:
+                                            del position.pending_token_amounts[target_name]
+                                        logger.error(f"Sell execution error: {e}")
+                                        break
+                    else:
+                        consecutive_data_failures += 1
+                        logger.warning(f"Invalid reserve data (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                        await asyncio.sleep(1)
+                        continue
                 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
@@ -1260,7 +1282,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with liquidity validation")
+            logger.info("✅ Bot running with COMPLETE P&L FIX")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
