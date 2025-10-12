@@ -1,10 +1,6 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
-CRITICAL FIX: Balance verification now uses pre_balance comparison (ChatGPT's simpler fix)
-UPDATED: PnL now tracks ACTUAL SOL received from wallet balance changes
-FIXED: Multiple partial sells can trigger independently with priority fees
-FINAL FIX: Proper RPC calls and transaction metadata parsing
-PROFIT TARGET FIX: Now correctly reads all targets from config
+UPDATED: Added liquidity validation before buys
 """
 
 import asyncio
@@ -22,7 +18,8 @@ from config import (
     MONITOR_CHECK_INTERVAL, DATA_FAILURE_TOLERANCE,
     DRY_RUN, ENABLE_TELEGRAM_NOTIFICATIONS,
     BLACKLISTED_TOKENS, NOTIFY_PROFIT_THRESHOLD,
-    PARTIAL_TAKE_PROFIT
+    PARTIAL_TAKE_PROFIT, LIQUIDITY_MULTIPLIER,
+    MIN_LIQUIDITY_SOL, MAX_SLIPPAGE_PERCENT
 )
 
 from wallet import WalletManager
@@ -30,6 +27,7 @@ from dex import PumpFunDEX
 from pumpportal_monitor import PumpPortalMonitor
 from pumpportal_trader import PumpPortalTrader
 from performance_tracker import PerformanceTracker
+from curve_reader import BondingCurveReader
 
 # Configure logging
 logging.basicConfig(
@@ -67,7 +65,7 @@ class Position:
         # CRITICAL FIX: Prevent multiple simultaneous closes
         self.is_closing = False
         
-        # CRITICAL HOTFIX: Track retry attempts to prevent infinite loops
+        # CRITICAL HOTFIX: Track retry attempts
         self.retry_counts = {}
         
         # Price tracking
@@ -81,24 +79,22 @@ class Position:
         self.consecutive_no_movement = 0
         self.last_checked_price = 0
         
-        # MC-based tracking for Path B
+        # MC-based tracking
         self.entry_market_cap = entry_market_cap
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
         
-        # FIXED: Calculate actual price paid per token from your transaction
+        # FIXED: Calculate actual price paid
         if tokens > 0:
             self.entry_token_price_sol = amount_sol / tokens
         else:
             self.entry_token_price_sol = 0
         
-        # Build profit targets from environment - FIXED
+        # Build profit targets from environment
         self.profit_targets = []
         
-        # TAKE_PROFIT values are multipliers (200 = 2x = +100% PnL)
-        # Convert multiplier to percentage gain
         for multiplier, sell_fraction in sorted(PARTIAL_TAKE_PROFIT.items()):
-            pnl_threshold = ((multiplier / 100) - 1) * 100  # 200 -> 100%, 300 -> 200%, 500 -> 400%
+            pnl_threshold = ((multiplier / 100) - 1) * 100
             self.profit_targets.append({
                 'target': pnl_threshold,
                 'sell_percent': sell_fraction * 100,
@@ -107,20 +103,19 @@ class Position:
         
         self.profit_targets.sort(key=lambda x: x['target'])
         
-        # Log configured targets
         if self.profit_targets:
             targets_str = ', '.join([f"{t['name']} at +{t['target']:.0f}% ({t['sell_percent']:.0f}%)" for t in self.profit_targets])
             logger.info(f"Profit targets configured: {targets_str}")
         else:
-            logger.warning("No profit targets configured - will only use stop-loss and max-age exits")
+            logger.warning("No profit targets configured")
 
 class SniperBot:
-    """Main sniper bot orchestrator - Path B Strategy with FIXED P&L"""
+    """Main sniper bot orchestrator with liquidity validation"""
     
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - PATH B: ACTUAL PNL TRACKING")
+        logger.info("🚀 INITIALIZING SNIPER BOT - WITH LIQUIDITY VALIDATION")
         logger.info("=" * 60)
         
         # Core components
@@ -132,9 +127,14 @@ class SniperBot:
         self.telegram_polling_task = None
         self.tracker = PerformanceTracker()
         
-        # Initialize trader
+        # Initialize curve reader for liquidity validation
         from solana.rpc.api import Client
-        from config import RPC_ENDPOINT
+        from config import RPC_ENDPOINT, PUMPFUN_PROGRAM_ID
+        
+        rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+        self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)
+        
+        # Initialize trader
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
         self.trader = PumpPortalTrader(self.wallet, client)
         
@@ -168,9 +168,10 @@ class SniperBot:
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
-        logger.info(f"📊 STARTUP STATUS - PATH B (ACTUAL PNL TRACKING):")
-        logger.info(f"  • Strategy: MC + Holder Verification")
-        logger.info(f"  • Entry: $6k-$60k MC, 8+ holders")
+        logger.info(f"📊 STARTUP STATUS:")
+        logger.info(f"  • Strategy: MC + Holder + Liquidity Validation")
+        logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
+        logger.info(f"  • Max slippage: {MAX_SLIPPAGE_PERCENT}%")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
@@ -191,13 +192,8 @@ class SniperBot:
             if v_sol == 0 or v_tokens == 0:
                 return 0
             
-            # Price per token in SOL
             price_sol = (v_sol * 1e9) / v_tokens
-            
-            # Total supply (PumpFun standard)
             total_supply = 1_000_000_000
-            
-            # Market cap in USD
             market_cap_usd = total_supply * price_sol * sol_price_usd
             
             return market_cap_usd
@@ -206,17 +202,13 @@ class SniperBot:
             return 0
     
     def _calculate_token_price_from_mc(self, market_cap_usd: float, sol_price_usd: float = 250) -> float:
-        """Calculate token price in SOL from market cap - CRITICAL FOR P&L"""
+        """Calculate token price in SOL from market cap"""
         try:
             if market_cap_usd == 0:
                 return 0
             
-            total_supply = 1_000_000_000  # PumpFun standard
-            
-            # Price per token in USD
+            total_supply = 1_000_000_000
             price_per_token_usd = market_cap_usd / total_supply
-            
-            # Convert to SOL
             price_per_token_sol = price_per_token_usd / sol_price_usd
             
             return price_per_token_sol
@@ -225,17 +217,12 @@ class SniperBot:
             return 0
     
     async def _get_transaction_deltas(self, signature: str, mint: str) -> dict:
-        """
-        FIXED: Read transaction metadata directly from blockchain
-        Returns: {"confirmed": bool, "sol_delta": float, "token_delta": float}
-        """
+        """Read transaction metadata from blockchain"""
         try:
-            # FIXED: Import and convert string signature to Signature object
             from solders.signature import Signature as SoldersSignature
             
             tx_sig = SoldersSignature.from_string(signature)
             
-            # FIXED: Proper RPC call
             tx_response = self.trader.client.get_transaction(
                 tx_sig,
                 encoding="jsonParsed",
@@ -247,7 +234,6 @@ class SniperBot:
             
             tx = tx_response.value
             
-            # Check if transaction succeeded
             if tx.transaction.meta is None or tx.transaction.meta.err is not None:
                 return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
             
@@ -256,8 +242,6 @@ class SniperBot:
             
             # Calculate SOL delta
             sol_delta = 0.0
-            
-            # FIXED: Correct attribute path and convert to strings
             account_keys = [str(key) for key in tx.transaction.transaction.message.account_keys]
             
             try:
@@ -270,12 +254,9 @@ class SniperBot:
             
             # Calculate token delta
             token_delta = 0.0
-            
-            # Find our token balance changes
             pre_token_amount = 0.0
             post_token_amount = 0.0
             
-            # FIXED: Proper None handling for token balances
             for balance in (meta.pre_token_balances or []):
                 if balance.mint == mint and balance.owner == my_pubkey_str:
                     ui_amount = balance.ui_token_amount.ui_amount
@@ -309,13 +290,12 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - PATH B (REAL PNL)\n"
+                    "🚀 Bot started - WITH LIQUIDITY VALIDATION\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"📈 Targets: 2x/3x/5x (REAL SOL)\n"
-                    f"💵 Entry: $6k-$60k MC\n"
-                    f"👥 Min holders: 8\n"
-                    f"🛑 Circuit breaker: 3 losses\n"
+                    f"🛡️ Liquidity: {LIQUIDITY_MULTIPLIER}x\n"
+                    f"📊 Max slippage: {MAX_SLIPPAGE_PERCENT}%\n"
+                    f"📈 Targets: 2x/3x/5x\n"
                     "Type /help for commands"
                 )
                 await self.telegram.send_message(startup_msg)
@@ -358,7 +338,6 @@ class SniperBot:
         self.running = True
         self.paused = False
         self.shutdown_requested = False
-        
         self.consecutive_losses = 0
         
         if not self.scanner:
@@ -398,7 +377,7 @@ class SniperBot:
         }
     
     async def on_token_found(self, token_data: Dict):
-        """Handle new token found - PATH B with MC data"""
+        """Handle new token found - with liquidity validation"""
         detection_start = time.time()
         
         try:
@@ -419,7 +398,7 @@ class SniperBot:
             if mint in BLACKLISTED_TOKENS:
                 return
             
-            # Check total positions (active + pending buys)
+            # Check total positions
             total_positions = len(self.positions) + self.pending_buys
             
             if total_positions >= MAX_POSITIONS:
@@ -458,11 +437,36 @@ class SniperBot:
             if len(name) < 3 or 'test' in name.lower():
                 return
             
-            # Increment pending buys immediately after all checks pass
+            # LIQUIDITY VALIDATION - critical new check
+            passed, reason, curve_data = self.curve_reader.validate_liquidity(
+                mint=mint,
+                buy_size_sol=BUY_AMOUNT_SOL,
+                min_multiplier=LIQUIDITY_MULTIPLIER,
+                min_absolute_sol=MIN_LIQUIDITY_SOL
+            )
+            
+            if not passed:
+                logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
+                return
+            
+            logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
+            
+            # Get entry price from curve
+            entry_price = curve_data['price_sol_per_token']
+            
+            # Estimate slippage
+            estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
+            if estimated_slippage:
+                logger.info(f"📊 Estimated slippage: {estimated_slippage:.2f}%")
+                if estimated_slippage > MAX_SLIPPAGE_PERCENT:
+                    logger.warning(f"⚠️ High estimated slippage ({estimated_slippage:.2f}% > {MAX_SLIPPAGE_PERCENT}%), skipping")
+                    return
+            
+            # Increment pending buys
             self.pending_buys += 1
             logger.debug(f"Pending buys: {self.pending_buys}, Active: {len(self.positions)}")
             
-            # Extract entry market cap from token_data
+            # Extract entry market cap
             entry_market_cap = token_data.get('market_cap', 0)
             
             # Log detection
@@ -471,30 +475,27 @@ class SniperBot:
             
             logger.info(f"🎯 Processing new token: {mint}")
             logger.info(f"   Detection latency: {detection_time_ms:.0f}ms")
-            logger.info(f"   Entry MC: ${entry_market_cap:,.0f}")
+            logger.info(f"   Entry price: {entry_price:.10f} SOL per token")
+            logger.info(f"   SOL raised: {curve_data['sol_raised']:.4f}")
             
             cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
             
-            # Execute buy
+            # Execute buy with tight slippage (30 BPS = 0.3%)
             execution_start = time.time()
             
             bonding_curve_key = None
             if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                 bonding_curve_key = token_data['data']['bondingCurveKey']
             
-            expected_tokens = 0
-            if 'data' in token_data:
-                data = token_data['data']
-                if 'initialBuy' in data and 'solAmount' in data:
-                    creator_sol = float(data.get('solAmount', 0.01))
-                    if creator_sol > 0:
-                        expected_tokens = float(data.get('initialBuy', 0)) * (BUY_AMOUNT_SOL / creator_sol)
+            # Calculate expected tokens
+            expected_tokens = BUY_AMOUNT_SOL / entry_price if entry_price > 0 else 0
             
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
                 sol_amount=BUY_AMOUNT_SOL,
                 bonding_curve_key=bonding_curve_key,
-                slippage=50
+                slippage=30,  # 0.3% - tight since liquidity validated
+                urgency="normal"
             )
             
             bought_tokens = 0
@@ -507,6 +508,14 @@ class SniperBot:
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
                 
+                # Calculate actual entry price and slippage
+                if bought_tokens > 0:
+                    actual_entry_price = BUY_AMOUNT_SOL / bought_tokens
+                    actual_slippage = ((actual_entry_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+                    logger.info(f"📊 Actual slippage: {actual_slippage:.2f}%")
+                else:
+                    actual_entry_price = entry_price
+                
                 self.tracker.log_buy_executed(
                     mint=mint,
                     amount_sol=BUY_AMOUNT_SOL,
@@ -515,29 +524,26 @@ class SniperBot:
                     execution_time_ms=execution_time_ms
                 )
                 
-                # Create position with entry MC
+                # Create position
                 position = Position(mint, BUY_AMOUNT_SOL, bought_tokens, entry_market_cap)
                 position.buy_signature = signature
                 position.initial_tokens = bought_tokens
                 position.remaining_tokens = bought_tokens
                 position.last_valid_balance = bought_tokens
                 position.entry_time = time.time()
+                position.entry_token_price_sol = actual_entry_price
                 
-                # Store entry SOL in curve
                 if 'data' in token_data:
                     position.entry_sol_in_curve = token_data['data'].get('vSolInBondingCurve', 30)
                 
                 self.positions[mint] = position
                 self.total_trades += 1
-                
-                # Decrement pending buys since position is now active
                 self.pending_buys -= 1
                 
                 logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
                 logger.info(f"   Amount: {BUY_AMOUNT_SOL} SOL")
                 logger.info(f"   Tokens: {bought_tokens:,.0f}")
-                logger.info(f"   Entry MC: ${entry_market_cap:,.0f}")
-                logger.info(f"   Entry Token Price: {position.entry_token_price_sol:.10f} SOL")
+                logger.info(f"   Entry Price: {actual_entry_price:.10f} SOL per token")
                 logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
                 
                 if self.telegram:
@@ -547,24 +553,21 @@ class SniperBot:
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
             else:
-                # Buy failed - decrement pending buys
                 self.pending_buys -= 1
                 self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, "Transaction failed")
                 
         except Exception as e:
-            # Error occurred - decrement pending buys
             self.pending_buys = max(0, self.pending_buys - 1)
             logger.error(f"Failed to process token: {e}")
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with CORRECTED P&L tracking and FIXED race condition prevention"""
+        """Monitor position with CORRECTED P&L tracking"""
         try:
             position = self.positions.get(mint)
             if not position:
                 return
             
-            # Grace period REMOVED - start monitoring immediately for fast dump detection
             if SELL_DELAY_SECONDS > 0:
                 logger.info(f"⏳ Grace period {SELL_DELAY_SECONDS}s for {mint[:8]}...")
                 await asyncio.sleep(SELL_DELAY_SECONDS)
@@ -579,7 +582,6 @@ class SniperBot:
             check_count = 0
             last_notification_pnl = 0
             consecutive_data_failures = 0
-            sol_price_usd = 250
             
             while mint in self.positions and position.status == 'active':
                 check_count += 1
@@ -595,17 +597,15 @@ class SniperBot:
                     # Get current price data
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
-                    # Check if we got valid data
                     if not curve_data:
                         consecutive_data_failures += 1
-                        logger.warning(f"No price data available for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                        logger.warning(f"No price data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
                         
                         if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
-                            logger.error(f"❌ Too many data failures for {mint[:8]}..., using last known price")
+                            logger.error(f"❌ Too many data failures for {mint[:8]}...")
                             if position.last_valid_price > 0:
-                                logger.debug(f"Using last valid token price: {position.last_valid_price:.10f}")
+                                logger.debug(f"Using last valid price: {position.last_valid_price:.10f}")
                             else:
-                                logger.warning(f"No last valid price available, skipping cycle")
                                 await asyncio.sleep(1)
                                 continue
                         else:
@@ -620,7 +620,7 @@ class SniperBot:
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # Calculate actual token price in human-readable SOL
+                        # Calculate actual token price
                         v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
                         v_token_reserves = curve_data.get('virtual_token_reserves', 0)
                         
@@ -659,7 +659,7 @@ class SniperBot:
                             
                             # Early dump detection
                             if age < 30 and price_change < -3:
-                                logger.warning(f"🚫 EARLY MOMENTUM FAILURE ({price_change:.1f}%) - exiting {mint[:8]}...")
+                                logger.warning(f"🚫 EARLY DUMP ({price_change:.1f}%) - exiting {mint[:8]}...")
                                 await self._close_position_full(mint, reason="early_dump")
                                 break
                             
@@ -668,7 +668,7 @@ class SniperBot:
                             
                             if check_count % 3 == 1:
                                 logger.info(
-                                    f"📊 {mint[:8]}... | YOUR P&L: {price_change:+.1f}% | "
+                                    f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
                                     f"Price: {position.entry_token_price_sol:.10f}→{current_token_price_sol:.10f} SOL | "
                                     f"Sold: {position.total_sold_percent}% | Age: {age:.0f}s"
                                 )
@@ -677,28 +677,27 @@ class SniperBot:
                             if self.telegram and abs(price_change - last_notification_pnl) >= 50:
                                 update_msg = (
                                     f"📊 Update {mint[:8]}...\n"
-                                    f"YOUR P&L: {price_change:+.1f}%\n"
+                                    f"P&L: {price_change:+.1f}%\n"
                                     f"Remaining: {100 - position.total_sold_percent}%"
                                 )
                                 await self.telegram.send_message(update_msg)
                                 last_notification_pnl = price_change
                             
-                            # CRITICAL: Fast dump detection - exit immediately if token dumps early
-                            # This catches dead-on-arrival tokens before they bleed to full stop loss
+                            # Fast dump detection
                             if age < 15 and price_change < -8 and not position.is_closing:
-                                logger.warning(f"🚫 FAST DUMP DETECTED ({price_change:.1f}%) in first 15s - emergency exit")
+                                logger.warning(f"🚫 FAST DUMP ({price_change:.1f}%) - emergency exit")
                                 position.is_closing = True
                                 await self._close_position_full(mint, reason="fast_dump")
                                 break
                             
-                            # Check stop-loss AFTER fast dump check
+                            # Stop-loss
                             if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                                 logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                                 position.is_closing = True
                                 await self._close_position_full(mint, reason="stop_loss")
                                 break
                             
-                            # FIXED: Improved profit target checking with race condition prevention
+                            # Profit targets
                             if not position.is_closing:
                                 for target in position.profit_targets:
                                     target_name = target['name']
@@ -708,32 +707,28 @@ class SniperBot:
                                     if (position.pnl_percent >= target_pnl and 
                                         target_name not in position.partial_sells):
                                         
-                                        # Check if already pending
                                         if target_name in position.pending_sells:
-                                            logger.debug(f"{target_name} already pending for {mint[:8]}, skipping")
+                                            logger.debug(f"{target_name} already pending, skipping")
                                             continue
                                         
-                                        # Calculate pending token amounts
+                                        # Calculate available tokens
                                         pending_token_amount = 0
                                         for pending_target_name in position.pending_sells:
                                             if pending_target_name in position.pending_token_amounts:
                                                 pending_token_amount += position.pending_token_amounts[pending_target_name]
                                         
-                                        # Calculate available tokens after pending sells
                                         available_tokens = position.remaining_tokens - pending_token_amount
                                         tokens_needed = position.remaining_tokens * (sell_percent / 100)
                                         
-                                        # Check if we have enough tokens
-                                        if available_tokens < tokens_needed * 0.95:  # 5% tolerance
+                                        if available_tokens < tokens_needed * 0.95:
                                             logger.warning(
-                                                f"⚠️ Not enough tokens for {target_name} on {mint[:8]}: "
+                                                f"⚠️ Not enough tokens for {target_name}: "
                                                 f"Available: {available_tokens:,.0f}, Need: {tokens_needed:,.0f}"
                                             )
                                             continue
                                         
                                         logger.info(f"🎯 {target_name} TARGET HIT for {mint[:8]}...")
                                         
-                                        # Add to pending BEFORE async call AND track token amount
                                         position.pending_sells.add(target_name)
                                         position.pending_token_amounts[target_name] = tokens_needed
                                         
@@ -742,11 +737,10 @@ class SniperBot:
                                                 mint, sell_percent, target_name, position.pnl_percent
                                             )
                                             if not success:
-                                                # Remove from pending if execution failed
                                                 position.pending_sells.discard(target_name)
                                                 if target_name in position.pending_token_amounts:
                                                     del position.pending_token_amounts[target_name]
-                                            break  # One sell per cycle
+                                            break
                                         except Exception as e:
                                             position.pending_sells.discard(target_name)
                                             if target_name in position.pending_token_amounts:
@@ -755,13 +749,12 @@ class SniperBot:
                                             break
                         else:
                             consecutive_data_failures += 1
-                            logger.warning(f"Invalid reserve data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                            logger.warning(f"Invalid reserve data (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
                             
                             if consecutive_data_failures > DATA_FAILURE_TOLERANCE:
                                 if position.last_valid_price > 0:
-                                    logger.debug(f"Using last valid token price: {position.last_valid_price:.10f}")
+                                    logger.debug(f"Using last valid price: {position.last_valid_price:.10f}")
                                 else:
-                                    logger.warning(f"No valid price available, skipping cycle")
                                     await asyncio.sleep(1)
                                     continue
                             else:
@@ -784,16 +777,12 @@ class SniperBot:
                 await self._close_position_full(mint, reason="monitor_error")
     
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
-        """
-        Execute a partial sell with REAL SOL tracking and priority fees
-        Returns immediately after submission, confirmation happens in background
-        """
+        """Execute partial sell with priority fees"""
         try:
             position = self.positions.get(mint)
             if not position:
                 return False
             
-            # Get token decimals and FLOOR the amount to base units to avoid oversell
             from decimal import Decimal, ROUND_DOWN
             token_decimals = self.wallet.get_token_decimals(mint)
             raw = Decimal(str(position.remaining_tokens)) * Decimal(str(sell_percent)) / Decimal("100")
@@ -801,18 +790,16 @@ class SniperBot:
             ui_tokens_to_sell = float(units / (Decimal(10) ** token_decimals))
             
             if ui_tokens_to_sell <= 0:
-                logger.warning(f"{target_name}: computed 0 tokens to sell after flooring; skipping")
+                logger.warning(f"{target_name}: 0 tokens after flooring, skipping")
                 return False
             
             logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
             logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} tokens)")
-            logger.info(f"   YOUR P&L: {current_pnl:+.1f}%")
+            logger.info(f"   P&L: {current_pnl:+.1f}%")
             
-            # FIXED: Capture SOL balance BEFORE transaction
             pre_sol_balance = self.wallet.get_sol_balance()
             pre_token_balance = self.wallet.get_token_balance(mint)
             
-            # Submit transaction with high urgency for partial sells
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_tokens_to_sell,
@@ -822,7 +809,6 @@ class SniperBot:
             )
             
             if signature and not signature.startswith("1111111"):
-                # Spawn background task for confirmation
                 asyncio.create_task(
                     self._confirm_sell_background(
                         signature, mint, target_name, sell_percent,
@@ -846,9 +832,7 @@ class SniperBot:
         sell_percent: float, tokens_sold: float, current_pnl: float,
         pre_sol_balance: float, pre_token_balance: float
     ):
-        """
-        FIXED: Track ACTUAL SOL received from wallet balance changes with retry logic
-        """
+        """Track ACTUAL SOL received from wallet balance changes"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -858,17 +842,14 @@ class SniperBot:
             logger.info(f"⏳ Confirming {target_name} sell for {mint[:8]}...")
             logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
             
-            # Track when transaction first appears in RPC
             first_seen = None
             start = time.time()
             confirmed = False
             
-            # Poll for up to 25 seconds to handle RPC lag
             while time.time() - start < 25:
                 try:
                     status = self.trader.client.get_signature_statuses([signature])
                     if status and status.value and status.value[0]:
-                        # Transaction found in RPC
                         if first_seen is None:
                             first_seen = time.time() - start
                         
@@ -883,18 +864,16 @@ class SniperBot:
                 except Exception as e:
                     logger.debug(f"Status check error: {e}")
                 
-                await asyncio.sleep(1)  # Check every 1s instead of 0.5s
+                await asyncio.sleep(1)
             
-            # Timeout diagnostic
             if not confirmed:
                 elapsed = time.time() - start
                 if first_seen is None:
-                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s - likely RPC lag OR low priority fee")
+                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s")
                 else:
-                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm - likely network congestion")
+                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm")
             
             if confirmed:
-                # FIXED: await the async function
                 txd = await self._get_transaction_deltas(signature, mint)
                 if txd["confirmed"]:
                     actual_sol_received = txd["sol_delta"] if txd["sol_delta"] > 0 else None
@@ -902,15 +881,14 @@ class SniperBot:
                 else:
                     actual_sol_received, actual_tokens_sold = None, None
 
-                # Fallback to wallet balance if tx metadata failed
                 if actual_sol_received is None:
-                    logger.warning(f"Failed to get SOL delta from tx metadata, using wallet balance")
+                    logger.warning(f"Using wallet balance fallback for SOL")
                     await asyncio.sleep(2)
                     post_sol_balance = self.wallet.get_sol_balance()
                     actual_sol_received = post_sol_balance - pre_sol_balance
 
                 if actual_tokens_sold is None:
-                    logger.warning(f"Failed to get token delta from tx metadata, using wallet balance")
+                    logger.warning(f"Using wallet balance fallback for tokens")
                     await asyncio.sleep(2)
                     current_token_balance = self.wallet.get_token_balance(mint)
                     balance_decrease = pre_token_balance - current_token_balance
@@ -933,7 +911,6 @@ class SniperBot:
                 }
                 position.total_sold_percent += sell_percent
                 
-                # Remove from pending
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
                 if target_name in position.pending_token_amounts:
@@ -947,7 +924,6 @@ class SniperBot:
                     mint=mint,
                     target_name=target_name,
                     percent_sold=sell_percent,
-                    # log the actual on-chain amount sold, not the requested amount
                     tokens_sold=actual_tokens_sold,
                     sol_received=actual_sol_received,
                     pnl_sol=actual_profit_sol
@@ -972,7 +948,6 @@ class SniperBot:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
             else:
-                # Transaction failed or timeout - retry with higher fees
                 logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
                 
                 retry_count = position.retry_counts.get(target_name, 0)
@@ -980,13 +955,11 @@ class SniperBot:
                     position.retry_counts[target_name] = retry_count + 1
                     logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3) with critical urgency")
                     
-                    # Remove from pending before retry
                     if target_name in position.pending_sells:
                         position.pending_sells.remove(target_name)
                     if target_name in position.pending_token_amounts:
                         del position.pending_token_amounts[target_name]
                     
-                    # Retry with critical urgency
                     token_decimals = self.wallet.get_token_decimals(mint)
                     ui_tokens_to_sell = round(position.remaining_tokens * (sell_percent / 100), token_decimals)
                     
@@ -999,7 +972,6 @@ class SniperBot:
                     )
                     
                     if retry_signature and not retry_signature.startswith("1111111"):
-                        # Re-add to pending and spawn new confirmation task
                         position.pending_sells.add(target_name)
                         position.pending_token_amounts[target_name] = ui_tokens_to_sell
                         
@@ -1013,7 +985,6 @@ class SniperBot:
                 else:
                     logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
                     
-                    # Remove from pending
                     if target_name in position.pending_sells:
                         position.pending_sells.remove(target_name)
                     if target_name in position.pending_token_amounts:
@@ -1057,7 +1028,6 @@ class SniperBot:
             if not position or position.status != 'active':
                 return
             
-            # Prevent multiple simultaneous closes
             if position.is_closing:
                 logger.debug(f"Position {mint[:8]} already closing")
                 return
@@ -1078,7 +1048,6 @@ class SniperBot:
             
             logger.info(f"📤 Closing remaining {remaining_percent}% of {mint[:8]}...")
             
-            # FIXED: Capture SOL balance BEFORE final sell
             pre_sol_balance = self.wallet.get_sol_balance()
             
             actual_balance = self.wallet.get_token_balance(mint)
@@ -1090,7 +1059,6 @@ class SniperBot:
             
             token_decimals = self.wallet.get_token_decimals(mint)
             
-            # Use critical urgency for full position closes
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
@@ -1100,32 +1068,24 @@ class SniperBot:
             )
             
             if signature and not signature.startswith("1111111"):
-                # Wait for confirmation
                 await asyncio.sleep(3)
                 
-                # FIXED: await the async function
                 txd = await self._get_transaction_deltas(signature, mint)
                 actual_tokens_sold = None
                 if txd["confirmed"] and txd["sol_delta"] > 0:
                     actual_sol_received = txd["sol_delta"]
-                    # if token_delta is present, track the actual amount sold
                     if txd.get("token_delta", 0.0) < 0:
                         actual_tokens_sold = abs(txd["token_delta"])
                 else:
                     post_sol_balance = self.wallet.get_sol_balance()
                     actual_sol_received = post_sol_balance - pre_sol_balance
                 
-                # If token delta wasn't available, fall back to the wallet balance delta
                 if actual_tokens_sold is None:
                     before_tokens = ui_token_balance
                     after_tokens = self.wallet.get_token_balance(mint)
-                    # best-effort estimation; clamp to non-negative
                     actual_tokens_sold = max(0.0, before_tokens - after_tokens)
                 
-                # Calculate base investment for remaining portion
                 base_sol_for_portion = position.amount_sol * (remaining_percent / 100)
-                
-                # Calculate REAL profit for this final sell
                 final_pnl_sol = actual_sol_received - base_sol_for_portion
                 
                 position.sell_signatures.append(signature)
@@ -1139,14 +1099,11 @@ class SniperBot:
                     self.session_loss_count += 1
                     
                 self.total_pnl += position.pnl_percent
-                
-                # Add REAL final profit to total
                 position.realized_pnl_sol += final_pnl_sol
                 self.total_realized_sol += final_pnl_sol
                 
                 self.tracker.log_sell_executed(
                     mint=mint,
-                    # log the actual on-chain amount sold when available
                     tokens_sold=actual_tokens_sold,
                     signature=signature,
                     sol_received=actual_sol_received,
@@ -1158,8 +1115,8 @@ class SniperBot:
                 
                 logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
                 logger.info(f"   Reason: {reason}")
-                logger.info(f"   YOUR P&L: {position.pnl_percent:+.1f}%")
-                logger.info(f"   Est. realized: {position.realized_pnl_sol:+.4f} SOL")
+                logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
+                logger.info(f"   Realized: {position.realized_pnl_sol:+.4f} SOL")
                 logger.info(f"   Consecutive losses: {self.consecutive_losses}")
                 
                 if self.telegram:
@@ -1168,8 +1125,8 @@ class SniperBot:
                         f"{emoji} POSITION CLOSED\n"
                         f"Token: {mint[:16]}\n"
                         f"Reason: {reason}\n"
-                        f"YOUR P&L: {position.pnl_percent:+.1f}%\n"
-                        f"Est. realized: {position.realized_pnl_sol:+.4f} SOL"
+                        f"P&L: {position.pnl_percent:+.1f}%\n"
+                        f"Realized: {position.realized_pnl_sol:+.4f} SOL"
                     )
                     if self.consecutive_losses >= 2:
                         msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
@@ -1210,7 +1167,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with PATH B Configuration (REAL PNL TRACKING)")
+            logger.info("✅ Bot running with liquidity validation")
             logger.info(f"⏱️ Grace period: {SELL_DELAY_SECONDS}s, Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
@@ -1228,7 +1185,7 @@ class SniperBot:
                             targets_hit = ', '.join(pos.partial_sells.keys()) if pos.partial_sells else 'None'
                             pending = ', '.join(pos.pending_sells) if pos.pending_sells else 'None'
                             logger.info(
-                                f"  • {mint[:8]}... | YOUR P&L: {pos.pnl_percent:+.1f}% | "
+                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
                                 f"Sold: {pos.total_sold_percent}% | Targets: {targets_hit} | "
                                 f"Pending: {pending} | Age: {age:.0f}s"
                             )
