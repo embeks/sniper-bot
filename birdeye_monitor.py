@@ -74,8 +74,8 @@ class BirdeyeMonitor:
             if time.time() - self.last_request_time < self.min_request_interval:
                 return
 
-            # HARDCODED URL - NO PARAMS OBJECT
-            url = "https://public-api.birdeye.so/defi/token_trending?limit=10&offset=0"
+            # CHANGED: Use v3/token/list with sort by recent listing
+            url = "https://public-api.birdeye.so/defi/v3/token/list?sort_by=listing_time&sort_type=desc&limit=20&offset=0"
             
             headers = {
                 "X-API-KEY": self.api_key,
@@ -83,8 +83,7 @@ class BirdeyeMonitor:
                 "accept": "application/json",
             }
             
-            logger.info(f"🔍 TESTING URL: {url}")
-            logger.info(f"📋 Headers: X-API-KEY={self.api_key[:10]}..., x-chain=solana")
+            logger.info(f"🔍 Trying v3/token/list (sorted by listing_time)")
             
             async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 self.last_request_time = time.time()
@@ -106,7 +105,7 @@ class BirdeyeMonitor:
                     return
                     
                 data = await resp.json()
-                logger.info(f"✅ SUCCESS! Got data: {str(data)[:200]}")
+                logger.info(f"✅ Got response with keys: {list(data.keys())}")
                 
                 if not data or data.get("success") is False:
                     logger.warning(f"Birdeye returned success=false or empty: {data}")
