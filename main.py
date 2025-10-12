@@ -642,16 +642,67 @@ class SniperBot:
                             
                             # ===================================================================
                             # 🚨 RUG TRAP - ALWAYS ACTIVE (even during grace period)
+                            # Catches catastrophic dumps (-40%+) but allows normal volatility
                             # ===================================================================
                             
-                            if price_change <= -10 and not position.is_closing:
+                            if price_change <= -40 and not position.is_closing:
                                 if in_grace_period:
                                     logger.warning(f"🚨 RUG TRAP TRIGGERED in grace period ({price_change:.1f}%) - immediate exit!")
                                 else:
-                                    logger.warning(f"🚨 MAJOR DUMP ({price_change:.1f}%) - immediate exit!")
+                                    logger.warning(f"🚨 CATASTROPHIC DUMP ({price_change:.1f}%) - immediate exit!")
                                 
                                 position.is_closing = True
-                                await self._close_position_full(mint, reason="rug_trap")
+                                
+                                # FIXED: Execute sell immediately, don't rely on _close_position_full
+                                actual_balance = self.wallet.get_token_balance(mint)
+                                
+                                if actual_balance > 0:
+                                    logger.info(f"💰 Rug trap selling {actual_balance:,.0f} tokens immediately")
+                                    
+                                    token_decimals = self.wallet.get_token_decimals(mint)
+                                    
+                                    # Force sell with critical priority and high slippage for emergency
+                                    signature = await self.trader.create_sell_transaction(
+                                        mint=mint,
+                                        token_amount=actual_balance,
+                                        slippage=100,  # High slippage for emergency exit
+                                        token_decimals=token_decimals,
+                                        urgency="critical"
+                                    )
+                                    
+                                    if signature and not signature.startswith("1111111"):
+                                        logger.info(f"✅ Rug trap sell submitted: {signature}")
+                                        
+                                        # Mark position as closed
+                                        position.status = 'closed'
+                                        
+                                        # Send Telegram notification
+                                        if self.telegram:
+                                            await self.telegram.send_message(
+                                                f"🚨 RUG TRAP ACTIVATED!\n"
+                                                f"Token: {mint[:16]}...\n"
+                                                f"Dump: {price_change:.1f}%\n"
+                                                f"Sold all tokens\n"
+                                                f"TX: https://solscan.io/tx/{signature}"
+                                            )
+                                    else:
+                                        logger.error(f"❌ RUG TRAP SELL FAILED - signature invalid")
+                                        
+                                        # Send failure alert
+                                        if self.telegram:
+                                            await self.telegram.send_message(
+                                                f"⚠️ RUG TRAP SELL FAILED!\n"
+                                                f"Token: {mint[:16]}...\n"
+                                                f"Dump: {price_change:.1f}%\n"
+                                                f"Manual intervention needed"
+                                            )
+                                else:
+                                    logger.warning(f"No tokens found to sell for rug trap")
+                                
+                                # Remove from positions
+                                if mint in self.positions:
+                                    del self.positions[mint]
+                                
                                 break
                             
                             # ===================================================================
