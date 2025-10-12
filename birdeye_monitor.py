@@ -75,8 +75,8 @@ class BirdeyeMonitor:
             if elapsed < self.min_request_interval:
                 return
             
-            # Birdeye new tokens endpoint
-            url = "https://public-api.birdeye.so/defi/v3/token/new-listing"
+            # FIXED: Use correct Birdeye endpoint - token_list sorted by creation time
+            url = "https://public-api.birdeye.so/defi/token_list"
             
             # FIXED: Correct header format for Birdeye API
             headers = {
@@ -85,8 +85,10 @@ class BirdeyeMonitor:
             }
             
             params = {
-                'chain': 'solana',
-                'limit': 50  # Get last 50 new tokens
+                'sort_by': 'creation_time',
+                'sort_type': 'desc',
+                'offset': 0,
+                'limit': 50
             }
             
             async with self.session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -110,10 +112,11 @@ class BirdeyeMonitor:
                 data = await resp.json()
                 
                 if not data.get('success'):
-                    logger.warning(f"Birdeye API returned success=false")
+                    logger.warning(f"Birdeye API returned success=false: {data}")
                     return
                 
-                tokens = data.get('data', {}).get('items', [])
+                # FIXED: Correct response structure for token_list endpoint
+                tokens = data.get('data', {}).get('tokens', [])
                 
                 if not tokens:
                     logger.debug("No new tokens from Birdeye")
