@@ -1,6 +1,6 @@
 """
 Main Orchestrator - Path B: MC-Based Entry & FIXED Balance Verification
-UPDATED: Added liquidity validation before buys
+CRITICAL FIX: Correct token decimals in P&L calculation
 """
 
 import asyncio
@@ -562,7 +562,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position with RUG TRAP during grace period"""
+        """Monitor position with RUG TRAP during grace period - FIXED P&L CALCULATION"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -618,13 +618,25 @@ class SniperBot:
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # Calculate actual token price
+                        # CRITICAL FIX: Get actual token decimals
+                        token_decimals = self.wallet.get_token_decimals(mint)
+                        
+                        # Handle tuple response (decimals, source)
+                        if isinstance(token_decimals, tuple):
+                            token_decimals = token_decimals[0]
+                        
+                        # Default to 6 if lookup fails
+                        if not token_decimals or token_decimals == 0:
+                            logger.warning(f"Could not get decimals for {mint[:8]}, defaulting to 6")
+                            token_decimals = 6
+                        
+                        # Calculate actual token price WITH CORRECT DECIMALS
                         v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
                         v_token_reserves = curve_data.get('virtual_token_reserves', 0)
                         
                         if v_token_reserves > 0 and v_sol_reserves > 0:
                             sol_human = v_sol_reserves / 1e9
-                            tokens_human = v_token_reserves / 1e6
+                            tokens_human = v_token_reserves / (10 ** token_decimals)  # ✅ FIXED
                             
                             current_token_price_sol = sol_human / tokens_human
                             
@@ -653,30 +665,27 @@ class SniperBot:
                                 
                                 position.is_closing = True
                                 
-                                # FIXED: Execute sell immediately, don't rely on _close_position_full
+                                # Execute sell immediately
                                 actual_balance = self.wallet.get_token_balance(mint)
                                 
                                 if actual_balance > 0:
                                     logger.info(f"💰 Rug trap selling {actual_balance:,.0f} tokens immediately")
                                     
-                                    token_decimals = self.wallet.get_token_decimals(mint)
+                                    token_decimals_sell = self.wallet.get_token_decimals(mint)
                                     
                                     # Force sell with critical priority and high slippage for emergency
                                     signature = await self.trader.create_sell_transaction(
                                         mint=mint,
                                         token_amount=actual_balance,
                                         slippage=100,  # High slippage for emergency exit
-                                        token_decimals=token_decimals,
+                                        token_decimals=token_decimals_sell,
                                         urgency="critical"
                                     )
                                     
                                     if signature and not signature.startswith("1111111"):
                                         logger.info(f"✅ Rug trap sell submitted: {signature}")
-                                        
-                                        # Mark position as closed
                                         position.status = 'closed'
                                         
-                                        # Send Telegram notification
                                         if self.telegram:
                                             await self.telegram.send_message(
                                                 f"🚨 RUG TRAP ACTIVATED!\n"
@@ -688,7 +697,6 @@ class SniperBot:
                                     else:
                                         logger.error(f"❌ RUG TRAP SELL FAILED - signature invalid")
                                         
-                                        # Send failure alert
                                         if self.telegram:
                                             await self.telegram.send_message(
                                                 f"⚠️ RUG TRAP SELL FAILED!\n"
