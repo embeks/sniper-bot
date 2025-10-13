@@ -23,8 +23,11 @@ from config import (
     MIN_LIQUIDITY_SOL, MAX_SLIPPAGE_PERCENT,
     # NEW: Timer and velocity settings
     VELOCITY_MIN_SOL_PER_SECOND, VELOCITY_MIN_BUYERS, VELOCITY_MAX_TOKEN_AGE,
+    VELOCITY_MIN_RECENT_SOL_PER_SECOND,
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
-    TIMER_EXTENSION_SECONDS, TIMER_EXTENSION_PNL_THRESHOLD, TIMER_MAX_EXTENSIONS
+    TIMER_EXTENSION_SECONDS, TIMER_EXTENSION_PNL_THRESHOLD, TIMER_MAX_EXTENSIONS,
+    # NEW: Creator filter
+    ENABLE_CREATOR_FILTER, MAX_TOKENS_PER_CREATOR_24H
 )
 
 from wallet import WalletManager
@@ -33,7 +36,8 @@ from pumpportal_monitor import PumpPortalMonitor
 from pumpportal_trader import PumpPortalTrader
 from performance_tracker import PerformanceTracker
 from curve_reader import BondingCurveReader
-from velocity_checker import VelocityChecker  # NEW
+from velocity_checker import VelocityChecker
+from creator_filter import CreatorFilter  # NEW
 
 # Configure logging
 logging.basicConfig(
@@ -132,6 +136,11 @@ class SniperBot:
             min_unique_buyers=VELOCITY_MIN_BUYERS,
             max_token_age_seconds=VELOCITY_MAX_TOKEN_AGE
         )
+        
+        # NEW: Initialize creator filter
+        self.creator_filter = CreatorFilter(
+            max_tokens_per_creator_24h=MAX_TOKENS_PER_CREATOR_24H
+        ) if ENABLE_CREATOR_FILTER else None
         
         # Initialize trader
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
@@ -470,12 +479,21 @@ class SniperBot:
             # Quality filters
             initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
             name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
+            symbol = token_data.get('data', {}).get('symbol', '') if 'data' in token_data else token_data.get('symbol', '')
+            creator = token_data.get('data', {}).get('traderPublicKey', '') if 'data' in token_data else token_data.get('traderPublicKey', '')
             
             if initial_buy < 0.1 or initial_buy > 10:
                 return
             
-            if len(name) < 3 or 'test' in name.lower():
+            if len(name) < 3:
                 return
+            
+            # NEW: Creator quality filter
+            if self.creator_filter:
+                creator_passed, creator_reason = self.creator_filter.check_all(name, creator, symbol)
+                if not creator_passed:
+                    logger.warning(f"❌ Creator filter rejected {mint[:8]}...: {creator_reason}")
+                    return
             
             # LIQUIDITY VALIDATION - critical check
             passed, reason, curve_data = self.curve_reader.validate_liquidity(
@@ -716,7 +734,7 @@ class SniperBot:
                         
                         if price_change <= -40 and not position.is_closing:
                             logger.warning(f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) - immediate exit!")
-                            position.is_closing = True
+                            # DON'T set is_closing here - let _close_position_full do it
                             await self._close_position_full(mint, reason="rug_trap")
                             break
                         
@@ -768,7 +786,7 @@ class SniperBot:
                             logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                             logger.warning(f"🔍 DEBUG: P&L={price_change:.1f}%, is_closing={position.is_closing}")
                             logger.warning(f"🔍 DEBUG: About to set is_closing=True and call close")
-                            position.is_closing = True
+                            # DON'T set is_closing here - let _close_position_full do it
                             
                             logger.warning(f"🔍 DEBUG: Calling _close_position_full NOW")
                             try:
