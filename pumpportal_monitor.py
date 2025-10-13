@@ -1,5 +1,5 @@
 """
-PumpPortal WebSocket Monitor - Path B: MC + Holder Strategy (Option B - Adjusted)
+PumpPortal WebSocket Monitor - ENHANCED with Recent Velocity Check
 """
 
 import asyncio
@@ -32,6 +32,12 @@ class PumpPortalMonitor:
         self.token_history = {}
         self.filter_reasons = {}
         
+        # NEW: Recent velocity snapshots (for 1-second checks)
+        self.recent_velocity_snapshots = {}
+        
+        # NEW: Creator spam tracking
+        self.creator_token_launches = {}  # {creator_address: [timestamps]}
+        
         # Token tracking for age and MC history
         self.token_first_seen = {}
         self.token_mc_history = {}
@@ -40,7 +46,7 @@ class PumpPortalMonitor:
         self.sol_price_usd = 250
         self.last_sol_price_update = 0
         
-        # PATH B FILTERS: Option 2 - Test Mode (Concentration Check DISABLED)
+        # PATH B FILTERS: Enhanced with rug keywords
         self.filters = {
             'min_creator_sol': 0.1,
             'max_creator_sol': 5.0,
@@ -48,20 +54,28 @@ class PumpPortalMonitor:
             'max_curve_sol': 45.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 10,  # CRITICAL: Minimum 5 holders required
-            'check_concentration': False,  # DISABLED FOR TESTING - Will re-enable after data collection
-            'max_top10_concentration': 85,  # Not enforced when check_concentration=False
+            'min_holders': 10,
+            'check_concentration': False,  # DISABLED FOR TESTING
+            'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,
             'min_token_age_seconds': 150,
             'min_market_cap': 4000,
             'max_market_cap': 35000,
             'min_mc_gain_2min': 15,
-            'max_token_age_minutes': 8,  # Reject tokens older than 8 minutes
+            'max_token_age_minutes': 8,
+            # ENHANCED: Expanded rug keyword list
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'stealth', 'fair', 'liquidity', 'burned', 'renounced', 'safu', 
-                'dev', 'team', 'official'
+                'dev', 'team', 'official',
+                # NEW: Common rug patterns
+                'pepe', 'elon', 'trump', 'inu', 'doge', 'shib', 'floki',
+                'moon', 'safe', 'baby', 'mini', 'rocket', 'gem'
             ],
+            # NEW: Recent velocity check (last 1 second must be ≥ this)
+            'min_recent_velocity_sol_per_sec': 1.0,
+            # NEW: Creator spam limit (max tokens per creator in 24h)
+            'max_tokens_per_creator_24h': 3,
             'filters_enabled': True
         }
         
@@ -106,13 +120,8 @@ class PumpPortalMonitor:
                 logger.debug("Cannot calculate MC - missing bonding curve data")
                 return 0
             
-            # Price per token in SOL
             price_sol = v_sol / v_tokens
-            
-            # Total supply (PumpFun standard is 1B tokens)
             total_supply = 1_000_000_000
-            
-            # Market cap in USD
             market_cap_usd = total_supply * price_sol * self.sol_price_usd
             
             return market_cap_usd
@@ -120,8 +129,79 @@ class PumpPortalMonitor:
             logger.error(f"MC calculation error: {e}")
             return 0
     
+    def _store_recent_velocity_snapshot(self, mint: str, sol_raised: float):
+        """Store snapshot for recent velocity checking"""
+        now = time.time()
+        
+        if mint not in self.recent_velocity_snapshots:
+            self.recent_velocity_snapshots[mint] = []
+        
+        self.recent_velocity_snapshots[mint].append({
+            'timestamp': now,
+            'sol_raised': sol_raised
+        })
+        
+        # Keep only last 10 snapshots (last ~10 seconds)
+        if len(self.recent_velocity_snapshots[mint]) > 10:
+            self.recent_velocity_snapshots[mint] = self.recent_velocity_snapshots[mint][-10:]
+    
+    def _check_recent_velocity(self, mint: str, current_sol: float) -> tuple:
+        """
+        NEW: Check velocity in the LAST 1 SECOND (not average over lifetime).
+        This catches tokens that are flattening/dying.
+        
+        Returns: (passed, sol_per_sec, reason)
+        """
+        try:
+            # Need at least one previous snapshot
+            if mint not in self.recent_velocity_snapshots or len(self.recent_velocity_snapshots[mint]) == 0:
+                # First time seeing, can't check yet
+                return (True, None, "first_snapshot")
+            
+            now = time.time()
+            history = self.recent_velocity_snapshots[mint]
+            
+            # Find snapshot from ~1 second ago
+            one_sec_ago = now - 1.0
+            closest_snapshot = None
+            min_time_diff = float('inf')
+            
+            for snap in history:
+                time_diff = abs(snap['timestamp'] - one_sec_ago)
+                if time_diff < min_time_diff:
+                    min_time_diff = time_diff
+                    closest_snapshot = snap
+            
+            # If we found a snapshot within 2s, use it
+            if closest_snapshot and min_time_diff < 2.0:
+                time_delta = now - closest_snapshot['timestamp']
+                sol_delta = current_sol - closest_snapshot['sol_raised']
+                
+                if time_delta > 0:
+                    recent_velocity = max(0, sol_delta / time_delta)
+                    
+                    min_required = self.filters['min_recent_velocity_sol_per_sec']
+                    
+                    if recent_velocity < min_required:
+                        logger.info(
+                            f"❌ RECENT VELOCITY TOO LOW: {recent_velocity:.2f} SOL/s in last {time_delta:.1f}s "
+                            f"(need ≥{min_required} SOL/s) - pump is dying"
+                        )
+                        return (False, recent_velocity, f"recent_velocity_low: {recent_velocity:.2f} SOL/s")
+                    
+                    logger.info(f"✅ Recent velocity OK: {recent_velocity:.2f} SOL/s in last {time_delta:.1f}s")
+                    return (True, recent_velocity, "ok")
+            
+            # Not enough history yet
+            return (True, None, "insufficient_history")
+            
+        except Exception as e:
+            logger.error(f"Error checking recent velocity: {e}")
+            # On error, let it pass (don't block good tokens due to bugs)
+            return (True, None, f"error: {e}")
+    
     def _check_velocity(self, mint: str, v_sol: float) -> bool:
-        """Reject instant pumps - require minimum time and reasonable growth rate"""
+        """Original velocity check - growth rate over time"""
         now = time.time()
         
         if mint not in self.token_history:
@@ -138,7 +218,6 @@ class PumpPortalMonitor:
         if len(history) < 2:
             return True
         
-        # Calculate total time elapsed and growth
         time_elapsed = history[-1][0] - history[0][0]
         sol_growth = history[-1][1] - history[0][1]
         
@@ -150,8 +229,6 @@ class PumpPortalMonitor:
         # Calculate average growth rate (SOL per minute)
         growth_per_minute = (sol_growth / time_elapsed) * 60 if time_elapsed > 0 else 999
         
-        # Organic tokens: 5-15 SOL/minute
-        # Coordinated pumps: 30-60+ SOL/minute
         max_sol_per_minute = 20
         
         if growth_per_minute > max_sol_per_minute:
@@ -161,11 +238,47 @@ class PumpPortalMonitor:
         logger.debug(f"Velocity OK: {growth_per_minute:.1f} SOL/min over {time_elapsed:.0f}s")
         return True
     
+    def _check_creator_spam(self, creator_address: str) -> tuple:
+        """
+        NEW: Check if creator is spamming tokens.
+        Returns: (passed, token_count, reason)
+        """
+        try:
+            now = time.time()
+            
+            # Clean up old entries (> 24h)
+            if creator_address in self.creator_token_launches:
+                self.creator_token_launches[creator_address] = [
+                    ts for ts in self.creator_token_launches[creator_address]
+                    if now - ts < 86400  # 24 hours
+                ]
+            
+            # Check how many tokens this creator launched in 24h
+            token_count = len(self.creator_token_launches.get(creator_address, []))
+            max_allowed = self.filters['max_tokens_per_creator_24h']
+            
+            if token_count >= max_allowed:
+                logger.info(
+                    f"❌ CREATOR SPAM: {creator_address[:8]}... launched "
+                    f"{token_count} tokens in 24h (max {max_allowed})"
+                )
+                return (False, token_count, f"creator_spam: {token_count}_tokens")
+            
+            # Record this token launch
+            if creator_address not in self.creator_token_launches:
+                self.creator_token_launches[creator_address] = []
+            self.creator_token_launches[creator_address].append(now)
+            
+            logger.debug(f"✅ Creator OK: {creator_address[:8]}... ({token_count + 1} tokens/24h)")
+            return (True, token_count + 1, "ok")
+            
+        except Exception as e:
+            logger.error(f"Error checking creator spam: {e}")
+            # On error, let it pass
+            return (True, 0, f"error: {e}")
+    
     async def _check_holders_helius(self, mint: str, retry: bool = True) -> dict:
-        """
-        Use Helius to verify holder distribution with retry logic for young tokens.
-        Returns dict with 'passed', 'holder_count', 'concentration', and 'reason'.
-        """
+        """Use Helius to verify holder distribution with retry logic"""
         try:
             logger.info(f"🔍 Checking holders for {mint[:8]}... via Helius")
             
@@ -186,12 +299,10 @@ class PumpPortalMonitor:
                         return {'passed': False, 'reason': f'HTTP {resp.status}'}
                     
                     data = await resp.json()
-                    logger.debug(f"Helius response: {data}")
                     
                     if 'error' in data:
                         error_msg = data['error'].get('message', '')
                         
-                        # Handle "not a Token mint" error with retry
                         if 'not a Token mint' in error_msg and retry:
                             logger.info(f"⏳ Token not indexed yet, waiting 10s and retrying...")
                             await asyncio.sleep(10)
@@ -207,9 +318,8 @@ class PumpPortalMonitor:
                     accounts = data['result']['value']
                     account_count = len(accounts)
                     
-                    logger.info(f"📊 Received {account_count} top holder accounts (API limit: 20)")
+                    logger.info(f"📊 Received {account_count} top holder accounts")
                     
-                    # CRITICAL CHECK 1: Minimum holder count
                     if account_count < self.filters['min_holders']:
                         logger.warning(f"❌ REJECT: Only {account_count} holders (need {self.filters['min_holders']}+)")
                         return {
@@ -218,7 +328,6 @@ class PumpPortalMonitor:
                             'reason': f'only {account_count} holders'
                         }
                     
-                    # Calculate Top 10 concentration from available accounts
                     total_supply = sum(float(acc.get('amount', 0)) for acc in accounts)
                     if total_supply == 0:
                         logger.warning(f"❌ REJECT: Zero total supply")
@@ -230,7 +339,6 @@ class PumpPortalMonitor:
                     
                     logger.info(f"📊 Top {top_10_count} concentration: {concentration:.1f}%")
                     
-                    # CRITICAL CHECK 2: Concentration limit (DISABLED IN TEST MODE)
                     if self.filters.get('check_concentration', True):
                         if concentration > self.filters['max_top10_concentration']:
                             logger.warning(f"❌ REJECT: Top {top_10_count} hold {concentration:.1f}% (max {self.filters['max_top10_concentration']}%)")
@@ -241,22 +349,17 @@ class PumpPortalMonitor:
                                 'reason': f'concentration {concentration:.1f}%'
                             }
                     else:
-                        logger.warning(f"⚠️  CONCENTRATION CHECK DISABLED: Top {top_10_count} = {concentration:.1f}% (normally max {self.filters['max_top10_concentration']}%)")
+                        logger.warning(f"⚠️  CONCENTRATION CHECK DISABLED: Top {top_10_count} = {concentration:.1f}%")
                     
-                    logger.info(f"✅ Holder check PASSED: {account_count} holders, Top {top_10_count} concentration: {concentration:.1f}%")
+                    logger.info(f"✅ Holder check PASSED: {account_count} holders")
                     return {
                         'passed': True,
                         'holder_count': account_count,
                         'concentration': concentration
                     }
                     
-        except asyncio.TimeoutError:
-            logger.warning("❌ Helius timeout (3s)")
-            return {'passed': False, 'reason': 'timeout'}
         except Exception as e:
             logger.error(f"❌ Helius exception: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return {'passed': False, 'reason': str(e)}
     
     def _log_filter(self, reason: str, detail: str):
@@ -267,40 +370,39 @@ class PumpPortalMonitor:
         logger.debug(f"Filtered ({reason}): {detail}")
     
     async def _apply_quality_filters(self, data: dict) -> bool:
-        """
-        Apply all quality filters including async Helius checks.
-        Returns True if token passes all filters, False otherwise.
-        """
+        """Apply all quality filters including recent velocity check"""
         if not self.filters['filters_enabled']:
             return True
             
-        # Extract the actual token data
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
         
-        # Calculate current time and SOL in curve
         now = time.time()
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
         
         # Track when we first see this token
         if mint not in self.token_first_seen:
-            self.token_first_seen[mint] = now
+            self.token_first_seen[mint]= now
         
-        # Age proxy: Require 30+ SOL in curve 
+        # Store snapshot for recent velocity
+        self._store_recent_velocity_snapshot(mint, v_sol)
+        
+        # Age proxy
         if v_sol < 30:
-            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve (need 30+ for age verification)")
+            self._log_filter("too_young", f"only {v_sol:.1f} SOL in curve")
             return False
         
-        # NEW: Max age check - reject tokens older than 8 minutes (prevents late buys)
         token_age_minutes = (now - self.token_first_seen[mint]) / 60
         if token_age_minutes > self.filters['max_token_age_minutes']:
-            self._log_filter("too_old", f"{token_age_minutes:.1f} minutes old (max {self.filters['max_token_age_minutes']})")
+            self._log_filter("too_old", f"{token_age_minutes:.1f} minutes")
             return False
         
-        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve, age: {token_age_minutes:.1f}m - proceeding with filters")
+        logger.info(f"✓ Token {mint[:8]}... has {v_sol:.1f} SOL in curve, age: {token_age_minutes:.1f}m")
         
-        # Filter 1: Creator initial buy amount
+        # Creator buy amount
         creator_sol = float(token_data.get('solAmount', 0))
+        creator_address = str(token_data.get('traderPublicKey', 'unknown'))
+        
         if creator_sol < self.filters['min_creator_sol']:
             self._log_filter("creator_buy_low", f"{creator_sol:.3f} SOL")
             return False
@@ -308,7 +410,13 @@ class PumpPortalMonitor:
             self._log_filter("creator_buy_high", f"{creator_sol:.1f} SOL")
             return False
         
-        # Filter 2: Name and symbol quality
+        # NEW: Creator spam check
+        creator_passed, creator_token_count, creator_reason = self._check_creator_spam(creator_address)
+        if not creator_passed:
+            self._log_filter("creator_spam", creator_reason)
+            return False
+        
+        # Name quality
         name = str(token_data.get('name', '')).strip()
         symbol = str(token_data.get('symbol', '')).strip()
         
@@ -320,14 +428,15 @@ class PumpPortalMonitor:
             self._log_filter("non_ascii", f"{name}/{symbol}")
             return False
         
-        # Check blacklist
+        # Check ENHANCED blacklist (now includes rug keywords)
         name_lower = name.lower()
+        symbol_lower = symbol.lower()
         for blacklisted in self.filters['name_blacklist']:
-            if blacklisted in name_lower:
+            if blacklisted in name_lower or blacklisted in symbol_lower:
                 self._log_filter("blacklist", f"'{blacklisted}' in {name}")
                 return False
         
-        # Filter 3: Bonding curve SOL window
+        # Bonding curve SOL window
         if v_sol < self.filters['min_curve_sol']:
             self._log_filter("curve_low", f"{v_sol:.2f} SOL")
             return False
@@ -335,7 +444,7 @@ class PumpPortalMonitor:
             self._log_filter("curve_high", f"{v_sol:.2f} SOL")
             return False
         
-        # Filter 4: ENHANCED momentum check
+        # Momentum check
         if v_sol < 35:
             required_multiplier = 8
         elif v_sol < 50:
@@ -345,16 +454,16 @@ class PumpPortalMonitor:
         
         required_sol = creator_sol * required_multiplier
         if v_sol < required_sol:
-            self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f} needed ({required_multiplier}x)")
+            self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f} needed")
             return False
         
-        # Filter 5: Virtual token reserves sanity check
+        # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
             self._log_filter("tokens_low", f"{v_tokens:,.0f}")
             return False
         
-        # Filter 6: URI/Description blacklist
+        # Metadata blacklist
         uri = str(token_data.get('uri', '')).lower()
         description = str(token_data.get('description', '')).lower()
         for blacklisted in self.filters['name_blacklist']:
@@ -362,12 +471,18 @@ class PumpPortalMonitor:
                 self._log_filter("metadata_blacklist", blacklisted)
                 return False
         
-        # Filter 7: Velocity check - must be at least 60 seconds old
+        # Original velocity check
         if not self._check_velocity(mint, v_sol):
             self._log_filter("velocity", "too fast or too young")
             return False
         
-        # Filter 7.5: Market Cap range check
+        # NEW: Recent velocity check (last 1 second)
+        recent_velocity_passed, recent_velocity_value, recent_velocity_reason = self._check_recent_velocity(mint, v_sol)
+        if not recent_velocity_passed:
+            self._log_filter("recent_velocity_low", recent_velocity_reason)
+            return False
+        
+        # Market cap
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
         
@@ -375,7 +490,6 @@ class PumpPortalMonitor:
             self._log_filter("mc_calculation_failed", "Could not calculate MC")
             return False
         
-        # Target: $6k-$60k MC range
         if market_cap < self.filters['min_market_cap']:
             self._log_filter("mc_too_low", f"${market_cap:,.0f}")
             return False
@@ -384,35 +498,26 @@ class PumpPortalMonitor:
             self._log_filter("mc_too_high", f"${market_cap:,.0f}")
             return False
         
-        logger.info(f"✓ MC check passed: ${market_cap:,.0f} (target: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,})")
+        logger.info(f"✓ MC check passed: ${market_cap:,.0f}")
         
-        # Filter 8: Helius holder distribution check - CRITICAL with relaxed limits
+        # Holder check
         holder_result = None
         try:
-            logger.info(f"🔍 Starting holder check for {mint[:8]}... (SOL in curve: {v_sol:.1f})")
-            
-            # Wait 3 seconds to ensure Helius has indexed the token
+            logger.info(f"🔍 Starting holder check for {mint[:8]}...")
             await asyncio.sleep(3)
             
-            logger.info(f"🔍 Calling Helius API...")
             holder_result = await self._check_holders_helius(mint)
-            logger.info(f"🔍 Holder check returned: {holder_result}")
             
             if not holder_result['passed']:
                 self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-                logger.warning(f"❌ Token {mint[:8]}... REJECTED by holder check: {holder_result.get('reason')}")
+                logger.warning(f"❌ Token {mint[:8]}... REJECTED by holder check")
                 return False
             
-            logger.info(f"✅ Token {mint[:8]}... passed holder check: {holder_result.get('holder_count')} holders, {holder_result.get('concentration', 0):.1f}% concentration")
-            
-            # Store for use in callback
+            logger.info(f"✅ Token {mint[:8]}... passed holder check")
             self._last_holder_result = holder_result
             
         except Exception as e:
-            logger.error(f"❌ CRITICAL: Holder check exception for {mint[:8]}...: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            # Fail closed on exceptions
+            logger.error(f"❌ Holder check exception: {e}")
             self._log_filter("holder_distribution", f"exception: {e}")
             return False
         
@@ -422,7 +527,8 @@ class PumpPortalMonitor:
         concentration = holder_result.get('concentration', 0) if holder_result else 0
         
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
-        logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f} | Momentum: {momentum:.1f}x")
+        logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f}")
+        logger.info(f"   Momentum: {momentum:.1f}x | Recent velocity: {recent_velocity_value:.2f} SOL/s" if recent_velocity_value else "")
         logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
         return True
         
@@ -430,15 +536,10 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: PATH B - Option 2 (TEST MODE - Concentration Check DISABLED)")
-        logger.info(f"  ⚠️  TESTING: Concentration check disabled for data collection")
-        logger.info(f"  Bonding Curve: {self.filters['min_curve_sol']}-{self.filters['max_curve_sol']} SOL")
-        logger.info(f"  Market Cap: ${self.filters['min_market_cap']:,}-${self.filters['max_market_cap']:,}")
-        logger.info(f"  Min Age: 30+ SOL in curve (~2-3 minutes)")
-        logger.info(f"  Max Age: {self.filters['max_token_age_minutes']} minutes")
-        logger.info(f"  Min Holders: {self.filters['min_holders']} (concentration NOT checked)")
-        logger.info(f"  Momentum: 8x@<35 SOL, 5x@<50 SOL, 3x@50+ SOL")
-        logger.info(f"  🎯 Goal: Collect 20-30 trades to analyze concentration vs rug correlation")
+        logger.info(f"Strategy: ENHANCED with Recent Velocity Check")
+        logger.info(f"  Recent Velocity: ≥{self.filters['min_recent_velocity_sol_per_sec']} SOL/s in last 1s")
+        logger.info(f"  Creator Spam: Max {self.filters['max_tokens_per_creator_24h']} tokens/24h")
+        logger.info(f"  Enhanced Blacklist: {len(self.filters['name_blacklist'])} keywords")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -447,23 +548,15 @@ class PumpPortalMonitor:
                 async with websockets.connect(uri) as websocket:
                     logger.info("✅ Connected to PumpPortal WebSocket!")
                     
-                    if self.reconnect_count > 0:
-                        logger.info(f"Reconnection #{self.reconnect_count} successful")
-                    
-                    # Subscribe to new tokens
                     subscribe_msg = {"method": "subscribeNewToken"}
                     await websocket.send(json.dumps(subscribe_msg))
                     logger.info("📡 Subscribed to new token events")
                     
-                    # Listen for messages
                     while self.running:
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=30)
                             data = json.loads(message)
                             
-                            logger.debug(f"Received: {str(data)[:200]}...")
-                            
-                            # Check for new token
                             if self._is_new_token(data):
                                 mint = self._extract_mint(data)
                                 
@@ -471,11 +564,9 @@ class PumpPortalMonitor:
                                     self.seen_tokens.add(mint)
                                     self.tokens_seen += 1
                                     
-                                    # Apply quality filters (async)
                                     if not await self._apply_quality_filters(data):
                                         self.tokens_filtered += 1
                                         
-                                        # Log filter stats periodically
                                         if self.tokens_seen % 10 == 0:
                                             filter_rate = (self.tokens_filtered / self.tokens_seen * 100)
                                             logger.info(f"📊 Filter stats: {self.tokens_filtered}/{self.tokens_seen} filtered ({filter_rate:.1f}%)")
@@ -486,13 +577,11 @@ class PumpPortalMonitor:
                                     
                                     self.tokens_passed += 1
                                     
-                                    # Extract metrics
                                     token_data = data.get('data', data)
                                     v_sol = token_data.get('vSolInBondingCurve', 0)
                                     creator_sol = token_data.get('solAmount', 0)
                                     market_cap = self._calculate_market_cap(token_data)
                                     
-                                    # Get holder data from filter results (stored during _apply_quality_filters)
                                     holder_data = getattr(self, '_last_holder_result', {
                                         'holder_count': 0,
                                         'concentration': 0
@@ -518,15 +607,12 @@ class PumpPortalMonitor:
                                             'data': data,
                                             'source': 'pumpportal',
                                             'passed_filters': True,
-                                            'strategy': 'path_b_option_2_test_mode',
                                             'market_cap': market_cap,
                                             'holder_data': holder_data
                                         })
                         
                         except asyncio.TimeoutError:
                             await websocket.ping()
-                            logger.debug("Sent ping")
-                        
                         except Exception as e:
                             logger.error(f"Message processing error: {e}")
                             break
@@ -536,7 +622,7 @@ class PumpPortalMonitor:
                 if self.running:
                     self.seen_tokens.clear()
                     self.reconnect_count += 1
-                    logger.info(f"Reconnecting in 5 seconds... (attempt #{self.reconnect_count + 1})")
+                    logger.info(f"Reconnecting in 5s... (attempt #{self.reconnect_count + 1})")
                     await asyncio.sleep(5)
     
     def _is_new_token(self, data: dict) -> bool:
