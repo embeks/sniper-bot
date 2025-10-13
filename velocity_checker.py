@@ -70,38 +70,97 @@ class VelocityChecker:
             # Avoid division by zero
             age = max(token_age_seconds, 0.1)
             
-            # Calculate velocity
-            sol_per_second = sol_raised / age
+            # Calculate AVERAGE velocity over lifetime
+            avg_sol_per_second = sol_raised / age
             
-            # Check thresholds
-            sol_check = sol_per_second >= self.min_sol_per_second
+            # Check average thresholds
+            sol_check = avg_sol_per_second >= self.min_sol_per_second
             buyers_check = unique_buyers >= self.min_unique_buyers
+            
+            if not sol_check or not buyers_check:
+                # Log why it failed
+                reasons = []
+                if not sol_check:
+                    reasons.append(f"Avg SOL/s: {avg_sol_per_second:.2f} < {self.min_sol_per_second}")
+                if not buyers_check:
+                    reasons.append(f"buyers: ~{unique_buyers} < {self.min_unique_buyers}")
+                
+                reason_str = ", ".join(reasons)
+                logger.info(f"❌ VELOCITY FAILED: {reason_str}")
+                
+                return False, f"low_velocity: {reason_str}"
+            
+            # NEW: RECENT VELOCITY CHECK (last 1 second)
+            # This catches tokens that HAD velocity but are now flat/dying
+            recent_velocity = self._check_recent_velocity(mint, sol_raised, token_age_seconds)
+            
+            if recent_velocity is not None and recent_velocity < 1.0:
+                logger.info(
+                    f"❌ RECENT VELOCITY TOO LOW: {recent_velocity:.2f} SOL/s in last 1s "
+                    f"(need ≥1.0 SOL/s) - pump is dying"
+                )
+                return False, f"recent_velocity_low: {recent_velocity:.2f} SOL/s"
             
             # Store snapshot for later velocity tracking
             self._store_velocity_snapshot(mint, sol_raised, unique_buyers, time.time())
             
-            if sol_check and buyers_check:
-                logger.info(
-                    f"✅ VELOCITY PASSED: {sol_per_second:.2f} SOL/s "
-                    f"({sol_raised:.2f} SOL / {age:.1f}s), ~{unique_buyers} buyers"
-                )
-                return True, "velocity_passed"
+            logger.info(
+                f"✅ VELOCITY PASSED: Avg {avg_sol_per_second:.2f} SOL/s "
+                f"({sol_raised:.2f} SOL / {age:.1f}s), ~{unique_buyers} buyers"
+            )
+            if recent_velocity is not None:
+                logger.info(f"   Recent velocity: {recent_velocity:.2f} SOL/s (last 1s)")
             
-            # Log why it failed
-            reasons = []
-            if not sol_check:
-                reasons.append(f"SOL/s: {sol_per_second:.2f} < {self.min_sol_per_second}")
-            if not buyers_check:
-                reasons.append(f"buyers: ~{unique_buyers} < {self.min_unique_buyers}")
-            
-            reason_str = ", ".join(reasons)
-            logger.info(f"❌ VELOCITY FAILED: {reason_str}")
-            
-            return False, f"low_velocity: {reason_str}"
+            return True, "velocity_passed"
             
         except Exception as e:
             logger.error(f"Error checking velocity: {e}")
             return False, f"velocity_error: {str(e)}"
+    
+    def _check_recent_velocity(self, mint: str, current_sol_raised: float, age: float) -> Optional[float]:
+        """
+        Check velocity in the LAST 1 SECOND (not average over lifetime).
+        This catches tokens that are flattening/dying.
+        
+        Returns:
+            SOL/s in last second, or None if not enough history
+        """
+        try:
+            # Need at least one previous snapshot to compare
+            if mint not in self.velocity_history or len(self.velocity_history[mint]) == 0:
+                # First time seeing this token, can't check recent velocity
+                return None
+            
+            history = self.velocity_history[mint]
+            current_time = time.time()
+            
+            # Find snapshot from ~1 second ago
+            one_sec_ago = current_time - 1.0
+            
+            # Look for closest snapshot to 1s ago
+            closest_snapshot = None
+            min_time_diff = float('inf')
+            
+            for snap in history:
+                time_diff = abs(snap['timestamp'] - one_sec_ago)
+                if time_diff < min_time_diff:
+                    min_time_diff = time_diff
+                    closest_snapshot = snap
+            
+            # If we found a snapshot within 2s, use it
+            if closest_snapshot and min_time_diff < 2.0:
+                time_delta = current_time - closest_snapshot['timestamp']
+                sol_delta = current_sol_raised - closest_snapshot['sol_raised']
+                
+                if time_delta > 0:
+                    recent_velocity = sol_delta / time_delta
+                    return max(0, recent_velocity)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking recent velocity: {e}")
+            return None
     
     def _estimate_unique_buyers(self, sol_raised: float, age_seconds: float) -> int:
         """
