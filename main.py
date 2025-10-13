@@ -766,8 +766,20 @@ class SniperBot:
                         # Stop-loss (overrides timer)
                         if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                             logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
+                            logger.warning(f"🔍 DEBUG: P&L={price_change:.1f}%, is_closing={position.is_closing}")
+                            logger.warning(f"🔍 DEBUG: About to set is_closing=True and call close")
                             position.is_closing = True
-                            await self._close_position_full(mint, reason="stop_loss")
+                            
+                            logger.warning(f"🔍 DEBUG: Calling _close_position_full NOW")
+                            try:
+                                await self._close_position_full(mint, reason="stop_loss")
+                                logger.warning(f"✅ DEBUG: _close_position_full completed")
+                            except Exception as e:
+                                logger.error(f"❌ CRITICAL: _close_position_full FAILED: {e}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                            
+                            logger.warning(f"🔍 DEBUG: Breaking out of monitor loop")
                             break
                     
                     else:
@@ -778,6 +790,8 @@ class SniperBot:
                 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                 
                 await asyncio.sleep(MONITOR_CHECK_INTERVAL)
             
@@ -1042,20 +1056,25 @@ class SniperBot:
     async def _close_position_full(self, mint: str, reason: str = "manual"):
         """Close remaining position with REAL SOL tracking"""
         try:
+            logger.warning(f"🔍 DEBUG: _close_position_full called for {mint[:8]}, reason={reason}")
+            
             position = self.positions.get(mint)
             if not position or position.status != 'active':
+                logger.error(f"🔍 DEBUG: Position not found or not active. position={position}, status={position.status if position else 'N/A'}")
                 return
             
             if position.is_closing:
                 logger.debug(f"Position {mint[:8]} already closing")
                 return
             
+            logger.warning(f"🔍 DEBUG: Setting is_closing=True and status='closing'")
             position.is_closing = True
             position.status = 'closing'
             ui_token_balance = position.remaining_tokens
             
             if ui_token_balance <= 0:
                 logger.warning(f"No tokens remaining for {mint[:8]}...")
+                logger.warning(f"🔍 DEBUG: remaining_tokens={position.remaining_tokens}, initial_tokens={position.initial_tokens}")
                 position.status = 'closed'
                 if mint in self.positions:
                     del self.positions[mint]
@@ -1070,21 +1089,30 @@ class SniperBot:
             logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
             logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
             
+            logger.warning(f"🔍 DEBUG: About to get pre_sol_balance")
             pre_sol_balance = self.wallet.get_sol_balance()
+            logger.warning(f"🔍 DEBUG: pre_sol_balance={pre_sol_balance:.4f}")
             
             # Always use actual wallet balance to avoid rounding dust
+            logger.warning(f"🔍 DEBUG: About to get actual token balance from wallet")
             actual_balance = self.wallet.get_token_balance(mint)
+            logger.warning(f"🔍 DEBUG: actual_balance={actual_balance:,.2f} tokens")
             if actual_balance > 0:
                 ui_token_balance = actual_balance
                 logger.info(f"💰 Selling actual balance: {actual_balance:,.2f} tokens")
             else:
                 logger.warning(f"No tokens in wallet - using position balance: {ui_token_balance:,.2f}")
             
+            logger.warning(f"🔍 DEBUG: About to get curve data")
             curve_data = self.dex.get_bonding_curve_data(mint)
             is_migrated = curve_data is None or curve_data.get('is_migrated', False)
+            logger.warning(f"🔍 DEBUG: is_migrated={is_migrated}")
             
+            logger.warning(f"🔍 DEBUG: About to get token decimals")
             token_decimals = self.wallet.get_token_decimals(mint)
+            logger.warning(f"🔍 DEBUG: token_decimals={token_decimals}")
             
+            logger.warning(f"🔍 DEBUG: About to create sell transaction")
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
@@ -1092,6 +1120,7 @@ class SniperBot:
                 token_decimals=token_decimals,
                 urgency="critical"
             )
+            logger.warning(f"🔍 DEBUG: Sell transaction signature={signature}")
             
             if signature and not signature.startswith("1111111"):
                 await asyncio.sleep(3)
