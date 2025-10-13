@@ -729,7 +729,7 @@ class SniperBot:
                             logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
                             logger.info(f"   Final P&L: {price_change:+.1f}%")
                             logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
-                            position.is_closing = True
+                            # DON'T set is_closing here - let _close_position_full do it
                             await self._close_position_full(mint, reason="timer_exit")
                             break
                         
