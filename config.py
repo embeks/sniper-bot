@@ -1,6 +1,5 @@
 """
-config - Path B: MC + Holder Strategy
-UPDATED: Added liquidity validation settings
+config - UPDATED: Added velocity gate and timer-based exit settings
 """
 
 import os
@@ -40,7 +39,40 @@ MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
-# Partial profit taking
+# ============================================
+# VELOCITY GATE SETTINGS (NEW)
+# ============================================
+# Minimum SOL/second inflow rate to enter
+VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.0'))
+
+# Minimum unique buyers required (estimated)
+VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
+
+# Maximum token age to even check velocity (skip older tokens)
+VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '3.0'))
+
+# ============================================
+# TIMER-BASED EXIT SETTINGS (NEW)
+# ============================================
+# Base hold time in seconds (will add random variance)
+TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '30'))
+
+# Random variance to add (+/- seconds)
+TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '5'))
+
+# Extension for mega-pumps (if velocity still rising and P&L > threshold)
+TIMER_EXTENSION_SECONDS = int(os.getenv('TIMER_EXTENSION_SECONDS', '10'))
+
+# P&L threshold to consider extension (%)
+TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD', '80'))
+
+# Maximum total extensions allowed
+TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
+
+# ============================================
+# LEGACY PARTIAL PROFIT SETTINGS (DEPRECATED)
+# These are kept for backward compatibility but not used in timer mode
+# ============================================
 PARTIAL_TAKE_PROFIT = {}
 tp1, sp1 = os.getenv('TAKE_PROFIT_1'), os.getenv('SELL_PERCENT_1')
 tp2, sp2 = os.getenv('TAKE_PROFIT_2'), os.getenv('SELL_PERCENT_2')
@@ -53,16 +85,16 @@ if tp2 and sp2:
 if tp3 and sp3:
     PARTIAL_TAKE_PROFIT[float(tp3)] = float(sp3) / 100.0
 
-# Timing
-SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '15'))
-MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '90'))
-MONITOR_CHECK_INTERVAL = int(os.getenv('MONITOR_CHECK_INTERVAL', '2'))
+# Timing (legacy)
+SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '0'))  # No grace period in timer mode
+MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '120'))  # Fallback safety
+MONITOR_CHECK_INTERVAL = int(os.getenv('MONITOR_CHECK_INTERVAL', '1'))  # Check every second
 DATA_FAILURE_TOLERANCE = int(os.getenv('DATA_FAILURE_TOLERANCE', '10'))
 
 # ============================================
-# LIQUIDITY VALIDATION (NEW)
+# LIQUIDITY VALIDATION
 # ============================================
-# Require 5x liquidity (e.g. 0.5 SOL raised for 0.1 SOL buy)
+# Require 5x liquidity (e.g. 0.15 SOL raised for 0.03 SOL buy)
 LIQUIDITY_MULTIPLIER = float(os.getenv('LIQUIDITY_MULTIPLIER', '5.0'))
 # Absolute minimum SOL raised
 MIN_LIQUIDITY_SOL = float(os.getenv('MIN_LIQUIDITY_SOL', '0.6'))
