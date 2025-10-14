@@ -1,5 +1,5 @@
 """
-config - UPDATED: Added velocity gate and timer-based exit settings
+config - UPDATED: Shorter timer (20s base) + fail-fast settings
 """
 
 import os
@@ -40,7 +40,7 @@ STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # ============================================
-# VELOCITY GATE SETTINGS (NEW)
+# VELOCITY GATE SETTINGS
 # ============================================
 # Minimum SOL/second inflow rate to enter
 VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.0'))
@@ -49,13 +49,20 @@ VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.
 VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
 
 # Maximum token age to even check velocity (skip older tokens)
-VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '3.0'))
+VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '6.0'))
+
+# NEW: Recent velocity thresholds (last 1-3 seconds)
+VELOCITY_MIN_RECENT_1S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_1S_SOL', '2.0'))
+VELOCITY_MIN_RECENT_3S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_3S_SOL', '4.0'))
+
+# NEW: Acceleration requirement (velocity shouldn't be falling)
+VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '40.0'))
 
 # ============================================
-# TIMER-BASED EXIT SETTINGS (NEW)
+# TIMER-BASED EXIT SETTINGS
 # ============================================
-# Base hold time in seconds (will add random variance)
-TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '30'))
+# CHANGED: Base hold time reduced from 30s to 20s
+TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '20'))
 
 # Random variance to add (+/- seconds)
 TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '5'))
@@ -68,6 +75,18 @@ TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD',
 
 # Maximum total extensions allowed
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
+
+# ============================================
+# FAIL-FAST EXIT SETTINGS (NEW)
+# ============================================
+# Time after buy to check for early failure (seconds)
+FAIL_FAST_CHECK_TIME = float(os.getenv('FAIL_FAST_CHECK_TIME', '5.0'))
+
+# P&L threshold for early exit (%)
+FAIL_FAST_PNL_THRESHOLD = float(os.getenv('FAIL_FAST_PNL_THRESHOLD', '-10.0'))
+
+# Velocity death threshold (% of pre-buy velocity)
+FAIL_FAST_VELOCITY_THRESHOLD = float(os.getenv('FAIL_FAST_VELOCITY_THRESHOLD', '30.0'))
 
 # ============================================
 # LEGACY PARTIAL PROFIT SETTINGS (DEPRECATED)
