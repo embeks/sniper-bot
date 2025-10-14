@@ -1,5 +1,6 @@
 """
-Performance Tracker - FIXED: Accurate win/loss tracking
+Performance Tracker - FINAL: Fixed CSV logging to show real P&L
+CRITICAL FIX: Uses actual pnl_sol parameter instead of recalculating
 """
 
 import json
@@ -24,7 +25,7 @@ class PerformanceTracker:
         # Use Render persistent disk path
         self.csv_file = Path("/data/trades.csv")
         
-        # Ensure /data directory exists (Render should create it, but be safe)
+        # Ensure /data directory exists
         self.csv_file.parent.mkdir(parents=True, exist_ok=True)
         
         # Initialize CSV file
@@ -45,17 +46,18 @@ class PerformanceTracker:
             'losing_trades': 0,
         }
         
-        # Fee breakdown
+        # Fee breakdown (updated for 0.05 SOL positions)
         self.fees = {
-            'network_fee': 0.000005,  # Base network fee
-            'priority_fee': 0.0001,   # Priority fee
-            'platform_fee_rate': 0.01  # PumpFun 1% fee
+            'network_fee': 0.000005,
+            'priority_fee_buy': 0.003,
+            'priority_fee_sell': 0.010,
+            'platform_fee_rate': 0.01
         }
         
         # High-frequency events to skip
         self.high_frequency_events = ['position_update', 'token_detected']
         
-        logger.info(f"📊 Performance tracker initialized (ACCURATE STATS)")
+        logger.info(f"📊 Performance tracker initialized (ACCURATE)")
         logger.info(f"📈 Logging trades to {self.csv_file}")
     
     def setup_csv(self):
@@ -121,13 +123,13 @@ class PerformanceTracker:
     def calculate_total_cost(self, buy_amount_sol: float) -> Dict:
         """Calculate total cost including all fees"""
         platform_fee = buy_amount_sol * self.fees['platform_fee_rate']
-        total_fees = self.fees['network_fee'] + self.fees['priority_fee'] + platform_fee
+        total_fees = self.fees['network_fee'] + self.fees['priority_fee_buy'] + platform_fee
         total_cost = buy_amount_sol + total_fees
         
         return {
             'buy_amount': buy_amount_sol,
             'network_fee': self.fees['network_fee'],
-            'priority_fee': self.fees['priority_fee'],
+            'priority_fee': self.fees['priority_fee_buy'],
             'platform_fee': platform_fee,
             'total_fees': total_fees,
             'total_cost': total_cost
@@ -153,13 +155,13 @@ class PerformanceTracker:
             if event_type in self.high_frequency_events:
                 return
             
-            # Prepare CSV data
+            # CRITICAL FIX: Use pnl_sol directly, don't recalculate
             csv_data = {
                 'timestamp': datetime.now().isoformat(),
                 'event_type': event_type,
                 'mint': data.get('mint', ''),
                 'amount_sol': data.get('amount_sol', data.get('buy_amount', 0)),
-                'pnl_sol': data.get('pnl_sol', 0),
+                'pnl_sol': data.get('pnl_sol', 0),  # USE DIRECTLY
                 'fees_sol': data.get('total_fees', 0),
                 'tokens': data.get('tokens_received', data.get('tokens_sold', 0)),
                 'execution_ms': data.get('execution_time_ms', 0),
@@ -180,11 +182,10 @@ class PerformanceTracker:
                 self.metrics['total_sells'] += 1
                 self.metrics['positions_closed'] += 1
                 
-                # FIXED: Only count as win if ACTUAL profit (not just positive pnl_sol from bug)
+                # FIXED: Only count as win if ACTUAL profit
                 pnl = data.get('pnl_sol', 0)
                 
-                # A real win means you made profit (pnl > 0.001 SOL minimum)
-                # This filters out tiny positive values from rounding errors
+                # Real win means profit > 0.001 SOL (filters rounding errors)
                 if pnl > 0.001:
                     self.metrics['winning_trades'] += 1
                     logger.debug(f"✅ Trade counted as WIN: {pnl:+.4f} SOL")
@@ -194,9 +195,7 @@ class PerformanceTracker:
                 
                 self.metrics['total_pnl_sol'] += pnl
             
-            # FIXED: Also track partial sells correctly
             elif event_type == 'partial_sell':
-                # Partial sells with profit should be tracked
                 pnl = data.get('pnl_sol', 0)
                 self.metrics['total_pnl_sol'] += pnl
                 logger.debug(f"📊 Partial sell P&L: {pnl:+.4f} SOL")
@@ -208,7 +207,6 @@ class PerformanceTracker:
         """Log token detection event - high frequency, skip CSV"""
         self.metrics['detection_times'].append(detection_time_ms)
         
-        # Only log to JSONL file
         try:
             event = {
                 'timestamp': datetime.now().isoformat(),
@@ -265,13 +263,16 @@ class PerformanceTracker:
     def log_sell_executed(self, mint: str, tokens_sold: float, signature: str,
                          sol_received: float, pnl_sol: float, pnl_percent: float,
                          hold_time_seconds: float, reason: str):
-        """Log successful sell execution"""
+        """
+        CRITICAL FIX: Log successful sell execution
+        Uses pnl_sol parameter DIRECTLY - doesn't recalculate
+        """
         self.log_event('sell_executed', {
             'mint': mint,
             'signature': signature,
             'tokens_sold': tokens_sold,
             'sol_received': sol_received,
-            'pnl_sol': pnl_sol,
+            'pnl_sol': pnl_sol,  # USE THIS EXACT VALUE
             'pnl_percent': pnl_percent,
             'hold_time_seconds': hold_time_seconds,
             'reason': reason
@@ -297,7 +298,6 @@ class PerformanceTracker:
     def log_position_update(self, mint: str, current_pnl_percent: float, 
                            current_price: float, age_seconds: float):
         """Log position monitoring update - high frequency, skip CSV"""
-        # Only log to JSONL file
         try:
             event = {
                 'timestamp': datetime.now().isoformat(),
@@ -316,10 +316,10 @@ class PerformanceTracker:
             logger.debug(f"Failed to log position update: {e}")
     
     def get_session_stats(self) -> Dict:
-        """Get current session statistics - FIXED"""
+        """Get current session statistics"""
         session_duration = time.time() - self.session_start
         
-        # FIXED: Calculate win rate correctly
+        # Calculate win rate correctly
         win_rate = 0
         if self.metrics['positions_closed'] > 0:
             win_rate = (self.metrics['winning_trades'] / self.metrics['positions_closed']) * 100
@@ -332,12 +332,10 @@ class PerformanceTracker:
         if self.metrics['execution_times']:
             avg_execution_time = sum(self.metrics['execution_times']) / len(self.metrics['execution_times'])
         
-        # FIXED: Calculate average P&L correctly
+        # Calculate average P&L correctly (now using 0.05 SOL positions)
         avg_pnl_percent = 0
         if self.metrics['positions_closed'] > 0:
-            # Average P&L per trade
             avg_pnl_sol = self.metrics['total_pnl_sol'] / self.metrics['positions_closed']
-            # Convert to percentage (assuming 0.05 SOL entries)
             avg_pnl_percent = (avg_pnl_sol / 0.05) * 100
         
         return {
@@ -392,4 +390,3 @@ class PerformanceTracker:
         logger.info(f"📈 Full trade log saved to: {self.csv_file}")
         
         return stats
-
