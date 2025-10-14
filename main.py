@@ -1,6 +1,6 @@
 """
-Main Orchestrator - TIMER-BASED EXIT STRATEGY
-UPDATED: Velocity gate + 30s timer exits (replaces profit targets)
+Main Orchestrator - UPDATED: Added fail-fast exit logic
+TIMER-BASED EXIT + FAIL-FAST (exit at 5s if P&L <-10% or velocity dead)
 """
 
 import asyncio
@@ -24,7 +24,11 @@ from config import (
     # Timer and velocity settings
     VELOCITY_MIN_SOL_PER_SECOND, VELOCITY_MIN_BUYERS, VELOCITY_MAX_TOKEN_AGE,
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
-    TIMER_EXTENSION_SECONDS, TIMER_EXTENSION_PNL_THRESHOLD, TIMER_MAX_EXTENSIONS
+    TIMER_EXTENSION_SECONDS, TIMER_EXTENSION_PNL_THRESHOLD, TIMER_MAX_EXTENSIONS,
+    # NEW: Fail-fast settings
+    FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD, FAIL_FAST_VELOCITY_THRESHOLD,
+    # NEW: Recent velocity settings
+    VELOCITY_MIN_RECENT_1S_SOL, VELOCITY_MIN_RECENT_3S_SOL, VELOCITY_MAX_DROP_PERCENT
 )
 
 from wallet import WalletManager
@@ -62,9 +66,12 @@ class Position:
         self.monitor_task = None
         
         # Timer-based exit tracking
-        self.exit_time = None  # Will be set after entry
+        self.exit_time = None
         self.extensions_used = 0
         self.max_pnl_reached = 0
+        
+        # NEW: Fail-fast tracking
+        self.fail_fast_checked = False
         
         # Legacy tracking (kept for compatibility)
         self.partial_sells = {}
@@ -73,10 +80,10 @@ class Position:
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
         
-        # CRITICAL FIX: Prevent multiple simultaneous closes
+        # Prevent multiple simultaneous closes
         self.is_closing = False
         
-        # CRITICAL HOTFIX: Track retry attempts
+        # Track retry attempts
         self.retry_counts = {}
         
         # Price tracking
@@ -95,19 +102,19 @@ class Position:
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
         
-        # ✅ FIXED: Calculate actual price paid
+        # Calculate actual price paid
         if tokens > 0:
             self.entry_token_price_sol = amount_sol / tokens
         else:
             self.entry_token_price_sol = 0
 
 class SniperBot:
-    """Main sniper bot orchestrator with velocity gate and timer exits"""
+    """Main sniper bot orchestrator with velocity gate, timer exits, and fail-fast"""
     
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - VELOCITY + TIMER STRATEGY")
+        logger.info("🚀 INITIALIZING SNIPER BOT - VELOCITY + TIMER + FAIL-FAST")
         logger.info("=" * 60)
         
         # Core components
@@ -126,11 +133,14 @@ class SniperBot:
         rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
         self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)
         
-        # NEW: Initialize velocity checker
+        # Initialize velocity checker with recent velocity settings
         self.velocity_checker = VelocityChecker(
             min_sol_per_second=VELOCITY_MIN_SOL_PER_SECOND,
             min_unique_buyers=VELOCITY_MIN_BUYERS,
-            max_token_age_seconds=VELOCITY_MAX_TOKEN_AGE
+            max_token_age_seconds=VELOCITY_MAX_TOKEN_AGE,
+            min_recent_1s_sol=VELOCITY_MIN_RECENT_1S_SOL,
+            min_recent_3s_sol=VELOCITY_MIN_RECENT_3S_SOL,
+            max_drop_percent=VELOCITY_MAX_DROP_PERCENT
         )
         
         # Initialize trader
@@ -168,10 +178,13 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: VELOCITY GATE + TIMER EXIT")
-        logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers, <{VELOCITY_MAX_TOKEN_AGE}s age")
+        logger.info(f"  • Strategy: VELOCITY GATE + TIMER EXIT + FAIL-FAST")
+        logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
+        logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
+        logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
         logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
         logger.info(f"  • Extension: +{TIMER_EXTENSION_SECONDS}s if >{TIMER_EXTENSION_PNL_THRESHOLD}% and accelerating")
+        logger.info(f"  • Fail-fast: Exit at {FAIL_FAST_CHECK_TIME}s if P&L <{FAIL_FAST_PNL_THRESHOLD}% or velocity dead")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
         logger.info(f"  • Max slippage: {MAX_SLIPPAGE_PERCENT}%")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
@@ -219,32 +232,27 @@ class SniperBot:
     
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
         """
-        ✅ FIXED: Calculate current token price with correct decimal handling
-        Both entry and current prices now use the same basis
+        Calculate current token price with correct decimal handling
         """
         try:
             if not curve_data:
                 return None
             
-            # Get reserves (now consistently raw from dex.py fix)
             v_sol_reserves = curve_data.get('virtual_sol_reserves', 0)
             v_token_reserves = curve_data.get('virtual_token_reserves', 0)
             
             if v_token_reserves <= 0 or v_sol_reserves <= 0:
                 return None
             
-            # Get token decimals
             token_decimals = self.wallet.get_token_decimals(mint)
             if isinstance(token_decimals, tuple):
                 token_decimals = token_decimals[0]
             if not token_decimals or token_decimals == 0:
                 token_decimals = 6
             
-            # Convert to human-readable
             sol_human = v_sol_reserves / 1e9
             tokens_human = v_token_reserves / (10 ** token_decimals)
             
-            # Calculate price
             current_token_price_sol = sol_human / tokens_human
             
             if current_token_price_sol <= 0:
@@ -330,11 +338,12 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - VELOCITY + TIMER\n"
+                    "🚀 Bot started - VELOCITY + TIMER + FAIL-FAST\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s\n"
                     f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s\n"
+                    f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%\n"
                     f"🛡️ Liquidity: {LIQUIDITY_MULTIPLIER}x\n"
                     "Type /help for commands"
                 )
@@ -477,7 +486,7 @@ class SniperBot:
             if len(name) < 3:
                 return
             
-            # LIQUIDITY VALIDATION - critical check
+            # LIQUIDITY VALIDATION
             passed, reason, curve_data = self.curve_reader.validate_liquidity(
                 mint=mint,
                 buy_size_sol=BUY_AMOUNT_SOL,
@@ -491,10 +500,9 @@ class SniperBot:
             
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
             
-            # NEW: VELOCITY CHECK - the momentum gate
+            # VELOCITY CHECK (with recent velocity + acceleration)
             token_age = token_data.get('data', {}).get('age', 0) if 'data' in token_data else token_data.get('age', 0)
             if token_age == 0:
-                # Estimate age from SOL raised if not provided
                 token_age = curve_data['sol_raised'] / max(initial_buy, 0.5)
             
             velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
@@ -537,21 +545,20 @@ class SniperBot:
             
             cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
             
-            # Execute buy with tight slippage (30 BPS = 0.3%)
+            # Execute buy
             execution_start = time.time()
             
             bonding_curve_key = None
             if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                 bonding_curve_key = token_data['data']['bondingCurveKey']
             
-            # Calculate expected tokens
             expected_tokens = BUY_AMOUNT_SOL / entry_price if entry_price > 0 else 0
             
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
                 sol_amount=BUY_AMOUNT_SOL,
                 bonding_curve_key=bonding_curve_key,
-                slippage=30,  # 0.3% - tight since liquidity validated
+                slippage=30,
                 urgency="normal"
             )
             
@@ -590,7 +597,7 @@ class SniperBot:
                 position.entry_time = time.time()
                 position.entry_token_price_sol = actual_entry_price
                 
-                # NEW: Set exit timer with randomness
+                # Set exit timer with randomness
                 variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
                 position.exit_time = position.entry_time + TIMER_EXIT_BASE_SECONDS + variance
                 
@@ -608,6 +615,7 @@ class SniperBot:
                 logger.info(f"   Tokens: {bought_tokens:,.0f}")
                 logger.info(f"   Entry Price: {actual_entry_price:.10f} SOL per token")
                 logger.info(f"   ⏱️ Exit timer: {exit_in_seconds:.1f}s")
+                logger.info(f"   ⚠️ Fail-fast check at: {FAIL_FAST_CHECK_TIME}s")
                 logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
                 
                 if self.telegram:
@@ -626,7 +634,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position - TIMER-BASED EXIT STRATEGY"""
+        """Monitor position - TIMER + FAIL-FAST EXIT STRATEGY"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -635,6 +643,7 @@ class SniperBot:
             logger.info(f"📈 Starting TIMER monitoring for {mint[:8]}...")
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} SOL per token")
             logger.info(f"   Exit Time: {position.exit_time - position.entry_time:.1f}s from now")
+            logger.info(f"   Fail-fast check: {FAIL_FAST_CHECK_TIME}s")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
             
             check_count = 0
@@ -702,21 +711,65 @@ class SniperBot:
                         position.last_valid_price = current_token_price_sol
                         position.last_price_update = time.time()
                         
-                        # Update velocity snapshot for potential extension
+                        # Update velocity snapshot
                         self.velocity_checker.update_snapshot(
                             mint, 
                             current_sol_in_curve, 
-                            int(current_sol_in_curve / 0.4)  # Estimate buyers
+                            int(current_sol_in_curve / 0.4)
                         )
                         
                         # ===================================================================
-                        # 🚨 RUG TRAP - ALWAYS ACTIVE
+                        # NEW: FAIL-FAST CHECK (at 5 seconds)
+                        # Exit immediately if P&L <-10% OR velocity died
+                        # ===================================================================
+                        
+                        if (age >= FAIL_FAST_CHECK_TIME and 
+                            not position.fail_fast_checked and 
+                            not position.is_closing):
+                            
+                            position.fail_fast_checked = True
+                            
+                            # Check P&L threshold
+                            if price_change < FAIL_FAST_PNL_THRESHOLD:
+                                logger.warning(
+                                    f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s - "
+                                    f"exiting immediately"
+                                )
+                                await self._close_position_full(mint, reason="fail_fast_pnl")
+                                break
+                            
+                            # Check velocity death
+                            pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
+                            if pre_buy_velocity:
+                                # Calculate current velocity
+                                current_velocity = current_sol_in_curve / max(age, 0.1)
+                                velocity_percent = (current_velocity / pre_buy_velocity) * 100
+                                
+                                if velocity_percent < FAIL_FAST_VELOCITY_THRESHOLD:
+                                    logger.warning(
+                                        f"⚠️ FAIL-FAST: Velocity died ({velocity_percent:.1f}% of pre-buy) at {age:.1f}s - "
+                                        f"exiting immediately"
+                                    )
+                                    await self._close_position_full(mint, reason="fail_fast_velocity")
+                                    break
+                                else:
+                                    logger.info(
+                                        f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
+                                        f"P&L {price_change:+.1f}%, velocity {velocity_percent:.0f}%"
+                                    )
+                            else:
+                                logger.info(
+                                    f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
+                                    f"P&L {price_change:+.1f}%"
+                                )
+                        
+                        # ===================================================================
+                        # RUG TRAP - ALWAYS ACTIVE
                         # Catches catastrophic dumps (-40%+)
                         # ===================================================================
                         
                         if price_change <= -40 and not position.is_closing:
                             logger.warning(f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) - immediate exit!")
-                            # DON'T set is_closing here - let _close_position_full do it
                             await self._close_position_full(mint, reason="rug_trap")
                             break
                         
@@ -729,12 +782,11 @@ class SniperBot:
                             logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
                             logger.info(f"   Final P&L: {price_change:+.1f}%")
                             logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
-                            # DON'T set is_closing here - let _close_position_full do it
                             await self._close_position_full(mint, reason="timer_exit")
                             break
                         
                         # Check for extension (if mega-pump and velocity accelerating)
-                        if (time_until_exit <= 5 and  # Within 5s of exit
+                        if (time_until_exit <= 5 and
                             time_until_exit > 0 and
                             price_change > TIMER_EXTENSION_PNL_THRESHOLD and
                             position.extensions_used < TIMER_MAX_EXTENSIONS and
@@ -766,20 +818,7 @@ class SniperBot:
                         # Stop-loss (overrides timer)
                         if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                             logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
-                            logger.warning(f"🔍 DEBUG: P&L={price_change:.1f}%, is_closing={position.is_closing}")
-                            logger.warning(f"🔍 DEBUG: About to set is_closing=True and call close")
-                            # DON'T set is_closing here - let _close_position_full do it
-                            
-                            logger.warning(f"🔍 DEBUG: Calling _close_position_full NOW")
-                            try:
-                                await self._close_position_full(mint, reason="stop_loss")
-                                logger.warning(f"✅ DEBUG: _close_position_full completed")
-                            except Exception as e:
-                                logger.error(f"❌ CRITICAL: _close_position_full FAILED: {e}")
-                                import traceback
-                                logger.error(traceback.format_exc())
-                            
-                            logger.warning(f"🔍 DEBUG: Breaking out of monitor loop")
+                            await self._close_position_full(mint, reason="stop_loss")
                             break
                     
                     else:
@@ -799,8 +838,6 @@ class SniperBot:
             if mint in self.positions and position.status == 'completed':
                 del self.positions[mint]
                 logger.info(f"Position {mint[:8]}... removed after completion")
-                
-                # Clean up velocity history
                 self.velocity_checker.clear_history(mint)
                 
         except Exception as e:
@@ -864,7 +901,7 @@ class SniperBot:
         sell_percent: float, tokens_sold: float, current_pnl: float,
         pre_sol_balance: float, pre_token_balance: float
     ):
-        """Track ACTUAL SOL received from wallet balance changes (LEGACY - kept for compatibility)"""
+        """Track ACTUAL SOL received from wallet balance changes (LEGACY)"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -1056,25 +1093,20 @@ class SniperBot:
     async def _close_position_full(self, mint: str, reason: str = "manual"):
         """Close remaining position with REAL SOL tracking"""
         try:
-            logger.warning(f"🔍 DEBUG: _close_position_full called for {mint[:8]}, reason={reason}")
-            
             position = self.positions.get(mint)
             if not position or position.status != 'active':
-                logger.error(f"🔍 DEBUG: Position not found or not active. position={position}, status={position.status if position else 'N/A'}")
                 return
             
             if position.is_closing:
                 logger.debug(f"Position {mint[:8]} already closing")
                 return
             
-            logger.warning(f"🔍 DEBUG: Setting is_closing=True and status='closing'")
             position.is_closing = True
             position.status = 'closing'
             ui_token_balance = position.remaining_tokens
             
             if ui_token_balance <= 0:
                 logger.warning(f"No tokens remaining for {mint[:8]}...")
-                logger.warning(f"🔍 DEBUG: remaining_tokens={position.remaining_tokens}, initial_tokens={position.initial_tokens}")
                 position.status = 'closed'
                 if mint in self.positions:
                     del self.positions[mint]
@@ -1089,30 +1121,21 @@ class SniperBot:
             logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
             logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
             
-            logger.warning(f"🔍 DEBUG: About to get pre_sol_balance")
             pre_sol_balance = self.wallet.get_sol_balance()
-            logger.warning(f"🔍 DEBUG: pre_sol_balance={pre_sol_balance:.4f}")
             
-            # Always use actual wallet balance to avoid rounding dust
-            logger.warning(f"🔍 DEBUG: About to get actual token balance from wallet")
+            # Use actual wallet balance
             actual_balance = self.wallet.get_token_balance(mint)
-            logger.warning(f"🔍 DEBUG: actual_balance={actual_balance:,.2f} tokens")
             if actual_balance > 0:
                 ui_token_balance = actual_balance
                 logger.info(f"💰 Selling actual balance: {actual_balance:,.2f} tokens")
             else:
                 logger.warning(f"No tokens in wallet - using position balance: {ui_token_balance:,.2f}")
             
-            logger.warning(f"🔍 DEBUG: About to get curve data")
             curve_data = self.dex.get_bonding_curve_data(mint)
             is_migrated = curve_data is None or curve_data.get('is_migrated', False)
-            logger.warning(f"🔍 DEBUG: is_migrated={is_migrated}")
             
-            logger.warning(f"🔍 DEBUG: About to get token decimals")
             token_decimals = self.wallet.get_token_decimals(mint)
-            logger.warning(f"🔍 DEBUG: token_decimals={token_decimals}")
             
-            logger.warning(f"🔍 DEBUG: About to create sell transaction")
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
@@ -1120,7 +1143,6 @@ class SniperBot:
                 token_decimals=token_decimals,
                 urgency="critical"
             )
-            logger.warning(f"🔍 DEBUG: Sell transaction signature={signature}")
             
             if signature and not signature.startswith("1111111"):
                 await asyncio.sleep(3)
@@ -1224,9 +1246,11 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with VELOCITY + TIMER STRATEGY")
+            logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
             logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
-            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s, +{TIMER_EXTENSION_SECONDS}s if >{TIMER_EXTENSION_PNL_THRESHOLD}%")
+            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
+            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
+            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
             last_stats_time = time.time()
