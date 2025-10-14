@@ -1,5 +1,9 @@
 """
-config - UPDATED: Shorter timer (20s base) + fail-fast settings
+config - FINAL: All fixes applied
+- Shorter timer (20s)
+- Tighter velocity drop (25%)
+- Faster monitoring (0.5s)
+- Increased position size (0.05 SOL)
 """
 
 import os
@@ -30,7 +34,8 @@ BACKUP_RPC_ENDPOINTS = [
 # ============================================
 # TRADING PARAMETERS
 # ============================================
-BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.03'))
+# FIXED: Increased from 0.01 to 0.05 SOL (fees require larger positions)
+BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
 PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
@@ -48,20 +53,23 @@ VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.
 # Minimum unique buyers required (estimated)
 VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
 
-# Maximum token age to even check velocity (skip older tokens)
+# Maximum token age to even check velocity (keep at 6s for current infra)
 VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '6.0'))
 
-# NEW: Recent velocity thresholds (last 1-3 seconds)
+# Recent velocity thresholds (last 1-3 seconds)
 VELOCITY_MIN_RECENT_1S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_1S_SOL', '2.0'))
 VELOCITY_MIN_RECENT_3S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_3S_SOL', '4.0'))
 
-# NEW: Acceleration requirement (velocity shouldn't be falling)
-VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '40.0'))
+# FIXED: Tightened from 40% to 25% (reject if velocity dropping >25%)
+VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0'))
+
+# NEW: Require 2 snapshots before buying (prevents buying tops)
+VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '2'))
 
 # ============================================
 # TIMER-BASED EXIT SETTINGS
 # ============================================
-# CHANGED: Base hold time reduced from 30s to 20s
+# FIXED: Shortened from 30s to 20s base
 TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '20'))
 
 # Random variance to add (+/- seconds)
@@ -77,7 +85,7 @@ TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD',
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
 
 # ============================================
-# FAIL-FAST EXIT SETTINGS (NEW)
+# FAIL-FAST EXIT SETTINGS
 # ============================================
 # Time after buy to check for early failure (seconds)
 FAIL_FAST_CHECK_TIME = float(os.getenv('FAIL_FAST_CHECK_TIME', '5.0'))
@@ -104,16 +112,18 @@ if tp2 and sp2:
 if tp3 and sp3:
     PARTIAL_TAKE_PROFIT[float(tp3)] = float(sp3) / 100.0
 
-# Timing (legacy)
-SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '0'))  # No grace period in timer mode
-MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '120'))  # Fallback safety
-MONITOR_CHECK_INTERVAL = int(os.getenv('MONITOR_CHECK_INTERVAL', '1'))  # Check every second
+# Timing
+SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '0'))
+MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '120'))
+
+# FIXED: Changed from 1s to 0.5s for more precise fail-fast timing
+MONITOR_CHECK_INTERVAL = float(os.getenv('MONITOR_CHECK_INTERVAL', '0.5'))
 DATA_FAILURE_TOLERANCE = int(os.getenv('DATA_FAILURE_TOLERANCE', '10'))
 
 # ============================================
 # LIQUIDITY VALIDATION
 # ============================================
-# Require 5x liquidity (e.g. 0.15 SOL raised for 0.03 SOL buy)
+# Require 5x liquidity (e.g. 0.25 SOL raised for 0.05 SOL buy)
 LIQUIDITY_MULTIPLIER = float(os.getenv('LIQUIDITY_MULTIPLIER', '5.0'))
 # Absolute minimum SOL raised
 MIN_LIQUIDITY_SOL = float(os.getenv('MIN_LIQUIDITY_SOL', '0.6'))
