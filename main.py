@@ -140,7 +140,8 @@ class SniperBot:
             max_token_age_seconds=VELOCITY_MAX_TOKEN_AGE,
             min_recent_1s_sol=VELOCITY_MIN_RECENT_1S_SOL,
             min_recent_3s_sol=VELOCITY_MIN_RECENT_3S_SOL,
-            max_drop_percent=VELOCITY_MAX_DROP_PERCENT
+            max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
+            min_snapshots=2  # NEW: Require 2 snapshots before buying
         )
         
         # Initialize trader
@@ -563,18 +564,35 @@ class SniperBot:
             )
             
             bought_tokens = 0
+            actual_sol_spent = BUY_AMOUNT_SOL
+            
             if signature:
-                await asyncio.sleep(2)
-                bought_tokens = self.wallet.get_token_balance(mint)
-                if bought_tokens == 0:
-                    bought_tokens = expected_tokens if expected_tokens > 0 else 350000
+                # CRITICAL FIX: Get REAL fill amount from transaction deltas
+                await asyncio.sleep(3)
+                
+                # Try to get actual amounts from transaction
+                txd = await self._get_transaction_deltas(signature, mint)
+                
+                if txd["confirmed"] and txd["token_delta"] > 0:
+                    # Got real transaction data
+                    bought_tokens = txd["token_delta"]
+                    actual_sol_spent = abs(txd["sol_delta"])
+                    logger.info(f"✅ Real fill: {bought_tokens:,.0f} tokens for {actual_sol_spent:.6f} SOL")
+                else:
+                    # Fallback to wallet balance
+                    bought_tokens = self.wallet.get_token_balance(mint)
+                    actual_sol_spent = BUY_AMOUNT_SOL
+                    
+                    if bought_tokens == 0:
+                        logger.warning("⚠️ No tokens detected - using estimate")
+                        bought_tokens = expected_tokens if expected_tokens > 0 else 350000
             
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
                 
-                # Calculate actual entry price and slippage
+                # Calculate actual entry price and slippage using REAL amounts
                 if bought_tokens > 0:
-                    actual_entry_price = BUY_AMOUNT_SOL / bought_tokens
+                    actual_entry_price = actual_sol_spent / bought_tokens
                     actual_slippage = ((actual_entry_price / entry_price) - 1) * 100 if entry_price > 0 else 0
                     logger.info(f"📊 Actual slippage: {actual_slippage:.2f}%")
                 else:
@@ -582,20 +600,21 @@ class SniperBot:
                 
                 self.tracker.log_buy_executed(
                     mint=mint,
-                    amount_sol=BUY_AMOUNT_SOL,
+                    amount_sol=actual_sol_spent,  # Use REAL amount spent
                     signature=signature,
                     tokens_received=bought_tokens,
                     execution_time_ms=execution_time_ms
                 )
                 
-                # Create position
-                position = Position(mint, BUY_AMOUNT_SOL, bought_tokens, entry_market_cap)
+                # Create position with REAL amounts
+                position = Position(mint, actual_sol_spent, bought_tokens, entry_market_cap)
                 position.buy_signature = signature
                 position.initial_tokens = bought_tokens
                 position.remaining_tokens = bought_tokens
                 position.last_valid_balance = bought_tokens
                 position.entry_time = time.time()
                 position.entry_token_price_sol = actual_entry_price
+                position.amount_sol = actual_sol_spent  # CRITICAL: Use real amount
                 
                 # Set exit timer with randomness
                 variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
