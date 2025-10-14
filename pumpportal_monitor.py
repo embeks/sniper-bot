@@ -155,18 +155,25 @@ class PumpPortalMonitor:
         try:
             # Need at least one previous snapshot
             if mint not in self.recent_velocity_snapshots or len(self.recent_velocity_snapshots[mint]) == 0:
-                # First time seeing, can't check yet
+                # First time seeing, can't check yet - PASS for now
+                logger.debug(f"Recent velocity: First snapshot for {mint[:8]}, skipping check")
                 return (True, None, "first_snapshot")
             
-            now = time.time()
             history = self.recent_velocity_snapshots[mint]
+            
+            # Need at least 2 snapshots to compare
+            if len(history) < 2:
+                logger.debug(f"Recent velocity: Only 1 snapshot for {mint[:8]}, skipping check")
+                return (True, None, "insufficient_history")
+            
+            now = time.time()
             
             # Find snapshot from ~1 second ago
             one_sec_ago = now - 1.0
             closest_snapshot = None
             min_time_diff = float('inf')
             
-            for snap in history:
+            for snap in history[:-1]:  # Don't compare with the current (last) snapshot
                 time_diff = abs(snap['timestamp'] - one_sec_ago)
                 if time_diff < min_time_diff:
                     min_time_diff = time_diff
@@ -192,8 +199,9 @@ class PumpPortalMonitor:
                     logger.info(f"✅ Recent velocity OK: {recent_velocity:.2f} SOL/s in last {time_delta:.1f}s")
                     return (True, recent_velocity, "ok")
             
-            # Not enough history yet
-            return (True, None, "insufficient_history")
+            # Not enough time elapsed yet
+            logger.debug(f"Recent velocity: Not enough time elapsed for {mint[:8]}")
+            return (True, None, "insufficient_time")
             
         except Exception as e:
             logger.error(f"Error checking recent velocity: {e}")
@@ -477,10 +485,16 @@ class PumpPortalMonitor:
             return False
         
         # NEW: Recent velocity check (last 1 second)
-        recent_velocity_passed, recent_velocity_value, recent_velocity_reason = self._check_recent_velocity(mint, v_sol)
-        if not recent_velocity_passed:
-            self._log_filter("recent_velocity_low", recent_velocity_reason)
-            return False
+        # Only check if we have history (token has been seen before)
+        if mint in self.recent_velocity_snapshots and len(self.recent_velocity_snapshots[mint]) >= 2:
+            recent_velocity_passed, recent_velocity_value, recent_velocity_reason = self._check_recent_velocity(mint, v_sol)
+            if not recent_velocity_passed:
+                self._log_filter("recent_velocity_low", recent_velocity_reason)
+                return False
+        else:
+            # First or second time seeing this token, skip recent velocity check
+            logger.debug(f"Skipping recent velocity check for {mint[:8]} (not enough snapshots yet)")
+            recent_velocity_value = None
         
         # Market cap
         await self._get_sol_price()
