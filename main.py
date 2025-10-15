@@ -1115,14 +1115,27 @@ class SniperBot:
                     actual_sol_received = txd["sol_delta"]
                     if txd.get("token_delta", 0.0) < 0:
                         actual_tokens_sold = abs(txd["token_delta"])
+                    logger.info(f"✅ Sell confirmed on-chain: {actual_sol_received:.6f} SOL received")
                 else:
+                    logger.warning(f"⚠️ Sell transaction not confirmed or failed - checking wallet balance")
                     post_sol_balance = self.wallet.get_sol_balance()
                     actual_sol_received = post_sol_balance - pre_sol_balance
+                    logger.info(f"📊 Balance delta: {actual_sol_received:+.6f} SOL")
                 
                 if actual_tokens_sold is None:
                     before_tokens = ui_token_balance
                     after_tokens = self.wallet.get_token_balance(mint)
                     actual_tokens_sold = max(0.0, before_tokens - after_tokens)
+                    logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
+                    
+                    if actual_tokens_sold == 0 and after_tokens > 0:
+                        logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
+                        logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
+                        position.status = 'sell_failed'
+                        if mint in self.positions:
+                            del self.positions[mint]
+                            self.velocity_checker.clear_history(mint)
+                        return
                 
                 final_pnl_sol = actual_sol_received - position.amount_sol
                 
