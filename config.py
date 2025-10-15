@@ -1,9 +1,10 @@
 """
-config - FINAL: All fixes applied
+config - FINAL: All fixes applied + VELOCITY AGE FIX
 - Shorter timer (20s)
 - Tighter velocity drop (25%)
 - Faster monitoring (0.5s)
 - Increased position size (0.05 SOL)
+- FIXED: Token age limit increased to 25s (accounts for monitor delays)
 """
 
 import os
@@ -53,8 +54,9 @@ VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.
 # Minimum unique buyers required (estimated)
 VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
 
-# Maximum token age to even check velocity (keep at 6s for current infra)
-VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '6.0'))
+# CRITICAL FIX: Increased from 6.0 to 25.0 to account for monitor delays
+# Timeline: 0.5s cooldown + 3s sleep + 0-6s retries + processing = ~10-20s
+VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '25.0'))
 
 # Recent velocity thresholds (last 1-3 seconds)
 VELOCITY_MIN_RECENT_1S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_1S_SOL', '2.0'))
@@ -63,8 +65,8 @@ VELOCITY_MIN_RECENT_3S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_3S_SOL', '4.0'
 # FIXED: Tightened from 40% to 25% (reject if velocity dropping >25%)
 VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0'))
 
-# NEW: Require 2 snapshots before buying (prevents buying tops)
-VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '2'))
+# CRITICAL FIX: Changed from 2 to 1 (allow buy on first detection)
+VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
 
 # ============================================
 # TIMER-BASED EXIT SETTINGS
