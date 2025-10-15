@@ -1,9 +1,10 @@
 """
-PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES
-All 3 critical fixes applied:
+PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES + AGE FIX
+All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
 - Fix #1: Adaptive velocity window (no false 0.00 SOL/s)
 - Fix #2: Creator buy rounding tolerance (0.095 SOL minimum)
 - Fix #3: Fast Helius retry with 2 attempts (2.5s + 2.5s)
+- Fix #4: PASS TOKEN AGE + SOL TO CALLBACK (for main.py velocity check)
 """
 
 import asyncio
@@ -429,7 +430,7 @@ class PumpPortalMonitor:
                 # Re-evaluate tokens that passed cooldown
                 for mint, data in tokens_to_process:
                     logger.info(f"⏰ Cooldown complete for {mint[:8]}... - re-evaluating")
-                    passed = await self._apply_quality_filters_post_cooldown(data)
+                    passed, token_age = await self._apply_quality_filters_post_cooldown(data)
                     
                     if not passed:
                         self.tokens_filtered += 1
@@ -457,6 +458,7 @@ class PumpPortalMonitor:
                     logger.info(f"💵 Market Cap: ${market_cap:,.0f}")
                     logger.info(f"🔥 Momentum: {v_sol/creator_sol if creator_sol > 0 else 0:.1f}x")
                     logger.info(f"👥 Holders: {holder_data.get('holder_count', 0)} | Concentration: {holder_data.get('concentration', 0):.1f}%")
+                    logger.info(f"⏱️ Token age: {token_age:.1f}s")
                     logger.info(f"📝 {token_data.get('name', 'Unknown')} ({token_data.get('symbol', 'Unknown')})")
                     logger.info("=" * 60)
                     
@@ -470,7 +472,10 @@ class PumpPortalMonitor:
                             'source': 'pumpportal',
                             'passed_filters': True,
                             'market_cap': market_cap,
-                            'holder_data': holder_data
+                            'holder_data': holder_data,
+                            'age': token_age,
+                            'token_age': token_age,
+                            'sol_raised_at_detection': v_sol
                         })
                 
             except Exception as e:
@@ -523,12 +528,10 @@ class PumpPortalMonitor:
         # This should never be reached now (handled by background task)
         return False
     
-    async def _apply_quality_filters_post_cooldown(self, data: dict) -> bool:
+    async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
         """
         SECOND PASS - After cooldown expires:
-        4. Basic checks (name, creator)
-        5. CONCURRENT: Holders + Liquidity
-        6. Final validation
+        Returns (passed: bool, token_age: float)
         ALL 3 FIXES APPLIED HERE
         """
         token_data = data.get('data', data)
@@ -553,13 +556,13 @@ class PumpPortalMonitor:
         # FIX #2: Lowered minimum to 0.095 to handle rounding (0.099 SOL now passes!)
         if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
-            return False
+            return (False, token_age)
         
         # Creator spam check
         creator_passed, _, _ = self._check_creator_spam(creator_address)
         if not creator_passed:
             self._log_filter("creator_spam", "max tokens/24h")
-            return False
+            return (False, token_age)
         
         # Name quality
         name = str(token_data.get('name', '')).strip()
@@ -567,7 +570,7 @@ class PumpPortalMonitor:
         
         if len(name) < self.filters['min_name_length'] or not name.isascii() or not symbol.isascii():
             self._log_filter("name_quality", f"{name}")
-            return False
+            return (False, token_age)
         
         # Blacklist check
         name_lower = name.lower()
@@ -575,25 +578,25 @@ class PumpPortalMonitor:
         for blacklisted in self.filters['name_blacklist']:
             if blacklisted in name_lower or blacklisted in symbol_lower:
                 self._log_filter("blacklist", f"'{blacklisted}' in {name}")
-                return False
+                return (False, token_age)
         
         # Bonding curve SOL range
         if v_sol < self.filters['min_curve_sol'] or v_sol > self.filters['max_curve_sol']:
             self._log_filter("curve_range", f"{v_sol:.2f} SOL")
-            return False
+            return (False, token_age)
         
         # Momentum check
         required_multiplier = 8 if v_sol < 35 else (5 if v_sol < 50 else 3)
         required_sol = creator_sol * required_multiplier
         if v_sol < required_sol:
             self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f}")
-            return False
+            return (False, token_age)
         
         # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
             self._log_filter("tokens_low", f"{v_tokens:,.0f}")
-            return False
+            return (False, token_age)
         
         # NOTE: Recent velocity check REMOVED from monitor
         # Velocity checking happens in main.py with live curve reads
@@ -616,7 +619,7 @@ class PumpPortalMonitor:
         
         if market_cap < self.filters['min_market_cap'] or market_cap > self.filters['max_market_cap']:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
-            return False
+            return (False, token_age)
         
         # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
         holder_task = asyncio.create_task(self._check_holders_helius(mint))
@@ -626,7 +629,7 @@ class PumpPortalMonitor:
         
         if not holder_result['passed']:
             self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-            return False
+            return (False, token_age)
         
         # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
@@ -639,23 +642,24 @@ class PumpPortalMonitor:
         logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
         
         self._last_holder_result = holder_result
-        return True
+        return (True, token_age)
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP")
+        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP + AGE/SOL PASSING")
         logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
         logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
+        logger.info(f"  Fix #4: PASS TOKEN AGE + SOL TO CALLBACK FOR MAIN.PY")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
         logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
         logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
         logger.info(f"  Concurrent checks: ENABLED")
-        logger.info(f"  Note: Velocity gate runs in main.py with live curve data")
+        logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
         
         uri = "wss://pumpportal.fun/api/data"
         
