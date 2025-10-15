@@ -193,20 +193,35 @@ class PumpPortalMonitor:
             self.recent_velocity_snapshots[mint] = self.recent_velocity_snapshots[mint][-10:]
     
     def _check_recent_velocity(self, mint: str, current_sol: float) -> tuple:
-        """Check velocity in LAST 1 SECOND to catch dying pumps"""
+        """
+        Check velocity in LAST 1 SECOND to catch dying pumps
+        FIX #1: Adaptive time window - don't fail young tokens with insufficient history
+        """
         try:
             if mint not in self.recent_velocity_snapshots or len(self.recent_velocity_snapshots[mint]) < 2:
                 return (True, None, "insufficient_history")
             
             history = self.recent_velocity_snapshots[mint]
             now = time.time()
-            one_sec_ago = now - 1.0
+            
+            # CRITICAL FIX: Calculate actual time elapsed since first snapshot
+            first_snapshot_time = history[0]['timestamp']
+            time_elapsed = now - first_snapshot_time
+            
+            # If we have < 0.9s of history, defer (don't filter yet)
+            if time_elapsed < 0.9:
+                logger.debug(f"Velocity check deferred for {mint[:8]}... (only {time_elapsed:.2f}s of history)")
+                return (True, None, f"deferred_young_token: {time_elapsed:.2f}s")
+            
+            # Use adaptive lookback window (max 1.0s, but use actual elapsed time if less)
+            lookback_window = min(1.0, time_elapsed - 0.1)  # Leave 0.1s buffer
+            target_time = now - lookback_window
             
             closest_snapshot = None
             min_time_diff = float('inf')
             
             for snap in history[:-1]:
-                time_diff = abs(snap['timestamp'] - one_sec_ago)
+                time_diff = abs(snap['timestamp'] - target_time)
                 if time_diff < min_time_diff:
                     min_time_diff = time_diff
                     closest_snapshot = snap
@@ -220,8 +235,9 @@ class PumpPortalMonitor:
                     min_required = self.filters['min_recent_velocity_sol_per_sec']
                     
                     if recent_velocity < min_required:
-                        return (False, recent_velocity, f"recent_velocity_low: {recent_velocity:.2f} SOL/s")
+                        return (False, recent_velocity, f"recent_velocity_low: {recent_velocity:.2f} SOL/s over {time_delta:.2f}s")
                     
+                    logger.debug(f"Velocity check passed for {mint[:8]}...: {recent_velocity:.2f} SOL/s over {time_delta:.2f}s")
                     return (True, recent_velocity, "ok")
             
             return (True, None, "insufficient_time")
@@ -503,7 +519,8 @@ class PumpPortalMonitor:
         creator_sol = float(token_data.get('solAmount', 0))
         creator_address = str(token_data.get('traderPublicKey', 'unknown'))
         
-        if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
+        # FIX #2: Add small epsilon to avoid floating point rounding issues (0.099 SOL edge case)
+        if creator_sol < (self.filters['min_creator_sol'] - 0.005) or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
             return False
         
