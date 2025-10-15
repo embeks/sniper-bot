@@ -485,18 +485,25 @@ class SniperBot:
                     logger.warning(f"⚠️ Could not determine age, using default: {token_age:.1f}s")
             
             logger.info(f"📊 Using token age: {token_age:.1f}s for velocity check")
-            logger.info(f"📊 SOL raised: {curve_data['sol_raised']:.4f}")
-            logger.info(f"📊 Expected velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s")
+            
+            sol_for_velocity = curve_data.get('sol_raised', 0)
+            if 'sol_raised_at_detection' in token_data and token_data['sol_raised_at_detection'] > 0:
+                sol_for_velocity = token_data['sol_raised_at_detection']
+                logger.info(f"📊 Using monitor's SOL value: {sol_for_velocity:.4f} (current curve: {curve_data['sol_raised']:.4f})")
+            else:
+                logger.info(f"📊 SOL raised: {sol_for_velocity:.4f}")
+            
+            logger.info(f"📊 Expected velocity: {sol_for_velocity / token_age:.2f} SOL/s")
             
             velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
                 mint=mint,
-                curve_data=curve_data,
+                curve_data={'sol_raised': sol_for_velocity, **curve_data},
                 token_age_seconds=token_age
             )
             
             if not velocity_passed:
                 logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
-                logger.info(f"   Calculated: {curve_data['sol_raised'] / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
+                logger.info(f"   Calculated: {sol_for_velocity / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
                 return
             
             entry_price = curve_data['price_sol_per_token']
