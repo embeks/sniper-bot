@@ -497,7 +497,7 @@ class SniperBot:
             
             velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
                 mint=mint,
-                curve_data={'sol_raised': sol_for_velocity, **curve_data},
+                curve_data={**curve_data, 'sol_raised': sol_for_velocity},
                 token_age_seconds=token_age
             )
             
