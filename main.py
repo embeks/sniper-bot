@@ -141,7 +141,7 @@ class SniperBot:
             min_recent_1s_sol=VELOCITY_MIN_RECENT_1S_SOL,
             min_recent_3s_sol=VELOCITY_MIN_RECENT_3S_SOL,
             max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
-            min_snapshots=2  # NEW: Require 2 snapshots before buying
+            min_snapshots=1  
         )
         
         # Initialize trader
