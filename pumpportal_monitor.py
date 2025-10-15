@@ -357,7 +357,7 @@ class PumpPortalMonitor:
         if reason not in self.filter_reasons:
             self.filter_reasons[reason] = 0
         self.filter_reasons[reason] += 1
-        logger.debug(f"Filtered ({reason}): {detail}")
+        logger.info(f"❌ Filtered ({reason}): {detail}")
     
     async def _apply_quality_filters(self, data: dict) -> bool:
         """
@@ -403,7 +403,7 @@ class PumpPortalMonitor:
             self._store_recent_velocity_snapshot(mint, v_sol)
             # FIXED: Don't count first sighting as "filtered" - it's deferred
             self.tokens_deferred += 1
-            logger.debug(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
+            logger.info(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
             return False
         
         # Check if cooldown elapsed
@@ -411,7 +411,7 @@ class PumpPortalMonitor:
         if time_since_first_sight < self.filters['first_sighting_cooldown_seconds']:
             # FIXED: Don't count cooldown as "filtered" - it's deferred
             self.tokens_deferred += 1
-            logger.debug(f"Cooldown pending: {time_since_first_sight:.2f}s < {self.filters['first_sighting_cooldown_seconds']}s")
+            logger.info(f"⏳ Cooldown pending: {time_since_first_sight:.2f}s < {self.filters['first_sighting_cooldown_seconds']}s")
             return False
         
         # Store snapshot for velocity tracking
