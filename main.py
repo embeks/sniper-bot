@@ -21,13 +21,10 @@ from config import (
     BLACKLISTED_TOKENS, NOTIFY_PROFIT_THRESHOLD,
     PARTIAL_TAKE_PROFIT, LIQUIDITY_MULTIPLIER,
     MIN_LIQUIDITY_SOL, MAX_SLIPPAGE_PERCENT,
-    # Timer and velocity settings
     VELOCITY_MIN_SOL_PER_SECOND, VELOCITY_MIN_BUYERS, VELOCITY_MAX_TOKEN_AGE,
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
     TIMER_EXTENSION_SECONDS, TIMER_EXTENSION_PNL_THRESHOLD, TIMER_MAX_EXTENSIONS,
-    # NEW: Fail-fast settings
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD, FAIL_FAST_VELOCITY_THRESHOLD,
-    # NEW: Recent velocity settings
     VELOCITY_MIN_RECENT_1S_SOL, VELOCITY_MIN_RECENT_3S_SOL, VELOCITY_MAX_DROP_PERCENT
 )
 
@@ -39,7 +36,6 @@ from performance_tracker import PerformanceTracker
 from curve_reader import BondingCurveReader
 from velocity_checker import VelocityChecker
 
-# Configure logging
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format=LOG_FORMAT,
@@ -64,45 +60,28 @@ class Position:
         self.buy_signature = None
         self.sell_signatures = []
         self.monitor_task = None
-        
-        # Timer-based exit tracking
         self.exit_time = None
         self.extensions_used = 0
         self.max_pnl_reached = 0
-        
-        # NEW: Fail-fast tracking
         self.fail_fast_checked = False
-        
-        # Legacy tracking (kept for compatibility)
         self.partial_sells = {}
         self.pending_sells = set()
         self.pending_token_amounts = {}
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
-        
-        # Prevent multiple simultaneous closes
         self.is_closing = False
-        
-        # Track retry attempts
         self.retry_counts = {}
-        
-        # Price tracking
         self.last_valid_price = 0
         self.last_price_update = time.time()
         self.consecutive_stale_reads = 0
         self.last_valid_balance = tokens
         self.curve_check_retries = 0
-        
-        # Volume and momentum tracking
         self.consecutive_no_movement = 0
         self.last_checked_price = 0
-        
-        # MC-based tracking
         self.entry_market_cap = entry_market_cap
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
         
-        # Calculate actual price paid
         if tokens > 0:
             self.entry_token_price_sol = amount_sol / tokens
         else:
@@ -117,7 +96,6 @@ class SniperBot:
         logger.info("🚀 INITIALIZING SNIPER BOT - VELOCITY + TIMER + FAIL-FAST")
         logger.info("=" * 60)
         
-        # Core components
         self.wallet = WalletManager()
         self.dex = PumpFunDEX(self.wallet)
         self.scanner = None
@@ -126,14 +104,12 @@ class SniperBot:
         self.telegram_polling_task = None
         self.tracker = PerformanceTracker()
         
-        # Initialize curve reader for liquidity validation
         from solana.rpc.api import Client
         from config import RPC_ENDPOINT, PUMPFUN_PROGRAM_ID
         
         rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
         self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)
         
-        # Initialize velocity checker with recent velocity settings
         self.velocity_checker = VelocityChecker(
             min_sol_per_second=VELOCITY_MIN_SOL_PER_SECOND,
             min_unique_buyers=VELOCITY_MIN_BUYERS,
@@ -144,11 +120,9 @@ class SniperBot:
             min_snapshots=1  
         )
         
-        # Initialize trader
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
         self.trader = PumpPortalTrader(self.wallet, client)
         
-        # Positions and stats
         self.positions: Dict[str, Position] = {}
         self.pending_buys = 0
         self.total_trades = 0
@@ -157,13 +131,11 @@ class SniperBot:
         self.total_realized_sol = 0
         self.MAX_POSITIONS = MAX_POSITIONS
         
-        # Control flags
         self.running = False
         self.paused = False
         self.shutdown_requested = False
         self._last_balance_warning = 0
         
-        # Circuit breaker
         self.consecutive_losses = 0
         self.session_loss_count = 0
         
@@ -232,9 +204,7 @@ class SniperBot:
             return 0
     
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
-        """
-        Calculate current token price with correct decimal handling
-        """
+        """Calculate current token price with correct decimal handling"""
         try:
             if not curve_data:
                 return None
@@ -289,7 +259,6 @@ class SniperBot:
             meta = tx.transaction.meta
             my_pubkey_str = str(self.wallet.pubkey)
             
-            # Calculate SOL delta
             sol_delta = 0.0
             account_keys = [str(key) for key in tx.transaction.transaction.message.account_keys]
             
@@ -301,7 +270,6 @@ class SniperBot:
             except (ValueError, IndexError) as e:
                 logger.warning(f"Wallet not found in transaction accounts: {e}")
             
-            # Calculate token delta
             token_delta = 0.0
             pre_token_amount = 0.0
             post_token_amount = 0.0
@@ -335,171 +303,7 @@ class SniperBot:
                 from telegram_bot import TelegramBot
                 self.telegram = TelegramBot(self)
                 self.telegram_polling_task = asyncio.create_task(self.telegram.start_polling())
-                logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
-            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
-            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
-            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
-            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
-            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
-            
-            last_stats_time = time.time()
-            
-            while self.running and not self.shutdown_requested:
-                await asyncio.sleep(10)
-                
-                # Periodic stats
-                if time.time() - last_stats_time > 60:
-                    if self.positions:
-                        logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
-                        for mint, pos in self.positions.items():
-                            age = time.time() - pos.entry_time
-                            time_until_exit = pos.exit_time - time.time()
-                            logger.info(
-                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
-                                f"Max: {pos.max_pnl_reached:+.1f}% | "
-                                f"Exit in: {time_until_exit:.1f}s | "
-                                f"Extensions: {pos.extensions_used}/{TIMER_MAX_EXTENSIONS}"
-                            )
-                    
-                    perf_stats = self.tracker.get_session_stats()
-                    if perf_stats['total_buys'] > 0:
-                        logger.info(f"📊 SESSION PERFORMANCE:")
-                        logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
-                        logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
-                        logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
-                        logger.info(f"  • Session losses: {self.session_loss_count}")
-                        logger.info(f"  • Consecutive losses: {self.consecutive_losses}/3")
-                    
-                    if self.total_realized_sol != 0:
-                        logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
-                    
-                    last_stats_time = time.time()
-                
-                # Check scanner health
-                if self.scanner_task and self.scanner_task.done():
-                    if not self.shutdown_requested:
-                        exc = self.scanner_task.exception()
-                        if exc:
-                            logger.error(f"Scanner died: {exc}")
-                            logger.info("Restarting scanner...")
-                            self.scanner_task = asyncio.create_task(self.scanner.start())
-            
-            # Idle if shutdown requested
-            if self.shutdown_requested:
-                logger.info("Bot stopped - idling")
-                while self.shutdown_requested:
-                    await asyncio.sleep(10)
-                    if not self.shutdown_requested:
-                        logger.info("Resuming from idle...")
-                        if not self.scanner_task or self.scanner_task.done():
-                            self.scanner_task = asyncio.create_task(self.scanner.start())
-                        continue
-            
-        except KeyboardInterrupt:
-            logger.info("\n🛑 Shutting down...")
-        except Exception as e:
-            logger.error(f"Fatal error: {e}")
-            if self.telegram:
-                await self.telegram.send_message(f"❌ Bot crashed: {e}")
-        finally:
-            await self.shutdown()
-    
-    async def shutdown(self):
-        """Clean shutdown"""
-        self.running = False
-        logger.info("Starting shutdown...")
-        
-        self.tracker.log_session_summary()
-        
-        if self.telegram and not self.shutdown_requested:
-            await self.telegram.send_message(
-                f"🛑 Bot shutting down\n"
-                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
-                f"Session losses: {self.session_loss_count}"
-            )
-        
-        if self.scanner_task and not self.scanner_task.done():
-            self.scanner_task.cancel()
-            try:
-                await self.scanner_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self.scanner:
-            self.scanner.stop()
-        
-        if self.positions:
-            logger.info(f"Closing {len(self.positions)} positions...")
-            for mint in list(self.positions.keys()):
-                await self._close_position_full(mint, reason="shutdown")
-        
-        if self.telegram_polling_task and not self.telegram_polling_task.done():
-            self.telegram_polling_task.cancel()
-            try:
-                await self.telegram_polling_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self.telegram:
-            self.telegram.stop()
-        
-        if self.total_trades > 0:
-            win_rate = (self.profitable_trades / self.total_trades * 100)
-            logger.info(f"📊 Final Stats:")
-            logger.info(f"  • Trades: {self.total_trades}")
-            logger.info(f"  • Win rate: {win_rate:.1f}%")
-            logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
-            logger.info(f"  • Session losses: {self.session_loss_count}")
-        
-        logger.info("✅ Shutdown complete")
-
-# Main entry point
-if __name__ == "__main__":
-    import os
-    from aiohttp import web
-    
-    port = int(os.getenv("PORT", "10000"))
-    
-    async def health_handler(request):
-        return web.Response(text="Bot is running", status=200)
-    
-    async def start_health_server():
-        app = web.Application()
-        app.router.add_get("/", health_handler)
-        app.router.add_get("/health", health_handler)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        logger.info(f"✅ Health server on port {port}")
-        return runner
-    
-    async def main_with_health():
-        health_runner = await start_health_server()
-        
-        try:
-            bot = SniperBot()
-            await bot.run()
-        finally:
-            await health_runner.cleanup()
-    
-    def signal_handler(sig, frame):
-        logger.info("\nReceived interrupt signal")
-        for task in asyncio.all_tasks():
-            task.cancel()
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    try:
-        asyncio.run(main_with_health())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        import traceback
-        traceback.print_exc()✅ Telegram bot initialized")
+                logger.info("✅ Telegram bot initialized")
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
@@ -597,22 +401,18 @@ if __name__ == "__main__":
         try:
             mint = token_data['mint']
             
-            # Update DEX with WebSocket data
             self.dex.update_token_data(mint, token_data)
             
-            # Update existing position prices
             if mint in self.positions:
                 self.dex.update_token_data(mint, token_data)
                 logger.debug(f"Updated price data for existing position {mint[:8]}...")
             
-            # Validation checks
             if not self.running or self.paused:
                 return
             
             if mint in BLACKLISTED_TOKENS:
                 return
             
-            # Check total positions
             total_positions = len(self.positions) + self.pending_buys
             
             if total_positions >= MAX_POSITIONS:
@@ -629,7 +429,6 @@ if __name__ == "__main__":
                     self._last_balance_warning = current_time
                 return
             
-            # Circuit breaker check
             if self.consecutive_losses >= 3:
                 logger.warning(f"🛑 Circuit breaker activated - 3 consecutive losses")
                 self.paused = True
@@ -641,7 +440,6 @@ if __name__ == "__main__":
                     )
                 return
             
-            # Quality filters
             initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
             name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
             
@@ -651,7 +449,6 @@ if __name__ == "__main__":
             if len(name) < 3:
                 return
             
-            # LIQUIDITY VALIDATION
             passed, reason, curve_data = self.curve_reader.validate_liquidity(
                 mint=mint,
                 buy_size_sol=BUY_AMOUNT_SOL,
@@ -665,14 +462,8 @@ if __name__ == "__main__":
             
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
             
-            # ============================================================
-            # 🔧 CRITICAL FIX: Token age calculation
-            # ============================================================
-            
-            # Try to get age from token_data (monitor should provide this)
             token_age = None
             
-            # Check multiple possible locations for age
             if 'data' in token_data and 'age' in token_data['data']:
                 token_age = token_data['data']['age']
                 logger.debug(f"📊 Age from token_data.data.age: {token_age:.1f}s")
@@ -683,30 +474,19 @@ if __name__ == "__main__":
                 token_age = token_data['token_age']
                 logger.debug(f"📊 Age from token_data.token_age: {token_age:.1f}s")
             
-            # If still no age, estimate from curve data (better fallback)
             if token_age is None or token_age == 0:
                 sol_raised = curve_data.get('sol_raised', 0)
                 
-                # Estimate: assume average 0.5 SOL per buy, 2 buys per second during pump
-                # This gives: age ≈ sol_raised / 1.0
-                # But cap it to be conservative
                 if sol_raised > 0:
-                    # Conservative estimate: 1 SOL per second during early pump
                     token_age = min(sol_raised / 1.0, VELOCITY_MAX_TOKEN_AGE)
                     logger.warning(f"⚠️ Age not in token_data, estimated from SOL raised: {token_age:.1f}s")
                 else:
-                    # Last resort: assume mid-range age
                     token_age = VELOCITY_MAX_TOKEN_AGE / 2
                     logger.warning(f"⚠️ Could not determine age, using default: {token_age:.1f}s")
             
-            # Log what we're using for velocity check
             logger.info(f"📊 Using token age: {token_age:.1f}s for velocity check")
             logger.info(f"📊 SOL raised: {curve_data['sol_raised']:.4f}")
             logger.info(f"📊 Expected velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s")
-            
-            # ============================================================
-            # VELOCITY CHECK (with CORRECTED age)
-            # ============================================================
             
             velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
                 mint=mint,
@@ -719,10 +499,8 @@ if __name__ == "__main__":
                 logger.info(f"   Calculated: {curve_data['sol_raised'] / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
                 return
             
-            # Get entry price from curve
             entry_price = curve_data['price_sol_per_token']
             
-            # Estimate slippage
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
             if estimated_slippage:
                 logger.info(f"📊 Estimated slippage: {estimated_slippage:.2f}%")
@@ -730,14 +508,11 @@ if __name__ == "__main__":
                     logger.warning(f"⚠️ High estimated slippage ({estimated_slippage:.2f}% > {MAX_SLIPPAGE_PERCENT}%), skipping")
                     return
             
-            # Increment pending buys
             self.pending_buys += 1
             logger.debug(f"Pending buys: {self.pending_buys}, Active: {len(self.positions)}")
             
-            # Extract entry market cap
             entry_market_cap = token_data.get('market_cap', 0)
             
-            # Log detection
             detection_time_ms = (time.time() - detection_start) * 1000
             self.tracker.log_token_detection(mint, token_data.get('source', 'pumpportal'), detection_time_ms)
             
@@ -750,7 +525,6 @@ if __name__ == "__main__":
             
             cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
             
-            # Execute buy
             execution_start = time.time()
             
             bonding_curve_key = None
@@ -771,19 +545,15 @@ if __name__ == "__main__":
             actual_sol_spent = BUY_AMOUNT_SOL
             
             if signature:
-                # CRITICAL FIX: Get REAL fill amount from transaction deltas
                 await asyncio.sleep(3)
                 
-                # Try to get actual amounts from transaction
                 txd = await self._get_transaction_deltas(signature, mint)
                 
                 if txd["confirmed"] and txd["token_delta"] > 0:
-                    # Got real transaction data
                     bought_tokens = txd["token_delta"]
                     actual_sol_spent = abs(txd["sol_delta"])
                     logger.info(f"✅ Real fill: {bought_tokens:,.0f} tokens for {actual_sol_spent:.6f} SOL")
                 else:
-                    # Fallback to wallet balance
                     bought_tokens = self.wallet.get_token_balance(mint)
                     actual_sol_spent = BUY_AMOUNT_SOL
                     
@@ -794,7 +564,6 @@ if __name__ == "__main__":
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
                 
-                # Calculate actual entry price and slippage using REAL amounts
                 if bought_tokens > 0:
                     actual_entry_price = actual_sol_spent / bought_tokens
                     actual_slippage = ((actual_entry_price / entry_price) - 1) * 100 if entry_price > 0 else 0
@@ -810,7 +579,6 @@ if __name__ == "__main__":
                     execution_time_ms=execution_time_ms
                 )
                 
-                # Create position with REAL amounts
                 position = Position(mint, actual_sol_spent, bought_tokens, entry_market_cap)
                 position.buy_signature = signature
                 position.initial_tokens = bought_tokens
@@ -820,7 +588,6 @@ if __name__ == "__main__":
                 position.entry_token_price_sol = actual_entry_price
                 position.amount_sol = actual_sol_spent
                 
-                # Set exit timer with randomness
                 variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
                 position.exit_time = position.entry_time + TIMER_EXIT_BASE_SECONDS + variance
                 
@@ -844,7 +611,6 @@ if __name__ == "__main__":
                 if self.telegram:
                     await self.telegram.notify_buy(mint, BUY_AMOUNT_SOL, signature)
                 
-                # Start monitoring
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
             else:
@@ -880,14 +646,12 @@ if __name__ == "__main__":
                 age = current_time - position.entry_time
                 time_until_exit = position.exit_time - current_time
                 
-                # Check age limit (fallback safety)
                 if age > MAX_POSITION_AGE_SECONDS:
                     logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s)")
                     await self._close_position_full(mint, reason="max_age")
                     break
                 
                 try:
-                    # Get current price data
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
                     if not curve_data:
@@ -913,7 +677,6 @@ if __name__ == "__main__":
                     if curve_data and curve_data.get('sol_in_curve', 0) > 0:
                         current_sol_in_curve = curve_data.get('sol_in_curve', 0)
                         
-                        # Calculate current price
                         current_token_price_sol = self._get_current_token_price(mint, curve_data)
                         
                         if current_token_price_sol is None:
@@ -922,7 +685,6 @@ if __name__ == "__main__":
                             await asyncio.sleep(1)
                             continue
                         
-                        # Calculate P&L
                         if position.entry_token_price_sol > 0:
                             price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
                         else:
@@ -936,17 +698,11 @@ if __name__ == "__main__":
                         position.last_valid_price = current_token_price_sol
                         position.last_price_update = time.time()
                         
-                        # Update velocity snapshot
                         self.velocity_checker.update_snapshot(
                             mint, 
                             current_sol_in_curve, 
                             int(current_sol_in_curve / 0.4)
                         )
-                        
-                        # ===================================================================
-                        # NEW: FAIL-FAST CHECK (at 5 seconds)
-                        # Exit immediately if P&L <-10% OR velocity died
-                        # ===================================================================
                         
                         if (age >= FAIL_FAST_CHECK_TIME and 
                             not position.fail_fast_checked and 
@@ -954,7 +710,6 @@ if __name__ == "__main__":
                             
                             position.fail_fast_checked = True
                             
-                            # Check P&L threshold
                             if price_change < FAIL_FAST_PNL_THRESHOLD:
                                 logger.warning(
                                     f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s - "
@@ -963,10 +718,8 @@ if __name__ == "__main__":
                                 await self._close_position_full(mint, reason="fail_fast_pnl")
                                 break
                             
-                            # Check velocity death
                             pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
                             if pre_buy_velocity:
-                                # Calculate current velocity
                                 current_velocity = current_sol_in_curve / max(age, 0.1)
                                 velocity_percent = (current_velocity / pre_buy_velocity) * 100
                                 
@@ -988,21 +741,11 @@ if __name__ == "__main__":
                                     f"P&L {price_change:+.1f}%"
                                 )
                         
-                        # ===================================================================
-                        # RUG TRAP - ALWAYS ACTIVE
-                        # Catches catastrophic dumps (-40%+)
-                        # ===================================================================
-                        
                         if price_change <= -40 and not position.is_closing:
                             logger.warning(f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) - immediate exit!")
                             await self._close_position_full(mint, reason="rug_trap")
                             break
                         
-                        # ===================================================================
-                        # TIMER EXIT LOGIC
-                        # ===================================================================
-                        
-                        # Check if timer expired
                         if time_until_exit <= 0 and not position.is_closing:
                             logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
                             logger.info(f"   Final P&L: {price_change:+.1f}%")
@@ -1010,14 +753,12 @@ if __name__ == "__main__":
                             await self._close_position_full(mint, reason="timer_exit")
                             break
                         
-                        # Check for extension (if mega-pump and velocity accelerating)
                         if (time_until_exit <= 5 and
                             time_until_exit > 0 and
                             price_change > TIMER_EXTENSION_PNL_THRESHOLD and
                             position.extensions_used < TIMER_MAX_EXTENSIONS and
                             not position.is_closing):
                             
-                            # Check if velocity still accelerating
                             is_accelerating = self.velocity_checker.is_velocity_accelerating(
                                 mint, 
                                 current_sol_in_curve
@@ -1032,7 +773,6 @@ if __name__ == "__main__":
                                 )
                                 logger.info(f"   P&L: {price_change:+.1f}%, velocity accelerating")
                         
-                        # Regular logging
                         if check_count % 3 == 1:
                             logger.info(
                                 f"⏱️ {mint[:8]}... | P&L: {price_change:+.1f}% | "
@@ -1040,7 +780,6 @@ if __name__ == "__main__":
                                 f"Extensions: {position.extensions_used}/{TIMER_MAX_EXTENSIONS}"
                             )
                         
-                        # Stop-loss (overrides timer)
                         if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                             logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
                             await self._close_position_full(mint, reason="stop_loss")
@@ -1059,7 +798,6 @@ if __name__ == "__main__":
                 
                 await asyncio.sleep(MONITOR_CHECK_INTERVAL)
             
-            # Clean up
             if mint in self.positions and position.status == 'completed':
                 del self.positions[mint]
                 logger.info(f"Position {mint[:8]}... removed after completion")
@@ -1348,7 +1086,6 @@ if __name__ == "__main__":
             
             pre_sol_balance = self.wallet.get_sol_balance()
             
-            # Use actual wallet balance
             actual_balance = self.wallet.get_token_balance(mint)
             if actual_balance > 0:
                 ui_token_balance = actual_balance
@@ -1471,4 +1208,164 @@ if __name__ == "__main__":
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("
+            logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
+            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
+            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
+            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
+            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
+            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
+            
+            last_stats_time = time.time()
+            
+            while self.running and not self.shutdown_requested:
+                await asyncio.sleep(10)
+                
+                if time.time() - last_stats_time > 60:
+                    if self.positions:
+                        logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
+                        for mint, pos in self.positions.items():
+                            age = time.time() - pos.entry_time
+                            time_until_exit = pos.exit_time - time.time()
+                            logger.info(
+                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
+                                f"Max: {pos.max_pnl_reached:+.1f}% | "
+                                f"Exit in: {time_until_exit:.1f}s | "
+                                f"Extensions: {pos.extensions_used}/{TIMER_MAX_EXTENSIONS}"
+                            )
+                    
+                    perf_stats = self.tracker.get_session_stats()
+                    if perf_stats['total_buys'] > 0:
+                        logger.info(f"📊 SESSION PERFORMANCE:")
+                        logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
+                        logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
+                        logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
+                        logger.info(f"  • Session losses: {self.session_loss_count}")
+                        logger.info(f"  • Consecutive losses: {self.consecutive_losses}/3")
+                    
+                    if self.total_realized_sol != 0:
+                        logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
+                    
+                    last_stats_time = time.time()
+                
+                if self.scanner_task and self.scanner_task.done():
+                    if not self.shutdown_requested:
+                        exc = self.scanner_task.exception()
+                        if exc:
+                            logger.error(f"Scanner died: {exc}")
+                            logger.info("Restarting scanner...")
+                            self.scanner_task = asyncio.create_task(self.scanner.start())
+            
+            if self.shutdown_requested:
+                logger.info("Bot stopped - idling")
+                while self.shutdown_requested:
+                    await asyncio.sleep(10)
+                    if not self.shutdown_requested:
+                        logger.info("Resuming from idle...")
+                        if not self.scanner_task or self.scanner_task.done():
+                            self.scanner_task = asyncio.create_task(self.scanner.start())
+                        continue
+            
+        except KeyboardInterrupt:
+            logger.info("\n🛑 Shutting down...")
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+            if self.telegram:
+                await self.telegram.send_message(f"❌ Bot crashed: {e}")
+        finally:
+            await self.shutdown()
+    
+    async def shutdown(self):
+        """Clean shutdown"""
+        self.running = False
+        logger.info("Starting shutdown...")
+        
+        self.tracker.log_session_summary()
+        
+        if self.telegram and not self.shutdown_requested:
+            await self.telegram.send_message(
+                f"🛑 Bot shutting down\n"
+                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
+                f"Session losses: {self.session_loss_count}"
+            )
+        
+        if self.scanner_task and not self.scanner_task.done():
+            self.scanner_task.cancel()
+            try:
+                await self.scanner_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.scanner:
+            self.scanner.stop()
+        
+        if self.positions:
+            logger.info(f"Closing {len(self.positions)} positions...")
+            for mint in list(self.positions.keys()):
+                await self._close_position_full(mint, reason="shutdown")
+        
+        if self.telegram_polling_task and not self.telegram_polling_task.done():
+            self.telegram_polling_task.cancel()
+            try:
+                await self.telegram_polling_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.telegram:
+            self.telegram.stop()
+        
+        if self.total_trades > 0:
+            win_rate = (self.profitable_trades / self.total_trades * 100)
+            logger.info(f"📊 Final Stats:")
+            logger.info(f"  • Trades: {self.total_trades}")
+            logger.info(f"  • Win rate: {win_rate:.1f}%")
+            logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
+            logger.info(f"  • Session losses: {self.session_loss_count}")
+        
+        logger.info("✅ Shutdown complete")
+
+if __name__ == "__main__":
+    import os
+    from aiohttp import web
+    
+    port = int(os.getenv("PORT", "10000"))
+    
+    async def health_handler(request):
+        return web.Response(text="Bot is running", status=200)
+    
+    async def start_health_server():
+        app = web.Application()
+        app.router.add_get("/", health_handler)
+        app.router.add_get("/health", health_handler)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logger.info(f"✅ Health server on port {port}")
+        return runner
+    
+    async def main_with_health():
+        health_runner = await start_health_server()
+        
+        try:
+            bot = SniperBot()
+            await bot.run()
+        finally:
+            await health_runner.cleanup()
+    
+    def signal_handler(sig, frame):
+        logger.info("\nReceived interrupt signal")
+        for task in asyncio.all_tasks():
+            task.cancel()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        asyncio.run(main_with_health())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
