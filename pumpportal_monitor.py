@@ -539,7 +539,8 @@ class PumpPortalMonitor:
         # Re-check age (token is now older)
         token_age = self._event_age_seconds(token_data)
         
-        # Store snapshot for velocity tracking
+        # CRITICAL FIX: Continue storing velocity snapshots during evaluation
+        # We need at least 0.9s of history for velocity check
         self._store_recent_velocity_snapshot(mint, v_sol)
         
         logger.info(f"✓ Token {mint[:8]}... passed cooldown: {token_age:.1f}s old, {v_sol:.1f} SOL")
@@ -593,12 +594,9 @@ class PumpPortalMonitor:
             self._log_filter("tokens_low", f"{v_tokens:,.0f}")
             return False
         
-        # FIX #1: Recent velocity check with adaptive time window
-        if len(self.recent_velocity_snapshots.get(mint, [])) >= 2:
-            recent_passed, recent_value, _ = self._check_recent_velocity(mint, v_sol)
-            if not recent_passed:
-                self._log_filter("recent_velocity_low", f"{recent_value:.2f} SOL/s" if recent_value else "insufficient data")
-                return False
+        # NOTE: Recent velocity check REMOVED from monitor
+        # Velocity checking happens in main.py with live curve reads
+        # We only have static snapshots here from WebSocket events
         
         # ===================================================================
         # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
@@ -642,7 +640,7 @@ class PumpPortalMonitor:
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
         logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 2 RETRIES")
-        logger.info(f"  Fix #1: Adaptive velocity window (no false 0.00 SOL/s)")
+        logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
         logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
@@ -650,6 +648,7 @@ class PumpPortalMonitor:
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
         logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s total)")
         logger.info(f"  Concurrent checks: ENABLED")
+        logger.info(f"  Note: Velocity gate runs in main.py with live curve data")
         
         uri = "wss://pumpportal.fun/api/data"
         
