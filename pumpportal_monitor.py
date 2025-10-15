@@ -1,9 +1,9 @@
 """
-PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES
+PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES
 All 3 critical fixes applied:
 - Fix #1: Adaptive velocity window (no false 0.00 SOL/s)
 - Fix #2: Creator buy rounding tolerance (0.095 SOL minimum)
-- Fix #3: Fast Helius retry (2.5s instead of 10s)
+- Fix #3: Fast Helius retry with 2 attempts (2.5s + 2.5s)
 """
 
 import asyncio
@@ -287,94 +287,115 @@ class PumpPortalMonitor:
             logger.error(f"Error checking creator spam: {e}")
             return (True, 0, f"error: {e}")
     
-    async def _check_holders_helius(self, mint: str, retry: bool = True) -> dict:
+    async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
         """
-        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 1 retry
-        FIX #3: Faster retry (2.5s instead of 10s) for fresh tokens
+        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
+        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
         """
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-                
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getTokenLargestAccounts",
-                    "params": [mint]
-                }
-                
-                # OPTIMIZATION: 0.8s timeout for fast-fail
-                timeout = aiohttp.ClientTimeout(total=0.8)
-                
-                try:
-                    async with session.post(url, json=payload, timeout=timeout) as resp:
-                        if resp.status != 200:
-                            if retry:
-                                logger.debug(f"Retry holder check for {mint[:8]}...")
-                                return await self._check_holders_helius(mint, retry=False)
-                            return {'passed': False, 'reason': f'HTTP {resp.status}'}
-                        
-                        data = await resp.json()
-                        
-                        if 'error' in data:
-                            error_msg = data['error'].get('message', '')
+        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        
+        for attempt in range(max_retries + 1):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+                    
+                    payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "getTokenLargestAccounts",
+                        "params": [mint]
+                    }
+                    
+                    # OPTIMIZATION: 0.8s timeout for fast-fail
+                    timeout = aiohttp.ClientTimeout(total=0.8)
+                    
+                    try:
+                        async with session.post(url, json=payload, timeout=timeout) as resp:
+                            if resp.status != 200:
+                                logger.warning(f"Helius API returned {resp.status} for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
+                                if attempt < max_retries:
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                return {'passed': False, 'reason': f'HTTP {resp.status}'}
                             
-                            # FIX #3: Faster retry for fresh tokens (2.5s instead of 10s)
-                            if 'not a Token mint' in error_msg and retry:
-                                # Token too new - wait briefly and retry once
-                                jitter = random.uniform(0, 0.2)
-                                retry_delay = 2.5 + jitter  # CHANGED from 10s to 2.5s
-                                logger.info(f"⏳ Token not indexed yet, waiting {retry_delay:.1f}s and retrying...")
-                                await asyncio.sleep(retry_delay)
-                                return await self._check_holders_helius(mint, retry=False)
+                            data = await resp.json()
                             
-                            return {'passed': False, 'reason': error_msg}
-                        
-                        if 'result' not in data or 'value' not in data['result']:
-                            return {'passed': False, 'reason': 'malformed response'}
-                        
-                        accounts = data['result']['value']
-                        account_count = len(accounts)
-                        
-                        if account_count < self.filters['min_holders']:
-                            return {
-                                'passed': False,
-                                'holder_count': account_count,
-                                'reason': f'only {account_count} holders'
-                            }
-                        
-                        total_supply = sum(float(acc.get('amount', 0)) for acc in accounts)
-                        if total_supply == 0:
-                            return {'passed': False, 'reason': 'zero supply'}
-                        
-                        top_10_count = min(10, account_count)
-                        top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:top_10_count])
-                        concentration = (top_10_supply / total_supply * 100)
-                        
-                        if self.filters.get('check_concentration', False):
-                            if concentration > self.filters['max_top10_concentration']:
+                            if 'error' in data:
+                                error_msg = data['error'].get('message', '')
+                                
+                                # Handle "not a Token mint" error with retry
+                                if 'not a Token mint' in error_msg and attempt < max_retries:
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                
+                                logger.warning(f"Helius API error for {mint[:8]}...: {error_msg}")
+                                return {'passed': False, 'reason': error_msg}
+                            
+                            if 'result' not in data or 'value' not in data['result']:
+                                logger.warning(f"Malformed response for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
+                                if attempt < max_retries:
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                return {'passed': False, 'reason': 'malformed response'}
+                            
+                            accounts = data['result']['value']
+                            account_count = len(accounts)
+                            
+                            if account_count < self.filters['min_holders']:
                                 return {
                                     'passed': False,
                                     'holder_count': account_count,
-                                    'concentration': concentration,
-                                    'reason': f'concentration {concentration:.1f}%'
+                                    'reason': f'only {account_count} holders'
                                 }
-                        
-                        return {
-                            'passed': True,
-                            'holder_count': account_count,
-                            'concentration': concentration
-                        }
-                
-                except asyncio.TimeoutError:
-                    if retry:
-                        logger.debug(f"Timeout, retry holder check for {mint[:8]}...")
-                        return await self._check_holders_helius(mint, retry=False)
-                    return {'passed': False, 'reason': 'holder_timeout'}
+                            
+                            total_supply = sum(float(acc.get('amount', 0)) for acc in accounts)
+                            if total_supply == 0:
+                                return {'passed': False, 'reason': 'zero supply'}
+                            
+                            top_10_count = min(10, account_count)
+                            top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:top_10_count])
+                            concentration = (top_10_supply / total_supply * 100)
+                            
+                            if self.filters.get('check_concentration', False):
+                                if concentration > self.filters['max_top10_concentration']:
+                                    return {
+                                        'passed': False,
+                                        'holder_count': account_count,
+                                        'concentration': concentration,
+                                        'reason': f'concentration {concentration:.1f}%'
+                                    }
+                            
+                            logger.debug(f"✅ Token {mint[:8]}... has {account_count} holders (attempt {attempt + 1})")
+                            return {
+                                'passed': True,
+                                'holder_count': account_count,
+                                'concentration': concentration
+                            }
                     
-        except Exception as e:
-            logger.error(f"Helius exception: {e}")
-            return {'passed': False, 'reason': str(e)}
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
+                        if attempt < max_retries:
+                            retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                            logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return {'passed': False, 'reason': 'holder_timeout'}
+                        
+            except Exception as e:
+                logger.error(f"Helius exception for {mint[:8]}...: {e}")
+                if attempt < max_retries:
+                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                    await asyncio.sleep(retry_delay)
+                    continue
+                return {'passed': False, 'reason': str(e)}
+        
+        logger.warning(f"❌ Failed to get holder count for {mint[:8]}... after {max_retries + 1} attempts")
+        return {'passed': False, 'reason': f'failed_after_{max_retries + 1}_attempts'}
     
     def _log_filter(self, reason: str, detail: str):
         """Track why tokens are filtered"""
@@ -581,7 +602,7 @@ class PumpPortalMonitor:
         
         # ===================================================================
         # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
-        # FIX #3: Fast Helius retry (2.5s instead of 10s) implemented above
+        # FIX #3: Fast Helius retry with 2 attempts (2.5s + 2.5s) implemented above
         # ===================================================================
         logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
         
@@ -593,7 +614,7 @@ class PumpPortalMonitor:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return False
         
-        # CONCURRENT: Holder check (this is the slow part, but now with fast retry!)
+        # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
         holder_task = asyncio.create_task(self._check_holders_helius(mint))
         
         # Wait for holder check with fast-fail
@@ -620,14 +641,14 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES")
+        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 2 RETRIES")
         logger.info(f"  Fix #1: Adaptive velocity window (no false 0.00 SOL/s)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
-        logger.info(f"  Fix #3: Fast Helius retry (2.5s instead of 10s)")
+        logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  RPC timeout: 0.8s with 1 retry")
+        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s total)")
         logger.info(f"  Concurrent checks: ENABLED")
         
         uri = "wss://pumpportal.fun/api/data"
