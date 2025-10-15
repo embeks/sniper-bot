@@ -1,6 +1,6 @@
 """
-Main Orchestrator - UPDATED: Added fail-fast exit logic
-TIMER-BASED EXIT + FAIL-FAST (exit at 5s if P&L <-10% or velocity dead)
+Main Orchestrator - FIXED: Token age calculation bug
+TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE (with correct age)
 """
 
 import asyncio
@@ -335,7 +335,171 @@ class SniperBot:
                 from telegram_bot import TelegramBot
                 self.telegram = TelegramBot(self)
                 self.telegram_polling_task = asyncio.create_task(self.telegram.start_polling())
-                logger.info("✅ Telegram bot initialized")
+                logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
+            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
+            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
+            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
+            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
+            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
+            
+            last_stats_time = time.time()
+            
+            while self.running and not self.shutdown_requested:
+                await asyncio.sleep(10)
+                
+                # Periodic stats
+                if time.time() - last_stats_time > 60:
+                    if self.positions:
+                        logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
+                        for mint, pos in self.positions.items():
+                            age = time.time() - pos.entry_time
+                            time_until_exit = pos.exit_time - time.time()
+                            logger.info(
+                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
+                                f"Max: {pos.max_pnl_reached:+.1f}% | "
+                                f"Exit in: {time_until_exit:.1f}s | "
+                                f"Extensions: {pos.extensions_used}/{TIMER_MAX_EXTENSIONS}"
+                            )
+                    
+                    perf_stats = self.tracker.get_session_stats()
+                    if perf_stats['total_buys'] > 0:
+                        logger.info(f"📊 SESSION PERFORMANCE:")
+                        logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
+                        logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
+                        logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
+                        logger.info(f"  • Session losses: {self.session_loss_count}")
+                        logger.info(f"  • Consecutive losses: {self.consecutive_losses}/3")
+                    
+                    if self.total_realized_sol != 0:
+                        logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
+                    
+                    last_stats_time = time.time()
+                
+                # Check scanner health
+                if self.scanner_task and self.scanner_task.done():
+                    if not self.shutdown_requested:
+                        exc = self.scanner_task.exception()
+                        if exc:
+                            logger.error(f"Scanner died: {exc}")
+                            logger.info("Restarting scanner...")
+                            self.scanner_task = asyncio.create_task(self.scanner.start())
+            
+            # Idle if shutdown requested
+            if self.shutdown_requested:
+                logger.info("Bot stopped - idling")
+                while self.shutdown_requested:
+                    await asyncio.sleep(10)
+                    if not self.shutdown_requested:
+                        logger.info("Resuming from idle...")
+                        if not self.scanner_task or self.scanner_task.done():
+                            self.scanner_task = asyncio.create_task(self.scanner.start())
+                        continue
+            
+        except KeyboardInterrupt:
+            logger.info("\n🛑 Shutting down...")
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+            if self.telegram:
+                await self.telegram.send_message(f"❌ Bot crashed: {e}")
+        finally:
+            await self.shutdown()
+    
+    async def shutdown(self):
+        """Clean shutdown"""
+        self.running = False
+        logger.info("Starting shutdown...")
+        
+        self.tracker.log_session_summary()
+        
+        if self.telegram and not self.shutdown_requested:
+            await self.telegram.send_message(
+                f"🛑 Bot shutting down\n"
+                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
+                f"Session losses: {self.session_loss_count}"
+            )
+        
+        if self.scanner_task and not self.scanner_task.done():
+            self.scanner_task.cancel()
+            try:
+                await self.scanner_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.scanner:
+            self.scanner.stop()
+        
+        if self.positions:
+            logger.info(f"Closing {len(self.positions)} positions...")
+            for mint in list(self.positions.keys()):
+                await self._close_position_full(mint, reason="shutdown")
+        
+        if self.telegram_polling_task and not self.telegram_polling_task.done():
+            self.telegram_polling_task.cancel()
+            try:
+                await self.telegram_polling_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.telegram:
+            self.telegram.stop()
+        
+        if self.total_trades > 0:
+            win_rate = (self.profitable_trades / self.total_trades * 100)
+            logger.info(f"📊 Final Stats:")
+            logger.info(f"  • Trades: {self.total_trades}")
+            logger.info(f"  • Win rate: {win_rate:.1f}%")
+            logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
+            logger.info(f"  • Session losses: {self.session_loss_count}")
+        
+        logger.info("✅ Shutdown complete")
+
+# Main entry point
+if __name__ == "__main__":
+    import os
+    from aiohttp import web
+    
+    port = int(os.getenv("PORT", "10000"))
+    
+    async def health_handler(request):
+        return web.Response(text="Bot is running", status=200)
+    
+    async def start_health_server():
+        app = web.Application()
+        app.router.add_get("/", health_handler)
+        app.router.add_get("/health", health_handler)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logger.info(f"✅ Health server on port {port}")
+        return runner
+    
+    async def main_with_health():
+        health_runner = await start_health_server()
+        
+        try:
+            bot = SniperBot()
+            await bot.run()
+        finally:
+            await health_runner.cleanup()
+    
+    def signal_handler(sig, frame):
+        logger.info("\nReceived interrupt signal")
+        for task in asyncio.all_tasks():
+            task.cancel()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        asyncio.run(main_with_health())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()✅ Telegram bot initialized")
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
@@ -427,7 +591,7 @@ class SniperBot:
         }
     
     async def on_token_found(self, token_data: Dict):
-        """Handle new token found - with liquidity and velocity validation"""
+        """Handle new token found - with liquidity and velocity validation (FIXED AGE CALCULATION)"""
         detection_start = time.time()
         
         try:
@@ -501,10 +665,48 @@ class SniperBot:
             
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
             
-            # VELOCITY CHECK (with recent velocity + acceleration)
-            token_age = token_data.get('data', {}).get('age', 0) if 'data' in token_data else token_data.get('age', 0)
-            if token_age == 0:
-                token_age = curve_data['sol_raised'] / max(initial_buy, 0.5)
+            # ============================================================
+            # 🔧 CRITICAL FIX: Token age calculation
+            # ============================================================
+            
+            # Try to get age from token_data (monitor should provide this)
+            token_age = None
+            
+            # Check multiple possible locations for age
+            if 'data' in token_data and 'age' in token_data['data']:
+                token_age = token_data['data']['age']
+                logger.debug(f"📊 Age from token_data.data.age: {token_age:.1f}s")
+            elif 'age' in token_data:
+                token_age = token_data['age']
+                logger.debug(f"📊 Age from token_data.age: {token_age:.1f}s")
+            elif 'token_age' in token_data:
+                token_age = token_data['token_age']
+                logger.debug(f"📊 Age from token_data.token_age: {token_age:.1f}s")
+            
+            # If still no age, estimate from curve data (better fallback)
+            if token_age is None or token_age == 0:
+                sol_raised = curve_data.get('sol_raised', 0)
+                
+                # Estimate: assume average 0.5 SOL per buy, 2 buys per second during pump
+                # This gives: age ≈ sol_raised / 1.0
+                # But cap it to be conservative
+                if sol_raised > 0:
+                    # Conservative estimate: 1 SOL per second during early pump
+                    token_age = min(sol_raised / 1.0, VELOCITY_MAX_TOKEN_AGE)
+                    logger.warning(f"⚠️ Age not in token_data, estimated from SOL raised: {token_age:.1f}s")
+                else:
+                    # Last resort: assume mid-range age
+                    token_age = VELOCITY_MAX_TOKEN_AGE / 2
+                    logger.warning(f"⚠️ Could not determine age, using default: {token_age:.1f}s")
+            
+            # Log what we're using for velocity check
+            logger.info(f"📊 Using token age: {token_age:.1f}s for velocity check")
+            logger.info(f"📊 SOL raised: {curve_data['sol_raised']:.4f}")
+            logger.info(f"📊 Expected velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s")
+            
+            # ============================================================
+            # VELOCITY CHECK (with CORRECTED age)
+            # ============================================================
             
             velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
                 mint=mint,
@@ -514,6 +716,7 @@ class SniperBot:
             
             if not velocity_passed:
                 logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
+                logger.info(f"   Calculated: {curve_data['sol_raised'] / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
                 return
             
             # Get entry price from curve
@@ -543,6 +746,7 @@ class SniperBot:
             logger.info(f"   Token age: {token_age:.1f}s")
             logger.info(f"   Entry price: {entry_price:.10f} SOL per token")
             logger.info(f"   SOL raised: {curve_data['sol_raised']:.4f}")
+            logger.info(f"   Velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s ✅")
             
             cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
             
@@ -600,7 +804,7 @@ class SniperBot:
                 
                 self.tracker.log_buy_executed(
                     mint=mint,
-                    amount_sol=actual_sol_spent,  # Use REAL amount spent
+                    amount_sol=actual_sol_spent,
                     signature=signature,
                     tokens_received=bought_tokens,
                     execution_time_ms=execution_time_ms
@@ -614,7 +818,7 @@ class SniperBot:
                 position.last_valid_balance = bought_tokens
                 position.entry_time = time.time()
                 position.entry_token_price_sol = actual_entry_price
-                position.amount_sol = actual_sol_spent  # CRITICAL: Use real amount
+                position.amount_sol = actual_sol_spent
                 
                 # Set exit timer with randomness
                 variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
@@ -650,6 +854,8 @@ class SniperBot:
         except Exception as e:
             self.pending_buys = max(0, self.pending_buys - 1)
             logger.error(f"Failed to process token: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
@@ -1265,168 +1471,4 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
-            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
-            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
-            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
-            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
-            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
-            
-            last_stats_time = time.time()
-            
-            while self.running and not self.shutdown_requested:
-                await asyncio.sleep(10)
-                
-                # Periodic stats
-                if time.time() - last_stats_time > 60:
-                    if self.positions:
-                        logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
-                        for mint, pos in self.positions.items():
-                            age = time.time() - pos.entry_time
-                            time_until_exit = pos.exit_time - time.time()
-                            logger.info(
-                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
-                                f"Max: {pos.max_pnl_reached:+.1f}% | "
-                                f"Exit in: {time_until_exit:.1f}s | "
-                                f"Extensions: {pos.extensions_used}/{TIMER_MAX_EXTENSIONS}"
-                            )
-                    
-                    perf_stats = self.tracker.get_session_stats()
-                    if perf_stats['total_buys'] > 0:
-                        logger.info(f"📊 SESSION PERFORMANCE:")
-                        logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
-                        logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
-                        logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
-                        logger.info(f"  • Session losses: {self.session_loss_count}")
-                        logger.info(f"  • Consecutive losses: {self.consecutive_losses}/3")
-                    
-                    if self.total_realized_sol != 0:
-                        logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
-                    
-                    last_stats_time = time.time()
-                
-                # Check scanner health
-                if self.scanner_task and self.scanner_task.done():
-                    if not self.shutdown_requested:
-                        exc = self.scanner_task.exception()
-                        if exc:
-                            logger.error(f"Scanner died: {exc}")
-                            logger.info("Restarting scanner...")
-                            self.scanner_task = asyncio.create_task(self.scanner.start())
-            
-            # Idle if shutdown requested
-            if self.shutdown_requested:
-                logger.info("Bot stopped - idling")
-                while self.shutdown_requested:
-                    await asyncio.sleep(10)
-                    if not self.shutdown_requested:
-                        logger.info("Resuming from idle...")
-                        if not self.scanner_task or self.scanner_task.done():
-                            self.scanner_task = asyncio.create_task(self.scanner.start())
-                        continue
-            
-        except KeyboardInterrupt:
-            logger.info("\n🛑 Shutting down...")
-        except Exception as e:
-            logger.error(f"Fatal error: {e}")
-            if self.telegram:
-                await self.telegram.send_message(f"❌ Bot crashed: {e}")
-        finally:
-            await self.shutdown()
-    
-    async def shutdown(self):
-        """Clean shutdown"""
-        self.running = False
-        logger.info("Starting shutdown...")
-        
-        self.tracker.log_session_summary()
-        
-        if self.telegram and not self.shutdown_requested:
-            await self.telegram.send_message(
-                f"🛑 Bot shutting down\n"
-                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
-                f"Session losses: {self.session_loss_count}"
-            )
-        
-        if self.scanner_task and not self.scanner_task.done():
-            self.scanner_task.cancel()
-            try:
-                await self.scanner_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self.scanner:
-            self.scanner.stop()
-        
-        if self.positions:
-            logger.info(f"Closing {len(self.positions)} positions...")
-            for mint in list(self.positions.keys()):
-                await self._close_position_full(mint, reason="shutdown")
-        
-        if self.telegram_polling_task and not self.telegram_polling_task.done():
-            self.telegram_polling_task.cancel()
-            try:
-                await self.telegram_polling_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self.telegram:
-            self.telegram.stop()
-        
-        if self.total_trades > 0:
-            win_rate = (self.profitable_trades / self.total_trades * 100)
-            logger.info(f"📊 Final Stats:")
-            logger.info(f"  • Trades: {self.total_trades}")
-            logger.info(f"  • Win rate: {win_rate:.1f}%")
-            logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
-            logger.info(f"  • Session losses: {self.session_loss_count}")
-        
-        logger.info("✅ Shutdown complete")
-
-# Main entry point
-if __name__ == "__main__":
-    import os
-    from aiohttp import web
-    
-    port = int(os.getenv("PORT", "10000"))
-    
-    async def health_handler(request):
-        return web.Response(text="Bot is running", status=200)
-    
-    async def start_health_server():
-        app = web.Application()
-        app.router.add_get("/", health_handler)
-        app.router.add_get("/health", health_handler)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        logger.info(f"✅ Health server on port {port}")
-        return runner
-    
-    async def main_with_health():
-        health_runner = await start_health_server()
-        
-        try:
-            bot = SniperBot()
-            await bot.run()
-        finally:
-            await health_runner.cleanup()
-    
-    def signal_handler(sig, frame):
-        logger.info("\nReceived interrupt signal")
-        for task in asyncio.all_tasks():
-            task.cancel()
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    try:
-        asyncio.run(main_with_health())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
+            logger.info("
