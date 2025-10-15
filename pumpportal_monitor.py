@@ -291,6 +291,7 @@ class PumpPortalMonitor:
         """
         OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
         FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
+        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
         """
         retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
         
@@ -600,9 +601,14 @@ class PumpPortalMonitor:
         
         # ===================================================================
         # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
-        # FIX #3: Fast Helius retry with 2 attempts (2.5s + 2.5s) implemented above
+        # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
+        # CRITICAL: Wait 3s before first check to allow Helius indexing
         # ===================================================================
         logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
+        
+        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
+        # Without this, ALL tokens fail because they're too new
+        await asyncio.sleep(3)
         
         # Market cap calculation (fast, local)
         await self._get_sol_price()
@@ -639,14 +645,15 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 2 RETRIES")
+        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP")
         logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
         logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s total)")
+        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
+        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
         logger.info(f"  Concurrent checks: ENABLED")
         logger.info(f"  Note: Velocity gate runs in main.py with live curve data")
         
