@@ -1,6 +1,10 @@
 """
-Main Orchestrator - FIXED: Token age calculation bug
+Main Orchestrator - FIXED: Migration check order + null price safety
 TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE (with correct age)
+CRITICAL FIXES:
+1. Check migration BEFORE calculating P&L
+2. Add null price safety checks
+3. Better decimal handling debugging
 """
 
 import asyncio
@@ -82,8 +86,10 @@ class Position:
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
         
+        # ✅ FIXED: Entry price calculation with proper decimal handling
         if tokens > 0:
             self.entry_token_price_sol = amount_sol / tokens
+            logger.debug(f"Position entry price: {self.entry_token_price_sol:.10f} SOL/token ({amount_sol} SOL / {tokens:,.2f} tokens)")
         else:
             self.entry_token_price_sol = 0
 
@@ -204,7 +210,10 @@ class SniperBot:
             return 0
     
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
-        """Calculate current token price with correct decimal handling"""
+        """
+        Calculate current token price with correct decimal handling
+        ✅ FIXED: Now consistent with how entry price is calculated
+        """
         try:
             if not curve_data:
                 return None
@@ -213,18 +222,28 @@ class SniperBot:
             v_token_reserves = curve_data.get('virtual_token_reserves', 0)
             
             if v_token_reserves <= 0 or v_sol_reserves <= 0:
+                logger.debug(f"Invalid reserves: SOL={v_sol_reserves}, tokens={v_token_reserves}")
                 return None
             
+            # Get token decimals
             token_decimals = self.wallet.get_token_decimals(mint)
             if isinstance(token_decimals, tuple):
                 token_decimals = token_decimals[0]
             if not token_decimals or token_decimals == 0:
                 token_decimals = 6
             
+            # ✅ CRITICAL FIX: Both reserves are now in atomic units (from dex.py fix)
+            # Convert both to human-readable for price calculation
             sol_human = v_sol_reserves / 1e9
             tokens_human = v_token_reserves / (10 ** token_decimals)
             
             current_token_price_sol = sol_human / tokens_human
+            
+            logger.debug(
+                f"Price calculation for {mint[:8]}...: "
+                f"{sol_human:.6f} SOL / {tokens_human:,.2f} tokens = {current_token_price_sol:.10f} SOL/token "
+                f"(decimals: {token_decimals})"
+            )
             
             if current_token_price_sol <= 0:
                 return None
@@ -625,7 +644,11 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position - TIMER + FAIL-FAST EXIT STRATEGY"""
+        """
+        Monitor position - TIMER + FAIL-FAST EXIT STRATEGY
+        ✅ FIXED: Check migration BEFORE calculating P&L
+        ✅ FIXED: Add null price safety checks
+        """
         try:
             position = self.positions.get(mint)
             if not position:
@@ -654,6 +677,7 @@ class SniperBot:
                 try:
                     curve_data = self.dex.get_bonding_curve_data(mint)
                     
+                    # ✅ CRITICAL FIX #1: Check for no data FIRST
                     if not curve_data:
                         consecutive_data_failures += 1
                         logger.warning(f"No price data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
@@ -669,127 +693,153 @@ class SniperBot:
                             await asyncio.sleep(1)
                             continue
                     
-                    if curve_data and curve_data.get('is_migrated'):
-                        logger.warning(f"❌ Token {mint[:8]}... has migrated")
+                    # ✅ CRITICAL FIX #2: Check migration BEFORE calculating P&L
+                    if curve_data.get('is_migrated'):
+                        logger.warning(f"❌ Token {mint[:8]}... has migrated - exiting immediately")
                         await self._close_position_full(mint, reason="migration")
                         break
                     
-                    if curve_data and curve_data.get('sol_in_curve', 0) > 0:
-                        current_sol_in_curve = curve_data.get('sol_in_curve', 0)
+                    # ✅ CRITICAL FIX #3: Check SOL in curve validity
+                    if curve_data.get('sol_in_curve', 0) <= 0:
+                        consecutive_data_failures += 1
+                        logger.warning(f"Invalid SOL in curve data (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                        await asyncio.sleep(1)
+                        continue
+                    
+                    # Now safe to calculate price
+                    current_sol_in_curve = curve_data.get('sol_in_curve', 0)
+                    
+                    current_token_price_sol = self._get_current_token_price(mint, curve_data)
+                    
+                    # ✅ CRITICAL FIX #4: Null price safety check
+                    if current_token_price_sol is None:
+                        consecutive_data_failures += 1
+                        logger.warning(f"Could not calculate price (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                        await asyncio.sleep(1)
+                        continue
+                    
+                    # ✅ CRITICAL FIX #5: Sanity check on price calculation
+                    if current_token_price_sol <= 0:
+                        logger.warning(f"Invalid price calculated: {current_token_price_sol}")
+                        consecutive_data_failures += 1
+                        await asyncio.sleep(1)
+                        continue
+                    
+                    # Now safe to calculate P&L
+                    if position.entry_token_price_sol > 0:
+                        price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
+                    else:
+                        price_change = 0
+                    
+                    position.pnl_percent = price_change
+                    position.current_price = current_token_price_sol
+                    position.max_pnl_reached = max(position.max_pnl_reached, price_change)
+                    
+                    consecutive_data_failures = 0
+                    position.last_valid_price = current_token_price_sol
+                    position.last_price_update = time.time()
+                    
+                    # Log price comparison for debugging
+                    if check_count == 1:
+                        logger.info(f"📊 First price check for {mint[:8]}...")
+                        logger.info(f"   Entry: {position.entry_token_price_sol:.10f} SOL/token")
+                        logger.info(f"   Current: {current_token_price_sol:.10f} SOL/token")
+                        logger.info(f"   P&L: {price_change:+.1f}%")
+                    
+                    self.velocity_checker.update_snapshot(
+                        mint, 
+                        current_sol_in_curve, 
+                        int(current_sol_in_curve / 0.4)
+                    )
+                    
+                    # Fail-fast check
+                    if (age >= FAIL_FAST_CHECK_TIME and 
+                        not position.fail_fast_checked and 
+                        not position.is_closing):
                         
-                        current_token_price_sol = self._get_current_token_price(mint, curve_data)
+                        position.fail_fast_checked = True
                         
-                        if current_token_price_sol is None:
-                            consecutive_data_failures += 1
-                            logger.warning(f"Could not calculate price (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
-                            await asyncio.sleep(1)
-                            continue
+                        if price_change < FAIL_FAST_PNL_THRESHOLD:
+                            logger.warning(
+                                f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s - "
+                                f"exiting immediately"
+                            )
+                            await self._close_position_full(mint, reason="fail_fast_pnl")
+                            break
                         
-                        if position.entry_token_price_sol > 0:
-                            price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
-                        else:
-                            price_change = 0
-                        
-                        position.pnl_percent = price_change
-                        position.current_price = current_token_price_sol
-                        position.max_pnl_reached = max(position.max_pnl_reached, price_change)
-                        
-                        consecutive_data_failures = 0
-                        position.last_valid_price = current_token_price_sol
-                        position.last_price_update = time.time()
-                        
-                        self.velocity_checker.update_snapshot(
-                            mint, 
-                            current_sol_in_curve, 
-                            int(current_sol_in_curve / 0.4)
-                        )
-                        
-                        if (age >= FAIL_FAST_CHECK_TIME and 
-                            not position.fail_fast_checked and 
-                            not position.is_closing):
+                        pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
+                        if pre_buy_velocity:
+                            current_velocity = current_sol_in_curve / max(age, 0.1)
+                            velocity_percent = (current_velocity / pre_buy_velocity) * 100
                             
-                            position.fail_fast_checked = True
-                            
-                            if price_change < FAIL_FAST_PNL_THRESHOLD:
+                            if velocity_percent < FAIL_FAST_VELOCITY_THRESHOLD:
                                 logger.warning(
-                                    f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s - "
+                                    f"⚠️ FAIL-FAST: Velocity died ({velocity_percent:.1f}% of pre-buy) at {age:.1f}s - "
                                     f"exiting immediately"
                                 )
-                                await self._close_position_full(mint, reason="fail_fast_pnl")
+                                await self._close_position_full(mint, reason="fail_fast_velocity")
                                 break
-                            
-                            pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
-                            if pre_buy_velocity:
-                                current_velocity = current_sol_in_curve / max(age, 0.1)
-                                velocity_percent = (current_velocity / pre_buy_velocity) * 100
-                                
-                                if velocity_percent < FAIL_FAST_VELOCITY_THRESHOLD:
-                                    logger.warning(
-                                        f"⚠️ FAIL-FAST: Velocity died ({velocity_percent:.1f}% of pre-buy) at {age:.1f}s - "
-                                        f"exiting immediately"
-                                    )
-                                    await self._close_position_full(mint, reason="fail_fast_velocity")
-                                    break
-                                else:
-                                    logger.info(
-                                        f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                        f"P&L {price_change:+.1f}%, velocity {velocity_percent:.0f}%"
-                                    )
                             else:
                                 logger.info(
                                     f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                    f"P&L {price_change:+.1f}%"
+                                    f"P&L {price_change:+.1f}%, velocity {velocity_percent:.0f}%"
                                 )
-                        
-                        if price_change <= -40 and not position.is_closing:
-                            logger.warning(f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) - immediate exit!")
-                            await self._close_position_full(mint, reason="rug_trap")
-                            break
-                        
-                        if time_until_exit <= 0 and not position.is_closing:
-                            logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
-                            logger.info(f"   Final P&L: {price_change:+.1f}%")
-                            logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
-                            await self._close_position_full(mint, reason="timer_exit")
-                            break
-                        
-                        if (time_until_exit <= 5 and
-                            time_until_exit > 0 and
-                            price_change > TIMER_EXTENSION_PNL_THRESHOLD and
-                            position.extensions_used < TIMER_MAX_EXTENSIONS and
-                            not position.is_closing):
-                            
-                            is_accelerating = self.velocity_checker.is_velocity_accelerating(
-                                mint, 
-                                current_sol_in_curve
-                            )
-                            
-                            if is_accelerating:
-                                position.exit_time += TIMER_EXTENSION_SECONDS
-                                position.extensions_used += 1
-                                logger.info(
-                                    f"🚀 EXTENDING TIMER for {mint[:8]}... "
-                                    f"(+{TIMER_EXTENSION_SECONDS}s, extension {position.extensions_used}/{TIMER_MAX_EXTENSIONS})"
-                                )
-                                logger.info(f"   P&L: {price_change:+.1f}%, velocity accelerating")
-                        
-                        if check_count % 3 == 1:
+                        else:
                             logger.info(
-                                f"⏱️ {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                                f"Exit in: {time_until_exit:.1f}s | "
-                                f"Extensions: {position.extensions_used}/{TIMER_MAX_EXTENSIONS}"
+                                f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
+                                f"P&L {price_change:+.1f}%"
                             )
-                        
-                        if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
-                            logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
-                            await self._close_position_full(mint, reason="stop_loss")
-                            break
                     
-                    else:
-                        consecutive_data_failures += 1
-                        logger.warning(f"Invalid reserve data (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
-                        await asyncio.sleep(1)
-                        continue
+                    # Rug trap check (now with valid price)
+                    if price_change <= -40 and not position.is_closing:
+                        logger.warning(f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) - immediate exit!")
+                        logger.warning(f"   Entry price: {position.entry_token_price_sol:.10f} SOL/token")
+                        logger.warning(f"   Current price: {current_token_price_sol:.10f} SOL/token")
+                        await self._close_position_full(mint, reason="rug_trap")
+                        break
+                    
+                    # Timer exit check
+                    if time_until_exit <= 0 and not position.is_closing:
+                        logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
+                        logger.info(f"   Final P&L: {price_change:+.1f}%")
+                        logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
+                        await self._close_position_full(mint, reason="timer_exit")
+                        break
+                    
+                    # Timer extension check
+                    if (time_until_exit <= 5 and
+                        time_until_exit > 0 and
+                        price_change > TIMER_EXTENSION_PNL_THRESHOLD and
+                        position.extensions_used < TIMER_MAX_EXTENSIONS and
+                        not position.is_closing):
+                        
+                        is_accelerating = self.velocity_checker.is_velocity_accelerating(
+                            mint, 
+                            current_sol_in_curve
+                        )
+                        
+                        if is_accelerating:
+                            position.exit_time += TIMER_EXTENSION_SECONDS
+                            position.extensions_used += 1
+                            logger.info(
+                                f"🚀 EXTENDING TIMER for {mint[:8]}... "
+                                f"(+{TIMER_EXTENSION_SECONDS}s, extension {position.extensions_used}/{TIMER_MAX_EXTENSIONS})"
+                            )
+                            logger.info(f"   P&L: {price_change:+.1f}%, velocity accelerating")
+                    
+                    # Periodic logging
+                    if check_count % 3 == 1:
+                        logger.info(
+                            f"⏱️ {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                            f"Exit in: {time_until_exit:.1f}s | "
+                            f"Extensions: {position.extensions_used}/{TIMER_MAX_EXTENSIONS}"
+                        )
+                    
+                    # Stop loss check
+                    if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
+                        logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
+                        await self._close_position_full(mint, reason="stop_loss")
+                        break
                 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
@@ -1121,6 +1171,12 @@ class SniperBot:
                     post_sol_balance = self.wallet.get_sol_balance()
                     actual_sol_received = post_sol_balance - pre_sol_balance
                     logger.info(f"📊 Balance delta: {actual_sol_received:+.6f} SOL")
+                
+                # ✅ ADDED: Check for suspicious sell (got <10% back)
+                if actual_sol_received < (position.amount_sol * 0.1):
+                    logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_sol_received:.6f} SOL back (invested {position.amount_sol} SOL)")
+                    logger.error(f"   This suggests curve was dead/migrated during sell")
+                    logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
                 
                 if actual_tokens_sold is None:
                     before_tokens = ui_token_balance
