@@ -1,6 +1,7 @@
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
-FIXED: Consistent raw reserve format from both WebSocket and blockchain
+FIXED: Consistent decimal handling - WebSocket data is already human-readable
+CRITICAL FIX: Don't convert WebSocket data to atomic units (it's already normalized)
 """
 
 import time
@@ -98,7 +99,10 @@ class PumpFunDEX:
             return None
     
     def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
-        """Get bonding curve data - CRITICAL METHOD for price monitoring"""
+        """
+        Get bonding curve data - CRITICAL METHOD for price monitoring
+        FIXED: WebSocket data is already human-readable, don't convert to atomic units
+        """
         try:
             # First check WebSocket data (most recent)
             if mint in self.token_websocket_data:
@@ -115,18 +119,6 @@ class PumpFunDEX:
                     v_sol = token_data.get('vSolInBondingCurve', 0)
                     v_tokens = token_data.get('vTokensInBondingCurve', 0)
                     
-                    # ✅ CRITICAL FIX: Get actual token decimals instead of hardcoding
-                    # WebSocket gives human-readable values, we need raw format
-                    token_decimals = self.wallet.get_token_decimals(mint)
-                    if isinstance(token_decimals, tuple):
-                        token_decimals = token_decimals[0]
-                    if not token_decimals or token_decimals == 0:
-                        token_decimals = 6  # PumpFun default
-                    
-                    # Convert to raw format (matching blockchain data format)
-                    v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
-                    v_tokens_raw = int(v_tokens * (10 ** token_decimals)) if v_tokens > 0 else 0
-                    
                     # Check migration
                     is_migrated = v_sol >= MIGRATION_THRESHOLD_SOL
                     if is_migrated:
@@ -137,13 +129,36 @@ class PumpFunDEX:
                             'is_valid': False
                         }
                     
+                    # ✅ CRITICAL FIX: PumpPortal WebSocket gives HUMAN-READABLE values
+                    # Don't convert to atomic units - keep them as-is for consistent decimal handling
+                    # The price calculation expects lamports and atomic units
+                    
+                    # Convert SOL to lamports for consistency with blockchain data
+                    v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
+                    
+                    # ✅ CRITICAL FIX: Get token decimals to convert human-readable to atomic
+                    token_decimals = self.wallet.get_token_decimals(mint)
+                    if isinstance(token_decimals, tuple):
+                        token_decimals = token_decimals[0]
+                    if not token_decimals or token_decimals == 0:
+                        token_decimals = 6  # PumpFun default
+                    
+                    # Convert human-readable tokens to atomic units
+                    v_tokens_atomic = int(v_tokens * (10 ** token_decimals)) if v_tokens > 0 else 0
+                    
+                    logger.debug(
+                        f"WebSocket data conversion for {mint[:8]}...: "
+                        f"{v_sol:.2f} SOL → {v_sol_lamports:,} lamports, "
+                        f"{v_tokens:,.2f} tokens → {v_tokens_atomic:,} atomic (decimals: {token_decimals})"
+                    )
+                    
                     curve_data = {
                         'bonding_curve': token_data.get('bondingCurveKey', ''),
-                        'virtual_token_reserves': v_tokens_raw,
-                        'virtual_sol_reserves': v_sol_lamports,
-                        'real_token_reserves': v_tokens_raw,
+                        'virtual_token_reserves': v_tokens_atomic,  # ✅ ATOMIC UNITS
+                        'virtual_sol_reserves': v_sol_lamports,     # ✅ LAMPORTS
+                        'real_token_reserves': v_tokens_atomic,
                         'real_sol_reserves': v_sol_lamports,
-                        'price_per_token': v_sol_lamports / v_tokens_raw if v_tokens_raw > 0 else 0,
+                        'price_per_token': v_sol_lamports / v_tokens_atomic if v_tokens_atomic > 0 else 0,
                         'sol_in_curve': v_sol,
                         'is_migrating': False,
                         'can_buy': True,
@@ -158,7 +173,7 @@ class PumpFunDEX:
                         'timestamp': time.time()
                     }
                     
-                    logger.debug(f"Using WebSocket data for {mint[:8]}... (age: {data_age:.1f}s, decimals: {token_decimals})")
+                    logger.debug(f"Using WebSocket data for {mint[:8]}... (age: {data_age:.1f}s)")
                     return curve_data
             
             # WebSocket data expired or unavailable - query chain directly via Helius
@@ -175,7 +190,7 @@ class PumpFunDEX:
                 parsed_data = self._parse_bonding_curve_account(response.value.data)
                 
                 if parsed_data:
-                    # Successfully parsed real chain data
+                    # Successfully parsed real chain data (already in atomic units)
                     parsed_data['bonding_curve'] = str(bonding_curve)
                     parsed_data['price_per_token'] = (
                         parsed_data['virtual_sol_reserves'] / parsed_data['virtual_token_reserves']
