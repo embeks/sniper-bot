@@ -1,5 +1,6 @@
 """
 Bonding Curve State Reader - Read liquidity directly from chain
+✅ FIXED: Consistent decimal handling with main.py and dex.py
 """
 
 import struct
@@ -26,11 +27,15 @@ class BondingCurveReader:
         return Pubkey.find_program_address(seeds, self.program_id)
     
     def _parse_curve_account(self, account_data: bytes) -> Optional[Dict]:
-        """Parse bonding curve layout"""
+        """
+        Parse bonding curve layout
+        ✅ FIXED: Returns raw atomic units (consistent with dex.py blockchain reads)
+        """
         try:
             if not account_data or len(account_data) < 49:
                 return None
             
+            # All values in ATOMIC UNITS (raw blockchain data)
             virtual_token_reserves = struct.unpack('<Q', account_data[8:16])[0]
             virtual_sol_reserves = struct.unpack('<Q', account_data[16:24])[0]
             real_token_reserves = struct.unpack('<Q', account_data[24:32])[0]
@@ -38,23 +43,32 @@ class BondingCurveReader:
             token_total_supply = struct.unpack('<Q', account_data[40:48])[0]
             complete = bool(account_data[48])
             
+            # Convert to human-readable for display/validation
             sol_raised = real_sol_reserves / 1e9
             tokens_minted = (token_total_supply - real_token_reserves) / 1e6
             
+            # Calculate price: both in atomic units for consistency
             if virtual_token_reserves > 0:
-                price_sol_per_token = (virtual_sol_reserves / 1e9) / (virtual_token_reserves / 1e6)
+                # Price in lamports per atomic token unit
+                price_sol_per_token = virtual_sol_reserves / virtual_token_reserves
             else:
                 price_sol_per_token = 0
             
+            logger.debug(
+                f"Parsed curve: {sol_raised:.2f} SOL raised, "
+                f"v_sol={virtual_sol_reserves:,} lamports, "
+                f"v_tokens={virtual_token_reserves:,} atomic"
+            )
+            
             return {
-                'virtual_token_reserves': virtual_token_reserves,
-                'virtual_sol_reserves': virtual_sol_reserves,
-                'real_token_reserves': real_token_reserves,
-                'real_sol_reserves': real_sol_reserves,
-                'sol_raised': sol_raised,
-                'tokens_minted': tokens_minted,
+                'virtual_token_reserves': virtual_token_reserves,  # ATOMIC UNITS
+                'virtual_sol_reserves': virtual_sol_reserves,      # LAMPORTS
+                'real_token_reserves': real_token_reserves,        # ATOMIC UNITS
+                'real_sol_reserves': real_sol_reserves,            # LAMPORTS
+                'sol_raised': sol_raised,                          # Human-readable SOL
+                'tokens_minted': tokens_minted,                    # Human-readable tokens
                 'complete': complete,
-                'price_sol_per_token': price_sol_per_token,
+                'price_sol_per_token': price_sol_per_token,       # Lamports per atomic unit
                 'is_valid': True
             }
             
@@ -125,24 +139,38 @@ class BondingCurveReader:
         return True, "ok", curve_data
     
     def estimate_slippage(self, mint: str, buy_size_sol: float) -> Optional[float]:
-        """Estimate buy slippage %"""
+        """
+        Estimate buy slippage %
+        ✅ FIXED: Consistent decimal handling
+        """
         curve_data = self.get_curve_state(mint)
         if not curve_data:
             return None
         
         try:
-            virtual_sol = curve_data['virtual_sol_reserves'] / 1e9
-            virtual_tokens = curve_data['virtual_token_reserves'] / 1e6
+            # Get atomic units from curve data
+            virtual_sol = curve_data['virtual_sol_reserves']  # lamports
+            virtual_tokens = curve_data['virtual_token_reserves']  # atomic units
             
-            current_price = virtual_sol / virtual_tokens if virtual_tokens > 0 else 0
+            # Convert to human-readable for calculation
+            sol_human = virtual_sol / 1e9
+            tokens_human = virtual_tokens / 1e6  # Assuming 6 decimals (PumpFun standard)
             
-            k = virtual_sol * virtual_tokens
-            new_sol = virtual_sol + buy_size_sol
+            current_price = sol_human / tokens_human if tokens_human > 0 else 0
+            
+            # Constant product AMM formula
+            k = sol_human * tokens_human
+            new_sol = sol_human + buy_size_sol
             new_tokens = k / new_sol
-            tokens_out = virtual_tokens - new_tokens
+            tokens_out = tokens_human - new_tokens
             
             effective_price = buy_size_sol / tokens_out if tokens_out > 0 else 0
             slippage_pct = ((effective_price / current_price) - 1) * 100 if current_price > 0 else 0
+            
+            logger.debug(
+                f"Slippage estimate: current={current_price:.10f}, "
+                f"effective={effective_price:.10f}, slippage={slippage_pct:.2f}%"
+            )
             
             return slippage_pct
             
