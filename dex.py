@@ -1,7 +1,7 @@
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
-FIXED: Consistent decimal handling - WebSocket data is already human-readable
-CRITICAL FIX: Don't convert WebSocket data to atomic units (it's already normalized)
+FINAL FIX: PumpPortal sends SOL as human-readable, tokens as ATOMIC
+DO NOT convert tokens - they're already in atomic units!
 """
 
 import time
@@ -101,7 +101,7 @@ class PumpFunDEX:
     def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
         """
         Get bonding curve data - CRITICAL METHOD for price monitoring
-        FIXED: WebSocket data is already human-readable, don't convert to atomic units
+        FINAL FIX: PumpPortal sends SOL as human-readable, tokens as ATOMIC
         """
         try:
             # First check WebSocket data (most recent)
@@ -129,32 +129,26 @@ class PumpFunDEX:
                             'is_valid': False
                         }
                     
-                    # ✅ CRITICAL FIX: PumpPortal WebSocket gives HUMAN-READABLE values
-                    # Don't convert to atomic units - keep them as-is for consistent decimal handling
-                    # The price calculation expects lamports and atomic units
+                    # ✅ FINAL FIX: PumpPortal WebSocket data format
+                    # - vSolInBondingCurve: Human-readable SOL (e.g., 31.75)
+                    # - vTokensInBondingCurve: ATOMIC units (already multiplied by 10^decimals)
+                    # DO NOT multiply tokens again - they're already in atomic format!
                     
                     # Convert SOL to lamports for consistency with blockchain data
                     v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
                     
-                    # ✅ CRITICAL FIX: Get token decimals to convert human-readable to atomic
-                    token_decimals = self.wallet.get_token_decimals(mint)
-                    if isinstance(token_decimals, tuple):
-                        token_decimals = token_decimals[0]
-                    if not token_decimals or token_decimals == 0:
-                        token_decimals = 6  # PumpFun default
-                    
-                    # Convert human-readable tokens to atomic units
-                    v_tokens_atomic = int(v_tokens * (10 ** token_decimals)) if v_tokens > 0 else 0
+                    # ✅ CRITICAL: Tokens are ALREADY atomic - use directly
+                    v_tokens_atomic = int(v_tokens) if v_tokens > 0 else 0
                     
                     logger.debug(
-                        f"WebSocket data conversion for {mint[:8]}...: "
+                        f"WebSocket data for {mint[:8]}...: "
                         f"{v_sol:.2f} SOL → {v_sol_lamports:,} lamports, "
-                        f"{v_tokens:,.2f} tokens → {v_tokens_atomic:,} atomic (decimals: {token_decimals})"
+                        f"tokens: {v_tokens_atomic:,} atomic (already in correct format from PumpPortal)"
                     )
                     
                     curve_data = {
                         'bonding_curve': token_data.get('bondingCurveKey', ''),
-                        'virtual_token_reserves': v_tokens_atomic,  # ✅ ATOMIC UNITS
+                        'virtual_token_reserves': v_tokens_atomic,  # ✅ ALREADY ATOMIC
                         'virtual_sol_reserves': v_sol_lamports,     # ✅ LAMPORTS
                         'real_token_reserves': v_tokens_atomic,
                         'real_sol_reserves': v_sol_lamports,
