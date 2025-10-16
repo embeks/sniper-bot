@@ -2,7 +2,7 @@
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
 FINAL FIX (OPUS): PumpPortal WebSocket sends UI tokens, NOT atomic
 ✅ Issue A Fix: Convert vTokensInBondingCurve to atomic units before price calculation
-This prevents the +67,097,923% P&L bug
+✅ CHATGPT FIXES: Source tracking, prefer_chain flag, real_sol_reserves
 """
 
 import time
@@ -100,14 +100,15 @@ class PumpFunDEX:
             logger.error(f"Failed to parse bonding curve account: {e}")
             return None
     
-    def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
+    def get_bonding_curve_data(self, mint: str, prefer_chain: bool = False) -> Optional[Dict]:
         """
         Get bonding curve data - CRITICAL METHOD for price monitoring
         ✅ OPUS FIX: PumpPortal sends vTokensInBondingCurve as UI tokens (human-readable)
+        ✅ CHATGPT FIX #3: Added prefer_chain flag to force blockchain reads post-buy
         """
         try:
-            # First check WebSocket data (most recent)
-            if mint in self.token_websocket_data:
+            # ✅ CHATGPT FIX #3: Skip WebSocket if prefer_chain is True
+            if not prefer_chain and mint in self.token_websocket_data:
                 ws_data = self.token_websocket_data[mint]
                 data_age = time.time() - ws_data['timestamp']
                 
@@ -127,7 +128,8 @@ class PumpFunDEX:
                         return {
                             'is_migrated': True,
                             'sol_in_curve': v_sol,
-                            'is_valid': False
+                            'is_valid': False,
+                            'source': 'ws'  # ✅ CHATGPT FIX #2
                         }
                     
                     # ✅ CRITICAL FIX (Opus): PumpPortal WebSocket data format
@@ -174,7 +176,8 @@ class PumpFunDEX:
                         'can_buy': True,
                         'from_websocket': True,
                         'is_valid': True,
-                        'needs_retry': False
+                        'needs_retry': False,
+                        'source': 'ws'  # ✅ CHATGPT FIX #2
                     }
                     
                     # Save to persistent cache
@@ -186,8 +189,11 @@ class PumpFunDEX:
                     logger.debug(f"Using WebSocket data for {mint[:8]}... (age: {data_age:.1f}s)")
                     return curve_data
             
-            # WebSocket data expired or unavailable - query chain directly via Helius
-            logger.debug(f"WebSocket data expired for {mint[:8]}..., querying chain via Helius")
+            # WebSocket data expired/unavailable or prefer_chain=True - query chain directly
+            if prefer_chain:
+                logger.debug(f"Forcing blockchain read for {mint[:8]}... (prefer_chain=True)")
+            else:
+                logger.debug(f"WebSocket data expired for {mint[:8]}..., querying chain via Helius")
             
             mint_pubkey = Pubkey.from_string(mint)
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
@@ -213,6 +219,7 @@ class PumpFunDEX:
                     parsed_data['can_buy'] = True
                     parsed_data['from_websocket'] = False
                     parsed_data['needs_retry'] = False
+                    parsed_data['source'] = 'chain'  # ✅ CHATGPT FIX #2
                     
                     # Cache it
                     self.bonding_curves_cache[mint] = {
