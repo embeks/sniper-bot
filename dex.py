@@ -99,7 +99,7 @@ class PumpFunDEX:
     def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
         """
         Get bonding curve data - CRITICAL METHOD for price monitoring
-        FIXED: Convert WebSocket UI tokens to atomic units
+        ✅ OPUS FIX: PumpPortal sends vTokensInBondingCurve as UI tokens (human-readable)
         """
         try:
             # First check WebSocket data (most recent)
@@ -108,7 +108,6 @@ class PumpFunDEX:
                 data_age = time.time() - ws_data['timestamp']
                 
                 # Use WebSocket data only if fresh (under 10 seconds)
-                # After 10s, query blockchain for real-time updates
                 if data_age < 10:
                     token_data = ws_data['data']
                     if 'data' in token_data:
@@ -127,42 +126,45 @@ class PumpFunDEX:
                             'is_valid': False
                         }
                     
-                    # ✅ FIXED: PumpPortal WebSocket data format
-                    # - vSolInBondingCurve: Human-readable SOL (e.g., 31.75)
-                    # - vTokensInBondingCurve: UI tokens (human-readable, NOT atomic)
+                    # ✅ CRITICAL FIX (Opus): PumpPortal WebSocket data format
+                    # - vSolInBondingCurve: Human-readable SOL (e.g., 39.96)
+                    # - vTokensInBondingCurve: UI tokens (human-readable, NOT atomic!)
+                    # We must convert BOTH to atomic units for price calculation
                     
-                    # Get token decimals for conversion
+                    # Step 1: Get token decimals
                     token_decimals = self.wallet.get_token_decimals(mint)
                     if isinstance(token_decimals, tuple):
                         token_decimals = token_decimals[0]
                     if not token_decimals or token_decimals == 0:
-                        token_decimals = 6  # PumpFun default
+                        token_decimals = 6  # PumpFun standard
                     
-                    # Convert SOL to lamports
+                    # Step 2: Convert SOL to lamports (atomic SOL)
                     v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
                     
-                    # ✅ CRITICAL FIX: Convert UI tokens to atomic
+                    # Step 3: Convert UI tokens to atomic tokens
+                    # ✅ THIS IS THE FIX: Multiply by 10^decimals, not divide
                     v_tokens_atomic = int(v_tokens * (10 ** token_decimals)) if v_tokens > 0 else 0
                     
-                    # ✅ Calculate price with explicit units
+                    # Step 4: Calculate price (both in atomic units now)
                     price_lamports_per_atomic = (
                         v_sol_lamports / v_tokens_atomic
                     ) if v_tokens_atomic > 0 else 0
                     
                     logger.debug(
                         f"WebSocket data for {mint[:8]}...: "
-                        f"{v_sol:.2f} SOL → {v_sol_lamports:,} lamports, "
-                        f"{v_tokens:.2f} UI tokens → {v_tokens_atomic:,} atomic (decimals: {token_decimals}), "
-                        f"price: {price_lamports_per_atomic:.10f} lamports/atomic"
+                        f"v_sol={v_sol:.2f} UI → {v_sol_lamports:,} lamports, "
+                        f"v_tokens={v_tokens:.2f} UI → {v_tokens_atomic:,} atomic (decimals={token_decimals}), "
+                        f"price={price_lamports_per_atomic:.10f} lamports/atomic"
                     )
                     
+                    # Step 5: Store atomic units in curve data
                     curve_data = {
                         'bonding_curve': token_data.get('bondingCurveKey', ''),
-                        'virtual_token_reserves': v_tokens_atomic,  # ✅ NOW ATOMIC
-                        'virtual_sol_reserves': v_sol_lamports,     # ✅ LAMPORTS
-                        'real_token_reserves': v_tokens_atomic,
-                        'real_sol_reserves': v_sol_lamports,
-                        'price_lamports_per_atomic': price_lamports_per_atomic,  # ✅ EXPLICIT UNITS
+                        'virtual_token_reserves': v_tokens_atomic,  # ✅ Atomic units
+                        'virtual_sol_reserves': v_sol_lamports,     # ✅ Lamports
+                        'real_token_reserves': v_tokens_atomic,     # ✅ Atomic units
+                        'real_sol_reserves': v_sol_lamports,        # ✅ Lamports
+                        'price_lamports_per_atomic': price_lamports_per_atomic,
                         'sol_in_curve': v_sol,
                         'is_migrating': False,
                         'can_buy': True,
@@ -197,7 +199,7 @@ class PumpFunDEX:
                     # Successfully parsed real chain data (already in atomic units)
                     parsed_data['bonding_curve'] = str(bonding_curve)
                     
-                    # ✅ Add explicit price field
+                    # ✅ Add explicit price field for consistency
                     parsed_data['price_lamports_per_atomic'] = (
                         parsed_data['virtual_sol_reserves'] / parsed_data['virtual_token_reserves']
                         if parsed_data['virtual_token_reserves'] > 0 else 0
