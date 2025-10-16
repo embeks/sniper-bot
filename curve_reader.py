@@ -47,17 +47,16 @@ class BondingCurveReader:
             sol_raised = real_sol_reserves / 1e9
             tokens_minted = (token_total_supply - real_token_reserves) / 1e6
             
-            # Calculate price: both in atomic units for consistency
-            if virtual_token_reserves > 0:
-                # Price in lamports per atomic token unit
-                price_sol_per_token = virtual_sol_reserves / virtual_token_reserves
-            else:
-                price_sol_per_token = 0
+            # ✅ FIXED: Calculate raw price with explicit units
+            price_lamports_per_atomic = (
+                virtual_sol_reserves / virtual_token_reserves
+            ) if virtual_token_reserves > 0 else 0
             
             logger.debug(
                 f"Parsed curve: {sol_raised:.2f} SOL raised, "
                 f"v_sol={virtual_sol_reserves:,} lamports, "
-                f"v_tokens={virtual_token_reserves:,} atomic"
+                f"v_tokens={virtual_token_reserves:,} atomic, "
+                f"price={price_lamports_per_atomic:.10f} lamports/atomic"
             )
             
             return {
@@ -68,7 +67,7 @@ class BondingCurveReader:
                 'sol_raised': sol_raised,                          # Human-readable SOL
                 'tokens_minted': tokens_minted,                    # Human-readable tokens
                 'complete': complete,
-                'price_sol_per_token': price_sol_per_token,       # Lamports per atomic unit
+                'price_lamports_per_atomic': price_lamports_per_atomic,  # ✅ EXPLICIT UNITS
                 'is_valid': True
             }
             
