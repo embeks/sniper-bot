@@ -1,7 +1,7 @@
 """
-Main Orchestrator - FINAL FIX: Robust sell confirmation
+Main Orchestrator - FINAL FIX: Stop loss with source checking
 TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE
-CRITICAL FIX: Wait up to 25 seconds for sell confirmation like partial sells
+✅ CRITICAL FIX: Stop loss now requires [chain] source like rug trap
 """
 
 import asyncio
@@ -845,10 +845,15 @@ class SniperBot:
                             f"Extensions: {position.extensions_used}/{TIMER_MAX_EXTENSIONS}"
                         )
                     
+                    # ✅ CRITICAL FIX: Stop loss now requires [chain] source like rug trap
                     if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
-                        logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}...")
-                        await self._close_position_full(mint, reason="stop_loss")
-                        break
+                        if not position.has_chain_price or source != 'chain':
+                            logger.warning(f"🚧 STOP LOSS signal from [{source}] ignored until first [chain] tick")
+                        else:
+                            logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... (on [chain] source)")
+                            logger.warning(f"   P&L: {price_change:.1f}% <= -{STOP_LOSS_PERCENTAGE}%")
+                            await self._close_position_full(mint, reason="stop_loss")
+                            break
                 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
@@ -1303,9 +1308,6 @@ class SniperBot:
                 logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_sol_received:.6f} SOL back (invested {position.amount_sol} SOL)")
                 logger.error(f"   This suggests curve was dead/migrated during sell")
                 logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-            
-            # ✅ REMOVED: The "SELL FAILED: Still have tokens" check that was here
-            # because we now check earlier with proper error handling
             
             # Calculate final P&L
             final_pnl_sol = actual_sol_received - position.amount_sol
