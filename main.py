@@ -1,10 +1,5 @@
 """
-Main Orchestrator - FIXED: Migration check order + null price safety
-TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE (with correct age)
-CRITICAL FIXES:
-1. Check migration BEFORE calculating P&L
-2. Add null price safety checks
-3. Better decimal handling debugging
+Main Orchestrator
 """
 
 import asyncio
@@ -314,6 +309,57 @@ class SniperBot:
             import traceback
             logger.debug(traceback.format_exc())
             return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
+    
+    async def _confirm_sell_transaction(self, signature: str, mint: str, timeout: int = 25) -> dict:
+        """
+        Confirm sell transaction with proper polling loop
+        Returns dict with confirmed, sol_delta, token_delta
+        """
+        try:
+            logger.info(f"⏳ Confirming transaction {signature[:8]}...")
+            logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
+            
+            first_seen = None
+            start = time.time()
+            confirmed = False
+            
+            while time.time() - start < timeout:
+                try:
+                    status = self.trader.client.get_signature_statuses([signature])
+                    if status and status.value and status.value[0]:
+                        if first_seen is None:
+                            first_seen = time.time() - start
+                            logger.debug(f"Transaction appeared in RPC after {first_seen:.1f}s")
+                        
+                        confirmation_status = status.value[0].confirmation_status
+                        if confirmation_status in ["confirmed", "finalized"]:
+                            if status.value[0].err:
+                                logger.error(f"❌ Transaction FAILED: {status.value[0].err}")
+                                return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0, "error": status.value[0].err}
+                            else:
+                                confirmed = True
+                                logger.info(f"✅ Transaction confirmed after {time.time() - start:.1f}s")
+                                break
+                except Exception as e:
+                    logger.debug(f"Status check error: {e}")
+                
+                await asyncio.sleep(1)
+            
+            if not confirmed:
+                elapsed = time.time() - start
+                if first_seen is None:
+                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s")
+                else:
+                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm within {timeout}s")
+                return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0, "timeout": True}
+            
+            # Get transaction deltas
+            txd = await self._get_transaction_deltas(signature, mint)
+            return txd
+            
+        except Exception as e:
+            logger.error(f"Confirmation error: {e}")
+            return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0, "error": str(e)}
     
     async def initialize_telegram(self):
         """Initialize Telegram bot after event loop is ready"""
@@ -865,7 +911,182 @@ class SniperBot:
             if mint in self.positions and position.status == 'completed':
                 del self.positions[mint]
                 logger.info(f"Position {mint[:8]}... removed after completion")
-                self.velocity_checker.clear_history(mint)
+    
+    async def _close_position(self, mint: str, reason: str = "manual"):
+        """Wrapper for telegram compatibility"""
+        await self._close_position_full(mint, reason)
+    
+    async def run(self):
+        """Main run loop"""
+        self.running = True
+        
+        try:
+            await self.initialize_telegram()
+            
+            self.scanner = PumpPortalMonitor(self.on_token_found)
+            self.scanner_task = asyncio.create_task(self.scanner.start())
+            
+            logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
+            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
+            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
+            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
+            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
+            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
+            
+            last_stats_time = time.time()
+            
+            while self.running and not self.shutdown_requested:
+                await asyncio.sleep(10)
+                
+                if time.time() - last_stats_time > 60:
+                    if self.positions:
+                        logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
+                        for mint, pos in self.positions.items():
+                            age = time.time() - pos.entry_time
+                            time_until_exit = pos.exit_time - time.time()
+                            logger.info(
+                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
+                                f"Max: {pos.max_pnl_reached:+.1f}% | "
+                                f"Exit in: {time_until_exit:.1f}s | "
+                                f"Extensions: {pos.extensions_used}/{TIMER_MAX_EXTENSIONS}"
+                            )
+                    
+                    perf_stats = self.tracker.get_session_stats()
+                    if perf_stats['total_buys'] > 0:
+                        logger.info(f"📊 SESSION PERFORMANCE:")
+                        logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
+                        logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
+                        logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
+                        logger.info(f"  • Session losses: {self.session_loss_count}")
+                        logger.info(f"  • Consecutive losses: {self.consecutive_losses}/3")
+                    
+                    if self.total_realized_sol != 0:
+                        logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
+                    
+                    last_stats_time = time.time()
+                
+                if self.scanner_task and self.scanner_task.done():
+                    if not self.shutdown_requested:
+                        exc = self.scanner_task.exception()
+                        if exc:
+                            logger.error(f"Scanner died: {exc}")
+                            logger.info("Restarting scanner...")
+                            self.scanner_task = asyncio.create_task(self.scanner.start())
+            
+            if self.shutdown_requested:
+                logger.info("Bot stopped - idling")
+                while self.shutdown_requested:
+                    await asyncio.sleep(10)
+                    if not self.shutdown_requested:
+                        logger.info("Resuming from idle...")
+                        if not self.scanner_task or self.scanner_task.done():
+                            self.scanner_task = asyncio.create_task(self.scanner.start())
+                        continue
+            
+        except KeyboardInterrupt:
+            logger.info("\n🛑 Shutting down...")
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+            if self.telegram:
+                await self.telegram.send_message(f"❌ Bot crashed: {e}")
+        finally:
+            await self.shutdown()
+    
+    async def shutdown(self):
+        """Clean shutdown"""
+        self.running = False
+        logger.info("Starting shutdown...")
+        
+        self.tracker.log_session_summary()
+        
+        if self.telegram and not self.shutdown_requested:
+            await self.telegram.send_message(
+                f"🛑 Bot shutting down\n"
+                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
+                f"Session losses: {self.session_loss_count}"
+            )
+        
+        if self.scanner_task and not self.scanner_task.done():
+            self.scanner_task.cancel()
+            try:
+                await self.scanner_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.scanner:
+            self.scanner.stop()
+        
+        if self.positions:
+            logger.info(f"Closing {len(self.positions)} positions...")
+            for mint in list(self.positions.keys()):
+                await self._close_position_full(mint, reason="shutdown")
+        
+        if self.telegram_polling_task and not self.telegram_polling_task.done():
+            self.telegram_polling_task.cancel()
+            try:
+                await self.telegram_polling_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.telegram:
+            self.telegram.stop()
+        
+        if self.total_trades > 0:
+            win_rate = (self.profitable_trades / self.total_trades * 100)
+            logger.info(f"📊 Final Stats:")
+            logger.info(f"  • Trades: {self.total_trades}")
+            logger.info(f"  • Win rate: {win_rate:.1f}%")
+            logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
+            logger.info(f"  • Session losses: {self.session_loss_count}")
+        
+        logger.info("✅ Shutdown complete")
+
+if __name__ == "__main__":
+    import os
+    from aiohttp import web
+    
+    port = int(os.getenv("PORT", "10000"))
+    
+    async def health_handler(request):
+        return web.Response(text="Bot is running", status=200)
+    
+    async def start_health_server():
+        app = web.Application()
+        app.router.add_get("/", health_handler)
+        app.router.add_get("/health", health_handler)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logger.info(f"✅ Health server on port {port}")
+        return runner
+    
+    async def main_with_health():
+        health_runner = await start_health_server()
+        
+        try:
+            bot = SniperBot()
+            await bot.run()
+        finally:
+            await health_runner.cleanup()
+    
+    def signal_handler(sig, frame):
+        logger.info("\nReceived interrupt signal")
+        for task in asyncio.all_tasks():
+            task.cancel()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        asyncio.run(main_with_health())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
                 
         except Exception as e:
             logger.error(f"Monitor error for {mint[:8]}...: {e}")
@@ -1118,7 +1339,10 @@ class SniperBot:
                 }
     
     async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position with REAL SOL tracking"""
+        """
+        Close remaining position with REAL SOL tracking
+        ✅ FIXED: Now uses the same robust confirmation loop as partial sells
+        """
         try:
             position = self.positions.get(mint)
             if not position or position.status != 'active':
@@ -1148,8 +1372,6 @@ class SniperBot:
             logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
             logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
             
-            pre_sol_balance = self.wallet.get_sol_balance()
-            
             actual_balance = self.wallet.get_token_balance(mint)
             if actual_balance > 0:
                 ui_token_balance = actual_balance
@@ -1162,99 +1384,147 @@ class SniperBot:
             
             token_decimals = self.wallet.get_token_decimals(mint)
             
+            # Determine slippage and urgency based on reason
+            if reason in ["timer_exit", "migration"]:
+                slippage = 100
+                urgency = "high"
+            else:
+                slippage = 100 if is_migrated else 50
+                urgency = "critical"
+            
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
-                slippage=100 if is_migrated else 50,
+                slippage=slippage,
                 token_decimals=token_decimals,
-                urgency="critical"
+                urgency=urgency
             )
             
             if signature and not signature.startswith("1111111"):
-                await asyncio.sleep(3)
+                # ✅ FIXED: Use the same confirmation loop as partial sells
+                confirmation_result = await self._confirm_sell_transaction(signature, mint, timeout=25)
                 
-                txd = await self._get_transaction_deltas(signature, mint)
-                actual_tokens_sold = None
-                if txd["confirmed"] and txd["sol_delta"] > 0:
-                    actual_sol_received = txd["sol_delta"]
-                    if txd.get("token_delta", 0.0) < 0:
-                        actual_tokens_sold = abs(txd["token_delta"])
-                    logger.info(f"✅ Sell confirmed on-chain: {actual_sol_received:.6f} SOL received")
-                else:
-                    logger.warning(f"⚠️ Sell transaction not confirmed or failed - checking wallet balance")
-                    post_sol_balance = self.wallet.get_sol_balance()
-                    actual_sol_received = post_sol_balance - pre_sol_balance
-                    logger.info(f"📊 Balance delta: {actual_sol_received:+.6f} SOL")
-                
-                # ✅ ADDED: Check for suspicious sell (got <10% back)
-                if actual_sol_received < (position.amount_sol * 0.1):
-                    logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_sol_received:.6f} SOL back (invested {position.amount_sol} SOL)")
-                    logger.error(f"   This suggests curve was dead/migrated during sell")
-                    logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-                
-                if actual_tokens_sold is None:
-                    before_tokens = ui_token_balance
-                    after_tokens = self.wallet.get_token_balance(mint)
-                    actual_tokens_sold = max(0.0, before_tokens - after_tokens)
-                    logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
+                if confirmation_result["confirmed"]:
+                    actual_sol_received = confirmation_result["sol_delta"]
+                    actual_tokens_sold = abs(confirmation_result["token_delta"]) if confirmation_result["token_delta"] < 0 else 0
                     
-                    if actual_tokens_sold == 0 and after_tokens > 0:
-                        logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
+                    # Verify we actually sold the tokens
+                    if actual_tokens_sold == 0:
+                        before_tokens = ui_token_balance
+                        after_tokens = self.wallet.get_token_balance(mint)
+                        actual_tokens_sold = max(0.0, before_tokens - after_tokens)
+                        logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
+                        
+                        if actual_tokens_sold == 0 and after_tokens > 0:
+                            logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
+                            logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
+                            position.status = 'sell_failed'
+                            if mint in self.positions:
+                                del self.positions[mint]
+                                self.velocity_checker.clear_history(mint)
+                            return
+                    
+                    # ✅ ADDED: Check for suspicious sell (got <10% back)
+                    if actual_sol_received < (position.amount_sol * 0.1):
+                        logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_sol_received:.6f} SOL back (invested {position.amount_sol} SOL)")
+                        logger.error(f"   This suggests curve was dead/migrated during sell")
                         logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-                        position.status = 'sell_failed'
-                        if mint in self.positions:
-                            del self.positions[mint]
-                            self.velocity_checker.clear_history(mint)
-                        return
-                
-                final_pnl_sol = actual_sol_received - position.amount_sol
-                
-                position.sell_signatures.append(signature)
-                position.status = 'closed'
-                
-                if final_pnl_sol > 0:
-                    self.profitable_trades += 1
-                    self.consecutive_losses = 0
-                else:
-                    self.consecutive_losses += 1
-                    self.session_loss_count += 1
-                
-                position.realized_pnl_sol = final_pnl_sol
-                self.total_realized_sol += final_pnl_sol
-                
-                self.tracker.log_sell_executed(
-                    mint=mint,
-                    tokens_sold=actual_tokens_sold,
-                    signature=signature,
-                    sol_received=actual_sol_received,
-                    pnl_sol=final_pnl_sol,
-                    pnl_percent=position.pnl_percent,
-                    hold_time_seconds=hold_time,
-                    reason=reason
-                )
-                
-                logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
-                logger.info(f"   Reason: {reason}")
-                logger.info(f"   Hold time: {hold_time:.1f}s")
-                logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
-                logger.info(f"   Realized: {final_pnl_sol:+.4f} SOL")
-                logger.info(f"   Consecutive losses: {self.consecutive_losses}")
-                
-                if self.telegram:
-                    emoji = "💰" if final_pnl_sol > 0 else "🔴"
-                    msg = (
-                        f"{emoji} POSITION CLOSED\n"
-                        f"Token: {mint[:16]}\n"
-                        f"Reason: {reason}\n"
-                        f"Hold: {hold_time:.1f}s\n"
-                        f"P&L: {position.pnl_percent:+.1f}%\n"
-                        f"Realized: {final_pnl_sol:+.4f} SOL"
+                    
+                    final_pnl_sol = actual_sol_received - position.amount_sol
+                    
+                    position.sell_signatures.append(signature)
+                    position.status = 'closed'
+                    
+                    if final_pnl_sol > 0:
+                        self.profitable_trades += 1
+                        self.consecutive_losses = 0
+                    else:
+                        self.consecutive_losses += 1
+                        self.session_loss_count += 1
+                    
+                    position.realized_pnl_sol = final_pnl_sol
+                    self.total_realized_sol += final_pnl_sol
+                    
+                    self.tracker.log_sell_executed(
+                        mint=mint,
+                        tokens_sold=actual_tokens_sold,
+                        signature=signature,
+                        sol_received=actual_sol_received,
+                        pnl_sol=final_pnl_sol,
+                        pnl_percent=position.pnl_percent,
+                        hold_time_seconds=hold_time,
+                        reason=reason
                     )
-                    if self.consecutive_losses >= 2:
-                        msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
-                    await self.telegram.send_message(msg)
+                    
+                    logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
+                    logger.info(f"   Reason: {reason}")
+                    logger.info(f"   Hold time: {hold_time:.1f}s")
+                    logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
+                    logger.info(f"   Realized: {final_pnl_sol:+.4f} SOL")
+                    logger.info(f"   Consecutive losses: {self.consecutive_losses}")
+                    
+                    if self.telegram:
+                        emoji = "💰" if final_pnl_sol > 0 else "🔴"
+                        msg = (
+                            f"{emoji} POSITION CLOSED\n"
+                            f"Token: {mint[:16]}\n"
+                            f"Reason: {reason}\n"
+                            f"Hold: {hold_time:.1f}s\n"
+                            f"P&L: {position.pnl_percent:+.1f}%\n"
+                            f"Realized: {final_pnl_sol:+.4f} SOL"
+                        )
+                        if self.consecutive_losses >= 2:
+                            msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
+                        await self.telegram.send_message(msg)
+                
+                elif confirmation_result.get("timeout"):
+                    # Transaction timed out - retry with higher urgency
+                    logger.warning(f"⏱️ Sell transaction timed out, retrying with critical urgency")
+                    
+                    retry_signature = await self.trader.create_sell_transaction(
+                        mint=mint,
+                        token_amount=ui_token_balance,
+                        slippage=150,  # Increase slippage for retry
+                        token_decimals=token_decimals,
+                        urgency="critical"
+                    )
+                    
+                    if retry_signature and not retry_signature.startswith("1111111"):
+                        retry_result = await self._confirm_sell_transaction(retry_signature, mint, timeout=25)
+                        
+                        if retry_result["confirmed"]:
+                            # Process successful retry
+                            actual_sol_received = retry_result["sol_delta"]
+                            actual_tokens_sold = abs(retry_result["token_delta"]) if retry_result["token_delta"] < 0 else 0
+                            
+                            final_pnl_sol = actual_sol_received - position.amount_sol
+                            position.sell_signatures.append(retry_signature)
+                            position.status = 'closed'
+                            
+                            if final_pnl_sol > 0:
+                                self.profitable_trades += 1
+                                self.consecutive_losses = 0
+                            else:
+                                self.consecutive_losses += 1
+                                self.session_loss_count += 1
+                            
+                            position.realized_pnl_sol = final_pnl_sol
+                            self.total_realized_sol += final_pnl_sol
+                            
+                            logger.info(f"✅ POSITION CLOSED (retry): {mint[:8]}...")
+                            logger.info(f"   Realized: {final_pnl_sol:+.4f} SOL")
+                        else:
+                            logger.error(f"❌ Retry also failed for {mint[:8]}")
+                            position.status = 'close_failed'
+                    else:
+                        logger.error(f"❌ Could not create retry transaction")
+                        position.status = 'close_failed'
+                else:
+                    # Transaction failed with error
+                    logger.error(f"❌ Sell transaction failed: {confirmation_result.get('error')}")
+                    position.status = 'close_failed'
             else:
-                logger.error(f"❌ Close transaction failed")
+                logger.error(f"❌ Close transaction failed to create")
                 position.status = 'close_failed'
                 
                 if reason in ["migration", "max_age", "no_data"]:
@@ -1276,179 +1546,3 @@ class SniperBot:
                 self.positions[mint].status = 'error'
                 del self.positions[mint]
                 self.velocity_checker.clear_history(mint)
-    
-    async def _close_position(self, mint: str, reason: str = "manual"):
-        """Wrapper for telegram compatibility"""
-        await self._close_position_full(mint, reason)
-    
-    async def run(self):
-        """Main run loop"""
-        self.running = True
-        
-        try:
-            await self.initialize_telegram()
-            
-            self.scanner = PumpPortalMonitor(self.on_token_found)
-            self.scanner_task = asyncio.create_task(self.scanner.start())
-            
-            logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
-            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
-            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
-            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
-            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
-            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
-            
-            last_stats_time = time.time()
-            
-            while self.running and not self.shutdown_requested:
-                await asyncio.sleep(10)
-                
-                if time.time() - last_stats_time > 60:
-                    if self.positions:
-                        logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
-                        for mint, pos in self.positions.items():
-                            age = time.time() - pos.entry_time
-                            time_until_exit = pos.exit_time - time.time()
-                            logger.info(
-                                f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
-                                f"Max: {pos.max_pnl_reached:+.1f}% | "
-                                f"Exit in: {time_until_exit:.1f}s | "
-                                f"Extensions: {pos.extensions_used}/{TIMER_MAX_EXTENSIONS}"
-                            )
-                    
-                    perf_stats = self.tracker.get_session_stats()
-                    if perf_stats['total_buys'] > 0:
-                        logger.info(f"📊 SESSION PERFORMANCE:")
-                        logger.info(f"  • Trades: {perf_stats['total_buys']} buys, {perf_stats['total_sells']} sells")
-                        logger.info(f"  • Win rate: {perf_stats['win_rate_percent']:.1f}%")
-                        logger.info(f"  • P&L: {perf_stats['total_pnl_sol']:+.4f} SOL")
-                        logger.info(f"  • Session losses: {self.session_loss_count}")
-                        logger.info(f"  • Consecutive losses: {self.consecutive_losses}/3")
-                    
-                    if self.total_realized_sol != 0:
-                        logger.info(f"💰 Total realized: {self.total_realized_sol:+.4f} SOL")
-                    
-                    last_stats_time = time.time()
-                
-                if self.scanner_task and self.scanner_task.done():
-                    if not self.shutdown_requested:
-                        exc = self.scanner_task.exception()
-                        if exc:
-                            logger.error(f"Scanner died: {exc}")
-                            logger.info("Restarting scanner...")
-                            self.scanner_task = asyncio.create_task(self.scanner.start())
-            
-            if self.shutdown_requested:
-                logger.info("Bot stopped - idling")
-                while self.shutdown_requested:
-                    await asyncio.sleep(10)
-                    if not self.shutdown_requested:
-                        logger.info("Resuming from idle...")
-                        if not self.scanner_task or self.scanner_task.done():
-                            self.scanner_task = asyncio.create_task(self.scanner.start())
-                        continue
-            
-        except KeyboardInterrupt:
-            logger.info("\n🛑 Shutting down...")
-        except Exception as e:
-            logger.error(f"Fatal error: {e}")
-            if self.telegram:
-                await self.telegram.send_message(f"❌ Bot crashed: {e}")
-        finally:
-            await self.shutdown()
-    
-    async def shutdown(self):
-        """Clean shutdown"""
-        self.running = False
-        logger.info("Starting shutdown...")
-        
-        self.tracker.log_session_summary()
-        
-        if self.telegram and not self.shutdown_requested:
-            await self.telegram.send_message(
-                f"🛑 Bot shutting down\n"
-                f"Total realized: {self.total_realized_sol:+.4f} SOL\n"
-                f"Session losses: {self.session_loss_count}"
-            )
-        
-        if self.scanner_task and not self.scanner_task.done():
-            self.scanner_task.cancel()
-            try:
-                await self.scanner_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self.scanner:
-            self.scanner.stop()
-        
-        if self.positions:
-            logger.info(f"Closing {len(self.positions)} positions...")
-            for mint in list(self.positions.keys()):
-                await self._close_position_full(mint, reason="shutdown")
-        
-        if self.telegram_polling_task and not self.telegram_polling_task.done():
-            self.telegram_polling_task.cancel()
-            try:
-                await self.telegram_polling_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self.telegram:
-            self.telegram.stop()
-        
-        if self.total_trades > 0:
-            win_rate = (self.profitable_trades / self.total_trades * 100)
-            logger.info(f"📊 Final Stats:")
-            logger.info(f"  • Trades: {self.total_trades}")
-            logger.info(f"  • Win rate: {win_rate:.1f}%")
-            logger.info(f"  • Realized: {self.total_realized_sol:+.4f} SOL")
-            logger.info(f"  • Session losses: {self.session_loss_count}")
-        
-        logger.info("✅ Shutdown complete")
-
-if __name__ == "__main__":
-    import os
-    from aiohttp import web
-    
-    port = int(os.getenv("PORT", "10000"))
-    
-    async def health_handler(request):
-        return web.Response(text="Bot is running", status=200)
-    
-    async def start_health_server():
-        app = web.Application()
-        app.router.add_get("/", health_handler)
-        app.router.add_get("/health", health_handler)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        logger.info(f"✅ Health server on port {port}")
-        return runner
-    
-    async def main_with_health():
-        health_runner = await start_health_server()
-        
-        try:
-            bot = SniperBot()
-            await bot.run()
-        finally:
-            await health_runner.cleanup()
-    
-    def signal_handler(sig, frame):
-        logger.info("\nReceived interrupt signal")
-        for task in asyncio.all_tasks():
-            task.cancel()
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    try:
-        asyncio.run(main_with_health())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
