@@ -1,5 +1,11 @@
 """
-Main Orchestrator
+Main Orchestrator - FIXED: Full-close uses same confirmation as partial sells
+TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE (with correct age)
+CRITICAL FIXES:
+1. Check migration BEFORE calculating P&L
+2. Add null price safety checks
+3. Better decimal handling debugging
+4. Full-close sells now use proper confirmation loop
 """
 
 import asyncio
