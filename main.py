@@ -592,7 +592,7 @@ class SniperBot:
                         if bought_tokens == 0:
                             logger.error("❌ Still no tokens - position may have failed")
                             self.pending_buys -= 1
-                            continue
+                            return
             
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
