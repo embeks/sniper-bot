@@ -1,5 +1,8 @@
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
+FINAL FIX (OPUS): PumpPortal WebSocket sends UI tokens, NOT atomic
+✅ Issue A Fix: Convert vTokensInBondingCurve to atomic units before price calculation
+This prevents the +67,097,923% P&L bug
 """
 
 import time
@@ -73,8 +76,9 @@ class PumpFunDEX:
             real_token_reserves = struct.unpack('<Q', account_data[24:32])[0]
             real_sol_reserves = struct.unpack('<Q', account_data[32:40])[0]
             
-            # Calculate SOL in curve (convert lamports to SOL)
-            sol_in_curve = virtual_sol_reserves / 1e9
+            # ✅ CHATGPT FIX #1: Use real_sol_reserves for accurate SOL raised
+            # This ensures health checks and velocity use actual deposited SOL
+            sol_in_curve = real_sol_reserves / 1e9
             
             # Check for migration
             is_migrated = sol_in_curve >= MIGRATION_THRESHOLD_SOL
