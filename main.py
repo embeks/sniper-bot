@@ -563,17 +563,36 @@ class SniperBot:
                 
                 txd = await self._get_transaction_deltas(signature, mint)
                 
+                # ✅ CRITICAL FIX: Always read actual wallet balance
+                # Don't trust transaction delta reading - it often returns 0
+                actual_wallet_balance = self.wallet.get_token_balance(mint)
+                
                 if txd["confirmed"] and txd["token_delta"] > 0:
                     bought_tokens = txd["token_delta"]
                     actual_sol_spent = abs(txd["sol_delta"])
                     logger.info(f"✅ Real fill: {bought_tokens:,.0f} tokens for {actual_sol_spent:.6f} SOL")
-                else:
-                    bought_tokens = self.wallet.get_token_balance(mint)
-                    actual_sol_spent = BUY_AMOUNT_SOL
                     
-                    if bought_tokens == 0:
-                        logger.warning("⚠️ No tokens detected - using estimate")
-                        bought_tokens = expected_tokens if expected_tokens > 0 else 350000
+                    # Verify against wallet balance
+                    if actual_wallet_balance > 0 and abs(actual_wallet_balance - bought_tokens) > (bought_tokens * 0.1):
+                        logger.warning(f"⚠️ Wallet balance mismatch! TX says {bought_tokens:,.0f} but wallet has {actual_wallet_balance:,.0f}")
+                        bought_tokens = actual_wallet_balance  # Use actual balance
+                else:
+                    # Transaction reading failed - use wallet balance
+                    if actual_wallet_balance > 0:
+                        bought_tokens = actual_wallet_balance
+                        actual_sol_spent = BUY_AMOUNT_SOL
+                        logger.warning(f"⚠️ TX reading failed - using wallet balance: {bought_tokens:,.0f} tokens")
+                    else:
+                        # Last resort - wait longer and check again
+                        logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
+                        await asyncio.sleep(2)
+                        bought_tokens = self.wallet.get_token_balance(mint)
+                        actual_sol_spent = BUY_AMOUNT_SOL
+                        
+                        if bought_tokens == 0:
+                            logger.error("❌ Still no tokens - position may have failed")
+                            self.pending_buys -= 1
+                            continue
             
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
