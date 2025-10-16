@@ -578,19 +578,19 @@ class SniperBot:
             if signature:
                 execution_time_ms = (time.time() - execution_start) * 1000
                 
-                if bought_tokens > 0:
-                    # ✅ SIMPLEST FIX: Just calculate SOL/token in same way as chain
-                    # Chain uses: virtual_sol_reserves / virtual_token_reserves (both in atomic units)
-                    # We should do: lamports_spent / raw_token_amount
-                    
-                    # Get RAW token balance (atomic units) for accurate price
+                # ✅ CRITICAL FIX: Only calculate from real transaction data
+                # If we have real token delta from transaction, use it
+                # Otherwise fall back to pre-buy estimate
+                
+                if bought_tokens > 0 and txd.get("confirmed") and txd.get("token_delta", 0) > 0:
+                    # We have REAL transaction data - calculate accurate entry price
                     raw_token_amount = self.wallet.get_token_balance_raw(mint)
                     if raw_token_amount > 0:
                         lamports_spent = int(actual_sol_spent * 1e9)
                         actual_entry_price_lamports_atomic = lamports_spent / raw_token_amount
-                        logger.debug(f"Entry price: {lamports_spent:,} lamports / {raw_token_amount:,} atomic = {actual_entry_price_lamports_atomic:.10f}")
+                        logger.debug(f"Entry price from raw balance: {lamports_spent:,} lamports / {raw_token_amount:,} atomic = {actual_entry_price_lamports_atomic:.10f}")
                     else:
-                        # Fallback to estimate if raw balance not available
+                        # Fallback: calculate from UI amount
                         token_decimals = self.wallet.get_token_decimals(mint)
                         if isinstance(token_decimals, tuple):
                             token_decimals = token_decimals[0]
@@ -599,6 +599,7 @@ class SniperBot:
                         raw_token_amount = int(bought_tokens * (10 ** token_decimals))
                         lamports_spent = int(actual_sol_spent * 1e9)
                         actual_entry_price_lamports_atomic = lamports_spent / raw_token_amount
+                        logger.debug(f"Entry price from UI amount: {lamports_spent:,} lamports / {raw_token_amount:,} atomic = {actual_entry_price_lamports_atomic:.10f}")
                     
                     # Slippage calculation
                     actual_entry_price_sol_per_ui = actual_sol_spent / bought_tokens
@@ -606,7 +607,9 @@ class SniperBot:
                     actual_slippage = ((actual_entry_price_sol_per_ui / estimated_entry_price_sol_per_ui) - 1) * 100 if estimated_entry_price_sol_per_ui > 0 else 0
                     logger.info(f"📊 Actual slippage: {actual_slippage:.2f}%")
                 else:
+                    # No real transaction data - use pre-buy estimate
                     actual_entry_price_lamports_atomic = entry_price
+                    logger.warning(f"Using pre-buy price estimate: {actual_entry_price_lamports_atomic:.10f} lamports/atomic")
                 
                 self.tracker.log_buy_executed(
                     mint=mint,
