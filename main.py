@@ -579,20 +579,31 @@ class SniperBot:
                 execution_time_ms = (time.time() - execution_start) * 1000
                 
                 if bought_tokens > 0:
-                    actual_entry_price = actual_sol_spent / bought_tokens
+                    # ✅ SIMPLEST FIX: Just calculate SOL/token in same way as chain
+                    # Chain uses: virtual_sol_reserves / virtual_token_reserves (both in atomic units)
+                    # We should do: lamports_spent / raw_token_amount
                     
-                    # ✅ CRITICAL: Convert actual_entry_price to same units as system (lamports/atomic)
-                    # actual_entry_price is currently SOL/UI_token, need lamports/atomic
-                    token_decimals = self.wallet.get_token_decimals(mint)
-                    if isinstance(token_decimals, tuple):
-                        token_decimals = token_decimals[0]
-                    if not token_decimals:
-                        token_decimals = 6
+                    # Get RAW token balance (atomic units) for accurate price
+                    raw_token_amount = self.wallet.get_token_balance_raw(mint)
+                    if raw_token_amount > 0:
+                        lamports_spent = int(actual_sol_spent * 1e9)
+                        actual_entry_price_lamports_atomic = lamports_spent / raw_token_amount
+                        logger.debug(f"Entry price: {lamports_spent:,} lamports / {raw_token_amount:,} atomic = {actual_entry_price_lamports_atomic:.10f}")
+                    else:
+                        # Fallback to estimate if raw balance not available
+                        token_decimals = self.wallet.get_token_decimals(mint)
+                        if isinstance(token_decimals, tuple):
+                            token_decimals = token_decimals[0]
+                        if not token_decimals:
+                            token_decimals = 6
+                        raw_token_amount = int(bought_tokens * (10 ** token_decimals))
+                        lamports_spent = int(actual_sol_spent * 1e9)
+                        actual_entry_price_lamports_atomic = lamports_spent / raw_token_amount
                     
-                    # Convert: SOL/UI → lamports/atomic
-                    actual_entry_price_lamports_atomic = (actual_entry_price * 1e9) / (10 ** token_decimals)
-                    
-                    actual_slippage = ((actual_entry_price_lamports_atomic / entry_price) - 1) * 100 if entry_price > 0 else 0
+                    # Slippage calculation
+                    actual_entry_price_sol_per_ui = actual_sol_spent / bought_tokens
+                    estimated_entry_price_sol_per_ui = entry_price * (10 ** token_decimals) / 1e9 if token_decimals else entry_price / 1e9
+                    actual_slippage = ((actual_entry_price_sol_per_ui / estimated_entry_price_sol_per_ui) - 1) * 100 if estimated_entry_price_sol_per_ui > 0 else 0
                     logger.info(f"📊 Actual slippage: {actual_slippage:.2f}%")
                 else:
                     actual_entry_price_lamports_atomic = entry_price
@@ -686,7 +697,9 @@ class SniperBot:
                     break
                 
                 try:
-                    curve_data = self.dex.get_bonding_curve_data(mint)
+                    # ✅ CHATGPT FIX: Prefer chain until we have first chain price
+                    prefer_chain = not position.has_chain_price
+                    curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=prefer_chain)
                     
                     if not curve_data:
                         consecutive_data_failures += 1
@@ -764,39 +777,48 @@ class SniperBot:
                     if (age >= FAIL_FAST_CHECK_TIME and 
                         not position.fail_fast_checked and 
                         not position.is_closing):
-                        
-                        position.fail_fast_checked = True
-                        
-                        if price_change < FAIL_FAST_PNL_THRESHOLD:
+
+                        # ✅ CHATGPT FIX: Only evaluate & finalize fail-fast on [chain] tick
+                        if not position.has_chain_price or source != 'chain':
                             logger.warning(
-                                f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s - "
-                                f"exiting immediately"
+                                f"🚧 FAIL-FAST from [{source}] ignored until first [chain] tick"
                             )
-                            await self._close_position_full(mint, reason="fail_fast_pnl")
-                            break
-                        
-                        pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
-                        if pre_buy_velocity:
-                            current_velocity = current_sol_in_curve / max(age, 0.1)
-                            velocity_percent = (current_velocity / pre_buy_velocity) * 100
-                            
-                            if velocity_percent < FAIL_FAST_VELOCITY_THRESHOLD:
+                        else:
+                            # Commit the one-time fail-fast check now that we have chain data
+                            position.fail_fast_checked = True
+
+                            # PNL branch (gated to chain)
+                            if price_change < FAIL_FAST_PNL_THRESHOLD:
                                 logger.warning(
-                                    f"⚠️ FAIL-FAST: Velocity died ({velocity_percent:.1f}% of pre-buy) at {age:.1f}s - "
-                                    f"exiting immediately"
+                                    f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s "
+                                    f"(on [chain]) - exiting immediately"
                                 )
-                                await self._close_position_full(mint, reason="fail_fast_velocity")
+                                await self._close_position_full(mint, reason="fail_fast_pnl")
                                 break
+
+                            # Velocity branch (also on chain)
+                            pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
+                            if pre_buy_velocity:
+                                current_velocity = current_sol_in_curve / max(age, 0.1)
+                                velocity_percent = (current_velocity / pre_buy_velocity) * 100
+
+                                if velocity_percent < FAIL_FAST_VELOCITY_THRESHOLD:
+                                    logger.warning(
+                                        f"⚠️ FAIL-FAST: Velocity died ({velocity_percent:.1f}% of pre-buy) at {age:.1f}s - "
+                                        f"exiting immediately"
+                                    )
+                                    await self._close_position_full(mint, reason="fail_fast_velocity")
+                                    break
+                                else:
+                                    logger.info(
+                                        f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
+                                        f"P&L {price_change:+.1f}%, velocity {velocity_percent:.0f}%"
+                                    )
                             else:
                                 logger.info(
                                     f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                    f"P&L {price_change:+.1f}%, velocity {velocity_percent:.0f}%"
+                                    f"P&L {price_change:+.1f}%"
                                 )
-                        else:
-                            logger.info(
-                                f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                f"P&L {price_change:+.1f}%"
-                            )
                     
                     # ✅ CHATGPT FIX #7: Only allow rug trap on chain price
                     rug_threshold = -60 if age < 3.0 else -40
