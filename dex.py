@@ -1,8 +1,9 @@
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
-FINAL FIX (OPUS): PumpPortal WebSocket sends UI tokens, NOT atomic
+FINAL FIX (OPUS + CHATGPT): 
 ✅ Issue A Fix: Convert vTokensInBondingCurve to atomic units before price calculation
 ✅ CHATGPT FIXES: Source tracking, prefer_chain flag, real_sol_reserves
+✅ CHATGPT WS FIX: Float math + sanity check vs chain price
 """
 
 import time
@@ -105,6 +106,7 @@ class PumpFunDEX:
         Get bonding curve data - CRITICAL METHOD for price monitoring
         ✅ OPUS FIX: PumpPortal sends vTokensInBondingCurve as UI tokens (human-readable)
         ✅ CHATGPT FIX #3: Added prefer_chain flag to force blockchain reads post-buy
+        ✅ CHATGPT WS FIX: Float math + sanity check vs chain price
         """
         try:
             # ✅ CHATGPT FIX #3: Skip WebSocket if prefer_chain is True
@@ -144,17 +146,33 @@ class PumpFunDEX:
                     if not token_decimals or token_decimals == 0:
                         token_decimals = 6  # PumpFun standard
                     
-                    # Step 2: Convert SOL to lamports (atomic SOL)
-                    v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
+                    # ✅ CHATGPT WS FIX: Compute price in float to avoid early int flooring
+                    # Step 2-4: Calculate price using float math
+                    if v_sol > 0 and v_tokens > 0:
+                        # (SOL/UI) * (lamports/SOL) / (atoms/UI) = lamports/atomic
+                        price_lamports_per_atomic = (v_sol / v_tokens) * (1e9 / (10 ** token_decimals))
+                    else:
+                        price_lamports_per_atomic = 0.0
                     
-                    # Step 3: Convert UI tokens to atomic tokens
-                    # ✅ THIS IS THE FIX: Multiply by 10^decimals, not divide
+                    # Optionally still carry atomic reserve fields (after price is computed)
+                    v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
                     v_tokens_atomic = int(v_tokens * (10 ** token_decimals)) if v_tokens > 0 else 0
                     
-                    # Step 4: Calculate price (both in atomic units now)
-                    price_lamports_per_atomic = (
-                        v_sol_lamports / v_tokens_atomic
-                    ) if v_tokens_atomic > 0 else 0
+                    # ✅ CHATGPT SANITY CHECK: Compare WS price to last chain price
+                    prev = self.last_good_prices.get(mint, {}).get('data')
+                    if prev and prev.get('source') == 'chain':
+                        prev_p = prev.get('price_lamports_per_atomic') or 0.0
+                        cur_p = price_lamports_per_atomic or 0.0
+                        # If WS price is 50x higher/lower than last chain price, ignore this frame
+                        if prev_p > 0 and (cur_p > prev_p * 50 or cur_p < prev_p / 50):
+                            logger.warning(
+                                f"WS price out-of-range vs chain "
+                                f"(ws={cur_p:.10f}, chain={prev_p:.10f}) — ignoring WS frame"
+                            )
+                            cached = self.last_good_prices[mint]['data'].copy()
+                            cached['is_stale'] = True
+                            cached['stale_age_seconds'] = time.time() - self.last_good_prices[mint]['timestamp']
+                            return cached
                     
                     logger.debug(
                         f"WebSocket data for {mint[:8]}...: "
