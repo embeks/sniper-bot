@@ -1,7 +1,5 @@
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
-FINAL FIX: PumpPortal sends SOL as human-readable, tokens as ATOMIC
-DO NOT convert tokens - they're already in atomic units!
 """
 
 import time
@@ -101,7 +99,7 @@ class PumpFunDEX:
     def get_bonding_curve_data(self, mint: str) -> Optional[Dict]:
         """
         Get bonding curve data - CRITICAL METHOD for price monitoring
-        FINAL FIX: PumpPortal sends SOL as human-readable, tokens as ATOMIC
+        FIXED: Convert WebSocket UI tokens to atomic units
         """
         try:
             # First check WebSocket data (most recent)
@@ -129,18 +127,24 @@ class PumpFunDEX:
                             'is_valid': False
                         }
                     
-                    # ✅ FINAL FIX: PumpPortal WebSocket data format
+                    # ✅ FIXED: PumpPortal WebSocket data format
                     # - vSolInBondingCurve: Human-readable SOL (e.g., 31.75)
-                    # - vTokensInBondingCurve: ATOMIC units (already multiplied by 10^decimals)
-                    # DO NOT multiply tokens again - they're already in atomic format!
+                    # - vTokensInBondingCurve: UI tokens (human-readable, NOT atomic)
                     
-                    # Convert SOL to lamports for consistency with blockchain data
+                    # Get token decimals for conversion
+                    token_decimals = self.wallet.get_token_decimals(mint)
+                    if isinstance(token_decimals, tuple):
+                        token_decimals = token_decimals[0]
+                    if not token_decimals or token_decimals == 0:
+                        token_decimals = 6  # PumpFun default
+                    
+                    # Convert SOL to lamports
                     v_sol_lamports = int(v_sol * 1e9) if v_sol > 0 else 0
                     
-                    # ✅ CRITICAL: Tokens are ALREADY atomic - use directly
-                    v_tokens_atomic = int(v_tokens) if v_tokens > 0 else 0
+                    # ✅ CRITICAL FIX: Convert UI tokens to atomic
+                    v_tokens_atomic = int(v_tokens * (10 ** token_decimals)) if v_tokens > 0 else 0
                     
-                    # ✅ FIXED: Calculate price with explicit units
+                    # ✅ Calculate price with explicit units
                     price_lamports_per_atomic = (
                         v_sol_lamports / v_tokens_atomic
                     ) if v_tokens_atomic > 0 else 0
@@ -148,13 +152,13 @@ class PumpFunDEX:
                     logger.debug(
                         f"WebSocket data for {mint[:8]}...: "
                         f"{v_sol:.2f} SOL → {v_sol_lamports:,} lamports, "
-                        f"tokens: {v_tokens_atomic:,} atomic (already in correct format from PumpPortal), "
+                        f"{v_tokens:.2f} UI tokens → {v_tokens_atomic:,} atomic (decimals: {token_decimals}), "
                         f"price: {price_lamports_per_atomic:.10f} lamports/atomic"
                     )
                     
                     curve_data = {
                         'bonding_curve': token_data.get('bondingCurveKey', ''),
-                        'virtual_token_reserves': v_tokens_atomic,  # ✅ ALREADY ATOMIC
+                        'virtual_token_reserves': v_tokens_atomic,  # ✅ NOW ATOMIC
                         'virtual_sol_reserves': v_sol_lamports,     # ✅ LAMPORTS
                         'real_token_reserves': v_tokens_atomic,
                         'real_sol_reserves': v_sol_lamports,
@@ -193,7 +197,7 @@ class PumpFunDEX:
                     # Successfully parsed real chain data (already in atomic units)
                     parsed_data['bonding_curve'] = str(bonding_curve)
                     
-                    # ✅ FIXED: Use explicit price field
+                    # ✅ Add explicit price field
                     parsed_data['price_lamports_per_atomic'] = (
                         parsed_data['virtual_sol_reserves'] / parsed_data['virtual_token_reserves']
                         if parsed_data['virtual_token_reserves'] > 0 else 0
