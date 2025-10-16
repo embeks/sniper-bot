@@ -140,10 +140,16 @@ class PumpFunDEX:
                     # ✅ CRITICAL: Tokens are ALREADY atomic - use directly
                     v_tokens_atomic = int(v_tokens) if v_tokens > 0 else 0
                     
+                    # ✅ FIXED: Calculate price with explicit units
+                    price_lamports_per_atomic = (
+                        v_sol_lamports / v_tokens_atomic
+                    ) if v_tokens_atomic > 0 else 0
+                    
                     logger.debug(
                         f"WebSocket data for {mint[:8]}...: "
                         f"{v_sol:.2f} SOL → {v_sol_lamports:,} lamports, "
-                        f"tokens: {v_tokens_atomic:,} atomic (already in correct format from PumpPortal)"
+                        f"tokens: {v_tokens_atomic:,} atomic (already in correct format from PumpPortal), "
+                        f"price: {price_lamports_per_atomic:.10f} lamports/atomic"
                     )
                     
                     curve_data = {
@@ -152,7 +158,7 @@ class PumpFunDEX:
                         'virtual_sol_reserves': v_sol_lamports,     # ✅ LAMPORTS
                         'real_token_reserves': v_tokens_atomic,
                         'real_sol_reserves': v_sol_lamports,
-                        'price_per_token': v_sol_lamports / v_tokens_atomic if v_tokens_atomic > 0 else 0,
+                        'price_lamports_per_atomic': price_lamports_per_atomic,  # ✅ EXPLICIT UNITS
                         'sol_in_curve': v_sol,
                         'is_migrating': False,
                         'can_buy': True,
@@ -186,10 +192,13 @@ class PumpFunDEX:
                 if parsed_data:
                     # Successfully parsed real chain data (already in atomic units)
                     parsed_data['bonding_curve'] = str(bonding_curve)
-                    parsed_data['price_per_token'] = (
+                    
+                    # ✅ FIXED: Use explicit price field
+                    parsed_data['price_lamports_per_atomic'] = (
                         parsed_data['virtual_sol_reserves'] / parsed_data['virtual_token_reserves']
                         if parsed_data['virtual_token_reserves'] > 0 else 0
                     )
+                    
                     parsed_data['is_migrating'] = False
                     parsed_data['can_buy'] = True
                     parsed_data['from_websocket'] = False
