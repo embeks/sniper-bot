@@ -518,7 +518,19 @@ class SniperBot:
                 logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
                 return
             
-            entry_price = curve_data['price_sol_per_token']
+            # ✅ FIXED: Convert entry price to SOL per UI token (same units as current price)
+            raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
+            token_decimals = self.wallet.get_token_decimals(mint)
+            if isinstance(token_decimals, tuple):
+                token_decimals = token_decimals[0]
+            if not token_decimals or token_decimals == 0:
+                token_decimals = 6
+            
+            # Convert: (lamports/atomic) → (SOL/UI) = (lamports/atomic) / 1e9 * 10^decimals
+            entry_price = (raw_entry_price / 1e9) * (10 ** token_decimals)
+            
+            logger.debug(f"Entry price conversion: {raw_entry_price:.10f} lamports/atomic → {entry_price:.10f} SOL/UI token")
+            logger.debug(f"Units: entry=current = SOL per UI token; reserves = lamports/atomic")
             
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
             if estimated_slippage:
@@ -790,11 +802,13 @@ class SniperBot:
                                 f"P&L {price_change:+.1f}%"
                             )
                     
-                    # Rug trap check (now with valid price)
-                    if price_change <= -40 and not position.is_closing:
+                    # Rug trap check (now with valid price and grace period for early fills)
+                    rug_threshold = -60 if age < 3.0 else -40
+                    if price_change <= rug_threshold and not position.is_closing:
                         logger.warning(f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) - immediate exit!")
                         logger.warning(f"   Entry price: {position.entry_token_price_sol:.10f} SOL/token")
                         logger.warning(f"   Current price: {current_token_price_sol:.10f} SOL/token")
+                        logger.warning(f"   Threshold: {rug_threshold}% (age: {age:.1f}s)")
                         await self._close_position_full(mint, reason="rug_trap")
                         break
                     
