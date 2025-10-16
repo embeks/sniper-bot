@@ -1,6 +1,5 @@
 """
 Bonding Curve State Reader - Read liquidity directly from chain
-✅ FIXED: Consistent decimal handling with main.py and dex.py
 """
 
 import struct
@@ -29,7 +28,7 @@ class BondingCurveReader:
     def _parse_curve_account(self, account_data: bytes) -> Optional[Dict]:
         """
         Parse bonding curve layout
-        ✅ FIXED: Returns raw atomic units (consistent with dex.py blockchain reads)
+        ✅ FIXED: Returns raw atomic units with explicit price field
         """
         try:
             if not account_data or len(account_data) < 49:
@@ -76,7 +75,7 @@ class BondingCurveReader:
             return None
     
     def get_curve_state(self, mint: str, use_cache: bool = True) -> Optional[Dict]:
-        """Get current curve state"""
+        """Get current curve state with standardized price units"""
         if use_cache and mint in self.cache:
             cached = self.cache[mint]
             if time.time() - cached['timestamp'] < self.CACHE_TTL:
@@ -140,7 +139,7 @@ class BondingCurveReader:
     def estimate_slippage(self, mint: str, buy_size_sol: float) -> Optional[float]:
         """
         Estimate buy slippage %
-        ✅ FIXED: Consistent decimal handling
+        ✅ FIXED: Uses standardized price units
         """
         curve_data = self.get_curve_state(mint)
         if not curve_data:
