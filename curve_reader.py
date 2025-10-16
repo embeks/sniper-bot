@@ -1,5 +1,6 @@
 """
 Bonding Curve State Reader - Read liquidity directly from chain
+✅ OPUS FIX (Issue B): Add explicit price_lamports_per_atomic field for consistency
 """
 
 import struct
@@ -28,7 +29,7 @@ class BondingCurveReader:
     def _parse_curve_account(self, account_data: bytes) -> Optional[Dict]:
         """
         Parse bonding curve layout
-        ✅ FIXED: Returns raw atomic units with explicit price field
+        ✅ OPUS FIX: Add explicit price_lamports_per_atomic field
         """
         try:
             if not account_data or len(account_data) < 49:
@@ -46,7 +47,8 @@ class BondingCurveReader:
             sol_raised = real_sol_reserves / 1e9
             tokens_minted = (token_total_supply - real_token_reserves) / 1e6
             
-            # ✅ FIXED: Calculate raw price with explicit units
+            # ✅ OPUS FIX: Calculate explicit price field for consistency
+            # This ensures price calculation is standardized across all modules
             price_lamports_per_atomic = (
                 virtual_sol_reserves / virtual_token_reserves
             ) if virtual_token_reserves > 0 else 0
@@ -59,14 +61,14 @@ class BondingCurveReader:
             )
             
             return {
-                'virtual_token_reserves': virtual_token_reserves,  # ATOMIC UNITS
-                'virtual_sol_reserves': virtual_sol_reserves,      # LAMPORTS
-                'real_token_reserves': real_token_reserves,        # ATOMIC UNITS
-                'real_sol_reserves': real_sol_reserves,            # LAMPORTS
+                'virtual_token_reserves': virtual_token_reserves,  # Atomic units (lamports-equivalent for tokens)
+                'virtual_sol_reserves': virtual_sol_reserves,      # Lamports
+                'real_token_reserves': real_token_reserves,        # Atomic units
+                'real_sol_reserves': real_sol_reserves,            # Lamports
                 'sol_raised': sol_raised,                          # Human-readable SOL
                 'tokens_minted': tokens_minted,                    # Human-readable tokens
                 'complete': complete,
-                'price_lamports_per_atomic': price_lamports_per_atomic,  # ✅ EXPLICIT UNITS
+                'price_lamports_per_atomic': price_lamports_per_atomic,  # ✅ EXPLICIT PRICE FIELD
                 'is_valid': True
             }
             
@@ -75,7 +77,7 @@ class BondingCurveReader:
             return None
     
     def get_curve_state(self, mint: str, use_cache: bool = True) -> Optional[Dict]:
-        """Get current curve state with standardized price units"""
+        """Get current curve state"""
         if use_cache and mint in self.cache:
             cached = self.cache[mint]
             if time.time() - cached['timestamp'] < self.CACHE_TTL:
@@ -139,7 +141,7 @@ class BondingCurveReader:
     def estimate_slippage(self, mint: str, buy_size_sol: float) -> Optional[float]:
         """
         Estimate buy slippage %
-        ✅ FIXED: Uses standardized price units
+        Uses the standardized price_lamports_per_atomic field
         """
         curve_data = self.get_curve_state(mint)
         if not curve_data:
