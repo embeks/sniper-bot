@@ -45,7 +45,7 @@ class PumpPortalMonitor:
         self.last_sol_price_update = 0
         
         self.filters = {
-            #'max_token_age_seconds': 4.0,
+            'max_token_age_seconds': 20.0,
             'min_curve_sol_prefilter': 3.0,
             'min_creator_sol': 0.095,
             'max_creator_sol': 5.0,
