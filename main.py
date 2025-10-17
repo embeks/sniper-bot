@@ -1,7 +1,8 @@
 """
-Main Orchestrator - LATENCY OPTIMIZED + FINAL FIX
+Main Orchestrator - LATENCY OPTIMIZED + FAST PATH FIX
 ✅ Parallelized pre-buy checks (liquidity + velocity + decimals)
 ✅ Dynamic priority fees based on token age (<15s = critical)
+✅ FIX: Retry curve_not_found for fast path tokens (0.8s retry)
 ✅ Entry price bookkeeping + Stop loss with source checking
 ✅ TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE
 """
@@ -104,12 +105,12 @@ class Position:
         self.entry_token_price_sol = 0
 
 class SniperBot:
-    """Main sniper bot orchestrator - LATENCY OPTIMIZED"""
+    """Main sniper bot orchestrator - LATENCY OPTIMIZED + FAST PATH FIX"""
     
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - LATENCY OPTIMIZED")
+        logger.info("🚀 INITIALIZING SNIPER BOT - LATENCY OPTIMIZED + FAST PATH FIX")
         logger.info("=" * 60)
         
         self.wallet = WalletManager()
@@ -167,9 +168,10 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: LATENCY OPTIMIZED + VELOCITY + TIMER + FAIL-FAST")
+        logger.info(f"  • Strategy: LATENCY OPTIMIZED + VELOCITY + TIMER + FAIL-FAST + FAST PATH")
         logger.info(f"  • ⚡ Parallelized checks: liquidity + velocity + decimals")
         logger.info(f"  • ⚡ Dynamic priority: {PRIORITY_FEE_CRITICAL} SOL (<{PRIORITY_FEE_AGE_THRESHOLD}s), {PRIORITY_FEE_NORMAL} SOL otherwise")
+        logger.info(f"  • ⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'} (3.0s RPC wait + 0.8s retry)")
         logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
@@ -319,11 +321,11 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - LATENCY OPTIMIZED\n"
+                    "🚀 Bot started - LATENCY OPTIMIZED + FAST PATH FIX\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"⚡ Priority: {PRIORITY_FEE_CRITICAL} SOL (age under {PRIORITY_FEE_AGE_THRESHOLD}s)\n"
-                    f"⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'}\n"
+                    f"⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'} (3.0s wait + retry)\n"
                     f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s\n"
                     f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s\n"
                     "Type /help for commands"
@@ -416,9 +418,10 @@ class SniperBot:
     
     async def on_token_found(self, token_data: Dict):
         """
-        Handle new token found - LATENCY OPTIMIZED
+        Handle new token found - LATENCY OPTIMIZED + FAST PATH FIX
         ✅ Parallelized checks (liquidity + velocity + decimals)
         ✅ Dynamic priority fees based on token age
+        ✅ FIX: Retry curve_not_found for fast path tokens
         """
         detection_start = time.time()
         
@@ -518,6 +521,21 @@ class SniperBot:
             
             # Wait for liquidity check (needed for velocity)
             passed, reason, curve_data = await liquidity_task
+            
+            # ===================================================================
+            # FAST PATH FIX: Retry curve_not_found with 0.8s delay
+            # Newborn curves (from fast path) often need just a bit more time
+            # ===================================================================
+            if not passed and str(reason) == "curve_not_found":
+                logger.info(f"⏳ Curve not found, retrying in 0.8s... (likely fast path token)")
+                await asyncio.sleep(0.8)
+                passed, reason, curve_data = await asyncio.to_thread(
+                    self.curve_reader.validate_liquidity,
+                    mint,
+                    BUY_AMOUNT_SOL,
+                    LIQUIDITY_MULTIPLIER,
+                    MIN_LIQUIDITY_SOL
+                )
             
             if not passed:
                 logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
@@ -1001,6 +1019,241 @@ class SniperBot:
             if mint in self.positions:
                 await self._close_position_full(mint, reason="monitor_error")
     
+    async def _close_position_full(self, mint: str, reason: str = "manual"):
+        """Close remaining position with ROBUST confirmation"""
+        try:
+            position = self.positions.get(mint)
+            if not position or position.status != 'active':
+                return
+            
+            if position.is_closing:
+                logger.debug(f"Position {mint[:8]} already closing")
+                return
+            
+            position.is_closing = True
+            position.status = 'closing'
+            ui_token_balance = position.remaining_tokens
+            
+            if ui_token_balance <= 0:
+                logger.warning(f"No tokens remaining for {mint[:8]}...")
+                position.status = 'closed'
+                if mint in self.positions:
+                    del self.positions[mint]
+                    self.velocity_checker.clear_history(mint)
+                return
+            
+            hold_time = time.time() - position.entry_time
+            
+            logger.info(f"📤 Closing position {mint[:8]}...")
+            logger.info(f"   Reason: {reason}")
+            logger.info(f"   Hold time: {hold_time:.1f}s")
+            logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
+            logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
+            
+            pre_sol_balance = self.wallet.get_sol_balance()
+            
+            actual_balance = self.wallet.get_token_balance(mint)
+            if actual_balance > 0:
+                ui_token_balance = actual_balance
+                logger.info(f"💰 Selling actual balance: {actual_balance:,.2f} tokens")
+            else:
+                logger.warning(f"No tokens in wallet - using position balance: {ui_token_balance:,.2f}")
+            
+            curve_data = self.dex.get_bonding_curve_data(mint)
+            is_migrated = curve_data is None or curve_data.get('is_migrated', False)
+            
+            token_decimals = self.wallet.get_token_decimals(mint)
+            
+            signature = await self.trader.create_sell_transaction(
+                mint=mint,
+                token_amount=ui_token_balance,
+                slippage=100 if is_migrated else 50,
+                token_decimals=token_decimals,
+                urgency="critical"
+            )
+            
+            if not signature or signature.startswith("1111111"):
+                logger.error(f"❌ Close transaction failed")
+                position.status = 'close_failed'
+                
+                if reason in ["migration", "max_age", "no_data"]:
+                    logger.warning(f"Removing unsellable position {mint[:8]}...")
+                    if self.telegram:
+                        await self.telegram.send_message(
+                            f"⚠️ Could not sell {mint[:16]}\n"
+                            f"Reason: {reason}\nRemoving to free slot"
+                        )
+                
+                if mint in self.positions:
+                    del self.positions[mint]
+                    self.velocity_checker.clear_history(mint)
+                return
+            
+            logger.info(f"⏳ Confirming full close for {mint[:8]}...")
+            logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
+            
+            first_seen = None
+            start = time.time()
+            confirmed = False
+            
+            try:
+                while time.time() - start < 25:
+                    try:
+                        from solders.signature import Signature as SoldersSignature
+                        sig_list = [SoldersSignature.from_string(signature)]
+                        status = self.trader.client.get_signature_statuses(sig_list)
+                        
+                        if status and status.value and status.value[0]:
+                            if first_seen is None:
+                                first_seen = time.time() - start
+                                logger.info(f"✓ Transaction appeared in RPC at {first_seen:.1f}s")
+                            
+                            status_obj = status.value[0]
+                            confirmation_status = status_obj.confirmation_status
+                            
+                            if confirmation_status and str(confirmation_status) in ["confirmed", "finalized"]:
+                                if status_obj.err:
+                                    logger.error(f"❌ Sell FAILED on-chain: {status_obj.err}")
+                                    confirmed = False
+                                    break
+                                else:
+                                    confirmed = True
+                                    logger.info(f"✅ Sell confirmed on-chain at {time.time() - start:.1f}s")
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Status check error (retrying): {e}")
+                    
+                    await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"❌ CRITICAL: Confirmation loop crashed: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            if not confirmed:
+                elapsed = time.time() - start
+                if first_seen is None:
+                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s")
+                else:
+                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm")
+                
+                logger.error(f"⚠️ SELL MAY HAVE FAILED - CHECK WALLET MANUALLY")
+                logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
+            
+            actual_sol_received = 0
+            actual_tokens_sold = 0
+            
+            if confirmed:
+                try:
+                    txd = await self._get_transaction_deltas(signature, mint)
+                    if txd["confirmed"]:
+                        actual_sol_received = txd["sol_delta"] if txd["sol_delta"] > 0 else 0
+                        actual_tokens_sold = abs(txd["token_delta"]) if txd["token_delta"] < 0 else 0
+                        logger.info(f"✅ Sell confirmed via transaction: {actual_sol_received:.6f} SOL received")
+                    else:
+                        logger.warning(f"Transaction delta failed, using wallet balance")
+                        confirmed = False
+                except Exception as e:
+                    logger.error(f"❌ Error reading transaction deltas: {e}")
+                    confirmed = False
+            
+            if not confirmed or actual_sol_received == 0:
+                try:
+                    await asyncio.sleep(2)
+                    post_sol_balance = self.wallet.get_sol_balance()
+                    actual_sol_received = post_sol_balance - pre_sol_balance
+                    logger.info(f"📊 SOL balance delta: {actual_sol_received:+.6f} SOL")
+                    
+                    after_tokens = self.wallet.get_token_balance(mint)
+                    actual_tokens_sold = max(0.0, ui_token_balance - after_tokens)
+                    logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
+                    
+                    if after_tokens > (ui_token_balance * 0.9):
+                        logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
+                        logger.error(f"   Expected to sell: {ui_token_balance:,.2f}")
+                        logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
+                        
+                        position.status = 'sell_failed'
+                        if mint in self.positions:
+                            del self.positions[mint]
+                            self.velocity_checker.clear_history(mint)
+                        
+                        if self.telegram:
+                            await self.telegram.send_message(
+                                f"❌ SELL FAILED for {mint[:16]}\n"
+                                f"Still have {after_tokens:,.0f} tokens in wallet\n"
+                                f"TX: https://solscan.io/tx/{signature}"
+                            )
+                        return
+                except Exception as e:
+                    logger.error(f"❌ CRITICAL: Balance check failed: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            if actual_sol_received < (position.amount_sol * 0.1):
+                logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_sol_received:.6f} SOL back (invested {position.amount_sol} SOL)")
+                logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
+            
+            final_pnl_sol = actual_sol_received - position.amount_sol
+            
+            position.sell_signatures.append(signature)
+            position.status = 'closed'
+            
+            if final_pnl_sol > 0:
+                self.profitable_trades += 1
+                self.consecutive_losses = 0
+            else:
+                self.consecutive_losses += 1
+                self.session_loss_count += 1
+            
+            position.realized_pnl_sol = final_pnl_sol
+            self.total_realized_sol += final_pnl_sol
+            
+            self.tracker.log_sell_executed(
+                mint=mint,
+                tokens_sold=actual_tokens_sold,
+                signature=signature,
+                sol_received=actual_sol_received,
+                pnl_sol=final_pnl_sol,
+                pnl_percent=position.pnl_percent,
+                hold_time_seconds=hold_time,
+                reason=reason
+            )
+            
+            logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
+            logger.info(f"   Reason: {reason}")
+            logger.info(f"   Hold time: {hold_time:.1f}s")
+            logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
+            logger.info(f"   Realized: {final_pnl_sol:+.4f} SOL")
+            logger.info(f"   Consecutive losses: {self.consecutive_losses}")
+            
+            if self.telegram:
+                emoji = "💰" if final_pnl_sol > 0 else "🔴"
+                msg = (
+                    f"{emoji} POSITION CLOSED\n"
+                    f"Token: {mint[:16]}\n"
+                    f"Reason: {reason}\n"
+                    f"Hold: {hold_time:.1f}s\n"
+                    f"P&L: {position.pnl_percent:+.1f}%\n"
+                    f"Realized: {final_pnl_sol:+.4f} SOL"
+                )
+                if self.consecutive_losses >= 2:
+                    msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
+                await self.telegram.send_message(msg)
+            
+            if mint in self.positions:
+                del self.positions[mint]
+                self.velocity_checker.clear_history(mint)
+                logger.info(f"Active: {len(self.positions)}/{MAX_POSITIONS}")
+            
+        except Exception as e:
+            logger.error(f"Failed to close {mint[:8]}...: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            if mint in self.positions:
+                self.positions[mint].status = 'error'
+                del self.positions[mint]
+                self.velocity_checker.clear_history(mint)
+    
     async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
         """Execute partial sell with priority fees (LEGACY - kept for compatibility)"""
         try:
@@ -1246,241 +1499,6 @@ class SniperBot:
                     'error': str(e)
                 }
     
-    async def _close_position_full(self, mint: str, reason: str = "manual"):
-        """Close remaining position with ROBUST confirmation"""
-        try:
-            position = self.positions.get(mint)
-            if not position or position.status != 'active':
-                return
-            
-            if position.is_closing:
-                logger.debug(f"Position {mint[:8]} already closing")
-                return
-            
-            position.is_closing = True
-            position.status = 'closing'
-            ui_token_balance = position.remaining_tokens
-            
-            if ui_token_balance <= 0:
-                logger.warning(f"No tokens remaining for {mint[:8]}...")
-                position.status = 'closed'
-                if mint in self.positions:
-                    del self.positions[mint]
-                    self.velocity_checker.clear_history(mint)
-                return
-            
-            hold_time = time.time() - position.entry_time
-            
-            logger.info(f"📤 Closing position {mint[:8]}...")
-            logger.info(f"   Reason: {reason}")
-            logger.info(f"   Hold time: {hold_time:.1f}s")
-            logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
-            logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
-            
-            pre_sol_balance = self.wallet.get_sol_balance()
-            
-            actual_balance = self.wallet.get_token_balance(mint)
-            if actual_balance > 0:
-                ui_token_balance = actual_balance
-                logger.info(f"💰 Selling actual balance: {actual_balance:,.2f} tokens")
-            else:
-                logger.warning(f"No tokens in wallet - using position balance: {ui_token_balance:,.2f}")
-            
-            curve_data = self.dex.get_bonding_curve_data(mint)
-            is_migrated = curve_data is None or curve_data.get('is_migrated', False)
-            
-            token_decimals = self.wallet.get_token_decimals(mint)
-            
-            signature = await self.trader.create_sell_transaction(
-                mint=mint,
-                token_amount=ui_token_balance,
-                slippage=100 if is_migrated else 50,
-                token_decimals=token_decimals,
-                urgency="critical"
-            )
-            
-            if not signature or signature.startswith("1111111"):
-                logger.error(f"❌ Close transaction failed")
-                position.status = 'close_failed'
-                
-                if reason in ["migration", "max_age", "no_data"]:
-                    logger.warning(f"Removing unsellable position {mint[:8]}...")
-                    if self.telegram:
-                        await self.telegram.send_message(
-                            f"⚠️ Could not sell {mint[:16]}\n"
-                            f"Reason: {reason}\nRemoving to free slot"
-                        )
-                
-                if mint in self.positions:
-                    del self.positions[mint]
-                    self.velocity_checker.clear_history(mint)
-                return
-            
-            logger.info(f"⏳ Confirming full close for {mint[:8]}...")
-            logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
-            
-            first_seen = None
-            start = time.time()
-            confirmed = False
-            
-            try:
-                while time.time() - start < 25:
-                    try:
-                        from solders.signature import Signature as SoldersSignature
-                        sig_list = [SoldersSignature.from_string(signature)]
-                        status = self.trader.client.get_signature_statuses(sig_list)
-                        
-                        if status and status.value and status.value[0]:
-                            if first_seen is None:
-                                first_seen = time.time() - start
-                                logger.info(f"✓ Transaction appeared in RPC at {first_seen:.1f}s")
-                            
-                            status_obj = status.value[0]
-                            confirmation_status = status_obj.confirmation_status
-                            
-                            if confirmation_status and str(confirmation_status) in ["confirmed", "finalized"]:
-                                if status_obj.err:
-                                    logger.error(f"❌ Sell FAILED on-chain: {status_obj.err}")
-                                    confirmed = False
-                                    break
-                                else:
-                                    confirmed = True
-                                    logger.info(f"✅ Sell confirmed on-chain at {time.time() - start:.1f}s")
-                                    break
-                    except Exception as e:
-                        logger.debug(f"Status check error (retrying): {e}")
-                    
-                    await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"❌ CRITICAL: Confirmation loop crashed: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-            
-            if not confirmed:
-                elapsed = time.time() - start
-                if first_seen is None:
-                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s")
-                else:
-                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm")
-                
-                logger.error(f"⚠️ SELL MAY HAVE FAILED - CHECK WALLET MANUALLY")
-                logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-            
-            actual_sol_received = 0
-            actual_tokens_sold = 0
-            
-            if confirmed:
-                try:
-                    txd = await self._get_transaction_deltas(signature, mint)
-                    if txd["confirmed"]:
-                        actual_sol_received = txd["sol_delta"] if txd["sol_delta"] > 0 else 0
-                        actual_tokens_sold = abs(txd["token_delta"]) if txd["token_delta"] < 0 else 0
-                        logger.info(f"✅ Sell confirmed via transaction: {actual_sol_received:.6f} SOL received")
-                    else:
-                        logger.warning(f"Transaction delta failed, using wallet balance")
-                        confirmed = False
-                except Exception as e:
-                    logger.error(f"❌ Error reading transaction deltas: {e}")
-                    confirmed = False
-            
-            if not confirmed or actual_sol_received == 0:
-                try:
-                    await asyncio.sleep(2)
-                    post_sol_balance = self.wallet.get_sol_balance()
-                    actual_sol_received = post_sol_balance - pre_sol_balance
-                    logger.info(f"📊 SOL balance delta: {actual_sol_received:+.6f} SOL")
-                    
-                    after_tokens = self.wallet.get_token_balance(mint)
-                    actual_tokens_sold = max(0.0, ui_token_balance - after_tokens)
-                    logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
-                    
-                    if after_tokens > (ui_token_balance * 0.9):
-                        logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
-                        logger.error(f"   Expected to sell: {ui_token_balance:,.2f}")
-                        logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-                        
-                        position.status = 'sell_failed'
-                        if mint in self.positions:
-                            del self.positions[mint]
-                            self.velocity_checker.clear_history(mint)
-                        
-                        if self.telegram:
-                            await self.telegram.send_message(
-                                f"❌ SELL FAILED for {mint[:16]}\n"
-                                f"Still have {after_tokens:,.0f} tokens in wallet\n"
-                                f"TX: https://solscan.io/tx/{signature}"
-                            )
-                        return
-                except Exception as e:
-                    logger.error(f"❌ CRITICAL: Balance check failed: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            
-            if actual_sol_received < (position.amount_sol * 0.1):
-                logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_sol_received:.6f} SOL back (invested {position.amount_sol} SOL)")
-                logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-            
-            final_pnl_sol = actual_sol_received - position.amount_sol
-            
-            position.sell_signatures.append(signature)
-            position.status = 'closed'
-            
-            if final_pnl_sol > 0:
-                self.profitable_trades += 1
-                self.consecutive_losses = 0
-            else:
-                self.consecutive_losses += 1
-                self.session_loss_count += 1
-            
-            position.realized_pnl_sol = final_pnl_sol
-            self.total_realized_sol += final_pnl_sol
-            
-            self.tracker.log_sell_executed(
-                mint=mint,
-                tokens_sold=actual_tokens_sold,
-                signature=signature,
-                sol_received=actual_sol_received,
-                pnl_sol=final_pnl_sol,
-                pnl_percent=position.pnl_percent,
-                hold_time_seconds=hold_time,
-                reason=reason
-            )
-            
-            logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
-            logger.info(f"   Reason: {reason}")
-            logger.info(f"   Hold time: {hold_time:.1f}s")
-            logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
-            logger.info(f"   Realized: {final_pnl_sol:+.4f} SOL")
-            logger.info(f"   Consecutive losses: {self.consecutive_losses}")
-            
-            if self.telegram:
-                emoji = "💰" if final_pnl_sol > 0 else "🔴"
-                msg = (
-                    f"{emoji} POSITION CLOSED\n"
-                    f"Token: {mint[:16]}\n"
-                    f"Reason: {reason}\n"
-                    f"Hold: {hold_time:.1f}s\n"
-                    f"P&L: {position.pnl_percent:+.1f}%\n"
-                    f"Realized: {final_pnl_sol:+.4f} SOL"
-                )
-                if self.consecutive_losses >= 2:
-                    msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
-                await self.telegram.send_message(msg)
-            
-            if mint in self.positions:
-                del self.positions[mint]
-                self.velocity_checker.clear_history(mint)
-                logger.info(f"Active: {len(self.positions)}/{MAX_POSITIONS}")
-            
-        except Exception as e:
-            logger.error(f"Failed to close {mint[:8]}...: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            if mint in self.positions:
-                self.positions[mint].status = 'error'
-                del self.positions[mint]
-                self.velocity_checker.clear_history(mint)
-    
     async def _close_position(self, mint: str, reason: str = "manual"):
         """Wrapper for telegram compatibility"""
         await self._close_position_full(mint, reason)
@@ -1495,9 +1513,10 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running - LATENCY OPTIMIZED")
+            logger.info("✅ Bot running - LATENCY OPTIMIZED + FAST PATH FIX")
             logger.info(f"⚡ Parallelized checks enabled")
             logger.info(f"⚡ Dynamic priority: {PRIORITY_FEE_CRITICAL} SOL (<{PRIORITY_FEE_AGE_THRESHOLD}s)")
+            logger.info(f"⚡ Fast path: 3.0s RPC wait + 0.8s curve retry")
             logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s")
             logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
