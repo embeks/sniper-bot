@@ -543,18 +543,33 @@ class SniperBot:
             
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
             
-            # Now run velocity check while decimals is still loading
-            velocity_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.velocity_checker.check_velocity,
-                    mint,
-                    curve_data,
-                    token_age
-                )
-            )
+            # ===================================================================
+            # FAST PATH FIX #2: Skip velocity recheck for fast path tokens
+            # Monitor already validated velocity at detection (stricter 4.5 SOL/s)
+            # Rechecking after 5.8s wait gives false negatives as velocity cools
+            # Fast path tokens are pre-validated with 2.25x stricter velocity gate!
+            # ===================================================================
+            is_fast_path = token_data.get('fast_path', False)
             
-            # Wait for both velocity and decimals to complete
-            velocity_passed, velocity_reason = await velocity_task
+            if is_fast_path:
+                logger.info(f"⚡ Fast path: Skipping velocity recheck (pre-validated at detection: ≥4.5 SOL/s)")
+                velocity_passed = True
+                velocity_reason = "fast_path_validated_at_detection"
+            else:
+                # Normal path: run velocity check
+                velocity_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        self.velocity_checker.check_velocity,
+                        mint,
+                        curve_data,
+                        token_age
+                    )
+                )
+                
+                # Wait for velocity check to complete
+                velocity_passed, velocity_reason = await velocity_task
+            
+            if not velocity_passed:
             token_decimals = await decimals_task
             
             if not velocity_passed:
