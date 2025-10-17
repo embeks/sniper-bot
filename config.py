@@ -1,5 +1,5 @@
 """
-config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
+config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION + LATENCY OPTIMIZED
 """
 
 import os
@@ -39,6 +39,26 @@ MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 # Risk management
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
+
+# ============================================
+# LATENCY OPTIMIZATION: DYNAMIC PRIORITY FEES
+# ============================================
+# NEW: Pay higher priority fees for young tokens to get faster blockchain confirmation
+# Saves 1-2 seconds on execution for tokens <15 seconds old
+PRIORITY_FEE_CRITICAL = float(os.getenv('PRIORITY_FEE_CRITICAL', '0.010'))  # 0.01 SOL for age <15s
+PRIORITY_FEE_NORMAL = float(os.getenv('PRIORITY_FEE_NORMAL', '0.003'))     # 0.003 SOL for age ≥15s
+PRIORITY_FEE_AGE_THRESHOLD = float(os.getenv('PRIORITY_FEE_AGE_THRESHOLD', '15.0'))  # Switch at 15s
+
+# ============================================
+# LATENCY OPTIMIZATION: FAST PATH SETTINGS
+# ============================================
+# NEW: Fast path bypasses slow holder checks for ultra-young tokens (<10s)
+# Saves 0-6 seconds by skipping Helius indexer queries
+# Compensates with STRICTER velocity requirements (3.0 SOL/s vs 2.0)
+FAST_PATH_ENABLED = os.getenv('FAST_PATH_ENABLED', 'true').lower() == 'true'
+FAST_PATH_MAX_AGE = float(os.getenv('FAST_PATH_MAX_AGE', '10.0'))  # Only for tokens <10s old
+FAST_PATH_MAX_BUY_SOL = float(os.getenv('FAST_PATH_MAX_BUY_SOL', '0.05'))  # Cap buy size
+FAST_PATH_VELOCITY_MULT = float(os.getenv('FAST_PATH_VELOCITY_MULT', '1.5'))  # 1.5x stricter
 
 # ============================================
 # VELOCITY GATE SETTINGS
