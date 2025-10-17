@@ -1,10 +1,11 @@
 """
-config - FINAL: All fixes applied + VELOCITY AGE FIX
+config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
 - Shorter timer (20s)
 - Tighter velocity drop (25%)
 - Faster monitoring (0.5s)
 - Increased position size (0.05 SOL)
 - FIXED: Token age limit increased to 25s (accounts for monitor delays)
+- NEW: Profit protection (Extreme TP + Trailing Stop)
 """
 
 import os
@@ -85,6 +86,80 @@ TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD',
 
 # Maximum total extensions allowed
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
+
+# ============================================
+# PROFIT PROTECTION SETTINGS (NEW!)
+# ============================================
+# These work alongside your timer-based exits to protect extreme gains
+# All checks are CHAIN-GATED (only trigger on blockchain data, not WebSocket)
+
+# Extreme Take-Profit: Exit immediately if profit goes parabolic
+# Example: If you hit +150% (2.5x), lock it in regardless of timer
+# Set to 999.0 to disable
+EXTREME_TP_PERCENT = float(os.getenv('EXTREME_TP_PERCENT', '150.0'))
+
+# Trailing Stop: Protect profits after hitting a certain level
+# TRAIL_START_PERCENT: Start trailing once you've hit this profit
+# TRAIL_GIVEBACK_PERCENT: Exit if you give back this much from peak
+# Example: Hit +191% peak, currently +85% = 106pp drop → Exit if drop >= 50pp
+# Set both to 999.0 to disable
+TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '100.0'))
+TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '50.0'))
+
+# ============================================
+# HOW PROFIT PROTECTION WORKS:
+# ============================================
+# 
+# Priority order (from highest to lowest):
+# 1. Extreme TP (150%+) - Locks in parabolic gains immediately
+# 2. Trailing Stop (100%+ then -50pp drop) - Protects from fast rugs
+# 3. Fail-Fast (5s check at -10%) - Exits early losers
+# 4. Rug Trap (-40% or -60% if <3s) - Emergency exits
+# 5. Stop Loss (-40%) - Standard loss protection  
+# 6. Timer Exit (20s) - Your main strategy (80% of trades)
+#
+# Most trades (80%): Exit on timer as normal
+# Extreme pumps (10%): Exit early via Extreme TP or Trailing Stop
+# Fast rugs (10%): Exit early via Fail-Fast or Rug Trap
+#
+# All profit exits require CHAIN confirmation (same as stop-loss)
+# This prevents WebSocket false signals from triggering exits
+#
+# EXAMPLE WITH YOUR ACTUAL TRADE (GOLDALON):
+# Without profit protection:
+#   06:29:43 - Peak: +191.7% (bot keeps holding)
+#   06:30:04 - Timer exit: -0.8%
+#   Result: -0.0085 SOL loss
+#
+# With Extreme TP = 150%:
+#   06:29:43 - Peak: +191.7%
+#   → +191.7% >= 150% ✓ on [chain] tick
+#   → EXTREME TP TRIGGERED!
+#   → Exit at +191.7% (~2s after buy)
+#   Result: +0.0383 SOL profit (+0.0468 SOL better!)
+#
+# TUNING GUIDE:
+# Conservative (lock profits early):
+#   EXTREME_TP_PERCENT = 100.0      # Exit at 2x
+#   TRAIL_START_PERCENT = 75.0      # Trail after 1.75x
+#   TRAIL_GIVEBACK_PERCENT = 30.0   # Tighter trail
+#
+# Moderate (recommended):
+#   EXTREME_TP_PERCENT = 150.0      # Exit at 2.5x
+#   TRAIL_START_PERCENT = 100.0     # Trail after 2x
+#   TRAIL_GIVEBACK_PERCENT = 50.0   # Exit if -50pp from peak
+#
+# Aggressive (let winners run):
+#   EXTREME_TP_PERCENT = 200.0      # Exit at 3x
+#   TRAIL_START_PERCENT = 150.0     # Trail after 2.5x
+#   TRAIL_GIVEBACK_PERCENT = 70.0   # Wider trail
+#
+# Disabled (pure timer strategy):
+#   EXTREME_TP_PERCENT = 999.0      # Never trigger
+#   TRAIL_START_PERCENT = 999.0     # Never trigger
+#   TRAIL_GIVEBACK_PERCENT = 999.0  # Never trigger
+#
+# ============================================
 
 # ============================================
 # FAIL-FAST EXIT SETTINGS
