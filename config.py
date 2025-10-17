@@ -56,7 +56,7 @@ PRIORITY_FEE_AGE_THRESHOLD = float(os.getenv('PRIORITY_FEE_AGE_THRESHOLD', '15.0
 # Saves 0-6 seconds by skipping Helius indexer queries
 # Compensates with STRICTER velocity requirements (3.0 SOL/s vs 2.0)
 FAST_PATH_ENABLED = os.getenv('FAST_PATH_ENABLED', 'true').lower() == 'true'
-FAST_PATH_MAX_AGE = float(os.getenv('FAST_PATH_MAX_AGE', '10.0'))  # Only for tokens <10s old
+FAST_PATH_MAX_AGE = float(os.getenv('FAST_PATH_MAX_AGE', '15.0'))  # FIX #1: Changed from 10.0 to 15.0
 FAST_PATH_MAX_BUY_SOL = float(os.getenv('FAST_PATH_MAX_BUY_SOL', '0.05'))  # Cap buy size
 FAST_PATH_VELOCITY_MULT = float(os.getenv('FAST_PATH_VELOCITY_MULT', '1.5'))  # 1.5x stricter
 
