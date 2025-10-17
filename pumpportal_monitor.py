@@ -1,10 +1,8 @@
 """
-PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES + AGE FIX
-All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
-- Fix #1: Adaptive velocity window (no false 0.00 SOL/s)
-- Fix #2: Creator buy rounding tolerance (0.095 SOL minimum)
-- Fix #3: Fast Helius retry with 2 attempts (2.5s + 2.5s)
-- Fix #4: PASS TOKEN AGE + SOL TO CALLBACK (for main.py velocity check)
+PumpPortal WebSocket Monitor - LATENCY OPTIMIZED with FAST PATH
+✅ Fast path for tokens <10s old (skip holder checks)
+✅ Stricter velocity gate on fast path (1.5x = 3.0 SOL/s)
+✅ All previous fixes maintained
 """
 
 import asyncio
@@ -16,7 +14,7 @@ import random
 import websockets
 import aiohttp
 from datetime import datetime
-from config import HELIUS_API_KEY
+from config import HELIUS_API_KEY, FAST_PATH_ENABLED, FAST_PATH_MAX_AGE, FAST_PATH_VELOCITY_MULT
 
 logger = logging.getLogger(__name__)
 
@@ -27,48 +25,29 @@ class PumpPortalMonitor:
         self.seen_tokens = set()
         self.reconnect_count = 0
         
-        # Verify Helius API key
         if not HELIUS_API_KEY:
             logger.error("❌ CRITICAL: HELIUS_API_KEY not found!")
             raise ValueError("HELIUS_API_KEY is required for holder checks")
         else:
             logger.info(f"✅ Helius API key loaded: {HELIUS_API_KEY[:10]}...")
         
-        # Token velocity tracking
         self.token_history = {}
         self.filter_reasons = {}
-        
-        # Recent velocity snapshots (high-frequency during first 3s)
         self.recent_velocity_snapshots = {}
-        
-        # OPTIMIZATION: First-sighting cooldown with token data storage
         self.first_sighting_times = {}
-        self.pending_tokens = {}  # Store token data for re-evaluation
-        
-        # Creator spam tracking
+        self.pending_tokens = {}
         self.creator_token_launches = {}
-        
-        # Token tracking for age
         self.token_first_seen = {}
         self.token_mc_history = {}
-        
-        # OPTIMIZATION: Cache decimals/metadata for 5s
         self.token_metadata_cache = {}
         
-        # SOL price caching
         self.sol_price_usd = 250
         self.last_sol_price_update = 0
         
-        # Filters - OPTIMIZED ORDER
         self.filters = {
-            # CRITICAL: Age check FIRST (before expensive RPC calls)
-            'max_token_age_seconds': 4.0,  # Only process tokens <4s old
-            
-            # OPTIMIZATION: Early curve prefilter
-            'min_curve_sol_prefilter': 3.0,  # Skip tokens with <3 SOL (likely duds)
-            
-            # FIX #2: Lowered from 0.1 to 0.095 to handle rounding edge cases
-            'min_creator_sol': 0.095,  # Allow 0.095-0.099 SOL range
+            'max_token_age_seconds': 4.0,
+            'min_curve_sol_prefilter': 3.0,
+            'min_creator_sol': 0.095,
             'max_creator_sol': 5.0,
             'min_curve_sol': 15.0,
             'max_curve_sol': 45.0,
@@ -77,10 +56,10 @@ class PumpPortalMonitor:
             'min_holders': 10,
             'check_concentration': False,
             'max_top10_concentration': 85,
-            'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
+            'max_velocity_sol_per_sec': 1.5,
             'min_market_cap': 4000,
             'max_market_cap': 35000,
-            'max_token_age_minutes': 8,  # Unused - kept for compatibility
+            'max_token_age_minutes': 8,
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
                 'stealth', 'fair', 'liquidity', 'burned', 'renounced', 'safu', 
@@ -88,21 +67,17 @@ class PumpPortalMonitor:
                 'pepe', 'elon', 'trump', 'inu', 'doge', 'shib', 'floki',
                 'moon', 'safe', 'baby', 'mini', 'rocket', 'gem'
             ],
-            # FIXED: Match velocity_checker.py settings (3.0 SOL/s minimum)
             'min_recent_velocity_sol_per_sec': 3.0,
             'max_tokens_per_creator_24h': 3,
-            
-            # OPTIMIZATION: First-sighting cooldown
             'first_sighting_cooldown_seconds': 0.5,
-            
             'filters_enabled': True
         }
         
-        # Statistics
-        self.tokens_evaluated = 0  # Total tokens evaluated
-        self.tokens_deferred = 0  # ADDED: Tokens in cooldown (not filtered)
-        self.tokens_filtered = 0  # Actually filtered out
-        self.tokens_passed = 0  # Passed all filters
+        self.tokens_evaluated = 0
+        self.tokens_deferred = 0
+        self.tokens_filtered = 0
+        self.tokens_passed = 0
+        self.tokens_fast_path = 0  # New counter for fast path
     
     async def _get_sol_price(self) -> float:
         """Get current SOL price with caching (5 min cache)"""
@@ -129,26 +104,19 @@ class PumpPortalMonitor:
         return self.sol_price_usd
     
     def _event_age_seconds(self, token_data: dict) -> float:
-        """
-        CRITICAL FIX: Get REAL token age from event data, not first sighting time
-        This prevents bypassing age checks on tokens that are already old
-        """
+        """Get REAL token age from event data"""
         now = time.time()
         
-        # Prefer explicit age if provided
         age = token_data.get('age')
         if isinstance(age, (int, float)) and age >= 0:
             return float(age)
         
-        # Check common timestamp fields
         for key in ('blockTime', 'createdAt', 'ts', 'timestamp'):
             if key in token_data:
                 ts = token_data[key]
-                # Normalize: ms to seconds if needed
                 ts = ts / 1000.0 if ts > 1e12 else ts
                 return max(0.0, now - float(ts))
         
-        # Fallback: use first sighting time (less accurate)
         mint = token_data.get('mint') or token_data.get('address', '')
         if mint:
             if mint not in self.token_first_seen:
@@ -158,11 +126,7 @@ class PumpPortalMonitor:
         return 0.0
     
     def _calculate_market_cap(self, token_data: dict) -> float:
-        """
-        Calculate market cap from bonding curve data
-        TODO: vTokensInBondingCurve may be in atomic units - verify with PumpPortal
-        If atomic, need to normalize by 10**decimals
-        """
+        """Calculate market cap from bonding curve data"""
         try:
             v_sol = float(token_data.get('vSolInBondingCurve', 0))
             v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
@@ -170,8 +134,6 @@ class PumpPortalMonitor:
             if v_sol == 0 or v_tokens == 0:
                 return 0
             
-            # Assuming v_tokens is in human-readable units (typical for PumpPortal)
-            # If you see MC values 1000x off, v_tokens is likely atomic
             price_sol = v_sol / v_tokens
             total_supply = 1_000_000_000
             market_cap_usd = total_supply * price_sol * self.sol_price_usd
@@ -182,7 +144,7 @@ class PumpPortalMonitor:
             return 0
     
     def _store_recent_velocity_snapshot(self, mint: str, sol_raised: float):
-        """OPTIMIZED: Store snapshot with high frequency during first 3s"""
+        """Store snapshot with high frequency during first 3s"""
         now = time.time()
         
         if mint not in self.recent_velocity_snapshots:
@@ -193,15 +155,11 @@ class PumpPortalMonitor:
             'sol_raised': sol_raised
         })
         
-        # Keep only last 10 snapshots (~3 seconds of history)
         if len(self.recent_velocity_snapshots[mint]) > 10:
             self.recent_velocity_snapshots[mint] = self.recent_velocity_snapshots[mint][-10:]
     
     def _check_recent_velocity(self, mint: str, current_sol: float) -> tuple:
-        """
-        Check velocity in LAST 1 SECOND to catch dying pumps
-        FIX #1: Adaptive time window - don't fail young tokens with insufficient history
-        """
+        """Check velocity in LAST 1 SECOND with adaptive window"""
         try:
             if mint not in self.recent_velocity_snapshots or len(self.recent_velocity_snapshots[mint]) < 2:
                 return (True, None, "insufficient_history")
@@ -209,17 +167,14 @@ class PumpPortalMonitor:
             history = self.recent_velocity_snapshots[mint]
             now = time.time()
             
-            # CRITICAL FIX: Calculate actual time elapsed since first snapshot
             first_snapshot_time = history[0]['timestamp']
             time_elapsed = now - first_snapshot_time
             
-            # If we have < 0.9s of history, defer (don't filter yet)
             if time_elapsed < 0.9:
                 logger.debug(f"Velocity check deferred for {mint[:8]}... (only {time_elapsed:.2f}s of history)")
                 return (True, None, f"deferred_young_token: {time_elapsed:.2f}s")
             
-            # Use adaptive lookback window (max 1.0s, but use actual elapsed time if less)
-            lookback_window = min(1.0, time_elapsed - 0.1)  # Leave 0.1s buffer
+            lookback_window = min(1.0, time_elapsed - 0.1)
             target_time = now - lookback_window
             
             closest_snapshot = None
@@ -252,23 +207,17 @@ class PumpPortalMonitor:
             return (True, None, f"error: {e}")
     
     def _check_creator_spam(self, creator_address: str) -> tuple:
-        """
-        Check if creator is spamming tokens.
-        FIXED: Thread-safe counter update
-        """
+        """Check if creator is spamming tokens"""
         try:
             now = time.time()
             
-            # FIXED: Use setdefault to avoid race conditions
             self.creator_token_launches.setdefault(creator_address, [])
             
-            # Clean up old entries (> 24h)
             self.creator_token_launches[creator_address] = [
                 ts for ts in self.creator_token_launches[creator_address]
-                if now - ts < 86400  # 24 hours
+                if now - ts < 86400
             ]
             
-            # Check how many tokens this creator launched in 24h
             token_count = len(self.creator_token_launches[creator_address])
             max_allowed = self.filters['max_tokens_per_creator_24h']
             
@@ -279,7 +228,6 @@ class PumpPortalMonitor:
                 )
                 return (False, token_count, f"creator_spam: {token_count}_tokens")
             
-            # Record this token launch
             self.creator_token_launches[creator_address].append(now)
             
             return (True, token_count + 1, "ok")
@@ -289,12 +237,8 @@ class PumpPortalMonitor:
             return (True, 0, f"error: {e}")
     
     async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
-        """
-        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
-        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
-        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
-        """
-        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        """Fast-fail RPC with 0.8s timeout + 2 retries"""
+        retry_delays = [2.5, 2.5]
         
         for attempt in range(max_retries + 1):
             try:
@@ -308,7 +252,6 @@ class PumpPortalMonitor:
                         "params": [mint]
                     }
                     
-                    # OPTIMIZATION: 0.8s timeout for fast-fail
                     timeout = aiohttp.ClientTimeout(total=0.8)
                     
                     try:
@@ -327,7 +270,6 @@ class PumpPortalMonitor:
                             if 'error' in data:
                                 error_msg = data['error'].get('message', '')
                                 
-                                # Handle "not a Token mint" error with retry
                                 if 'not a Token mint' in error_msg and attempt < max_retries:
                                     retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                                     logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
@@ -407,18 +349,14 @@ class PumpPortalMonitor:
         logger.info(f"❌ Filtered ({reason}): {detail}")
     
     async def _process_pending_tokens(self):
-        """
-        CRITICAL FIX: Re-evaluate tokens after cooldown expires
-        This background task checks pending tokens and re-processes them
-        """
+        """Re-evaluate tokens after cooldown expires"""
         while self.running:
             try:
-                await asyncio.sleep(0.1)  # Check every 100ms
+                await asyncio.sleep(0.1)
                 
                 now = time.time()
                 tokens_to_process = []
                 
-                # Find tokens ready for re-evaluation
                 for mint, stored_data in list(self.pending_tokens.items()):
                     first_sight_time = self.first_sighting_times.get(mint, now)
                     time_since_first = now - first_sight_time
@@ -427,7 +365,6 @@ class PumpPortalMonitor:
                         tokens_to_process.append((mint, stored_data))
                         del self.pending_tokens[mint]
                 
-                # Re-evaluate tokens that passed cooldown
                 for mint, data in tokens_to_process:
                     logger.info(f"⏰ Cooldown complete for {mint[:8]}... - re-evaluating")
                     passed, token_age = await self._apply_quality_filters_post_cooldown(data)
@@ -436,7 +373,6 @@ class PumpPortalMonitor:
                         self.tokens_filtered += 1
                         continue
                     
-                    # Token passed all filters!
                     if mint in self.seen_tokens:
                         continue
                     
@@ -482,12 +418,7 @@ class PumpPortalMonitor:
                 logger.error(f"Error in pending tokens processor: {e}")
     
     async def _apply_quality_filters(self, data: dict) -> bool:
-        """
-        OPTIMIZED FILTER ORDER - FIRST PASS ONLY:
-        1. Age check (before expensive RPC)
-        2. Curve prefilter (skip obvious duds)
-        3. First-sighting cooldown (0.5s confirmation) - STORE TOKEN FOR RE-EVAL
-        """
+        """FIRST PASS: Age + Curve + Cooldown checks"""
         if not self.filters['filters_enabled']:
             return True
             
@@ -497,74 +428,191 @@ class PumpPortalMonitor:
         now = time.time()
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
         
-        # ===================================================================
-        # CRITICAL FIX: Use REAL token age from event, not first sighting
-        # ===================================================================
         token_age = self._event_age_seconds(token_data)
         
         if token_age > self.filters['max_token_age_seconds']:
             self._log_filter("too_old_prefilter", f"{token_age:.1f}s > {self.filters['max_token_age_seconds']}s")
             return False
         
-        # ===================================================================
-        # OPTIMIZATION 2: CURVE PREFILTER (skip obvious duds early)
-        # ===================================================================
         if v_sol < self.filters['min_curve_sol_prefilter']:
             self._log_filter("low_curve_prefilter", f"{v_sol:.2f} SOL < {self.filters['min_curve_sol_prefilter']}")
             return False
         
         # ===================================================================
-        # OPTIMIZATION 3: FIRST-SIGHTING COOLDOWN (0.5s confirmation)
-        # CRITICAL FIX: Store token data for re-evaluation by background task
+        # LATENCY OPTIMIZATION: FAST PATH FOR ULTRA-YOUNG TOKENS
+        # Skip holder checks for tokens <10s old with stricter gates
         # ===================================================================
+        if FAST_PATH_ENABLED and token_age < FAST_PATH_MAX_AGE:
+            logger.info(f"⚡ FAST PATH activated for {mint[:8]}... (age: {token_age:.1f}s)")
+            self.tokens_fast_path += 1
+            
+            # Skip cooldown and holder checks, but apply stricter velocity
+            passed, fast_path_age = await self._apply_fast_path_filters(data)
+            
+            if passed:
+                if mint in self.seen_tokens:
+                    return False
+                
+                self.seen_tokens.add(mint)
+                self.tokens_passed += 1
+                
+                token_data = data.get('data', data)
+                v_sol = token_data.get('vSolInBondingCurve', 0)
+                creator_sol = token_data.get('solAmount', 0)
+                market_cap = self._calculate_market_cap(token_data)
+                
+                logger.info("=" * 60)
+                logger.info("⚡ FAST PATH TOKEN PASSED!")
+                logger.info(f"📜 Mint: {mint}")
+                logger.info(f"📊 {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_fast_path} fast path")
+                logger.info(f"💰 Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL")
+                logger.info(f"💵 Market Cap: ${market_cap:,.0f}")
+                logger.info(f"🔥 Momentum: {v_sol/creator_sol if creator_sol > 0 else 0:.1f}x")
+                logger.info(f"⏱️ Token age: {fast_path_age:.1f}s")
+                logger.info(f"⚡ Bypassed holder checks (age <{FAST_PATH_MAX_AGE}s)")
+                logger.info(f"📝 {token_data.get('name', 'Unknown')} ({token_data.get('symbol', 'Unknown')})")
+                logger.info("=" * 60)
+                
+                if self.callback:
+                    await self.callback({
+                        'mint': mint,
+                        'signature': data.get('signature', 'unknown'),
+                        'type': 'pumpfun_launch',
+                        'timestamp': datetime.now().isoformat(),
+                        'data': data,
+                        'source': 'pumpportal',
+                        'passed_filters': True,
+                        'fast_path': True,
+                        'market_cap': market_cap,
+                        'holder_data': {'holder_count': 0, 'concentration': 0, 'fast_path': True},
+                        'age': fast_path_age,
+                        'token_age': fast_path_age,
+                        'sol_raised_at_detection': v_sol
+                    })
+                
+                return True
+            else:
+                self.tokens_filtered += 1
+                return False
+        
+        # Normal path: Use cooldown
         if mint not in self.first_sighting_times:
             self.first_sighting_times[mint] = now
-            self.pending_tokens[mint] = data  # Store for later re-evaluation
+            self.pending_tokens[mint] = data
             self._store_recent_velocity_snapshot(mint, v_sol)
             self.tokens_deferred += 1
             logger.info(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
             return False
         
-        # This should never be reached now (handled by background task)
         return False
     
-    async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
+    async def _apply_fast_path_filters(self, data: dict) -> tuple:
         """
-        SECOND PASS - After cooldown expires:
+        FAST PATH: Stricter gates, no holder checks
         Returns (passed: bool, token_age: float)
-        ALL 3 FIXES APPLIED HERE
         """
+        token_data = data.get('data', data)
+        mint = self._extract_mint(data)
+        
+        token_age = self._event_age_seconds(token_data)
+        v_sol = float(token_data.get('vSolInBondingCurve', 0))
+        
+        self._store_recent_velocity_snapshot(mint, v_sol)
+        
+        logger.info(f"⚡ Fast path evaluation for {mint[:8]}... (age: {token_age:.1f}s)")
+        
+        # Basic filters
+        creator_sol = float(token_data.get('solAmount', 0))
+        creator_address = str(token_data.get('traderPublicKey', 'unknown'))
+        
+        if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
+            self._log_filter("fast_path_creator_buy", f"{creator_sol:.3f} SOL")
+            return (False, token_age)
+        
+        creator_passed, _, _ = self._check_creator_spam(creator_address)
+        if not creator_passed:
+            self._log_filter("fast_path_creator_spam", "max tokens/24h")
+            return (False, token_age)
+        
+        name = str(token_data.get('name', '')).strip()
+        symbol = str(token_data.get('symbol', '')).strip()
+        
+        if len(name) < self.filters['min_name_length'] or not name.isascii() or not symbol.isascii():
+            self._log_filter("fast_path_name_quality", f"{name}")
+            return (False, token_age)
+        
+        name_lower = name.lower()
+        symbol_lower = symbol.lower()
+        for blacklisted in self.filters['name_blacklist']:
+            if blacklisted in name_lower or blacklisted in symbol_lower:
+                self._log_filter("fast_path_blacklist", f"'{blacklisted}' in {name}")
+                return (False, token_age)
+        
+        if v_sol < self.filters['min_curve_sol'] or v_sol > self.filters['max_curve_sol']:
+            self._log_filter("fast_path_curve_range", f"{v_sol:.2f} SOL")
+            return (False, token_age)
+        
+        # Stricter momentum for fast path
+        required_multiplier = 10 if v_sol < 35 else (7 if v_sol < 50 else 5)
+        required_sol = creator_sol * required_multiplier
+        if v_sol < required_sol:
+            self._log_filter("fast_path_momentum", f"{v_sol:.2f} vs {required_sol:.2f}")
+            return (False, token_age)
+        
+        v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
+        if v_tokens < self.filters['min_v_tokens']:
+            self._log_filter("fast_path_tokens_low", f"{v_tokens:,.0f}")
+            return (False, token_age)
+        
+        # Market cap
+        await self._get_sol_price()
+        market_cap = self._calculate_market_cap(token_data)
+        
+        if market_cap < self.filters['min_market_cap'] or market_cap > self.filters['max_market_cap']:
+            self._log_filter("fast_path_mc_range", f"${market_cap:,.0f}")
+            return (False, token_age)
+        
+        # CRITICAL: Stricter velocity gate for fast path (1.5x normal = 3.0 SOL/s)
+        min_velocity_fast_path = self.filters['min_recent_velocity_sol_per_sec'] * FAST_PATH_VELOCITY_MULT
+        avg_velocity = v_sol / max(token_age, 0.1)
+        
+        if avg_velocity < min_velocity_fast_path:
+            self._log_filter("fast_path_velocity", f"{avg_velocity:.2f} SOL/s < {min_velocity_fast_path:.2f}")
+            return (False, token_age)
+        
+        logger.info(f"✅ FAST PATH PASSED: {name} ({symbol})")
+        logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f}")
+        logger.info(f"   Velocity: {avg_velocity:.2f} SOL/s (≥{min_velocity_fast_path:.2f} required)")
+        logger.info(f"   Token age: {token_age:.1f}s | ⚡ SKIPPED HOLDER CHECKS")
+        
+        return (True, token_age)
+    
+    async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
+        """SECOND PASS - After cooldown expires (normal path with holder checks)"""
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
         
         now = time.time()
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
         
-        # Re-check age (token is now older)
         token_age = self._event_age_seconds(token_data)
         
-        # CRITICAL FIX: Continue storing velocity snapshots during evaluation
-        # We need at least 0.9s of history for velocity check
         self._store_recent_velocity_snapshot(mint, v_sol)
         
         logger.info(f"✓ Token {mint[:8]}... passed cooldown: {token_age:.1f}s old, {v_sol:.1f} SOL")
         
-        # Basic filters
         creator_sol = float(token_data.get('solAmount', 0))
         creator_address = str(token_data.get('traderPublicKey', 'unknown'))
         
-        # FIX #2: Lowered minimum to 0.095 to handle rounding (0.099 SOL now passes!)
         if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
             return (False, token_age)
         
-        # Creator spam check
         creator_passed, _, _ = self._check_creator_spam(creator_address)
         if not creator_passed:
             self._log_filter("creator_spam", "max tokens/24h")
             return (False, token_age)
         
-        # Name quality
         name = str(token_data.get('name', '')).strip()
         symbol = str(token_data.get('symbol', '')).strip()
         
@@ -572,7 +620,6 @@ class PumpPortalMonitor:
             self._log_filter("name_quality", f"{name}")
             return (False, token_age)
         
-        # Blacklist check
         name_lower = name.lower()
         symbol_lower = symbol.lower()
         for blacklisted in self.filters['name_blacklist']:
@@ -580,40 +627,25 @@ class PumpPortalMonitor:
                 self._log_filter("blacklist", f"'{blacklisted}' in {name}")
                 return (False, token_age)
         
-        # Bonding curve SOL range
         if v_sol < self.filters['min_curve_sol'] or v_sol > self.filters['max_curve_sol']:
             self._log_filter("curve_range", f"{v_sol:.2f} SOL")
             return (False, token_age)
         
-        # Momentum check
         required_multiplier = 8 if v_sol < 35 else (5 if v_sol < 50 else 3)
         required_sol = creator_sol * required_multiplier
         if v_sol < required_sol:
             self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f}")
             return (False, token_age)
         
-        # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
             self._log_filter("tokens_low", f"{v_tokens:,.0f}")
             return (False, token_age)
         
-        # NOTE: Recent velocity check REMOVED from monitor
-        # Velocity checking happens in main.py with live curve reads
-        # We only have static snapshots here from WebSocket events
-        
-        # ===================================================================
-        # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
-        # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
-        # CRITICAL: Wait 3s before first check to allow Helius indexing
-        # ===================================================================
         logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
         
-        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
-        # Without this, ALL tokens fail because they're too new
         await asyncio.sleep(3)
         
-        # Market cap calculation (fast, local)
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
         
@@ -621,17 +653,13 @@ class PumpPortalMonitor:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
         
-        # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
         holder_task = asyncio.create_task(self._check_holders_helius(mint))
-        
-        # Wait for holder check with fast-fail
         holder_result = await holder_task
         
         if not holder_result['passed']:
             self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
             return (False, token_age)
         
-        # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
         holder_count = holder_result.get('holder_count', 0)
         concentration = holder_result.get('concentration', 0)
@@ -648,27 +676,23 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP + AGE/SOL PASSING")
-        logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
-        logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
-        logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
-        logger.info(f"  Fix #4: PASS TOKEN AGE + SOL TO CALLBACK FOR MAIN.PY")
+        logger.info(f"Strategy: LATENCY OPTIMIZED + FAST PATH")
+        logger.info(f"  ⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'}")
+        if FAST_PATH_ENABLED:
+            logger.info(f"  ⚡ Fast path age: <{FAST_PATH_MAX_AGE}s")
+            logger.info(f"  ⚡ Fast path velocity: {self.filters['min_recent_velocity_sol_per_sec'] * FAST_PATH_VELOCITY_MULT:.1f} SOL/s ({FAST_PATH_VELOCITY_MULT}x stricter)")
+            logger.info(f"  ⚡ Fast path skips: Holder checks, 3s sleep")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
-        logger.info(f"  Concurrent checks: ENABLED")
-        logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
+        logger.info(f"  Normal path: 3s sleep + holder checks")
         
         uri = "wss://pumpportal.fun/api/data"
         
-        # Start background task for re-evaluating pending tokens
         pending_task = asyncio.create_task(self._process_pending_tokens())
         
         while self.running:
             try:
-                # FIXED: Add WebSocket keepalive params
                 async with websockets.connect(
                     uri,
                     ping_interval=20,
@@ -692,18 +716,14 @@ class PumpPortalMonitor:
                                 if not mint:
                                     continue
                                 
-                                # FIXED: Increment evaluated counter for ALL tokens
                                 self.tokens_evaluated += 1
                                 
-                                # CRITICAL FIX: Check filters (stores for later if needed)
                                 passed = await self._apply_quality_filters(data)
                                 
                                 if not passed:
-                                    # Token either filtered or deferred for cooldown
-                                    # Stats logged every 10 tokens
                                     if self.tokens_evaluated % 10 == 0:
                                         filter_rate = (self.tokens_filtered / self.tokens_evaluated * 100) if self.tokens_evaluated > 0 else 0
-                                        logger.info(f"📊 Filter stats: {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_deferred} deferred / {self.tokens_evaluated} evaluated ({filter_rate:.1f}% filtered)")
+                                        logger.info(f"📊 Filter stats: {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_deferred} deferred / {self.tokens_fast_path} fast path / {self.tokens_evaluated} evaluated ({filter_rate:.1f}% filtered)")
                                         if self.filter_reasons:
                                             top_reasons = sorted(self.filter_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
                                             logger.info(f"   Top reasons: {top_reasons}")
@@ -723,7 +743,6 @@ class PumpPortalMonitor:
                     logger.info(f"Reconnecting in 5s... (attempt #{self.reconnect_count + 1})")
                     await asyncio.sleep(5)
         
-        # Cleanup
         pending_task.cancel()
     
     def _is_new_token(self, data: dict) -> bool:
@@ -771,6 +790,7 @@ class PumpPortalMonitor:
             'tokens_passed': self.tokens_passed,
             'tokens_filtered': self.tokens_filtered,
             'tokens_deferred': self.tokens_deferred,
+            'tokens_fast_path': self.tokens_fast_path,
             'filter_rate': (self.tokens_filtered / self.tokens_evaluated * 100) if self.tokens_evaluated > 0 else 0,
             'filter_reasons': self.filter_reasons
         }
@@ -779,6 +799,6 @@ class PumpPortalMonitor:
         self.running = False
         stats = self.get_stats()
         logger.info(f"PumpPortal monitor stopped")
-        logger.info(f"Stats: {stats['tokens_passed']} passed / {stats['tokens_filtered']} filtered / {stats['tokens_deferred']} deferred / {stats['tokens_evaluated']} evaluated ({stats['filter_rate']:.1f}% filtered)")
+        logger.info(f"Stats: {stats['tokens_passed']} passed / {stats['tokens_filtered']} filtered / {stats['tokens_deferred']} deferred / {stats['tokens_fast_path']} fast path / {stats['tokens_evaluated']} evaluated ({stats['filter_rate']:.1f}% filtered)")
         if self.filter_reasons:
             logger.info(f"Filter breakdown: {self.filter_reasons}")
