@@ -1,5 +1,5 @@
 """
-Wallet Management - FIXED: Robust token balance reading
+Wallet Management - FIXED: Robust token balance reading with ALL RPC response formats handled
 """
 
 import base58
@@ -11,8 +11,8 @@ import time
 from typing import Optional, Dict, List, Tuple
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from solders.rpc.responses import GetTokenAccountsByOwnerResp
 from solana.rpc.api import Client
+from solana.rpc.commitment import Confirmed
 from spl.token.instructions import get_associated_token_address
 
 from config import (
@@ -94,7 +94,11 @@ class WalletManager:
                 mint_pubkey = Pubkey.from_string(mint)
                 token_account = get_associated_token_address(self.pubkey, mint_pubkey)
                 
-                response = self.client.get_token_account_balance(token_account)
+                response = self.client.get_token_account_balance(
+                    token_account,
+                    commitment=Confirmed
+                )
+                
                 if response.value:
                     # CRITICAL: Return UI amount for position tracking
                     # This is the human-readable amount (e.g., 350000 tokens)
@@ -115,7 +119,7 @@ class WalletManager:
                 
                 # Response was None or empty - could be indexing delay
                 if attempt < max_retries - 1:
-                    logger.debug(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
+                    logger.debug(f"⏳ Token account not ready (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
                     time.sleep(retry_delay)
                     continue
                     
@@ -163,38 +167,126 @@ class WalletManager:
             return 0
     
     def get_all_token_accounts(self) -> Dict[str, Dict]:
-        """Get all token accounts owned by this wallet"""
+        """
+        Get all token accounts owned by this wallet
+        ✅ CRITICAL FIX: Handles ALL possible RPC response formats
+        """
         try:
-            response = self.client.get_token_accounts_by_owner(
-                self.pubkey,
-                {"programId": TOKEN_PROGRAM_ID}
-            )
-            
-            token_accounts = {}
-            
-            if response.value:
-                for account in response.value:
-                    try:
-                        account_data = account.account.data
-                        if isinstance(account_data, dict):
-                            parsed = account_data.get('parsed', {})
-                            info = parsed.get('info', {})
+            # Try with jsonParsed encoding first (easiest to parse)
+            try:
+                from solana.rpc.types import TokenAccountOpts
+                
+                response = self.client.get_token_accounts_by_owner_json_parsed(
+                    self.pubkey,
+                    TokenAccountOpts(program_id=TOKEN_PROGRAM_ID)
+                )
+                
+                token_accounts = {}
+                
+                if response.value:
+                    for account in response.value:
+                        try:
+                            # With jsonParsed, data is already a dict
+                            account_data = account.account.data
                             
-                            mint = info.get('mint')
-                            if mint:
-                                token_accounts[mint] = {
-                                    'pubkey': str(account.pubkey),
-                                    'balance': float(info.get('tokenAmount', {}).get('uiAmount', 0)),
-                                    'decimals': info.get('tokenAmount', {}).get('decimals', 0),
-                                    'raw_amount': info.get('tokenAmount', {}).get('amount', '0')
-                                }
-                    except:
-                        continue
-            
-            return token_accounts
+                            if isinstance(account_data, dict) and 'parsed' in account_data:
+                                parsed = account_data.get('parsed', {})
+                                info = parsed.get('info', {})
+                                
+                                mint = info.get('mint')
+                                if mint:
+                                    token_amount = info.get('tokenAmount', {})
+                                    token_accounts[mint] = {
+                                        'pubkey': str(account.pubkey),
+                                        'balance': float(token_amount.get('uiAmount', 0)),
+                                        'decimals': token_amount.get('decimals', 0),
+                                        'raw_amount': token_amount.get('amount', '0')
+                                    }
+                        except Exception as e:
+                            logger.debug(f"Failed to parse token account: {e}")
+                            continue
+                
+                logger.debug(f"✅ Found {len(token_accounts)} token accounts via jsonParsed")
+                return token_accounts
+                
+            except Exception as e:
+                logger.debug(f"jsonParsed method failed, trying base64 fallback: {e}")
+                
+                # Fallback: Use base64 encoding and manually decode
+                response = self.client.get_token_accounts_by_owner(
+                    self.pubkey,
+                    {"programId": TOKEN_PROGRAM_ID}
+                )
+                
+                token_accounts = {}
+                
+                if response.value:
+                    for account in response.value:
+                        try:
+                            account_data = account.account.data
+                            
+                            # Handle different data formats
+                            data_bytes = None
+                            
+                            if isinstance(account_data, bytes):
+                                # Already bytes
+                                data_bytes = account_data
+                            elif isinstance(account_data, str):
+                                # Base64 string
+                                data_bytes = base64.b64decode(account_data)
+                            elif isinstance(account_data, list) and len(account_data) >= 1:
+                                # [base64_string, encoding] format
+                                if account_data[0]:
+                                    data_bytes = base64.b64decode(account_data[0])
+                            elif isinstance(account_data, dict):
+                                # Already parsed (shouldn't happen here but handle it)
+                                if 'parsed' in account_data:
+                                    parsed = account_data['parsed']
+                                    info = parsed.get('info', {})
+                                    mint = info.get('mint')
+                                    if mint:
+                                        token_amount = info.get('tokenAmount', {})
+                                        token_accounts[mint] = {
+                                            'pubkey': str(account.pubkey),
+                                            'balance': float(token_amount.get('uiAmount', 0)),
+                                            'decimals': token_amount.get('decimals', 0),
+                                            'raw_amount': token_amount.get('amount', '0')
+                                        }
+                                    continue
+                            
+                            if not data_bytes or len(data_bytes) < 165:
+                                continue
+                            
+                            # Manually decode SPL Token Account layout
+                            # Layout: [mint(32), owner(32), amount(8), ...]
+                            mint_bytes = data_bytes[0:32]
+                            amount_bytes = data_bytes[64:72]
+                            
+                            mint = str(Pubkey(mint_bytes))
+                            raw_amount = struct.unpack('<Q', amount_bytes)[0]
+                            
+                            # Get decimals from mint account
+                            decimals = self.get_token_decimals(mint)
+                            ui_amount = raw_amount / (10 ** decimals)
+                            
+                            token_accounts[mint] = {
+                                'pubkey': str(account.pubkey),
+                                'balance': float(ui_amount),
+                                'decimals': decimals,
+                                'raw_amount': str(raw_amount)
+                            }
+                            
+                        except Exception as e:
+                            logger.debug(f"Failed to parse token account (base64 method): {e}")
+                            continue
+                
+                logger.debug(f"✅ Found {len(token_accounts)} token accounts via base64 decode")
+                return token_accounts
             
         except Exception as e:
-            logger.error(f"Failed to get token accounts: {e}")
+            logger.error(f"❌ CRITICAL: All methods failed to get token accounts: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {}
     
     def can_trade(self) -> bool:
