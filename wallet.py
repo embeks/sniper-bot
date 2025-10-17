@@ -1,5 +1,5 @@
 """
-Wallet Management
+Wallet Management - FIXED: Robust token balance reading
 """
 
 import base58
@@ -7,6 +7,7 @@ import base64
 import logging
 import json
 import struct
+import time
 from typing import Optional, Dict, List, Tuple
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -83,30 +84,63 @@ class WalletManager:
             logger.error(f"Failed to get SOL balance: {e}")
             return 0.0
     
-    def get_token_balance(self, mint: str) -> float:
-        """Get balance for a specific token - returns UI amount (human readable)"""
-        try:
-            mint_pubkey = Pubkey.from_string(mint)
-            token_account = get_associated_token_address(self.pubkey, mint_pubkey)
-            
-            response = self.client.get_token_account_balance(token_account)
-            if response.value:
-                # CRITICAL: Return UI amount for position tracking
-                # This is the human-readable amount (e.g., 350000 tokens)
-                ui_amount = response.value.ui_amount
-                if ui_amount:
-                    return float(ui_amount)
+    def get_token_balance(self, mint: str, max_retries: int = 3, retry_delay: float = 1.0) -> float:
+        """
+        Get balance for a specific token - returns UI amount (human readable)
+        ✅ CRITICAL FIX: Retry logic for RPC lag + fallback to get_all_token_accounts()
+        """
+        for attempt in range(max_retries):
+            try:
+                mint_pubkey = Pubkey.from_string(mint)
+                token_account = get_associated_token_address(self.pubkey, mint_pubkey)
+                
+                response = self.client.get_token_account_balance(token_account)
+                if response.value:
+                    # CRITICAL: Return UI amount for position tracking
+                    # This is the human-readable amount (e.g., 350000 tokens)
+                    ui_amount = response.value.ui_amount
+                    if ui_amount:
+                        if attempt > 0:
+                            logger.debug(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f}")
+                        return float(ui_amount)
+                    else:
+                        # Fallback: calculate from raw
+                        raw_amount = response.value.amount
+                        decimals = response.value.decimals
+                        if raw_amount and decimals:
+                            calculated = float(int(raw_amount) / (10 ** int(decimals)))
+                            if attempt > 0:
+                                logger.debug(f"✅ Calculated balance on retry {attempt + 1}: {calculated:,.2f}")
+                            return calculated
+                
+                # Response was None or empty - could be indexing delay
+                if attempt < max_retries - 1:
+                    logger.debug(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    continue
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"⏳ RPC error for {mint[:8]}... (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(retry_delay)
+                    continue
                 else:
-                    # Fallback: calculate from raw
-                    raw_amount = response.value.amount
-                    decimals = response.value.decimals
-                    if raw_amount and decimals:
-                        return float(int(raw_amount) / (10 ** int(decimals)))
-                    return 0.0
-            return 0.0
-            
+                    logger.debug(f"RPC failed after {max_retries} attempts: {e}")
+        
+        # ✅ CRITICAL FALLBACK: If direct query fails, scan all token accounts
+        # This is slower but more reliable for newly created token accounts
+        logger.warning(f"⚠️ Direct balance query failed for {mint[:8]}..., trying fallback method...")
+        try:
+            all_accounts = self.get_all_token_accounts()
+            if mint in all_accounts:
+                balance = all_accounts[mint]['balance']
+                logger.info(f"✅ Found via fallback: {balance:,.2f} tokens for {mint[:8]}...")
+                return balance
+            else:
+                logger.warning(f"❌ Token {mint[:8]}... not found in any token accounts")
+                return 0.0
         except Exception as e:
-            logger.debug(f"No balance for token {mint[:8]}...")
+            logger.error(f"❌ Fallback method also failed: {e}")
             return 0.0
     
     def get_token_balance_raw(self, mint: str) -> int:
