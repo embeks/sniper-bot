@@ -31,6 +31,16 @@ from config import (
     VELOCITY_MIN_RECENT_1S_SOL, VELOCITY_MIN_RECENT_3S_SOL, VELOCITY_MAX_DROP_PERCENT
 )
 
+# ✅ NEW: Import profit protection settings
+try:
+    from config import EXTREME_TP_PERCENT, TRAIL_START_PERCENT, TRAIL_GIVEBACK_PERCENT
+except ImportError:
+    # Fallback defaults if not in config yet
+    EXTREME_TP_PERCENT = 150.0
+    TRAIL_START_PERCENT = 100.0
+    TRAIL_GIVEBACK_PERCENT = 50.0
+    logger.warning("⚠️ Profit protection settings not in config.py, using defaults")
+
 from wallet import WalletManager
 from dex import PumpFunDEX
 from pumpportal_monitor import PumpPortalMonitor
@@ -819,6 +829,32 @@ class SniperBot:
                         current_sol_in_curve, 
                         int(current_sol_in_curve / 0.4)
                     )
+                    
+                    # ✅ CHATGPT FIX: Fast Profit Protectors (run BEFORE fail-fast, stop-loss, timer)
+                    # Only trust chain ticks for profit-based exits (same as stop-loss gating)
+                    on_chain = (source == 'chain') and position.has_chain_price
+                    
+                    # 1) EXTREME TAKE-PROFIT (catches parabolic pumps)
+                    if on_chain and not position.is_closing:
+                        if price_change >= EXTREME_TP_PERCENT:
+                            logger.info(
+                                f"💰 EXTREME TAKE PROFIT on [chain]: {price_change:+.1f}% "
+                                f"(threshold: {EXTREME_TP_PERCENT}%, peak: {position.max_pnl_reached:+.1f}%)"
+                            )
+                            await self._close_position_full(mint, reason="extreme_take_profit")
+                            break
+                    
+                    # 2) TRAILING STOP (protects profits from fast rugs)
+                    if on_chain and not position.is_closing:
+                        if position.max_pnl_reached >= TRAIL_START_PERCENT:
+                            drop_from_peak = position.max_pnl_reached - price_change
+                            if drop_from_peak >= TRAIL_GIVEBACK_PERCENT:
+                                logger.warning(
+                                    f"📉 TRAILING STOP on [chain]: drop {drop_from_peak:.1f}pp "
+                                    f"from +{position.max_pnl_reached:.1f}% peak → current {price_change:+.1f}%"
+                                )
+                                await self._close_position_full(mint, reason="trailing_stop")
+                                break
                     
                     if (age >= FAIL_FAST_CHECK_TIME and 
                         not position.fail_fast_checked and 
