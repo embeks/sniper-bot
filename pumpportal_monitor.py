@@ -69,7 +69,7 @@ class PumpPortalMonitor:
             ],
             'min_recent_velocity_sol_per_sec': 3.0,
             'max_tokens_per_creator_24h': 3,
-            'first_sighting_cooldown_seconds': 0.0,  # FIX #2: Changed from 0.5 to 0.0
+            'first_sighting_cooldown_seconds': 0.0,
             'filters_enabled': True
         }
         
@@ -262,6 +262,71 @@ class PumpPortalMonitor:
                                     retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                                     logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
                                     await asyncio.sleep(retry_delay)
+                                    continue
+                                return {'passed': False, 'reason': f'HTTP {resp.status}'}
+                            
+                            data = await resp.json()
+                            
+                            if 'error' in data:
+                                error_msg = data['error'].get('message', '')
+                                
+                                if 'not a Token mint' in error_msg and attempt < max_retries:
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                
+                                logger.warning(f"Helius API error for {mint[:8]}...: {error_msg}")
+                                return {'passed': False, 'reason': error_msg}
+                            
+                            if 'result' not in data or 'value' not in data['result']:
+                                logger.warning(f"Malformed response for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
+                                if attempt < max_retries:
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                return {'passed': False, 'reason': 'malformed response'}
+                            
+                            accounts = data['result']['value']
+                            account_count = len(accounts)
+                            
+                            if account_count < self.filters['min_holders']:
+                                return {
+                                    'passed': False,
+                                    'holder_count': account_count,
+                                    'reason': f'only {account_count} holders'
+                                }
+                            
+                            total_supply = sum(float(acc.get('amount', 0)) for acc in accounts)
+                            if total_supply == 0:
+                                return {'passed': False, 'reason': 'zero supply'}
+                            
+                            top_10_count = min(10, account_count)
+                            top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:top_10_count])
+                            concentration = (top_10_supply / total_supply * 100)
+                            
+                            if self.filters.get('check_concentration', False):
+                                if concentration > self.filters['max_top10_concentration']:
+                                    return {
+                                        'passed': False,
+                                        'holder_count': account_count,
+                                        'concentration': concentration,
+                                        'reason': f'concentration {concentration:.1f}%'
+                                    }
+                            
+                            logger.debug(f"✅ Token {mint[:8]}... has {account_count} holders (attempt {attempt + 1})")
+                            return {
+                                'passed': True,
+                                'holder_count': account_count,
+                                'concentration': concentration
+                            }
+                    
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
+                        if attempt < max_retries:
+                            retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                            logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
+                            await asyncio.sleep(retry_delay)
                             continue
                         return {'passed': False, 'reason': 'holder_timeout'}
                         
@@ -375,8 +440,8 @@ class PumpPortalMonitor:
         
         # ===================================================================
         # LATENCY OPTIMIZATION: FAST PATH FOR ULTRA-YOUNG TOKENS
-        # Skip holder checks for tokens <15s old with stricter gates
-        # FIX #3: Changed minimum age from 1.0s to 0.5s
+        # Skip holder checks for tokens <10s old with stricter gates
+        # FIX: Tokens must be at least 1s old (RPC needs time to index)
         # ===================================================================
         if FAST_PATH_ENABLED and token_age < FAST_PATH_MAX_AGE and token_age >= 0.5:
             logger.info(f"⚡ FAST PATH activated for {mint[:8]}... (age: {token_age:.1f}s)")
@@ -746,69 +811,4 @@ class PumpPortalMonitor:
         logger.info(f"PumpPortal monitor stopped")
         logger.info(f"Stats: {stats['tokens_passed']} passed / {stats['tokens_filtered']} filtered / {stats['tokens_deferred']} deferred / {stats['tokens_fast_path']} fast path / {stats['tokens_evaluated']} evaluated ({stats['filter_rate']:.1f}% filtered)")
         if self.filter_reasons:
-            logger.info(f"Filter breakdown: {self.filter_reasons}"))
-                                    continue
-                                return {'passed': False, 'reason': f'HTTP {resp.status}'}
-                            
-                            data = await resp.json()
-                            
-                            if 'error' in data:
-                                error_msg = data['error'].get('message', '')
-                                
-                                if 'not a Token mint' in error_msg and attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                                    logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
-                                    await asyncio.sleep(retry_delay)
-                                    continue
-                                
-                                logger.warning(f"Helius API error for {mint[:8]}...: {error_msg}")
-                                return {'passed': False, 'reason': error_msg}
-                            
-                            if 'result' not in data or 'value' not in data['result']:
-                                logger.warning(f"Malformed response for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
-                                if attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                                    await asyncio.sleep(retry_delay)
-                                    continue
-                                return {'passed': False, 'reason': 'malformed response'}
-                            
-                            accounts = data['result']['value']
-                            account_count = len(accounts)
-                            
-                            if account_count < self.filters['min_holders']:
-                                return {
-                                    'passed': False,
-                                    'holder_count': account_count,
-                                    'reason': f'only {account_count} holders'
-                                }
-                            
-                            total_supply = sum(float(acc.get('amount', 0)) for acc in accounts)
-                            if total_supply == 0:
-                                return {'passed': False, 'reason': 'zero supply'}
-                            
-                            top_10_count = min(10, account_count)
-                            top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:top_10_count])
-                            concentration = (top_10_supply / total_supply * 100)
-                            
-                            if self.filters.get('check_concentration', False):
-                                if concentration > self.filters['max_top10_concentration']:
-                                    return {
-                                        'passed': False,
-                                        'holder_count': account_count,
-                                        'concentration': concentration,
-                                        'reason': f'concentration {concentration:.1f}%'
-                                    }
-                            
-                            logger.debug(f"✅ Token {mint[:8]}... has {account_count} holders (attempt {attempt + 1})")
-                            return {
-                                'passed': True,
-                                'holder_count': account_count,
-                                'concentration': concentration
-                            }
-                    
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Timeout for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
-                        if attempt < max_retries:
-                            retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                            logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
-                            await asyncio.sleep(retry_delay
+            logger.info(f"Filter breakdown: {self.filter_reasons}")
