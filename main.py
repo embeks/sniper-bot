@@ -313,19 +313,31 @@ class SniperBot:
                 self.telegram_polling_task = asyncio.create_task(self.telegram.start_polling())
                 logger.info("✅ Telegram bot initialized")
                 
+                # CRITICAL FIX: Wait for telegram to be ready before sending
+                await asyncio.sleep(2)
+                
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
                     "🚀 Bot started - LATENCY OPTIMIZED\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"⚡ Priority: {PRIORITY_FEE_CRITICAL} SOL (<{PRIORITY_FEE_AGE_THRESHOLD}s)\n"
+                    f"⚡ Priority: {PRIORITY_FEE_CRITICAL} SOL (age under {PRIORITY_FEE_AGE_THRESHOLD}s)\n"
+                    f"⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'}\n"
                     f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s\n"
                     f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s\n"
                     "Type /help for commands"
                 )
-                await self.telegram.send_message(startup_msg)
+                
+                try:
+                    await self.telegram.send_message(startup_msg)
+                    logger.info("✅ Telegram startup notification sent")
+                except Exception as e:
+                    logger.error(f"Failed to send startup notification: {e}")
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize Telegram: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 self.telegram = None
     
     async def stop_scanner(self):
