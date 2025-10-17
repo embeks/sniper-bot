@@ -569,9 +569,10 @@ class SniperBot:
                 # Wait for velocity check to complete
                 velocity_passed, velocity_reason = await velocity_task
             
-            if not velocity_passed:
+            # Wait for decimals task to complete (we started it in parallel earlier)
             token_decimals = await decimals_task
             
+            # Now check velocity results
             if not velocity_passed:
                 logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
                 logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
