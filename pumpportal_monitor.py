@@ -441,10 +441,20 @@ class PumpPortalMonitor:
         # ===================================================================
         # LATENCY OPTIMIZATION: FAST PATH FOR ULTRA-YOUNG TOKENS
         # Skip holder checks for tokens <10s old with stricter gates
+        # FIX: Tokens must be at least 1s old (RPC needs time to index)
         # ===================================================================
-        if FAST_PATH_ENABLED and token_age < FAST_PATH_MAX_AGE:
+        if FAST_PATH_ENABLED and token_age < FAST_PATH_MAX_AGE and token_age >= 1.0:
             logger.info(f"⚡ FAST PATH activated for {mint[:8]}... (age: {token_age:.1f}s)")
             self.tokens_fast_path += 1
+            
+            # FIX: If token is very young, wait for RPC to index
+            if token_age < 2.0:
+                wait_time = 2.0 - token_age
+                logger.info(f"⏳ Token very young ({token_age:.1f}s), waiting {wait_time:.1f}s for RPC indexing...")
+                await asyncio.sleep(wait_time)
+                # Update age after wait
+                token_age = self._event_age_seconds(data)
+                logger.info(f"✅ Resuming fast path (token now {token_age:.1f}s old)")
             
             # Skip cooldown and holder checks, but apply stricter velocity
             passed, fast_path_age = await self._apply_fast_path_filters(data)
