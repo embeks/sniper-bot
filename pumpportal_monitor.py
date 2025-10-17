@@ -2,7 +2,8 @@
 PumpPortal WebSocket Monitor - LATENCY OPTIMIZED with FAST PATH
 ✅ Fast path for tokens <10s old (skip holder checks)
 ✅ Stricter velocity gate on fast path (1.5x = 3.0 SOL/s)
-✅ All previous fixes maintained
+✅ FIX: Lower age gate to 0.0s (from 0.5s)
+✅ FIX: Pending tokens get second chance at fast path
 """
 
 import asyncio
@@ -77,7 +78,7 @@ class PumpPortalMonitor:
         self.tokens_deferred = 0
         self.tokens_filtered = 0
         self.tokens_passed = 0
-        self.tokens_fast_path = 0  # New counter for fast path
+        self.tokens_fast_path = 0
     
     async def _get_sol_price(self) -> float:
         """Get current SOL price with caching (5 min cache)"""
@@ -367,6 +368,14 @@ class PumpPortalMonitor:
                 
                 for mint, data in tokens_to_process:
                     logger.info(f"⏰ Cooldown complete for {mint[:8]}... - re-evaluating")
+                    
+                    # FIX #2: Give tokens a second chance at fast path
+                    fast_passed = await self._apply_quality_filters(data)
+                    if fast_passed:
+                        # Fast path handled everything (callback, logging, etc.)
+                        continue
+                    
+                    # If fast path didn't trigger, try normal path with holder checks
                     passed, token_age = await self._apply_quality_filters_post_cooldown(data)
                     
                     if not passed:
@@ -418,7 +427,7 @@ class PumpPortalMonitor:
                 logger.error(f"Error in pending tokens processor: {e}")
     
     async def _apply_quality_filters(self, data: dict) -> bool:
-        """FIRST PASS: Age + Curve + Cooldown checks"""
+        """FIRST PASS: Age + Curve + Fast Path checks"""
         if not self.filters['filters_enabled']:
             return True
             
@@ -439,15 +448,15 @@ class PumpPortalMonitor:
             return False
         
         # ===================================================================
-        # LATENCY OPTIMIZATION: FAST PATH FOR ULTRA-YOUNG TOKENS
-        # Skip holder checks for tokens <10s old with stricter gates
-        # FIX: Tokens must be at least 1s old (RPC needs time to index)
+        # FIX #1: FAST PATH - Lower age gate from 0.5s to 0.0s
+        # This allows newborn tokens (0.0-0.4s) to enter fast path
+        # Internal RPC wait (lines below) handles very young tokens
         # ===================================================================
-        if FAST_PATH_ENABLED and token_age < FAST_PATH_MAX_AGE and token_age >= 0.5:
+        if FAST_PATH_ENABLED and token_age < FAST_PATH_MAX_AGE and token_age >= 0.0:
             logger.info(f"⚡ FAST PATH activated for {mint[:8]}... (age: {token_age:.1f}s)")
             self.tokens_fast_path += 1
             
-            # FIX: If token is very young, wait for RPC to index
+            # If token is very young, wait for RPC to index
             if token_age < 2.0:
                 wait_time = 2.0 - token_age
                 logger.info(f"⏳ Token very young ({token_age:.1f}s), waiting {wait_time:.1f}s for RPC indexing...")
@@ -689,9 +698,10 @@ class PumpPortalMonitor:
         logger.info(f"Strategy: LATENCY OPTIMIZED + FAST PATH")
         logger.info(f"  ⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'}")
         if FAST_PATH_ENABLED:
-            logger.info(f"  ⚡ Fast path age: <{FAST_PATH_MAX_AGE}s")
+            logger.info(f"  ⚡ Fast path age: 0.0-{FAST_PATH_MAX_AGE}s (FIXED: includes newborn tokens)")
             logger.info(f"  ⚡ Fast path velocity: {self.filters['min_recent_velocity_sol_per_sec'] * FAST_PATH_VELOCITY_MULT:.1f} SOL/s ({FAST_PATH_VELOCITY_MULT}x stricter)")
             logger.info(f"  ⚡ Fast path skips: Holder checks, 3s sleep")
+            logger.info(f"  ⚡ Pending tokens get 2nd chance at fast path")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
