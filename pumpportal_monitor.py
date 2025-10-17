@@ -456,9 +456,9 @@ class PumpPortalMonitor:
             logger.info(f"⚡ FAST PATH activated for {mint[:8]}... (age: {token_age:.1f}s)")
             self.tokens_fast_path += 1
             
-            # If token is very young, wait for RPC to index
-            if token_age < 2.0:
-                wait_time = 2.0 - token_age
+            # If token is very young, wait for RPC to index (increased from 2.0s to 3.0s)
+            if token_age < 3.0:
+                wait_time = 3.0 - token_age
                 logger.info(f"⏳ Token very young ({token_age:.1f}s), waiting {wait_time:.1f}s for RPC indexing...")
                 await asyncio.sleep(wait_time)
                 # Update age after wait
