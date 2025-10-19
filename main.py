@@ -1,10 +1,10 @@
 """
-Main Orchestrator - LATENCY OPTIMIZED + FAST PATH FIX
-✅ Parallelized pre-buy checks (liquidity + velocity + decimals)
-✅ Dynamic priority fees based on token age (<15s = critical)
-✅ FIX: Retry curve_not_found for fast path tokens (0.8s retry)
-✅ Entry price bookkeeping + Stop loss with source checking
-✅ TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE
+Main Orchestrator - STAGE 1 & 2 OPTIMIZED
+✅ Decision time metric (measure speed)
+✅ No-movement exit (exit dead tokens at 9s)
+✅ Fast retry sequence (150ms → 300ms → 500ms)
+✅ Non-blocking liquidity (trust event data, validate after)
+✅ All previous optimizations (parallel checks, dynamic priority, fast path)
 """
 
 import asyncio
@@ -41,7 +41,6 @@ except ImportError:
     EXTREME_TP_PERCENT = 150.0
     TRAIL_START_PERCENT = 100.0
     TRAIL_GIVEBACK_PERCENT = 50.0
-    logger.warning("⚠️ Profit protection settings not in config.py, using defaults")
 
 from wallet import WalletManager
 from dex import PumpFunDEX
@@ -105,12 +104,12 @@ class Position:
         self.entry_token_price_sol = 0
 
 class SniperBot:
-    """Main sniper bot orchestrator - LATENCY OPTIMIZED + FAST PATH FIX"""
+    """Main sniper bot orchestrator - STAGE 1 & 2 OPTIMIZED"""
     
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - LATENCY OPTIMIZED + FAST PATH FIX")
+        logger.info("🚀 INITIALIZING SNIPER BOT - STAGE 1 & 2 OPTIMIZED")
         logger.info("=" * 60)
         
         self.wallet = WalletManager()
@@ -168,10 +167,13 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: LATENCY OPTIMIZED + VELOCITY + TIMER + FAIL-FAST + FAST PATH")
+        logger.info(f"  • Strategy: STAGE 1 & 2 OPTIMIZED (Decision metric + No-movement + Fast retries + Non-blocking)")
         logger.info(f"  • ⚡ Parallelized checks: liquidity + velocity + decimals")
         logger.info(f"  • ⚡ Dynamic priority: {PRIORITY_FEE_CRITICAL} SOL (<{PRIORITY_FEE_AGE_THRESHOLD}s), {PRIORITY_FEE_NORMAL} SOL otherwise")
-        logger.info(f"  • ⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'} (3.0s RPC wait + 0.8s retry)")
+        logger.info(f"  • ⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'} (1.5s RPC wait + fast retries)")
+        logger.info(f"  • ⚡ Fast retries: 150ms → 300ms → 500ms (vs old 800ms)")
+        logger.info(f"  • ⚡ Non-blocking liquidity: Trust event data, validate after")
+        logger.info(f"  • 💀 No-movement exit: <0.5% change for 6s → exit")
         logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
@@ -316,17 +318,16 @@ class SniperBot:
                 self.telegram_polling_task = asyncio.create_task(self.telegram.start_polling())
                 logger.info("✅ Telegram bot initialized")
                 
-                # CRITICAL FIX: Wait for telegram to be ready before sending
                 await asyncio.sleep(2)
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - LATENCY OPTIMIZED + FAST PATH FIX\n"
+                    "🚀 Bot started - STAGE 1 & 2 OPTIMIZED\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"⚡ Priority: {PRIORITY_FEE_CRITICAL} SOL (age under {PRIORITY_FEE_AGE_THRESHOLD}s)\n"
-                    f"⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'} (3.0s wait + retry)\n"
-                    f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s\n"
+                    f"⚡ RPC wait: 1.5s (was 5s)\n"
+                    f"⚡ Fast retries: 150→300→500ms\n"
+                    f"💀 No-movement exit enabled\n"
                     f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s\n"
                     "Type /help for commands"
                 )
@@ -418,12 +419,12 @@ class SniperBot:
     
     async def on_token_found(self, token_data: Dict):
         """
-        Handle new token found - LATENCY OPTIMIZED + FAST PATH FIX
-        ✅ Parallelized checks (liquidity + velocity + decimals)
-        ✅ Dynamic priority fees based on token age
-        ✅ FIX: Retry curve_not_found for fast path tokens
+        Handle new token found - STAGE 1 & 2 OPTIMIZED
+        ✅ Decision time metric
+        ✅ Fast retry sequence (150→300→500ms)
+        ✅ Non-blocking liquidity (trust event, validate after)
         """
-        detection_start = time.time()
+        detection_start = time.time()  # STAGE 1: Decision time metric
         
         try:
             mint = token_data['mint']
@@ -476,13 +477,7 @@ class SniperBot:
             if len(name) < 3:
                 return
             
-            # ===================================================================
-            # LATENCY OPTIMIZATION #1: PARALLELIZE PRE-BUY CHECKS
-            # Run liquidity + velocity + decimals checks SIMULTANEOUSLY
-            # Saves 0.3-0.5 seconds per trade
-            # ===================================================================
-            
-            # Get token age for velocity check and priority fee decision
+            # Get token age
             token_age = None
             if 'data' in token_data and 'age' in token_data['data']:
                 token_age = token_data['data']['age']
@@ -513,29 +508,64 @@ class SniperBot:
                 )
             )
             
-            # Velocity check needs curve data, so we wait for liquidity first
-            # But we can start the decimals fetch immediately
             decimals_task = asyncio.create_task(
                 self.wallet.get_token_decimals_async(mint)
             )
             
-            # Wait for liquidity check (needed for velocity)
-            passed, reason, curve_data = await liquidity_task
+            # ============================================================
+            # STAGE 2: NON-BLOCKING LIQUIDITY
+            # Trust event data for immediate go-ahead, validate after
+            # ============================================================
+            estimated_sol_raised = token_data.get('data', {}).get('vSolInBondingCurve', 0) if 'data' in token_data else token_data.get('vSolInBondingCurve', 0)
             
-            # ===================================================================
-            # FAST PATH FIX: Retry curve_not_found with 0.8s delay
-            # Newborn curves (from fast path) often need just a bit more time
-            # ===================================================================
+            if estimated_sol_raised >= MIN_LIQUIDITY_SOL:
+                logger.info(f"✅ Event data shows {estimated_sol_raised:.4f} SOL raised (trust mode)")
+                
+                # Use event data for immediate go-ahead
+                raw_entry_price = token_data.get('data', {}).get('price', 0) if 'data' in token_data else token_data.get('price', 0)
+                
+                curve_data = {
+                    'sol_raised': estimated_sol_raised,
+                    'price_lamports_per_atomic': raw_entry_price if raw_entry_price > 0 else 0.0000001,
+                    'sol_in_curve': estimated_sol_raised,
+                    'trusted_from_event': True
+                }
+                
+                # Validate in background
+                asyncio.create_task(self._validate_liquidity_background(mint, liquidity_task))
+                
+                passed = True
+                reason = "trusted_from_event"
+            else:
+                # Low liquidity in event - do blocking validation
+                logger.info(f"⚠️ Low event liquidity ({estimated_sol_raised:.4f} SOL), doing blocking check...")
+                passed, reason, curve_data = await liquidity_task
+            
+            # ============================================================
+            # STAGE 2: FAST RETRY SEQUENCE
+            # 150ms → 300ms → 500ms (vs old 800ms single retry)
+            # ============================================================
             if not passed and str(reason) == "curve_not_found":
-                logger.info(f"⏳ Curve not found, retrying in 0.8s... (likely fast path token)")
-                await asyncio.sleep(0.8)
-                passed, reason, curve_data = await asyncio.to_thread(
-                    self.curve_reader.validate_liquidity,
-                    mint,
-                    BUY_AMOUNT_SOL,
-                    LIQUIDITY_MULTIPLIER,
-                    MIN_LIQUIDITY_SOL
-                )
+                logger.info(f"⏳ Curve not found, starting fast retry sequence...")
+                
+                for attempt, retry_delay in enumerate([0.15, 0.30, 0.50], 1):
+                    logger.info(f"   Retry #{attempt} in {retry_delay*1000:.0f}ms...")
+                    await asyncio.sleep(retry_delay)
+                    
+                    passed, reason, curve_data = await asyncio.to_thread(
+                        self.curve_reader.validate_liquidity,
+                        mint,
+                        BUY_AMOUNT_SOL,
+                        LIQUIDITY_MULTIPLIER,
+                        MIN_LIQUIDITY_SOL
+                    )
+                    
+                    if passed:
+                        logger.info(f"✅ Curve found on retry #{attempt}")
+                        break
+                
+                if not passed:
+                    logger.warning(f"❌ Curve still not found after 3 retries (0.95s total)")
             
             if not passed:
                 logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
@@ -543,12 +573,7 @@ class SniperBot:
             
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
             
-            # ===================================================================
-            # FAST PATH FIX #2: Skip velocity recheck for fast path tokens
-            # Monitor already validated velocity at detection (stricter 4.5 SOL/s)
-            # Rechecking after 5.8s wait gives false negatives as velocity cools
-            # Fast path tokens are pre-validated with 2.25x stricter velocity gate!
-            # ===================================================================
+            # Velocity check
             is_fast_path = token_data.get('fast_path', False)
             
             if is_fast_path:
@@ -556,7 +581,6 @@ class SniperBot:
                 velocity_passed = True
                 velocity_reason = "fast_path_validated_at_detection"
             else:
-                # Normal path: run velocity check
                 velocity_task = asyncio.create_task(
                     asyncio.to_thread(
                         self.velocity_checker.check_velocity,
@@ -565,20 +589,15 @@ class SniperBot:
                         token_age
                     )
                 )
-                
-                # Wait for velocity check to complete
                 velocity_passed, velocity_reason = await velocity_task
             
-            # Wait for decimals task to complete (we started it in parallel earlier)
             token_decimals = await decimals_task
             
-            # Now check velocity results
             if not velocity_passed:
                 logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
                 logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
                 return
             
-            # Handle decimals
             if isinstance(token_decimals, tuple):
                 token_decimals = token_decimals[0]
             if not token_decimals or token_decimals == 0:
@@ -586,11 +605,6 @@ class SniperBot:
             
             logger.info(f"⚡ Parallel checks complete! Token {mint[:8]}... passed all gates")
             
-            # ===================================================================
-            # END PARALLELIZATION
-            # ===================================================================
-            
-            # Store estimated entry price
             raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
             estimated_entry_price = raw_entry_price
             
@@ -626,11 +640,6 @@ class SniperBot:
             if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                 bonding_curve_key = token_data['data']['bondingCurveKey']
             
-            # ===================================================================
-            # LATENCY OPTIMIZATION #2: DYNAMIC PRIORITY FEES
-            # Pay more for young tokens to get faster confirmation
-            # Saves 1-2 seconds on blockchain confirmation
-            # ===================================================================
             urgency = "critical" if token_age < PRIORITY_FEE_AGE_THRESHOLD else "normal"
             logger.info(f"⚡ Priority urgency: {urgency} (fee: {PRIORITY_FEE_CRITICAL if urgency == 'critical' else PRIORITY_FEE_NORMAL} SOL)")
             
@@ -641,6 +650,11 @@ class SniperBot:
                 slippage=30,
                 urgency=urgency
             )
+            
+            # STAGE 1: Log decision time
+            if signature:
+                decision_time_ms = (time.time() - detection_start) * 1000
+                logger.info(f"⚡ DECISION TIME: {decision_time_ms:.0f}ms (detection→tx sent)")
             
             bought_tokens = 0
             actual_sol_spent = BUY_AMOUNT_SOL
@@ -794,8 +808,25 @@ class SniperBot:
             logger.error(traceback.format_exc())
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
+    async def _validate_liquidity_background(self, mint: str, liquidity_task):
+        """STAGE 2: Validate liquidity in background - exit position if it fails"""
+        try:
+            passed, reason, curve_data = await liquidity_task
+            
+            if not passed:
+                logger.error(f"🚨 BACKGROUND LIQUIDITY FAILED for {mint[:8]}: {reason}")
+                
+                if mint in self.positions:
+                    logger.error(f"🚨 Exiting position immediately - liquidity contradiction!")
+                    await self._close_position_full(mint, reason="failed_liquidity_validation")
+            else:
+                logger.debug(f"✅ Background liquidity validated for {mint[:8]}: {curve_data.get('sol_raised', 0):.4f} SOL")
+                
+        except Exception as e:
+            logger.error(f"Background validation error for {mint[:8]}: {e}")
+    
     async def _monitor_position(self, mint: str):
-        """Monitor position - TIMER + FAIL-FAST EXIT STRATEGY"""
+        """Monitor position - TIMER + FAIL-FAST + NO-MOVEMENT EXIT"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -805,6 +836,7 @@ class SniperBot:
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} lamports/atomic")
             logger.info(f"   Exit Time: {position.exit_time - position.entry_time:.1f}s from now")
             logger.info(f"   Fail-fast check: {FAIL_FAST_CHECK_TIME}s")
+            logger.info(f"   💀 No-movement exit: <0.5% change for 6s")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
             
             check_count = 0
@@ -884,6 +916,29 @@ class SniperBot:
                     consecutive_data_failures = 0
                     position.last_valid_price = current_token_price_sol
                     position.last_price_update = time.time()
+                    
+                    # ============================================================
+                    # STAGE 1: NO-MOVEMENT EXIT
+                    # Exit if price doesn't move >0.5% for 6 seconds
+                    # ============================================================
+                    if check_count >= 6:  # After ~3 seconds of monitoring
+                        if position.last_checked_price > 0:
+                            price_change_from_last = abs(current_token_price_sol - position.last_checked_price) / position.last_checked_price
+                            
+                            if price_change_from_last < 0.005:  # Less than 0.5% movement
+                                position.consecutive_no_movement += 1
+                                
+                                if position.consecutive_no_movement >= 4:  # 4 checks = ~6s stuck
+                                    logger.warning(
+                                        f"💀 NO MOVEMENT for {mint[:8]}... "
+                                        f"({position.consecutive_no_movement * 1.5:.0f}s stuck at {price_change:+.1f}%)"
+                                    )
+                                    await self._close_position_full(mint, reason="no_movement")
+                                    break
+                            else:
+                                position.consecutive_no_movement = 0
+                        
+                        position.last_checked_price = current_token_price_sol
                     
                     if check_count == 1:
                         logger.info(f"📊 First price check for {mint[:8]}...")
@@ -1270,251 +1325,6 @@ class SniperBot:
                 del self.positions[mint]
                 self.velocity_checker.clear_history(mint)
     
-    async def _execute_partial_sell(self, mint: str, sell_percent: float, target_name: str, current_pnl: float) -> bool:
-        """Execute partial sell with priority fees (LEGACY - kept for compatibility)"""
-        try:
-            position = self.positions.get(mint)
-            if not position:
-                return False
-            
-            from decimal import Decimal, ROUND_DOWN
-            token_decimals = self.wallet.get_token_decimals(mint)
-            raw = Decimal(str(position.remaining_tokens)) * Decimal(str(sell_percent)) / Decimal("100")
-            units = (raw * (Decimal(10) ** token_decimals)).quantize(Decimal("1"), rounding=ROUND_DOWN)
-            ui_tokens_to_sell = float(units / (Decimal(10) ** token_decimals))
-            
-            if ui_tokens_to_sell <= 0:
-                logger.warning(f"{target_name}: 0 tokens after flooring, skipping")
-                return False
-            
-            logger.info(f"💰 Executing {target_name} partial sell for {mint[:8]}...")
-            logger.info(f"   Selling: {sell_percent}% ({ui_tokens_to_sell:,.2f} tokens)")
-            logger.info(f"   P&L: {current_pnl:+.1f}%")
-            
-            pre_sol_balance = self.wallet.get_sol_balance()
-            pre_token_balance = self.wallet.get_token_balance(mint)
-            
-            signature = await self.trader.create_sell_transaction(
-                mint=mint,
-                token_amount=ui_tokens_to_sell,
-                slippage=50,
-                token_decimals=token_decimals,
-                urgency="high"
-            )
-            
-            if signature and not signature.startswith("1111111"):
-                asyncio.create_task(
-                    self._confirm_sell_background(
-                        signature, mint, target_name, sell_percent,
-                        ui_tokens_to_sell, current_pnl,
-                        pre_sol_balance, pre_token_balance
-                    )
-                )
-                
-                logger.info(f"✅ {target_name} sell submitted, confirming in background...")
-                return True
-            else:
-                logger.error(f"Failed to submit {target_name} sell")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Partial sell error: {e}")
-            return False
-    
-    async def _confirm_sell_background(
-        self, signature: str, mint: str, target_name: str,
-        sell_percent: float, tokens_sold: float, current_pnl: float,
-        pre_sol_balance: float, pre_token_balance: float
-    ):
-        """Track ACTUAL SOL received from wallet balance changes (LEGACY)"""
-        try:
-            position = self.positions.get(mint)
-            if not position:
-                logger.warning(f"Position {mint[:8]} disappeared during confirmation")
-                return
-            
-            logger.info(f"⏳ Confirming {target_name} sell for {mint[:8]}...")
-            logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
-            
-            first_seen = None
-            start = time.time()
-            confirmed = False
-            
-            while time.time() - start < 25:
-                try:
-                    status = self.trader.client.get_signature_statuses([signature])
-                    if status and status.value and status.value[0]:
-                        if first_seen is None:
-                            first_seen = time.time() - start
-                        
-                        confirmation_status = status.value[0].confirmation_status
-                        if confirmation_status in ["confirmed", "finalized"]:
-                            if status.value[0].err:
-                                logger.error(f"❌ {target_name} sell FAILED: {status.value[0].err}")
-                                break
-                            else:
-                                confirmed = True
-                                break
-                except Exception as e:
-                    logger.debug(f"Status check error: {e}")
-                
-                await asyncio.sleep(1)
-            
-            if not confirmed:
-                elapsed = time.time() - start
-                if first_seen is None:
-                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s")
-                else:
-                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm")
-            
-            if confirmed:
-                txd = await self._get_transaction_deltas(signature, mint)
-                if txd["confirmed"]:
-                    actual_sol_received = txd["sol_delta"] if txd["sol_delta"] > 0 else None
-                    actual_tokens_sold = abs(txd["token_delta"]) if txd["token_delta"] < 0 else None
-                else:
-                    actual_sol_received, actual_tokens_sold = None, None
-
-                if actual_sol_received is None:
-                    logger.warning(f"Using wallet balance fallback for SOL")
-                    await asyncio.sleep(2)
-                    post_sol_balance = self.wallet.get_sol_balance()
-                    actual_sol_received = post_sol_balance - pre_sol_balance
-
-                if actual_tokens_sold is None:
-                    logger.warning(f"Using wallet balance fallback for tokens")
-                    await asyncio.sleep(2)
-                    current_token_balance = self.wallet.get_token_balance(mint)
-                    balance_decrease = pre_token_balance - current_token_balance
-                    actual_tokens_sold = max(0.0, balance_decrease)
-                    position.remaining_tokens = max(0.0, current_token_balance)
-                else:
-                    position.remaining_tokens = max(0.0, position.remaining_tokens - actual_tokens_sold)
-                
-                base_sol_for_portion = position.amount_sol * (sell_percent / 100)
-                actual_profit_sol = actual_sol_received - base_sol_for_portion
-                
-                position.sell_signatures.append(signature)
-                position.realized_pnl_sol += actual_profit_sol
-                self.total_realized_sol += actual_profit_sol
-                
-                position.partial_sells[target_name] = {
-                    'pnl': current_pnl,
-                    'time': time.time(),
-                    'percent_sold': sell_percent
-                }
-                position.total_sold_percent += sell_percent
-                
-                if target_name in position.pending_sells:
-                    position.pending_sells.remove(target_name)
-                if target_name in position.pending_token_amounts:
-                    del position.pending_token_amounts[target_name]
-                
-                self.consecutive_losses = 0
-                if target_name in position.retry_counts:
-                    del position.retry_counts[target_name]
-                
-                self.tracker.log_partial_sell(
-                    mint=mint,
-                    target_name=target_name,
-                    percent_sold=sell_percent,
-                    tokens_sold=actual_tokens_sold,
-                    sol_received=actual_sol_received,
-                    pnl_sol=actual_profit_sol
-                )
-                
-                logger.info(f"✅ {target_name} CONFIRMED for {mint[:8]}")
-                logger.info(f"   Received: {actual_sol_received:.4f} SOL")
-                logger.info(f"   Profit: {actual_profit_sol:+.4f} SOL")
-                
-                if self.telegram:
-                    msg = (
-                        f"💰 {target_name} CONFIRMED!\n"
-                        f"Token: {mint[:16]}...\n"
-                        f"Sold: {sell_percent}%\n"
-                        f"P&L: {current_pnl:+.1f}%\n"
-                        f"Profit: {actual_profit_sol:+.4f} SOL\n"
-                        f"TX: https://solscan.io/tx/{signature}"
-                    )
-                    await self.telegram.send_message(msg)
-                
-                if position.total_sold_percent >= 100:
-                    logger.info(f"✅ Position fully closed")
-                    position.status = 'completed'
-            else:
-                logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
-                
-                retry_count = position.retry_counts.get(target_name, 0)
-                if retry_count < 2:
-                    position.retry_counts[target_name] = retry_count + 1
-                    logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3) with critical urgency")
-                    
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-                    
-                    token_decimals = self.wallet.get_token_decimals(mint)
-                    ui_tokens_to_sell = round(position.remaining_tokens * (sell_percent / 100), token_decimals)
-                    
-                    retry_signature = await self.trader.create_sell_transaction(
-                        mint=mint,
-                        token_amount=ui_tokens_to_sell,
-                        slippage=50,
-                        token_decimals=token_decimals,
-                        urgency="critical"
-                    )
-                    
-                    if retry_signature and not retry_signature.startswith("1111111"):
-                        position.pending_sells.add(target_name)
-                        position.pending_token_amounts[target_name] = ui_tokens_to_sell
-                        
-                        asyncio.create_task(
-                            self._confirm_sell_background(
-                                retry_signature, mint, target_name, sell_percent,
-                                ui_tokens_to_sell, current_pnl,
-                                pre_sol_balance, pre_token_balance
-                            )
-                        )
-                else:
-                    logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
-                    
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-                    
-                    position.partial_sells[target_name] = {
-                        'pnl': current_pnl,
-                        'time': time.time(),
-                        'percent_sold': 0,
-                        'status': 'failed',
-                        'attempts': retry_count + 1
-                    }
-                    
-                    if self.telegram:
-                        await self.telegram.send_message(
-                            f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
-                            f"Max retries exceeded - manual intervention needed"
-                        )
-                
-        except Exception as e:
-            logger.error(f"Confirmation error for {mint[:8]}: {e}")
-            if mint in self.positions:
-                position = self.positions[mint]
-                if target_name in position.pending_sells:
-                    position.pending_sells.remove(target_name)
-                if target_name in position.pending_token_amounts:
-                    del position.pending_token_amounts[target_name]
-                
-                position.partial_sells[target_name] = {
-                    'pnl': current_pnl,
-                    'time': time.time(),
-                    'percent_sold': 0,
-                    'status': 'error',
-                    'error': str(e)
-                }
-    
     async def _close_position(self, mint: str, reason: str = "manual"):
         """Wrapper for telegram compatibility"""
         await self._close_position_full(mint, reason)
@@ -1529,11 +1339,11 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running - LATENCY OPTIMIZED + FAST PATH FIX")
-            logger.info(f"⚡ Parallelized checks enabled")
-            logger.info(f"⚡ Dynamic priority: {PRIORITY_FEE_CRITICAL} SOL (<{PRIORITY_FEE_AGE_THRESHOLD}s)")
-            logger.info(f"⚡ Fast path: 3.0s RPC wait + 0.8s curve retry")
-            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s")
+            logger.info("✅ Bot running - STAGE 1 & 2 OPTIMIZED")
+            logger.info(f"⚡ Decision time metric enabled")
+            logger.info(f"⚡ No-movement exit enabled")
+            logger.info(f"⚡ Fast retries: 150→300→500ms")
+            logger.info(f"⚡ Non-blocking liquidity enabled")
             logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
