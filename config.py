@@ -1,5 +1,5 @@
 """
-config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION + LATENCY OPTIMIZED
+config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION + LATENCY OPTIMIZED + RPC OPTIMIZATION
 """
 
 import os
@@ -26,6 +26,21 @@ BACKUP_RPC_ENDPOINTS = [
     os.getenv('BACKUP_RPC_1', 'https://api.mainnet-beta.solana.com'),
     os.getenv('BACKUP_RPC_2', 'https://solana-api.projectserum.com')
 ]
+
+# ============================================
+# RPC OPTIMIZATION (CHATGPT RECOMMENDATIONS)
+# ============================================
+# CHANGED: Reduced from 30s to 5s for fail-fast retries
+# Each retry attempt should fail quickly so we can retry faster
+RPC_TIMEOUT = int(os.getenv('RPC_TIMEOUT', '5'))  # Reduced from 30
+
+# NEW: Per-call timeout for curve reads (fail fast, retry fast)
+RPC_CURVE_READ_TIMEOUT = float(os.getenv('RPC_CURVE_READ_TIMEOUT', '1.5'))  # 1.5s per attempt
+
+# NEW: Use "processed" commitment for price reads (fastest)
+# Options: "processed" (fastest), "confirmed" (balanced), "finalized" (slowest)
+RPC_COMMITMENT_READS = os.getenv('RPC_COMMITMENT_READS', 'processed')  # Fast reads
+RPC_COMMITMENT_WRITES = os.getenv('RPC_COMMITMENT_WRITES', 'confirmed')  # Safe writes
 
 # ============================================
 # TRADING PARAMETERS
@@ -104,13 +119,14 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
 # ============================================
 # PROFIT PROTECTION SETTINGS (NEW!)
 # ============================================
-
+# Extreme take profit - exit immediately if hit (e.g., +150%)
 EXTREME_TP_PERCENT = float(os.getenv('EXTREME_TP_PERCENT', '150.0'))
 
-
+# Trailing stop activation - start trailing when P&L reaches this (e.g., +100%)
 TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '100.0'))
-TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '50.0'))
 
+# Trailing stop giveback - exit if drops this much from peak (e.g., 50pp from +120% peak)
+TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '50.0'))
 
 # ============================================
 # FAIL-FAST EXIT SETTINGS
@@ -235,7 +251,6 @@ NOTIFY_PROFIT_THRESHOLD = 50
 # ============================================
 MAX_RETRIES = 3
 RETRY_DELAY = 1
-RPC_TIMEOUT = 30
 
 # ============================================
 # LOGGING
