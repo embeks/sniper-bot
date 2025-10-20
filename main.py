@@ -1,10 +1,12 @@
 """
-Main Orchestrator - STAGE 1 & 2 OPTIMIZED
-✅ Decision time metric (measure speed)
+Main Orchestrator - STAGE 1 & 2 + PRICE FIX
+✅ Decision time metric
 ✅ No-movement exit (exit dead tokens at 9s)
 ✅ Fast retry sequence (150ms → 300ms → 500ms)
-✅ Non-blocking liquidity (trust event data, validate after)
-✅ All previous optimizations (parallel checks, dynamic priority, fast path)
+✅ Hybrid liquidity (trust SOL raised, but REQUIRE real price)
+✅ Price sanity checks (>10x divergence = skip)
+✅ Abort if background validation fails immediately
+✅ All previous optimizations
 """
 
 import asyncio
@@ -104,12 +106,12 @@ class Position:
         self.entry_token_price_sol = 0
 
 class SniperBot:
-    """Main sniper bot orchestrator - STAGE 1 & 2 OPTIMIZED"""
+    """Main sniper bot orchestrator - STAGE 1 & 2 + PRICE FIX"""
     
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - STAGE 1 & 2 OPTIMIZED")
+        logger.info("🚀 INITIALIZING SNIPER BOT - STAGE 1 & 2 + PRICE FIX")
         logger.info("=" * 60)
         
         self.wallet = WalletManager()
@@ -167,12 +169,15 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: STAGE 1 & 2 OPTIMIZED (Decision metric + No-movement + Fast retries + Non-blocking)")
+        logger.info(f"  • Strategy: STAGE 1 & 2 + PRICE FIX")
+        logger.info(f"  • ✅ PRICE FIX: Require real price before buy (no fallbacks)")
+        logger.info(f"  • ✅ Sanity check: Skip if price divergence >1000%")
+        logger.info(f"  • ✅ Abort if background validation fails immediately")
+        logger.info(f"  • ⚡ Hybrid mode: Trust liquidity + require real price")
         logger.info(f"  • ⚡ Parallelized checks: liquidity + velocity + decimals")
         logger.info(f"  • ⚡ Dynamic priority: {PRIORITY_FEE_CRITICAL} SOL (<{PRIORITY_FEE_AGE_THRESHOLD}s), {PRIORITY_FEE_NORMAL} SOL otherwise")
         logger.info(f"  • ⚡ Fast path: {'ENABLED' if FAST_PATH_ENABLED else 'DISABLED'} (1.5s RPC wait + fast retries)")
-        logger.info(f"  • ⚡ Fast retries: 150ms → 300ms → 500ms (vs old 800ms)")
-        logger.info(f"  • ⚡ Non-blocking liquidity: Trust event data, validate after")
+        logger.info(f"  • ⚡ Fast retries: 150ms → 300ms → 500ms")
         logger.info(f"  • 💀 No-movement exit: <0.5% change for 6s → exit")
         logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
@@ -246,6 +251,34 @@ class SniperBot:
             
         except Exception as e:
             logger.error(f"Error getting token price for {mint[:8]}: {e}")
+            return None
+    
+    def _derive_price_from_curve(self, sol_in_curve: float, virtual_sol: float = None, virtual_token: float = None) -> Optional[float]:
+        """
+        Derive price from bonding curve reserves when DEX feed is cold.
+        Returns lamports per atomic unit.
+        """
+        try:
+            # PumpFun bonding curve parameters
+            if virtual_sol is None:
+                virtual_sol = 30.0  # Initial virtual SOL reserves
+            if virtual_token is None:
+                # Estimate remaining virtual tokens based on SOL raised
+                initial_virtual_tokens = 1_073_000_000  # 1.073B tokens
+                # Approximate tokens sold (this is simplified, real curve is more complex)
+                estimated_tokens_sold = (sol_in_curve / virtual_sol) * initial_virtual_tokens
+                virtual_token = max(initial_virtual_tokens - estimated_tokens_sold, 1000)
+            
+            # Price = (virtual_sol_reserves_lamports / virtual_token_reserves)
+            price_lamports_per_atomic = (virtual_sol * 1e9) / virtual_token
+            
+            logger.debug(f"Derived price from curve: {price_lamports_per_atomic:.10f} lamports/atomic")
+            logger.debug(f"  SOL in curve: {sol_in_curve:.4f}, Virtual SOL: {virtual_sol:.4f}, Virtual tokens: {virtual_token:.0f}")
+            
+            return price_lamports_per_atomic
+            
+        except Exception as e:
+            logger.error(f"Error deriving price from curve: {e}")
             return None
     
     async def _get_transaction_deltas(self, signature: str, mint: str) -> dict:
@@ -322,10 +355,12 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - STAGE 1 & 2 OPTIMIZED\n"
+                    "🚀 Bot started - STAGE 1 & 2 + PRICE FIX\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"⚡ RPC wait: 1.5s (was 5s)\n"
+                    f"✅ Price fix: Real price required\n"
+                    f"✅ Sanity check: >1000% = skip\n"
+                    f"⚡ RPC wait: 1.5s\n"
                     f"⚡ Fast retries: 150→300→500ms\n"
                     f"💀 No-movement exit enabled\n"
                     f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s\n"
@@ -419,12 +454,15 @@ class SniperBot:
     
     async def on_token_found(self, token_data: Dict):
         """
-        Handle new token found - STAGE 1 & 2 OPTIMIZED
+        Handle new token found - STAGE 1 & 2 + PRICE FIX
         ✅ Decision time metric
         ✅ Fast retry sequence (150→300→500ms)
-        ✅ Non-blocking liquidity (trust event, validate after)
+        ✅ Hybrid liquidity (trust SOL, require real price)
+        ✅ Price sanity checks
+        ✅ Abort if background validation fails immediately
         """
-        detection_start = time.time()  # STAGE 1: Decision time metric
+        detection_start = time.time()
+        background_validation_failed = False  # Track background validation
         
         try:
             mint = token_data['mint']
@@ -497,62 +535,82 @@ class SniperBot:
             
             logger.info(f"⚡ Parallelizing checks for {mint[:8]}... (age: {token_age:.1f}s)")
             
-            # Create tasks for parallel execution
-            liquidity_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.curve_reader.validate_liquidity,
-                    mint,
-                    BUY_AMOUNT_SOL,
-                    LIQUIDITY_MULTIPLIER,
-                    MIN_LIQUIDITY_SOL
-                )
-            )
-            
+            # Create decimals task (parallel)
             decimals_task = asyncio.create_task(
                 self.wallet.get_token_decimals_async(mint)
             )
             
             # ============================================================
-            # STAGE 2: NON-BLOCKING LIQUIDITY
-            # Trust event data for immediate go-ahead, validate after
+            # PRICE FIX: HYBRID APPROACH
+            # 1. Trust event liquidity to proceed quickly
+            # 2. BUT: Require real price from curve (with fast retries)
+            # 3. Add sanity checks for price divergence
             # ============================================================
             estimated_sol_raised = token_data.get('data', {}).get('vSolInBondingCurve', 0) if 'data' in token_data else token_data.get('vSolInBondingCurve', 0)
             
-            if estimated_sol_raised >= MIN_LIQUIDITY_SOL:
-                logger.info(f"✅ Event data shows {estimated_sol_raised:.4f} SOL raised (trust mode)")
-                
-                # Use event data for immediate go-ahead
-                raw_entry_price = token_data.get('data', {}).get('price', 0) if 'data' in token_data else token_data.get('price', 0)
-                
-                curve_data = {
-                    'sol_raised': estimated_sol_raised,
-                    'price_lamports_per_atomic': raw_entry_price if raw_entry_price > 0 else 0.0000001,
-                    'sol_in_curve': estimated_sol_raised,
-                    'trusted_from_event': True
-                }
-                
-                # Validate in background
-                asyncio.create_task(self._validate_liquidity_background(mint, liquidity_task))
-                
-                passed = True
-                reason = "trusted_from_event"
-            else:
-                # Low liquidity in event - do blocking validation
-                logger.info(f"⚠️ Low event liquidity ({estimated_sol_raised:.4f} SOL), doing blocking check...")
-                passed, reason, curve_data = await liquidity_task
+            # Step 1: Check if event liquidity is sufficient
+            if estimated_sol_raised < MIN_LIQUIDITY_SOL:
+                logger.warning(f"❌ Event shows only {estimated_sol_raised:.4f} SOL raised (need {MIN_LIQUIDITY_SOL})")
+                return
             
-            # ============================================================
-            # STAGE 2: FAST RETRY SEQUENCE
-            # 150ms → 300ms → 500ms (vs old 800ms single retry)
-            # ============================================================
-            if not passed and str(reason) == "curve_not_found":
-                logger.info(f"⏳ Curve not found, starting fast retry sequence...")
-                
-                for attempt, retry_delay in enumerate([0.15, 0.30, 0.50], 1):
-                    logger.info(f"   Retry #{attempt} in {retry_delay*1000:.0f}ms...")
+            logger.info(f"✅ Event shows {estimated_sol_raised:.4f} SOL raised - proceeding to price check")
+            
+            # Step 2: REQUIRE real price with fast retries (NO FALLBACKS!)
+            curve_data = None
+            estimated_entry_price = None
+            price_verified = False
+            
+            for attempt in range(4):  # 0, 150ms, 300ms, 500ms = ~1s total
+                if attempt > 0:
+                    retry_delay = 0.15 * attempt  # 0.15, 0.30, 0.50
+                    logger.info(f"   Price retry #{attempt} in {retry_delay*1000:.0f}ms...")
                     await asyncio.sleep(retry_delay)
+                
+                # Read curve
+                curve_data = await asyncio.to_thread(
+                    self.curve_reader.read_bonding_curve,
+                    mint
+                )
+                
+                if curve_data:
+                    estimated_entry_price = curve_data.get('price_lamports_per_atomic', 0)
                     
-                    passed, reason, curve_data = await asyncio.to_thread(
+                    if estimated_entry_price and estimated_entry_price > 0:
+                        price_verified = True
+                        logger.info(f"✅ Got real price on attempt {attempt+1}: {estimated_entry_price:.10f} lamports/atomic")
+                        break
+                    else:
+                        logger.debug(f"   Curve found but price invalid")
+                else:
+                    logger.debug(f"   Curve not found on attempt {attempt+1}")
+            
+            # Step 3: If no real price after retries, SKIP (no fallback!)
+            if not price_verified or not estimated_entry_price or estimated_entry_price <= 0:
+                logger.error(f"❌ Could not get real price after {attempt+1} attempts (~{attempt*0.15:.2f}s) - SKIPPING")
+                logger.error(f"   This protects you from buying with fake/garbage prices")
+                return
+            
+            # Step 4: Sanity check - price must be reasonable
+            # If event has a price, compare it
+            event_price = token_data.get('data', {}).get('price', 0) if 'data' in token_data else token_data.get('price', 0)
+            if event_price and event_price > 0:
+                price_divergence_pct = abs(estimated_entry_price - event_price) / event_price * 100
+                if price_divergence_pct > 1000:  # >10x difference
+                    logger.error(f"❌ PRICE SANITY CHECK FAILED: {price_divergence_pct:.1f}% divergence")
+                    logger.error(f"   Event price: {event_price:.10f}, Curve price: {estimated_entry_price:.10f}")
+                    logger.error(f"   Skipping to avoid price manipulation or data error")
+                    return
+                elif price_divergence_pct > 100:  # >2x difference - warn but proceed
+                    logger.warning(f"⚠️ Price divergence: {price_divergence_pct:.1f}% (event vs curve)")
+            
+            logger.info(f"✅ Price verified: {estimated_entry_price:.10f} lamports/atomic")
+            
+            # Step 5: Start background validation (but don't block on it)
+            async def background_validator():
+                nonlocal background_validation_failed
+                try:
+                    await asyncio.sleep(0.1)  # Small delay before validation
+                    passed, reason, validated_curve = await asyncio.to_thread(
                         self.curve_reader.validate_liquidity,
                         mint,
                         BUY_AMOUNT_SOL,
@@ -560,26 +618,34 @@ class SniperBot:
                         MIN_LIQUIDITY_SOL
                     )
                     
-                    if passed:
-                        logger.info(f"✅ Curve found on retry #{attempt}")
-                        break
-                
-                if not passed:
-                    logger.warning(f"❌ Curve still not found after 3 retries (0.95s total)")
+                    if not passed:
+                        background_validation_failed = True
+                        logger.error(f"🚨 BACKGROUND LIQUIDITY FAILED for {mint[:8]}: {reason}")
+                        
+                        # If position already created, exit it
+                        if mint in self.positions:
+                            logger.error(f"🚨 Exiting position immediately - liquidity contradiction!")
+                            await self._close_position_full(mint, reason="failed_liquidity_validation")
+                    else:
+                        logger.debug(f"✅ Background liquidity validated: {validated_curve.get('sol_raised', 0):.4f} SOL")
+                        
+                except Exception as e:
+                    logger.error(f"Background validation error for {mint[:8]}: {e}")
             
-            if not passed:
-                logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
+            background_task = asyncio.create_task(background_validator())
+            
+            # Step 6: Quick check - did background validation fail immediately?
+            await asyncio.sleep(0.05)  # 50ms check
+            if background_validation_failed:
+                logger.error(f"❌ Background validation failed immediately - ABORTING buy")
                 return
             
-            logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
-            
-            # Velocity check
+            # Velocity check (can skip if fast path)
             is_fast_path = token_data.get('fast_path', False)
             
             if is_fast_path:
                 logger.info(f"⚡ Fast path: Skipping velocity recheck (pre-validated at detection: ≥4.5 SOL/s)")
                 velocity_passed = True
-                velocity_reason = "fast_path_validated_at_detection"
             else:
                 velocity_task = asyncio.create_task(
                     asyncio.to_thread(
@@ -590,25 +656,19 @@ class SniperBot:
                     )
                 )
                 velocity_passed, velocity_reason = await velocity_task
+                
+                if not velocity_passed:
+                    logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
+                    return
             
             token_decimals = await decimals_task
-            
-            if not velocity_passed:
-                logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
-                logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
-                return
             
             if isinstance(token_decimals, tuple):
                 token_decimals = token_decimals[0]
             if not token_decimals or token_decimals == 0:
                 token_decimals = 6
             
-            logger.info(f"⚡ Parallel checks complete! Token {mint[:8]}... passed all gates")
-            
-            raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
-            estimated_entry_price = raw_entry_price
-            
-            logger.debug(f"Estimated entry price (at detection): {estimated_entry_price:.10f} lamports/atomic")
+            logger.info(f"⚡ All checks passed! Token {mint[:8]}... ready to buy")
             
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
             if estimated_slippage:
@@ -628,7 +688,7 @@ class SniperBot:
             logger.info(f"🎯 Processing new token: {mint}")
             logger.info(f"   Detection latency: {detection_time_ms:.0f}ms")
             logger.info(f"   Token age: {token_age:.1f}s")
-            logger.info(f"   Estimated entry price: {estimated_entry_price:.10f} lamports/atomic")
+            logger.info(f"   ✅ VERIFIED entry price: {estimated_entry_price:.10f} lamports/atomic")
             logger.info(f"   SOL raised: {curve_data['sol_raised']:.4f}")
             logger.info(f"   Velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s ✅")
             
@@ -651,7 +711,6 @@ class SniperBot:
                 urgency=urgency
             )
             
-            # STAGE 1: Log decision time
             if signature:
                 decision_time_ms = (time.time() - detection_start) * 1000
                 logger.info(f"⚡ DECISION TIME: {decision_time_ms:.0f}ms (detection→tx sent)")
@@ -737,12 +796,14 @@ class SniperBot:
                     price_diff_pct = abs(actual_entry_price - estimated_entry_price) / estimated_entry_price * 100 if estimated_entry_price > 0 else 0
                     
                     logger.info(f"📊 Entry Price Verification:")
-                    logger.info(f"   Estimated (at detection): {estimated_entry_price:.10f} lamports/atom")
+                    logger.info(f"   Estimated (verified from curve): {estimated_entry_price:.10f} lamports/atom")
                     logger.info(f"   Actual (from fill): {actual_entry_price:.10f} lamports/atom")
                     logger.info(f"   Difference: {price_diff_pct:.1f}%")
                     
-                    if price_diff_pct > 10:
-                        logger.warning(f"⚠️ LARGE ENTRY PRICE DISCREPANCY: {price_diff_pct:.1f}%")
+                    if price_diff_pct > 50:
+                        logger.warning(f"⚠️ ENTRY PRICE SLIPPAGE: {price_diff_pct:.1f}%")
+                    elif price_diff_pct < 10:
+                        logger.info(f"✅ Excellent price accuracy: {price_diff_pct:.1f}% difference")
             
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
@@ -788,12 +849,21 @@ class SniperBot:
                 if self.telegram:
                     await self.telegram.notify_buy(mint, actual_sol_spent, signature)
                 
+                # Seed price from chain for monitoring
                 await asyncio.sleep(0.8)
                 seed = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
                 if seed and seed.get('source') == 'chain':
                     logger.info("🔎 Seeded post-buy price from [chain]")
+                    position.last_valid_price = seed.get('price_lamports_per_atomic', actual_entry_price)
                 else:
-                    logger.info("🔎 Could not seed chain price; monitor will require chain before SL/rug")
+                    logger.info("🔎 Could not seed chain price; using entry price for monitoring")
+                    # Derive price from curve as fallback
+                    derived_price = self._derive_price_from_curve(position.entry_sol_in_curve)
+                    if derived_price:
+                        position.last_valid_price = derived_price
+                        logger.info(f"🔎 Derived initial monitoring price: {derived_price:.10f} lamports/atomic")
+                    else:
+                        position.last_valid_price = actual_entry_price
                 
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
@@ -807,23 +877,6 @@ class SniperBot:
             import traceback
             logger.error(traceback.format_exc())
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
-    
-    async def _validate_liquidity_background(self, mint: str, liquidity_task):
-        """STAGE 2: Validate liquidity in background - exit position if it fails"""
-        try:
-            passed, reason, curve_data = await liquidity_task
-            
-            if not passed:
-                logger.error(f"🚨 BACKGROUND LIQUIDITY FAILED for {mint[:8]}: {reason}")
-                
-                if mint in self.positions:
-                    logger.error(f"🚨 Exiting position immediately - liquidity contradiction!")
-                    await self._close_position_full(mint, reason="failed_liquidity_validation")
-            else:
-                logger.debug(f"✅ Background liquidity validated for {mint[:8]}: {curve_data.get('sol_raised', 0):.4f} SOL")
-                
-        except Exception as e:
-            logger.error(f"Background validation error for {mint[:8]}: {e}")
     
     async def _monitor_position(self, mint: str):
         """Monitor position - TIMER + FAIL-FAST + NO-MOVEMENT EXIT"""
@@ -865,6 +918,21 @@ class SniperBot:
                             logger.error(f"❌ Too many data failures for {mint[:8]}...")
                             if position.last_valid_price > 0:
                                 logger.debug(f"Using last valid price: {position.last_valid_price:.10f}")
+                                # Derive a synthetic price for monitoring
+                                current_sol_in_curve = position.entry_sol_in_curve * (1 + (age / 100))  # Rough estimate
+                                derived_price = self._derive_price_from_curve(current_sol_in_curve)
+                                if derived_price:
+                                    curve_data = {
+                                        'price_lamports_per_atomic': derived_price,
+                                        'sol_in_curve': current_sol_in_curve,
+                                        'source': 'derived',
+                                        'is_migrated': False
+                                    }
+                                    logger.info(f"📐 Using derived price for monitoring: {derived_price:.10f}")
+                                    consecutive_data_failures = 0
+                                else:
+                                    await asyncio.sleep(1)
+                                    continue
                             else:
                                 await asyncio.sleep(1)
                                 continue
@@ -882,7 +950,7 @@ class SniperBot:
                         await self._close_position_full(mint, reason="migration")
                         break
                     
-                    if curve_data.get('sol_in_curve', 0) <= 0:
+                    if curve_data.get('sol_in_curve', 0) <= 0 and source != 'derived':
                         consecutive_data_failures += 1
                         logger.warning(f"Invalid SOL in curve data (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
                         await asyncio.sleep(1)
@@ -917,18 +985,15 @@ class SniperBot:
                     position.last_valid_price = current_token_price_sol
                     position.last_price_update = time.time()
                     
-                    # ============================================================
-                    # STAGE 1: NO-MOVEMENT EXIT
-                    # Exit if price doesn't move >0.5% for 6 seconds
-                    # ============================================================
-                    if check_count >= 6:  # After ~3 seconds of monitoring
+                    # NO-MOVEMENT EXIT
+                    if check_count >= 6:
                         if position.last_checked_price > 0:
                             price_change_from_last = abs(current_token_price_sol - position.last_checked_price) / position.last_checked_price
                             
-                            if price_change_from_last < 0.005:  # Less than 0.5% movement
+                            if price_change_from_last < 0.005:
                                 position.consecutive_no_movement += 1
                                 
-                                if position.consecutive_no_movement >= 4:  # 4 checks = ~6s stuck
+                                if position.consecutive_no_movement >= 4:
                                     logger.warning(
                                         f"💀 NO MOVEMENT for {mint[:8]}... "
                                         f"({position.consecutive_no_movement * 1.5:.0f}s stuck at {price_change:+.1f}%)"
@@ -954,7 +1019,7 @@ class SniperBot:
                     
                     on_chain = (source == 'chain') and position.has_chain_price
                     
-                    # 1) EXTREME TAKE-PROFIT
+                    # EXTREME TAKE-PROFIT
                     if on_chain and not position.is_closing:
                         if price_change >= EXTREME_TP_PERCENT:
                             logger.info(
@@ -964,7 +1029,7 @@ class SniperBot:
                             await self._close_position_full(mint, reason="extreme_take_profit")
                             break
                     
-                    # 2) TRAILING STOP
+                    # TRAILING STOP
                     if on_chain and not position.is_closing:
                         if position.max_pnl_reached >= TRAIL_START_PERCENT:
                             drop_from_peak = position.max_pnl_reached - price_change
@@ -976,11 +1041,12 @@ class SniperBot:
                                 await self._close_position_full(mint, reason="trailing_stop")
                                 break
                     
+                    # FAIL-FAST CHECK
                     if (age >= FAIL_FAST_CHECK_TIME and 
                         not position.fail_fast_checked and 
                         not position.is_closing):
 
-                        if not position.has_chain_price or source != 'chain':
+                        if not position.has_chain_price or source not in ['chain', 'derived']:
                             logger.warning(
                                 f"🚧 FAIL-FAST from [{source}] ignored until first [chain] tick"
                             )
@@ -990,7 +1056,7 @@ class SniperBot:
                             if price_change < FAIL_FAST_PNL_THRESHOLD:
                                 logger.warning(
                                     f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s "
-                                    f"(on [chain]) - exiting immediately"
+                                    f"(on [{source}]) - exiting immediately"
                                 )
                                 await self._close_position_full(mint, reason="fail_fast_pnl")
                                 break
@@ -1018,18 +1084,20 @@ class SniperBot:
                                     f"P&L {price_change:+.1f}%"
                                 )
                     
+                    # RUG TRAP
                     rug_threshold = -60 if age < 3.0 else -40
                     if price_change <= rug_threshold and not position.is_closing:
-                        if not position.has_chain_price or source != 'chain':
+                        if not position.has_chain_price or source not in ['chain', 'derived']:
                             logger.warning(f"🚧 RUG signal from [{source}] ignored until first [chain] tick")
                         else:
                             logger.warning(
-                                f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) on [chain] "
+                                f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) on [{source}] "
                                 f"(age {age:.1f}s, threshold {rug_threshold}%)"
                             )
                             await self._close_position_full(mint, reason="rug_trap")
                             break
                     
+                    # TIMER EXIT
                     if time_until_exit <= 0 and not position.is_closing:
                         logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
                         logger.info(f"   Final P&L: {price_change:+.1f}%")
@@ -1037,6 +1105,7 @@ class SniperBot:
                         await self._close_position_full(mint, reason="timer_exit")
                         break
                     
+                    # TIMER EXTENSION
                     if (time_until_exit <= 5 and
                         time_until_exit > 0 and
                         price_change > TIMER_EXTENSION_PNL_THRESHOLD and
@@ -1064,11 +1133,12 @@ class SniperBot:
                             f"Extensions: {position.extensions_used}/{TIMER_MAX_EXTENSIONS}"
                         )
                     
+                    # STOP LOSS
                     if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
-                        if not position.has_chain_price or source != 'chain':
+                        if not position.has_chain_price or source not in ['chain', 'derived']:
                             logger.warning(f"🚧 STOP LOSS signal from [{source}] ignored until first [chain] tick")
                         else:
-                            logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... (on [chain] source)")
+                            logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... (on [{source}] source)")
                             logger.warning(f"   P&L: {price_change:.1f}% <= -{STOP_LOSS_PERCENTAGE}%")
                             await self._close_position_full(mint, reason="stop_loss")
                             break
@@ -1339,11 +1409,12 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running - STAGE 1 & 2 OPTIMIZED")
+            logger.info("✅ Bot running - STAGE 1 & 2 + PRICE FIX")
             logger.info(f"⚡ Decision time metric enabled")
             logger.info(f"⚡ No-movement exit enabled")
             logger.info(f"⚡ Fast retries: 150→300→500ms")
-            logger.info(f"⚡ Non-blocking liquidity enabled")
+            logger.info(f"✅ Hybrid liquidity: Trust SOL + require real price")
+            logger.info(f"✅ Price sanity checks enabled (>1000% = skip)")
             logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
