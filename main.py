@@ -566,23 +566,43 @@ class SniperBot:
                     logger.info(f"   Price retry #{attempt} in {retry_delay*1000:.0f}ms...")
                     await asyncio.sleep(retry_delay)
                 
-                # Read curve
-                curve_data = await asyncio.to_thread(
-                    self.curve_reader.read_bonding_curve,
-                    mint
-                )
-                
-                if curve_data:
-                    estimated_entry_price = curve_data.get('price_lamports_per_atomic', 0)
+                # Read curve - use get_curve_state from curve_reader
+                try:
+                    curve_state = await asyncio.to_thread(
+                        self.curve_reader.get_curve_state,
+                        mint,
+                        use_cache=False  # Force fresh read
+                    )
                     
-                    if estimated_entry_price and estimated_entry_price > 0:
-                        price_verified = True
-                        logger.info(f"✅ Got real price on attempt {attempt+1}: {estimated_entry_price:.10f} lamports/atomic")
-                        break
+                    if curve_state and curve_state.get('is_valid'):
+                        # Extract price - already calculated by curve_reader
+                        estimated_entry_price = curve_state.get('price_lamports_per_atomic', 0)
+                        
+                        if estimated_entry_price and estimated_entry_price > 0:
+                            # Build curve_data for later use
+                            curve_data = {
+                                'price_lamports_per_atomic': estimated_entry_price,
+                                'sol_in_curve': curve_state.get('sol_raised', 0),
+                                'sol_raised': curve_state.get('sol_raised', 0),
+                                'virtual_sol_reserves': curve_state.get('virtual_sol_reserves', 0),
+                                'virtual_token_reserves': curve_state.get('virtual_token_reserves', 0),
+                                'real_sol_reserves': curve_state.get('real_sol_reserves', 0),
+                                'real_token_reserves': curve_state.get('real_token_reserves', 0),
+                                'source': 'curve_reader',
+                                'is_migrated': curve_state.get('complete', False)
+                            }
+                            
+                            price_verified = True
+                            logger.info(f"✅ Got real price on attempt {attempt+1}: {estimated_entry_price:.10f} lamports/atomic")
+                            break
+                        else:
+                            logger.debug(f"   Curve found but price invalid ({estimated_entry_price})")
                     else:
-                        logger.debug(f"   Curve found but price invalid")
-                else:
-                    logger.debug(f"   Curve not found on attempt {attempt+1}")
+                        logger.debug(f"   Curve not found on attempt {attempt+1}")
+                        
+                except Exception as e:
+                    logger.debug(f"   Error reading curve on attempt {attempt+1}: {e}")
+
             
             # Step 3: If no real price after retries, SKIP (no fallback!)
             if not price_verified or not estimated_entry_price or estimated_entry_price <= 0:
