@@ -60,8 +60,8 @@ TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 # ============================================
 # NEW: Pay higher priority fees for young tokens to get faster blockchain confirmation
 # Saves 1-2 seconds on execution for tokens <15 seconds old
-PRIORITY_FEE_CRITICAL = float(os.getenv('PRIORITY_FEE_CRITICAL', '0.010'))  # 0.01 SOL for age <15s
-PRIORITY_FEE_NORMAL = float(os.getenv('PRIORITY_FEE_NORMAL', '0.003'))     # 0.003 SOL for age ≥15s
+PRIORITY_FEE_CRITICAL = float(os.getenv('PRIORITY_FEE_CRITICAL', '0.005'))  # ✅ Reduced to 0.005 SOL (50% less)
+PRIORITY_FEE_NORMAL = float(os.getenv('PRIORITY_FEE_NORMAL', '0.002'))     # ✅ Reduced to 0.002 SOL
 PRIORITY_FEE_AGE_THRESHOLD = float(os.getenv('PRIORITY_FEE_AGE_THRESHOLD', '15.0'))  # Switch at 15s
 
 # ============================================
