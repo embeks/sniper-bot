@@ -1,8 +1,7 @@
+
 """
-Bonding Curve State Reader - LATENCY OPTIMIZED
-✅ OPUS FIX: Explicit price_lamports_per_atomic field
-✅ CHATGPT OPTIMIZATION: "processed" commitment for faster reads
-✅ Short timeouts for fail-fast retries
+Bonding Curve State Reader - Read liquidity directly from chain
+✅ OPUS FIX (Issue B): Add explicit price_lamports_per_atomic field for consistency
 """
 
 import struct
@@ -11,7 +10,6 @@ import time
 from typing import Optional, Dict, Tuple
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
-from solana.rpc.commitment import Processed
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +62,14 @@ class BondingCurveReader:
             )
             
             return {
-                'virtual_token_reserves': virtual_token_reserves,  # Atomic units
+                'virtual_token_reserves': virtual_token_reserves,  # Atomic units (lamports-equivalent for tokens)
                 'virtual_sol_reserves': virtual_sol_reserves,      # Lamports
                 'real_token_reserves': real_token_reserves,        # Atomic units
                 'real_sol_reserves': real_sol_reserves,            # Lamports
                 'sol_raised': sol_raised,                          # Human-readable SOL
                 'tokens_minted': tokens_minted,                    # Human-readable tokens
                 'complete': complete,
-                'price_lamports_per_atomic': price_lamports_per_atomic,  # ✅ EXPLICIT PRICE
+                'price_lamports_per_atomic': price_lamports_per_atomic,  # ✅ EXPLICIT PRICE FIELD
                 'is_valid': True
             }
             
@@ -80,10 +78,7 @@ class BondingCurveReader:
             return None
     
     def get_curve_state(self, mint: str, use_cache: bool = True) -> Optional[Dict]:
-        """
-        Get current curve state
-        ✅ CHATGPT OPTIMIZATION: Use "processed" commitment for fastest reads
-        """
+        """Get current curve state"""
         if use_cache and mint in self.cache:
             cached = self.cache[mint]
             if time.time() - cached['timestamp'] < self.CACHE_TTL:
@@ -93,12 +88,7 @@ class BondingCurveReader:
             mint_pubkey = Pubkey.from_string(mint)
             curve_pda, _ = self.derive_curve_pda(mint_pubkey)
             
-            # ✅ CHATGPT OPTIMIZATION: Use "processed" commitment for speed
-            # This reads the most recent data without waiting for full confirmation
-            response = self.client.get_account_info(
-                curve_pda,
-                commitment=Processed  # Fastest commitment level
-            )
+            response = self.client.get_account_info(curve_pda)
             
             if not response.value or not response.value.data:
                 return None
@@ -128,7 +118,6 @@ class BondingCurveReader:
         """
         Check if curve has enough liquidity for safe buy
         Returns: (passed, reason, curve_data)
-        ✅ Uses "processed" commitment via get_curve_state
         """
         curve_data = self.get_curve_state(mint, use_cache=False)
         
@@ -154,7 +143,6 @@ class BondingCurveReader:
         """
         Estimate buy slippage %
         Uses the standardized price_lamports_per_atomic field
-        ✅ Uses "processed" commitment via get_curve_state
         """
         curve_data = self.get_curve_state(mint)
         if not curve_data:
