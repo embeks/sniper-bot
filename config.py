@@ -1,5 +1,12 @@
+
 """
-config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION + LATENCY OPTIMIZED + RPC OPTIMIZATION
+config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
+- Shorter timer (20s)
+- Tighter velocity drop (25%)
+- Faster monitoring (0.5s)
+- Increased position size (0.05 SOL)
+- FIXED: Token age limit increased to 25s (accounts for monitor delays)
+- NEW: Profit protection (Extreme TP + Trailing Stop)
 """
 
 import os
@@ -28,21 +35,6 @@ BACKUP_RPC_ENDPOINTS = [
 ]
 
 # ============================================
-# RPC OPTIMIZATION (CHATGPT RECOMMENDATIONS)
-# ============================================
-# CHANGED: Reduced from 30s to 5s for fail-fast retries
-# Each retry attempt should fail quickly so we can retry faster
-RPC_TIMEOUT = int(os.getenv('RPC_TIMEOUT', '5'))  # Reduced from 30
-
-# NEW: Per-call timeout for curve reads (fail fast, retry fast)
-RPC_CURVE_READ_TIMEOUT = float(os.getenv('RPC_CURVE_READ_TIMEOUT', '1.5'))  # 1.5s per attempt
-
-# NEW: Use "processed" commitment for price reads (fastest)
-# Options: "processed" (fastest), "confirmed" (balanced), "finalized" (slowest)
-RPC_COMMITMENT_READS = os.getenv('RPC_COMMITMENT_READS', 'processed')  # Fast reads
-RPC_COMMITMENT_WRITES = os.getenv('RPC_COMMITMENT_WRITES', 'confirmed')  # Safe writes
-
-# ============================================
 # TRADING PARAMETERS
 # ============================================
 # FIXED: Increased from 0.01 to 0.05 SOL (fees require larger positions)
@@ -54,26 +46,6 @@ MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 # Risk management
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
-
-# ============================================
-# LATENCY OPTIMIZATION: DYNAMIC PRIORITY FEES
-# ============================================
-# NEW: Pay higher priority fees for young tokens to get faster blockchain confirmation
-# Saves 1-2 seconds on execution for tokens <15 seconds old
-PRIORITY_FEE_CRITICAL = float(os.getenv('PRIORITY_FEE_CRITICAL', '0.005'))  # ✅ Reduced to 0.005 SOL (50% less)
-PRIORITY_FEE_NORMAL = float(os.getenv('PRIORITY_FEE_NORMAL', '0.002'))     # ✅ Reduced to 0.002 SOL
-PRIORITY_FEE_AGE_THRESHOLD = float(os.getenv('PRIORITY_FEE_AGE_THRESHOLD', '15.0'))  # Switch at 15s
-
-# ============================================
-# LATENCY OPTIMIZATION: FAST PATH SETTINGS
-# ============================================
-# NEW: Fast path bypasses slow holder checks for ultra-young tokens (<10s)
-# Saves 0-6 seconds by skipping Helius indexer queries
-# Compensates with STRICTER velocity requirements (3.0 SOL/s vs 2.0)
-FAST_PATH_ENABLED = os.getenv('FAST_PATH_ENABLED', 'true').lower() == 'true'
-FAST_PATH_MAX_AGE = float(os.getenv('FAST_PATH_MAX_AGE', '15.0'))  # FIX #1: Changed from 10.0 to 15.0
-FAST_PATH_MAX_BUY_SOL = float(os.getenv('FAST_PATH_MAX_BUY_SOL', '0.05'))  # Cap buy size
-FAST_PATH_VELOCITY_MULT = float(os.getenv('FAST_PATH_VELOCITY_MULT', '1.5'))  # 1.5x stricter
 
 # ============================================
 # VELOCITY GATE SETTINGS
@@ -102,7 +74,7 @@ VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
 # TIMER-BASED EXIT SETTINGS
 # ============================================
 # FIXED: Shortened from 30s to 20s base
-TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '18'))
+TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '20'))
 
 # Random variance to add (+/- seconds)
 TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '5'))
@@ -119,14 +91,76 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
 # ============================================
 # PROFIT PROTECTION SETTINGS (NEW!)
 # ============================================
-# Extreme take profit - exit immediately if hit (e.g., +150%)
+# These work alongside your timer-based exits to protect extreme gains
+# All checks are CHAIN-GATED (only trigger on blockchain data, not WebSocket)
+
+# Extreme Take-Profit: Exit immediately if profit goes parabolic
+# Example: If you hit +150% (2.5x), lock it in regardless of timer
+# Set to 999.0 to disable
 EXTREME_TP_PERCENT = float(os.getenv('EXTREME_TP_PERCENT', '150.0'))
 
-# Trailing stop activation - start trailing when P&L reaches this (e.g., +100%)
+# Trailing Stop: Protect profits after hitting a certain level
+# TRAIL_START_PERCENT: Start trailing once you've hit this profit
+# TRAIL_GIVEBACK_PERCENT: Exit if you give back this much from peak
+# Example: Hit +191% peak, currently +85% = 106pp drop → Exit if drop >= 50pp
+# Set both to 999.0 to disable
 TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '100.0'))
-
-# Trailing stop giveback - exit if drops this much from peak (e.g., 50pp from +120% peak)
 TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '50.0'))
+
+# ============================================
+# HOW PROFIT PROTECTION WORKS:
+# ============================================
+# 
+# Priority order (from highest to lowest):
+# 1. Extreme TP (150%+) - Locks in parabolic gains immediately
+# 2. Trailing Stop (100%+ then -50pp drop) - Protects from fast rugs
+# 3. Fail-Fast (5s check at -10%) - Exits early losers
+# 4. Rug Trap (-40% or -60% if <3s) - Emergency exits
+# 5. Stop Loss (-40%) - Standard loss protection  
+# 6. Timer Exit (20s) - Your main strategy (80% of trades)
+#
+# Most trades (80%): Exit on timer as normal
+# Extreme pumps (10%): Exit early via Extreme TP or Trailing Stop
+# Fast rugs (10%): Exit early via Fail-Fast or Rug Trap
+#
+# All profit exits require CHAIN confirmation (same as stop-loss)
+# This prevents WebSocket false signals from triggering exits
+#
+# EXAMPLE WITH YOUR ACTUAL TRADE (GOLDALON):
+# Without profit protection:
+#   06:29:43 - Peak: +191.7% (bot keeps holding)
+#   06:30:04 - Timer exit: -0.8%
+#   Result: -0.0085 SOL loss
+#
+# With Extreme TP = 150%:
+#   06:29:43 - Peak: +191.7%
+#   → +191.7% >= 150% ✓ on [chain] tick
+#   → EXTREME TP TRIGGERED!
+#   → Exit at +191.7% (~2s after buy)
+#   Result: +0.0383 SOL profit (+0.0468 SOL better!)
+#
+# TUNING GUIDE:
+# Conservative (lock profits early):
+#   EXTREME_TP_PERCENT = 100.0      # Exit at 2x
+#   TRAIL_START_PERCENT = 75.0      # Trail after 1.75x
+#   TRAIL_GIVEBACK_PERCENT = 30.0   # Tighter trail
+#
+# Moderate (recommended):
+#   EXTREME_TP_PERCENT = 150.0      # Exit at 2.5x
+#   TRAIL_START_PERCENT = 100.0     # Trail after 2x
+#   TRAIL_GIVEBACK_PERCENT = 50.0   # Exit if -50pp from peak
+#
+# Aggressive (let winners run):
+#   EXTREME_TP_PERCENT = 200.0      # Exit at 3x
+#   TRAIL_START_PERCENT = 150.0     # Trail after 2.5x
+#   TRAIL_GIVEBACK_PERCENT = 70.0   # Wider trail
+#
+# Disabled (pure timer strategy):
+#   EXTREME_TP_PERCENT = 999.0      # Never trigger
+#   TRAIL_START_PERCENT = 999.0     # Never trigger
+#   TRAIL_GIVEBACK_PERCENT = 999.0  # Never trigger
+#
+# ============================================
 
 # ============================================
 # FAIL-FAST EXIT SETTINGS
@@ -135,7 +169,7 @@ TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '50.0'))
 FAIL_FAST_CHECK_TIME = float(os.getenv('FAIL_FAST_CHECK_TIME', '5.0'))
 
 # P&L threshold for early exit (%)
-FAIL_FAST_PNL_THRESHOLD = float(os.getenv('FAIL_FAST_PNL_THRESHOLD', '-2.0'))
+FAIL_FAST_PNL_THRESHOLD = float(os.getenv('FAIL_FAST_PNL_THRESHOLD', '-10.0'))
 
 # Velocity death threshold (% of pre-buy velocity)
 FAIL_FAST_VELOCITY_THRESHOLD = float(os.getenv('FAIL_FAST_VELOCITY_THRESHOLD', '30.0'))
@@ -251,6 +285,7 @@ NOTIFY_PROFIT_THRESHOLD = 50
 # ============================================
 MAX_RETRIES = 3
 RETRY_DELAY = 1
+RPC_TIMEOUT = 30
 
 # ============================================
 # LOGGING
@@ -269,3 +304,4 @@ if DRY_RUN:
     print("⚠️ DRY RUN MODE - No real transactions will be executed")
 if DEBUG_MODE:
     print("🔍 DEBUG MODE - Verbose logging enabled")
+
