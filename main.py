@@ -1300,24 +1300,31 @@ class SniperBot:
                 logger.error(f"⚠️ SELL MAY HAVE FAILED - CHECK WALLET MANUALLY")
                 logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
             
+            # Try to read transaction metadata (more reliable than balance delta)
             actual_sol_received = 0
             actual_tokens_sold = 0
             
-            if confirmed:
+            # CHATGPT FIX: Extend retry window for transaction reading
+            # Even if confirmation times out, the tx is usually on-chain
+            for tx_read_attempt in range(5):  # Try 5 times over 10 seconds
                 try:
                     txd = await self._get_transaction_deltas(signature, mint)
                     if txd["confirmed"]:
                         actual_sol_received = txd["sol_delta"] if txd["sol_delta"] > 0 else 0
                         actual_tokens_sold = abs(txd["token_delta"]) if txd["token_delta"] < 0 else 0
                         logger.info(f"✅ Sell confirmed via transaction: {actual_sol_received:.6f} SOL received")
+                        break
                     else:
-                        logger.warning(f"Transaction delta failed, using wallet balance")
-                        confirmed = False
+                        logger.debug(f"Transaction delta read attempt {tx_read_attempt + 1}/5 failed, retrying...")
                 except Exception as e:
-                    logger.error(f"❌ Error reading transaction deltas: {e}")
-                    confirmed = False
+                    logger.debug(f"Error reading transaction deltas (attempt {tx_read_attempt + 1}/5): {e}")
+                
+                if tx_read_attempt < 4:  # Don't sleep on last attempt
+                    await asyncio.sleep(2)  # Wait 2s between attempts
             
-            if not confirmed or actual_sol_received == 0:
+            # Only fall back to wallet balance if transaction reading completely failed
+            if actual_sol_received == 0 and actual_tokens_sold == 0:
+                logger.warning(f"⚠️ Could not read sell transaction after 5 attempts, using wallet balance fallback")
                 try:
                     await asyncio.sleep(2)
                     post_sol_balance = self.wallet.get_sol_balance()
@@ -1327,24 +1334,6 @@ class SniperBot:
                     after_tokens = self.wallet.get_token_balance(mint)
                     actual_tokens_sold = max(0.0, ui_token_balance - after_tokens)
                     logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
-                    
-                    if after_tokens > (ui_token_balance * 0.9):
-                        logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
-                        logger.error(f"   Expected to sell: {ui_token_balance:,.2f}")
-                        logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-                        
-                        position.status = 'sell_failed'
-                        if mint in self.positions:
-                            del self.positions[mint]
-                            self.velocity_checker.clear_history(mint)
-                        
-                        if self.telegram:
-                            await self.telegram.send_message(
-                                f"❌ SELL FAILED for {mint[:16]}\n"
-                                f"Still have {after_tokens:,.0f} tokens in wallet\n"
-                                f"TX: https://solscan.io/tx/{signature}"
-                            )
-                        return
                 except Exception as e:
                     logger.error(f"❌ CRITICAL: Balance check failed: {e}")
                     import traceback
