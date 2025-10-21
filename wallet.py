@@ -1,5 +1,6 @@
+
 """
-Wallet Management - LATENCY OPTIMIZED: Cached decimals + async wrapper
+Wallet Management - FIXED: Robust token balance reading with ALL RPC response formats handled
 """
 
 import base58
@@ -8,8 +9,6 @@ import logging
 import json
 import struct
 import time
-import asyncio
-from functools import lru_cache
 from typing import Optional, Dict, List, Tuple
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -32,9 +31,11 @@ class WalletManager:
         try:
             # Decode private key
             if PRIVATE_KEY.startswith('[') and PRIVATE_KEY.endswith(']'):
+                # Array format - FIXED: Using json.loads instead of eval
                 key_array = json.loads(PRIVATE_KEY)
                 self.keypair = Keypair.from_bytes(bytes(key_array))
             else:
+                # Base58 format
                 decoded = base58.b58decode(PRIVATE_KEY)
                 self.keypair = Keypair.from_bytes(decoded)
             
@@ -53,6 +54,7 @@ class WalletManager:
     def _verify_wallet(self):
         """Verify wallet matches expected address"""
         try:
+            # Get SOL balance to verify wallet is accessible
             response = self.client.get_balance(self.pubkey)
             balance_sol = response.value / 1e9
             
@@ -61,6 +63,7 @@ class WalletManager:
             if balance_sol < MIN_SOL_BALANCE:
                 logger.warning(f"⚠️ Low balance: {balance_sol:.4f} SOL (minimum: {MIN_SOL_BALANCE} SOL)")
             
+            # Check if we have enough for trading
             tradeable_balance = balance_sol - MIN_SOL_BALANCE
             max_trades = int(tradeable_balance / BUY_AMOUNT_SOL)
             
@@ -83,7 +86,10 @@ class WalletManager:
             return 0.0
     
     def get_token_balance(self, mint: str, max_retries: int = 3, retry_delay: float = 1.0) -> float:
-        """Get balance for a specific token - returns UI amount (human readable)"""
+        """
+        Get balance for a specific token - returns UI amount (human readable)
+        ✅ CRITICAL FIX: Retry logic for RPC lag + fallback to get_all_token_accounts()
+        """
         for attempt in range(max_retries):
             try:
                 mint_pubkey = Pubkey.from_string(mint)
@@ -95,12 +101,15 @@ class WalletManager:
                 )
                 
                 if response.value:
+                    # CRITICAL: Return UI amount for position tracking
+                    # This is the human-readable amount (e.g., 350000 tokens)
                     ui_amount = response.value.ui_amount
                     if ui_amount:
                         if attempt > 0:
                             logger.debug(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f}")
                         return float(ui_amount)
                     else:
+                        # Fallback: calculate from raw
                         raw_amount = response.value.amount
                         decimals = response.value.decimals
                         if raw_amount and decimals:
@@ -109,6 +118,7 @@ class WalletManager:
                                 logger.debug(f"✅ Calculated balance on retry {attempt + 1}: {calculated:,.2f}")
                             return calculated
                 
+                # Response was None or empty - could be indexing delay
                 if attempt < max_retries - 1:
                     logger.debug(f"⏳ Token account not ready (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
                     time.sleep(retry_delay)
@@ -122,6 +132,8 @@ class WalletManager:
                 else:
                     logger.debug(f"RPC failed after {max_retries} attempts: {e}")
         
+        # ✅ CRITICAL FALLBACK: If direct query fails, scan all token accounts
+        # This is slower but more reliable for newly created token accounts
         logger.warning(f"⚠️ Direct balance query failed for {mint[:8]}..., trying fallback method...")
         try:
             all_accounts = self.get_all_token_accounts()
@@ -144,6 +156,7 @@ class WalletManager:
             
             response = self.client.get_token_account_balance(token_account)
             if response.value:
+                # Return the raw amount as integer
                 raw_amount = response.value.amount
                 if raw_amount:
                     return int(raw_amount)
@@ -155,8 +168,12 @@ class WalletManager:
             return 0
     
     def get_all_token_accounts(self) -> Dict[str, Dict]:
-        """Get all token accounts owned by this wallet"""
+        """
+        Get all token accounts owned by this wallet
+        ✅ CRITICAL FIX: Handles ALL possible RPC response formats
+        """
         try:
+            # Try with jsonParsed encoding first (easiest to parse)
             try:
                 from solana.rpc.types import TokenAccountOpts
                 
@@ -170,6 +187,7 @@ class WalletManager:
                 if response.value:
                     for account in response.value:
                         try:
+                            # With jsonParsed, data is already a dict
                             account_data = account.account.data
                             
                             if isinstance(account_data, dict) and 'parsed' in account_data:
@@ -195,6 +213,7 @@ class WalletManager:
             except Exception as e:
                 logger.debug(f"jsonParsed method failed, trying base64 fallback: {e}")
                 
+                # Fallback: Use base64 encoding and manually decode
                 response = self.client.get_token_accounts_by_owner(
                     self.pubkey,
                     {"programId": TOKEN_PROGRAM_ID}
@@ -207,16 +226,21 @@ class WalletManager:
                         try:
                             account_data = account.account.data
                             
+                            # Handle different data formats
                             data_bytes = None
                             
                             if isinstance(account_data, bytes):
+                                # Already bytes
                                 data_bytes = account_data
                             elif isinstance(account_data, str):
+                                # Base64 string
                                 data_bytes = base64.b64decode(account_data)
                             elif isinstance(account_data, list) and len(account_data) >= 1:
+                                # [base64_string, encoding] format
                                 if account_data[0]:
                                     data_bytes = base64.b64decode(account_data[0])
                             elif isinstance(account_data, dict):
+                                # Already parsed (shouldn't happen here but handle it)
                                 if 'parsed' in account_data:
                                     parsed = account_data['parsed']
                                     info = parsed.get('info', {})
@@ -234,12 +258,15 @@ class WalletManager:
                             if not data_bytes or len(data_bytes) < 165:
                                 continue
                             
+                            # Manually decode SPL Token Account layout
+                            # Layout: [mint(32), owner(32), amount(8), ...]
                             mint_bytes = data_bytes[0:32]
                             amount_bytes = data_bytes[64:72]
                             
                             mint = str(Pubkey(mint_bytes))
                             raw_amount = struct.unpack('<Q', amount_bytes)[0]
                             
+                            # Get decimals from mint account
                             decimals = self.get_token_decimals(mint)
                             ui_amount = raw_amount / (10 ** decimals)
                             
@@ -267,6 +294,7 @@ class WalletManager:
         """Check if wallet can execute a trade"""
         try:
             balance = self.get_sol_balance()
+            # Include all fees in calculation
             required = MIN_SOL_BALANCE + BUY_AMOUNT_SOL + 0.000005 + 0.0001 + (BUY_AMOUNT_SOL * 0.01)
             
             if balance < required:
@@ -286,7 +314,7 @@ class WalletManager:
         if our_wallet not in tx_accounts:
             logger.warning(f"⚠️ Transaction doesn't involve our wallet!")
             logger.debug(f"Our wallet: {our_wallet}")
-            logger.debug(f"TX accounts: {tx_accounts[:5]}...")
+            logger.debug(f"TX accounts: {tx_accounts[:5]}...")  # Show first 5
             return False
         
         return True
@@ -303,6 +331,7 @@ class WalletManager:
     def estimate_profit_loss(self, mint: str, entry_price: float, current_price: float, amount: float) -> Dict:
         """Calculate P&L for a position"""
         try:
+            # Calculate values
             entry_value = entry_price * amount
             current_value = current_price * amount
             pnl_usd = current_value - entry_value
@@ -326,30 +355,36 @@ class WalletManager:
                 'is_profit': False
             }
     
-    @lru_cache(maxsize=4096)
     def get_token_decimals(self, mint: str) -> int:
         """
-        LATENCY OPTIMIZED: Cached token decimals (saves 0.1-0.2s per call)
         Get the decimals for a specific token mint.
-        Returns: decimals (int)
+        Returns: decimals (int) - just the decimal value
+        
+        CRITICAL FIX: Properly decode SPL Token Mint layout to read decimals at byte offset 44
         """
         try:
             mint_pubkey = Pubkey.from_string(mint)
             
+            # Get mint account info
             response = self.client.get_account_info(mint_pubkey)
             if response.value and response.value.data:
+                # Try to decode the account data
                 mint_data = response.value.data
                 
+                # Handle base64 encoded data
                 if isinstance(mint_data, str):
                     try:
+                        # It's base64 encoded
                         mint_bytes = base64.b64decode(mint_data)
                     except:
                         logger.warning(f"Failed to decode base64 data for {mint[:8]}...")
                         logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
                         return 6
                 elif isinstance(mint_data, bytes):
+                    # It's already bytes
                     mint_bytes = mint_data
                 elif isinstance(mint_data, list) and len(mint_data) == 2:
+                    # It's the [data, encoding] format from RPC
                     if mint_data[1] == 'base64':
                         mint_bytes = base64.b64decode(mint_data[0])
                     else:
@@ -357,6 +392,7 @@ class WalletManager:
                         logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
                         return 6
                 elif isinstance(mint_data, dict) and 'parsed' in mint_data:
+                    # Parsed JSON response
                     parsed_info = mint_data.get('parsed', {}).get('info', {})
                     decimals = parsed_info.get('decimals', 6)
                     logger.info(f"Token {mint[:8]}... has {decimals} decimals (source: parsed)")
@@ -366,9 +402,18 @@ class WalletManager:
                     logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
                     return 6
                 
+                # SPL Token Mint Layout (165 bytes total):
+                # 0-4: COption<Pubkey> mint_authority (36 bytes: 4 byte discriminator + 32 byte pubkey)
+                # 36-44: u64 supply (8 bytes)
+                # 44: u8 decimals (1 byte) <-- THIS IS WHAT WE NEED
+                # 45: bool is_initialized (1 byte)
+                # 46-82: COption<Pubkey> freeze_authority (36 bytes)
+                
                 if len(mint_bytes) > 44:
+                    # Read the decimals byte at offset 44
                     decimals = mint_bytes[44]
                     
+                    # Sanity check - decimals should be reasonable (0-18 typically, 6-9 for most tokens)
                     if decimals > 12:
                         logger.warning(f"Suspicious decimals value {decimals} for {mint[:8]}..., using fallback")
                         logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
@@ -381,19 +426,13 @@ class WalletManager:
                     logger.debug(f"Token {mint[:8]}... defaulting to 6 decimals (source: fallback)")
                     return 6
             
+            # No account found or no data
             logger.debug(f"Could not fetch decimals for {mint[:8]}..., defaulting to 6 (source: fallback)")
             return 6
             
         except Exception as e:
             logger.debug(f"Failed to get token decimals: {e}, defaulting to 6 (source: fallback)")
             return 6
-    
-    async def get_token_decimals_async(self, mint: str) -> int:
-        """
-        LATENCY OPTIMIZED: Async wrapper for get_token_decimals
-        Allows parallel execution with other async operations
-        """
-        return await asyncio.to_thread(self.get_token_decimals, mint)
     
     def log_wallet_status(self):
         """Log current wallet status"""
@@ -409,7 +448,7 @@ class WalletManager:
             
             if token_accounts:
                 logger.info("Active Positions:")
-                for mint, data in list(token_accounts.items())[:5]:
+                for mint, data in list(token_accounts.items())[:5]:  # Show first 5
                     if data['balance'] > 0:
                         logger.info(f"  • {mint[:8]}... Balance: {data['balance']:,.2f} (Raw: {data['raw_amount']})")
             
