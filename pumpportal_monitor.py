@@ -292,10 +292,10 @@ class PumpPortalMonitor:
     async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
         """
         OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
-        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
-        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
+        FIX #3: Two retry attempts (1.8s + 1.8s) for fresh tokens that need more time
+        NOTE: Main flow uses intelligent sleep to ensure token is 5.5s old before first check
         """
-        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        retry_delays = [1.8, 1.8]  # First retry at +1.8s, second retry at +1.8s more
         
         for attempt in range(max_retries + 1):
             try:
@@ -606,13 +606,18 @@ class PumpPortalMonitor:
         # ===================================================================
         # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
         # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
-        # CRITICAL: Wait 3s before first check to allow Helius indexing
+        # INTELLIGENT SLEEP: Calculate optimal wait time based on token age
         # ===================================================================
         logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
-        
-        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
-        # Without this, ALL tokens fail because they're too new
-        await asyncio.sleep(3)
+
+        # INTELLIGENT SLEEP: Wait until token is 5.5s old (optimal for Helius indexing)
+        # This adapts to early vs late detection automatically
+        TARGET_INDEXING_AGE = 5.5
+        current_age = self._event_age_seconds(token_data)
+        smart_sleep = max(0.5, TARGET_INDEXING_AGE - current_age)
+
+        logger.info(f"⏱️ Token currently {current_age:.1f}s old, sleeping {smart_sleep:.1f}s until {TARGET_INDEXING_AGE}s")
+        await asyncio.sleep(smart_sleep)
         
         # Market cap calculation (fast, local)
         await self._get_sol_price()
@@ -649,17 +654,18 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP + AGE/SOL PASSING")
+        logger.info(f"Strategy: CUPSEY-STYLE OPTIMIZED (INTELLIGENT SLEEP)")
+        logger.info(f"  ⚡ INTELLIGENT SLEEP: Adapts to token age (target 5.5s)")
         logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
-        logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
+        logger.info(f"  Fix #3: Helius retry with 2 attempts (1.8s + 1.8s)")
         logger.info(f"  Fix #4: PASS TOKEN AGE + SOL TO CALLBACK FOR MAIN.PY")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
+        logger.info(f"  RPC timeout: 0.8s with 2 retries")
         logger.info(f"  Concurrent checks: ENABLED")
+        logger.info(f"  Target entry time: 10-12s (cupsey-style)")
         logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
         
         uri = "wss://pumpportal.fun/api/data"
