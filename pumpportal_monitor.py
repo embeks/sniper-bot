@@ -290,13 +290,13 @@ class PumpPortalMonitor:
             logger.error(f"Error checking creator spam: {e}")
             return (True, 0, f"error: {e}")
     
-    async def _check_holders_helius(self, mint: str, max_retries: int = 3) -> dict:
+    async def _check_holders_helius(self, mint: str, max_retries: int = 4) -> dict:
         """
         OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
         FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
         NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
         """
-        retry_delays = [0.5, 1.0, 1.5]  # ✅ FIXED - Faster retries for actual indexing delays
+        retry_delays = [0.5, 1.0, 1.5, 2.5]  # ✅ FIXED - Faster retries for actual indexing delays
         
         for attempt in range(max_retries + 1):
             try:
@@ -318,7 +318,7 @@ class PumpPortalMonitor:
                             if resp.status != 200:
                                 logger.warning(f"Helius API returned {resp.status} for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
                                 if attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    retry_delay = retry_delays[attempt]
                                     logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
                                     await asyncio.sleep(retry_delay)
                                     continue
@@ -331,7 +331,7 @@ class PumpPortalMonitor:
                                 
                                 # Handle "not a Token mint" error with retry
                                 if 'not a Token mint' in error_msg and attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    retry_delay = retry_delays[attempt]
                                     logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
                                     await asyncio.sleep(retry_delay)
                                     continue
@@ -342,7 +342,7 @@ class PumpPortalMonitor:
                             if 'result' not in data or 'value' not in data['result']:
                                 logger.warning(f"Malformed response for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
                                 if attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                                    retry_delay = retry_delays[attempt]
                                     await asyncio.sleep(retry_delay)
                                     continue
                                 return {'passed': False, 'reason': 'malformed response'}
@@ -384,7 +384,7 @@ class PumpPortalMonitor:
                     except asyncio.TimeoutError:
                         logger.warning(f"Timeout for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
                         if attempt < max_retries:
-                            retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                            retry_delay = retry_delays[attempt]
                             logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
                             await asyncio.sleep(retry_delay)
                             continue
@@ -393,7 +393,7 @@ class PumpPortalMonitor:
             except Exception as e:
                 logger.error(f"Helius exception for {mint[:8]}...: {e}")
                 if attempt < max_retries:
-                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
+                    retry_delay = retry_delays[attempt]
                     await asyncio.sleep(retry_delay)
                     continue
                 return {'passed': False, 'reason': str(e)}
