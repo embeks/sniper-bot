@@ -296,7 +296,7 @@ class PumpPortalMonitor:
         FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
         NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
         """
-        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        retry_delays = [0.5, 1.0]  # ✅ FIXED - Faster retries for actual indexing delays
         
         for attempt in range(max_retries + 1):
             try:
@@ -311,7 +311,7 @@ class PumpPortalMonitor:
                     }
                     
                     # OPTIMIZATION: 0.8s timeout for fast-fail
-                    timeout = aiohttp.ClientTimeout(total=0.8)
+                    timeout = aiohttp.ClientTimeout(total=2.5)  # ✅ FIXED - Give API time to respond
                     
                     try:
                         async with session.post(url, json=payload, timeout=timeout) as resp:
@@ -613,7 +613,7 @@ class PumpPortalMonitor:
         
         # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
         # Without this, ALL tokens fail because they're too new
-        await asyncio.sleep(3)
+        # await asyncio.sleep(3)  # ✅ REMOVED - Token already indexed, no need to wait
         
         # Market cap calculation (fast, local)
         await self._get_sol_price()
