@@ -715,6 +715,13 @@ class SniperBot:
                 
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
+
+                # ✅ DUAL PIPELINE: Start post-buy verification if needed
+                if token_data.get('needs_post_verification', False):
+                    logger.info(f"🔍 Starting post-buy verification task for {mint[:8]}...")
+                    asyncio.create_task(
+                        self._run_post_buy_verification(mint)
+                    )
             else:
                 self.pending_buys -= 1
                 self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, "Transaction failed or no tokens received")
@@ -1479,7 +1486,26 @@ class SniperBot:
     async def _close_position(self, mint: str, reason: str = "manual"):
         """Wrapper for telegram compatibility"""
         await self._close_position_full(mint, reason)
-    
+
+    async def _run_post_buy_verification(self, mint: str):
+        """
+        Run post-buy verification in background
+        Triggers emergency sell if verification fails
+        """
+        try:
+            async def emergency_sell_callback(failed_mint: str, reason: str):
+                """Callback for emergency sell"""
+                logger.warning(f"🚨 EMERGENCY SELL triggered for {failed_mint[:8]}...: {reason}")
+                await self._close_position_full(failed_mint, reason=f"emergency_{reason}")
+
+            # Run verification via scanner
+            if self.scanner:
+                await self.scanner._verify_holders_post_buy(mint, emergency_sell_callback)
+        except Exception as e:
+            logger.error(f"Error in post-buy verification task: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     async def run(self):
         """Main run loop"""
         self.running = True
