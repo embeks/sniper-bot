@@ -290,13 +290,13 @@ class PumpPortalMonitor:
             logger.error(f"Error checking creator spam: {e}")
             return (True, 0, f"error: {e}")
     
-    async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
+    async def _check_holders_helius(self, mint: str, max_retries: int = 3) -> dict:
         """
         OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
         FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
         NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
         """
-        retry_delays = [0.5, 1.0]  # ✅ FIXED - Faster retries for actual indexing delays
+        retry_delays = [0.5, 1.0, 1.5]  # ✅ FIXED - Faster retries for actual indexing delays
         
         for attempt in range(max_retries + 1):
             try:
