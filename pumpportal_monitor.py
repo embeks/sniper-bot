@@ -38,7 +38,14 @@ class PumpPortalMonitor:
             logger.error("❌ CRITICAL: HELIUS_API_KEY not found!")
             raise ValueError("HELIUS_API_KEY is required for holder checks")
         else:
-            logger.info(f"✅ Helius API key loaded: {HELIUS_API_KEY[:10]}...")
+            # Show key info for debugging
+            key_preview = HELIUS_API_KEY[:10] if len(HELIUS_API_KEY) >= 10 else HELIUS_API_KEY
+            logger.info(f"✅ Helius API key loaded: {key_preview}... (length: {len(HELIUS_API_KEY)})")
+
+            # Validate key format (Helius keys are typically 32+ characters)
+            if len(HELIUS_API_KEY) < 20:
+                logger.warning(f"⚠️ Helius API key seems too short ({len(HELIUS_API_KEY)} chars) - might be invalid!")
+
 
         # Initialize RPC client for fast on-chain buyer checks
         rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
