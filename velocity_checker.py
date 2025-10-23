@@ -1,4 +1,5 @@
 
+
 """
 Velocity Checker - FINAL: Two-snapshot rule to prevent buying tops
 Only allows entries after confirming velocity is STILL pumping
