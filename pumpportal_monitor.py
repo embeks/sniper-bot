@@ -430,6 +430,7 @@ class PumpPortalMonitor:
                 if not bonding_curve:
                     logger.warning(f"Could not derive PDA for {mint[:8]}...")
                     return 0
+                logger.debug(f"Derived bonding curve: {bonding_curve[:8]}... for {mint[:8]}...")
 
             from solders.pubkey import Pubkey
             bonding_curve_pubkey = Pubkey.from_string(bonding_curve)
@@ -441,11 +442,16 @@ class PumpPortalMonitor:
             )
 
             if not sigs or not sigs.value or len(sigs.value) == 0:
-                logger.debug(f"No transactions found for {mint[:8]}...")
+                logger.info(f"⚠️ No transactions found for bonding curve {bonding_curve[:8]}...")
                 return 0
+
+            sig_count = len(sigs.value)
+            logger.debug(f"Found {sig_count} signatures for {mint[:8]}...")
 
             # Extract unique buyers
             unique_buyers: Set[str] = set()
+            tx_checked = 0
+            tx_failed = 0
 
             for sig_info in sigs.value[:20]:  # Check first 20 for speed
                 try:
@@ -458,22 +464,26 @@ class PumpPortalMonitor:
                         max_supported_transaction_version=0
                     )
 
+                    tx_checked += 1
                     buyer = extract_buyer_from_transaction(tx)
                     if buyer:
                         unique_buyers.add(buyer)
+                    else:
+                        tx_failed += 1
 
                 except Exception as e:
-                    # Skip failed transactions
+                    tx_failed += 1
+                    logger.debug(f"Failed to get tx: {e}")
                     continue
 
             buyer_count = len(unique_buyers)
-            logger.info(f"🔍 Found {buyer_count} unique buyers on-chain for {mint[:8]}...")
+            logger.info(f"🔍 Found {buyer_count} unique buyers on-chain for {mint[:8]}... (checked {tx_checked} txs, {tx_failed} failed)")
             return buyer_count
 
         except Exception as e:
             logger.error(f"Error counting on-chain buyers: {e}")
             import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return 0
 
     async def _verify_holders_post_buy(self, mint: str, callback) -> bool:
