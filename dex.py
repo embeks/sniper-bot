@@ -1,4 +1,5 @@
 
+
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
 FINAL FIX (OPUS + CHATGPT): 
@@ -289,3 +290,4 @@ class PumpFunDEX:
                 return price_data
             
             return None
+
