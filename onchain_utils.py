@@ -26,22 +26,43 @@ def derive_bonding_curve_pda(mint: str) -> Optional[str]:
         logger.error(f"Error deriving PDA: {e}")
         return None
 
-def extract_buyer_from_transaction(tx_data: dict) -> Optional[str]:
-    """Extract buyer address from parsed transaction"""
+def extract_buyer_from_transaction(tx_response) -> Optional[str]:
+    """
+    Extract buyer address from Solana transaction response
+    Buyer = fee payer (first signer in transaction)
+    """
     try:
-        if not tx_data or not tx_data.value:
+        # Handle None or missing response
+        if not tx_response:
             return None
 
-        tx = tx_data.value
+        # Get the actual transaction from the RPC response
+        if hasattr(tx_response, 'value') and tx_response.value:
+            tx = tx_response.value
+        else:
+            return None
 
-        # Look for account keys (buyer is typically first signer)
-        if hasattr(tx, 'transaction') and hasattr(tx.transaction, 'message'):
-            message = tx.transaction.message
-            if hasattr(message, 'account_keys') and len(message.account_keys) > 1:
-                # First account after program is usually the buyer
-                return str(message.account_keys[1])
+        # Access the transaction and message
+        if hasattr(tx, 'transaction'):
+            transaction = tx.transaction
 
+            # Get the message (contains account keys)
+            if hasattr(transaction, 'message'):
+                message = transaction.message
+
+                # Get account keys - first key is the fee payer (buyer)
+                if hasattr(message, 'account_keys'):
+                    account_keys = message.account_keys
+
+                    if len(account_keys) > 0:
+                        # First account is the fee payer = buyer
+                        buyer = str(account_keys[0])
+                        logger.debug(f"Extracted buyer: {buyer[:8]}...")
+                        return buyer
+
+        logger.debug("Could not find account keys in transaction")
         return None
+
     except Exception as e:
-        logger.error(f"Error extracting buyer: {e}")
+        logger.debug(f"Error extracting buyer: {e}")
         return None
