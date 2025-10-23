@@ -109,10 +109,10 @@ class PumpPortalMonitor:
             # FIXED: Match velocity_checker.py settings (3.0 SOL/s minimum)
             'min_recent_velocity_sol_per_sec': 3.0,
             'max_tokens_per_creator_24h': 3,
-            
-            # OPTIMIZATION: First-sighting cooldown
-            'first_sighting_cooldown_seconds': 0.5,
-            
+
+            # OPTIMIZATION: First-sighting cooldown - wait for tx confirmation
+            'first_sighting_cooldown_seconds': 1.5,
+
             'filters_enabled': True
         }
         
@@ -613,7 +613,7 @@ class PumpPortalMonitor:
         OPTIMIZED FILTER ORDER - FIRST PASS ONLY:
         1. Age check (before expensive RPC)
         2. Curve prefilter (skip obvious duds)
-        3. First-sighting cooldown (0.5s confirmation) - STORE TOKEN FOR RE-EVAL
+        3. First-sighting cooldown (1.5s for tx confirmation) - STORE TOKEN FOR RE-EVAL
         """
         if not self.filters['filters_enabled']:
             return True
@@ -755,7 +755,9 @@ class PumpPortalMonitor:
         holder_count = 0
         concentration = 0
 
-        if token_age < 10.0:  # FAST PATH for fresh tokens
+        # Fast path uses on-chain buyer counting (1.5s cooldown ensures txs are confirmed)
+        # Standard path uses Helius indexer (for tokens >10s old, already indexed)
+        if token_age < 10.0:  # FAST PATH for fresh tokens (<10s old)
             logger.info(f"⚡ FAST PATH: Checking on-chain buyers for {mint[:8]}... (age: {token_age:.1f}s)")
 
             unique_buyers = await self.count_unique_buyers_onchain(mint)
@@ -771,7 +773,7 @@ class PumpPortalMonitor:
             concentration = 0  # Not calculated in fast path
             needs_post_verification = True  # Flag for post-buy verification
 
-        else:  # STANDARD PATH for older tokens (already indexed)
+        else:  # STANDARD PATH for older tokens (>10s old, already indexed)
             logger.info(f"🐢 Standard path: Using Helius for {mint[:8]}... (age: {token_age:.1f}s)")
             holder_result = await self._check_holders_helius(mint)
 
@@ -808,9 +810,9 @@ class PumpPortalMonitor:
         logger.info(f"  Fix #4: PASS TOKEN AGE + SOL TO CALLBACK FOR MAIN.PY")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
-        logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
+        logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s (wait for tx confirmation)")
+        logger.info(f"  DUAL PIPELINE: Fast path (2-10s) uses on-chain, others use Helius")
+        logger.info(f"  RPC timeout: 2.5s with 4 retries (delays: 0.5s, 1.0s, 1.5s, 2.5s)")
         logger.info(f"  Concurrent checks: ENABLED")
         logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
         
