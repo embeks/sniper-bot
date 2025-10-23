@@ -95,7 +95,7 @@ class PumpPortalMonitor:
             'max_tokens_per_creator_24h': 3,
             
             # OPTIMIZATION: First-sighting cooldown
-            'first_sighting_cooldown_seconds': 0.5,
+            'first_sighting_cooldown_seconds': 6.0,  # Wait for Helius indexing (was 1.5s)
             
             'filters_enabled': True
         }
@@ -292,11 +292,11 @@ class PumpPortalMonitor:
     
     async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
         """
-        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
-        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
-        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
+        OPTIMIZED: Fast-fail RPC with 1.5s timeout + 2 retries
+        FIX #3: Two retry attempts (1.0s + 2.0s) for fresh tokens that need more time
+        NOTE: Main flow includes 6s cooldown BEFORE calling this, so token should be indexed
         """
-        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        retry_delays = [1.0, 2.0]  # Only 2 retries, spaced for Helius indexing time
         
         for attempt in range(max_retries + 1):
             try:
@@ -309,9 +309,9 @@ class PumpPortalMonitor:
                         "method": "getTokenLargestAccounts",
                         "params": [mint]
                     }
-                    
-                    # OPTIMIZATION: 0.8s timeout for fast-fail
-                    timeout = aiohttp.ClientTimeout(total=0.8)
+
+                    # OPTIMIZATION: 1.5s timeout - fail faster on dead tokens
+                    timeout = aiohttp.ClientTimeout(total=1.5)  # Fail faster on dead tokens
                     
                     try:
                         async with session.post(url, json=payload, timeout=timeout) as resp:
@@ -514,7 +514,21 @@ class PumpPortalMonitor:
         if v_sol < self.filters['min_curve_sol_prefilter']:
             self._log_filter("low_curve_prefilter", f"{v_sol:.2f} SOL < {self.filters['min_curve_sol_prefilter']}")
             return False
-        
+
+        # ===================================================================
+        # OPTIMIZATION: WebSocket Estimate Pre-Filter
+        # Skip obvious duds before waiting for Helius
+        # ===================================================================
+        if v_sol > 0:
+            # Estimate buyers from SOL raised (avg 0.4 SOL per buyer)
+            estimated_buyers = int(v_sol / 0.4)
+
+            if estimated_buyers < 8:
+                self._log_filter("estimated_buyers_low", f"~{estimated_buyers} buyers from {v_sol:.2f} SOL")
+                return False
+
+            logger.debug(f"✅ WebSocket estimate: ~{estimated_buyers} buyers from {v_sol:.2f} SOL")
+
         # ===================================================================
         # OPTIMIZATION 3: FIRST-SIGHTING COOLDOWN (0.5s confirmation)
         # CRITICAL FIX: Store token data for re-evaluation by background task
@@ -532,48 +546,67 @@ class PumpPortalMonitor:
     
     async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
         """
-        SECOND PASS - After cooldown expires:
+        OPTIMIZED FILTER ORDER - Check Helius FIRST (it's the slowest)
         Returns (passed: bool, token_age: float)
-        ALL 3 FIXES APPLIED HERE
         """
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
-        
+
         now = time.time()
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
-        
+
         # Re-check age (token is now older)
         token_age = self._event_age_seconds(token_data)
-        
-        # CRITICAL FIX: Continue storing velocity snapshots during evaluation
-        # We need at least 0.9s of history for velocity check
+
+        # Continue storing velocity snapshots
         self._store_recent_velocity_snapshot(mint, v_sol)
-        
+
         logger.info(f"✓ Token {mint[:8]}... passed cooldown: {token_age:.1f}s old, {v_sol:.1f} SOL")
-        
-        # Basic filters
+
+        # ===================================================================
+        # OPTIMIZATION: CHECK HELIUS FIRST (slowest check)
+        # If this fails, no point running other filters
+        # ===================================================================
+        logger.info(f"🔍 Checking Helius for {mint[:8]}... (should be indexed after 6s cooldown)")
+
+        holder_result = await self._check_holders_helius(mint, max_retries=2)
+
+        if not holder_result['passed']:
+            self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
+            return (False, token_age)
+
+        holder_count = holder_result.get('holder_count', 0)
+        concentration = holder_result.get('concentration', 0)
+        self._last_holder_result = holder_result
+
+        logger.info(f"✅ Helius passed: {holder_count} holders, {concentration:.1f}% concentration")
+
+        # ===================================================================
+        # NOW run cheap filters (only if Helius passed)
+        # ===================================================================
+
         creator_sol = float(token_data.get('solAmount', 0))
         creator_address = str(token_data.get('traderPublicKey', 'unknown'))
-        
-        # FIX #2: Lowered minimum to 0.095 to handle rounding (0.099 SOL now passes!)
+
+        # Creator buy check
         if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
             return (False, token_age)
-        
+
         # Creator spam check
         creator_passed, _, _ = self._check_creator_spam(creator_address)
         if not creator_passed:
             self._log_filter("creator_spam", "max tokens/24h")
             return (False, token_age)
-        
+
         # Name quality
         name = str(token_data.get('name', '')).strip()
         symbol = str(token_data.get('symbol', '')).strip()
-        
+
         if len(name) < self.filters['min_name_length'] or not name.isascii() or not symbol.isascii():
             self._log_filter("name_quality", f"{name}")
             return (False, token_age)
-        
+
         # Blacklist check
         name_lower = name.lower()
         symbol_lower = symbol.lower()
@@ -581,69 +614,44 @@ class PumpPortalMonitor:
             if blacklisted in name_lower or blacklisted in symbol_lower:
                 self._log_filter("blacklist", f"'{blacklisted}' in {name}")
                 return (False, token_age)
-        
+
         # Bonding curve SOL range
         if v_sol < self.filters['min_curve_sol'] or v_sol > self.filters['max_curve_sol']:
             self._log_filter("curve_range", f"{v_sol:.2f} SOL")
             return (False, token_age)
-        
+
         # Momentum check
         required_multiplier = 8 if v_sol < 35 else (5 if v_sol < 50 else 3)
         required_sol = creator_sol * required_multiplier
         if v_sol < required_sol:
             self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f}")
             return (False, token_age)
-        
+
         # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
             self._log_filter("tokens_low", f"{v_tokens:,.0f}")
             return (False, token_age)
-        
-        # NOTE: Recent velocity check REMOVED from monitor
-        # Velocity checking happens in main.py with live curve reads
-        # We only have static snapshots here from WebSocket events
-        
-        # ===================================================================
-        # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
-        # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
-        # CRITICAL: Wait 3s before first check to allow Helius indexing
-        # ===================================================================
-        logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
-        
-        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
-        # Without this, ALL tokens fail because they're too new
-        await asyncio.sleep(3)
-        
-        # Market cap calculation (fast, local)
+
+        # NOTE: Velocity checking happens in main.py with live curve data
+        # WebSocket snapshots used here only for estimates
+
+        # Market cap
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
-        
+
         if market_cap < self.filters['min_market_cap'] or market_cap > self.filters['max_market_cap']:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
-        
-        # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
-        holder_task = asyncio.create_task(self._check_holders_helius(mint))
-        
-        # Wait for holder check with fast-fail
-        holder_result = await holder_task
-        
-        if not holder_result['passed']:
-            self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-            return (False, token_age)
-        
+
         # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
-        holder_count = holder_result.get('holder_count', 0)
-        concentration = holder_result.get('concentration', 0)
-        
+
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f}")
         logger.info(f"   Momentum: {momentum:.1f}x | Token age: {token_age:.1f}s")
         logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
-        
-        self._last_holder_result = holder_result
+
         return (True, token_age)
         
     async def start(self):
@@ -653,15 +661,14 @@ class PumpPortalMonitor:
         logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP + AGE/SOL PASSING")
         logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
-        logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
-        logger.info(f"  Fix #4: PASS TOKEN AGE + SOL TO CALLBACK FOR MAIN.PY")
+        logger.info(f"  OPTIMIZED: WebSocket estimate pre-filter (skip obvious duds)")
+        logger.info(f"  OPTIMIZED: Helius-first filter order (fail fast)")
+        logger.info(f"  OPTIMIZED: 6s cooldown matches Helius indexing time")
+        logger.info(f"  OPTIMIZED: Faster Helius retries (2 attempts: 1.0s + 2.0s)")
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
-        logger.info(f"  Concurrent checks: ENABLED")
-        logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
+        logger.info(f"  RPC timeout: 1.5s (fail faster on dead tokens)")
         
         uri = "wss://pumpportal.fun/api/data"
         
