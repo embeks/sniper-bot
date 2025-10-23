@@ -7,7 +7,6 @@ All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
 - Fix #2: Creator buy rounding tolerance (0.095 SOL minimum)
 - Fix #3: Fast Helius retry with 2 attempts (2.5s + 2.5s)
 - Fix #4: PASS TOKEN AGE + SOL TO CALLBACK (for main.py velocity check)
-- DUAL PIPELINE: Fast path with on-chain buyer check + post-buy verification
 """
 
 import asyncio
@@ -20,9 +19,6 @@ import websockets
 import aiohttp
 from datetime import datetime
 from config import HELIUS_API_KEY
-from solana.rpc.api import Client
-from onchain_utils import derive_bonding_curve_pda, extract_buyer_from_transaction
-from typing import Set, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -38,20 +34,8 @@ class PumpPortalMonitor:
             logger.error("❌ CRITICAL: HELIUS_API_KEY not found!")
             raise ValueError("HELIUS_API_KEY is required for holder checks")
         else:
-            # Show key info for debugging
-            key_preview = HELIUS_API_KEY[:10] if len(HELIUS_API_KEY) >= 10 else HELIUS_API_KEY
-            logger.info(f"✅ Helius API key loaded: {key_preview}... (length: {len(HELIUS_API_KEY)})")
-
-            # Validate key format (Helius keys are typically 32+ characters)
-            if len(HELIUS_API_KEY) < 20:
-                logger.warning(f"⚠️ Helius API key seems too short ({len(HELIUS_API_KEY)} chars) - might be invalid!")
-
-
-        # Initialize RPC client for fast on-chain buyer checks
-        rpc_url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-        self.rpc_client = Client(rpc_url)
-        logger.info(f"✅ RPC client initialized for fast path")
-
+            logger.info(f"✅ Helius API key loaded: {HELIUS_API_KEY[:10]}...")
+        
         # Token velocity tracking
         self.token_history = {}
         self.filter_reasons = {}
@@ -111,7 +95,7 @@ class PumpPortalMonitor:
             'max_tokens_per_creator_24h': 3,
             
             # OPTIMIZATION: First-sighting cooldown
-            'first_sighting_cooldown_seconds': 1.5,
+            'first_sighting_cooldown_seconds': 0.5,
             
             'filters_enabled': True
         }
@@ -306,13 +290,13 @@ class PumpPortalMonitor:
             logger.error(f"Error checking creator spam: {e}")
             return (True, 0, f"error: {e}")
     
-    async def _check_holders_helius(self, mint: str, max_retries: int = 4) -> dict:
+    async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
         """
         OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
         FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
         NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
         """
-        retry_delays = [0.5, 1.0, 1.5, 2.5]  # ✅ FIXED - Faster retries for actual indexing delays
+        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
         
         for attempt in range(max_retries + 1):
             try:
@@ -327,14 +311,14 @@ class PumpPortalMonitor:
                     }
                     
                     # OPTIMIZATION: 0.8s timeout for fast-fail
-                    timeout = aiohttp.ClientTimeout(total=2.5)  # ✅ FIXED - Give API time to respond
+                    timeout = aiohttp.ClientTimeout(total=0.8)
                     
                     try:
                         async with session.post(url, json=payload, timeout=timeout) as resp:
                             if resp.status != 200:
                                 logger.warning(f"Helius API returned {resp.status} for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
                                 if attempt < max_retries:
-                                    retry_delay = retry_delays[attempt]
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                                     logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
                                     await asyncio.sleep(retry_delay)
                                     continue
@@ -347,7 +331,7 @@ class PumpPortalMonitor:
                                 
                                 # Handle "not a Token mint" error with retry
                                 if 'not a Token mint' in error_msg and attempt < max_retries:
-                                    retry_delay = retry_delays[attempt]
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                                     logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
                                     await asyncio.sleep(retry_delay)
                                     continue
@@ -358,7 +342,7 @@ class PumpPortalMonitor:
                             if 'result' not in data or 'value' not in data['result']:
                                 logger.warning(f"Malformed response for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
                                 if attempt < max_retries:
-                                    retry_delay = retry_delays[attempt]
+                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                                     await asyncio.sleep(retry_delay)
                                     continue
                                 return {'passed': False, 'reason': 'malformed response'}
@@ -400,7 +384,7 @@ class PumpPortalMonitor:
                     except asyncio.TimeoutError:
                         logger.warning(f"Timeout for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
                         if attempt < max_retries:
-                            retry_delay = retry_delays[attempt]
+                            retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                             logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
                             await asyncio.sleep(retry_delay)
                             continue
@@ -409,115 +393,14 @@ class PumpPortalMonitor:
             except Exception as e:
                 logger.error(f"Helius exception for {mint[:8]}...: {e}")
                 if attempt < max_retries:
-                    retry_delay = retry_delays[attempt]
+                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                     await asyncio.sleep(retry_delay)
                     continue
                 return {'passed': False, 'reason': str(e)}
         
         logger.warning(f"❌ Failed to get holder count for {mint[:8]}... after {max_retries + 1} attempts")
         return {'passed': False, 'reason': f'failed_after_{max_retries + 1}_attempts'}
-
-    async def count_unique_buyers_onchain(self, mint: str, bonding_curve: str = None) -> int:
-        """
-        Count unique buyers from recent on-chain transactions
-        This replaces Helius holder check for fast path
-        Speed: ~500ms vs 6s for Helius
-        """
-        try:
-            # Derive bonding curve if not provided
-            if not bonding_curve:
-                bonding_curve = derive_bonding_curve_pda(mint)
-                if not bonding_curve:
-                    logger.warning(f"Could not derive PDA for {mint[:8]}...")
-                    return 0
-                logger.debug(f"Derived bonding curve: {bonding_curve[:8]}... for {mint[:8]}...")
-
-            from solders.pubkey import Pubkey
-            bonding_curve_pubkey = Pubkey.from_string(bonding_curve)
-
-            # Get recent transactions (last 30)
-            sigs = self.rpc_client.get_signatures_for_address(
-                bonding_curve_pubkey,
-                limit=30
-            )
-
-            if not sigs or not sigs.value or len(sigs.value) == 0:
-                logger.info(f"⚠️ No transactions found for bonding curve {bonding_curve[:8]}...")
-                return 0
-
-            sig_count = len(sigs.value)
-            logger.debug(f"Found {sig_count} signatures for {mint[:8]}...")
-
-            # Extract unique buyers
-            unique_buyers: Set[str] = set()
-            tx_checked = 0
-            tx_failed = 0
-
-            for sig_info in sigs.value[:20]:  # Check first 20 for speed
-                try:
-                    from solders.signature import Signature as SoldersSignature
-                    sig = SoldersSignature.from_string(str(sig_info.signature))
-
-                    tx = self.rpc_client.get_transaction(
-                        sig,
-                        encoding="jsonParsed",
-                        max_supported_transaction_version=0
-                    )
-
-                    tx_checked += 1
-                    buyer = extract_buyer_from_transaction(tx)
-                    if buyer:
-                        unique_buyers.add(buyer)
-                    else:
-                        tx_failed += 1
-
-                except Exception as e:
-                    tx_failed += 1
-                    logger.debug(f"Failed to get tx: {e}")
-                    continue
-
-            buyer_count = len(unique_buyers)
-            logger.info(f"🔍 Found {buyer_count} unique buyers on-chain for {mint[:8]}... (checked {tx_checked} txs, {tx_failed} failed)")
-            return buyer_count
-
-        except Exception as e:
-            logger.error(f"Error counting on-chain buyers: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return 0
-
-    async def _verify_holders_post_buy(self, mint: str, callback) -> bool:
-        """
-        Verify holder distribution AFTER buying (background task)
-        If verification fails, trigger emergency sell via callback
-        """
-        try:
-            # Wait for Helius to index
-            logger.info(f"⏳ Post-buy verification starting for {mint[:8]}... (waiting 5s for indexing)")
-            await asyncio.sleep(5)
-
-            # Check holders via Helius
-            holder_result = await self._check_holders_helius(mint)
-
-            if not holder_result.get('passed'):
-                reason = holder_result.get('reason', 'unknown')
-                logger.warning(f"⚠️ POST-BUY VERIFICATION FAILED for {mint[:8]}...: {reason}")
-
-                # Trigger emergency sell via callback
-                if callback:
-                    await callback(mint, reason)
-
-                return False
-
-            logger.info(f"✅ Post-buy verification PASSED for {mint[:8]}...")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error in post-buy verification: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-
+    
     def _log_filter(self, reason: str, detail: str):
         """Track why tokens are filtered"""
         if reason not in self.filter_reasons:
@@ -549,15 +432,8 @@ class PumpPortalMonitor:
                 # Re-evaluate tokens that passed cooldown
                 for mint, data in tokens_to_process:
                     logger.info(f"⏰ Cooldown complete for {mint[:8]}... - re-evaluating")
-                    result = await self._apply_quality_filters_post_cooldown(data)
-
-                    # Handle both old (2-tuple) and new (3-tuple) return formats
-                    if len(result) == 3:
-                        passed, token_age, needs_post_verification = result
-                    else:
-                        passed, token_age = result
-                        needs_post_verification = False
-
+                    passed, token_age = await self._apply_quality_filters_post_cooldown(data)
+                    
                     if not passed:
                         self.tokens_filtered += 1
                         continue
@@ -601,8 +477,7 @@ class PumpPortalMonitor:
                             'holder_data': holder_data,
                             'age': token_age,
                             'token_age': token_age,
-                            'sol_raised_at_detection': v_sol,
-                            'needs_post_verification': needs_post_verification  # Flag for dual pipeline
+                            'sol_raised_at_detection': v_sol
                         })
                 
             except Exception as e:
@@ -738,7 +613,7 @@ class PumpPortalMonitor:
         
         # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
         # Without this, ALL tokens fail because they're too new
-        # await asyncio.sleep(3)  # ✅ REMOVED - Token already indexed, no need to wait
+        await asyncio.sleep(3)
         
         # Market cap calculation (fast, local)
         await self._get_sol_price()
@@ -748,54 +623,28 @@ class PumpPortalMonitor:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
         
-        # ===================================================================
-        # DUAL PIPELINE: Fast path vs Standard path
-        # ===================================================================
-        needs_post_verification = False
-        holder_count = 0
-        concentration = 0
-
-        if token_age < 10.0:  # FAST PATH for fresh tokens
-            logger.info(f"⚡ FAST PATH: Checking on-chain buyers for {mint[:8]}... (age: {token_age:.1f}s)")
-
-            unique_buyers = await self.count_unique_buyers_onchain(mint)
-
-            if unique_buyers < self.filters['min_holders']:
-                reason = f"only {unique_buyers} unique buyers (min {self.filters['min_holders']})"
-                logger.info(f"❌ Filtered (fast_path_buyers): {reason}")
-                self._log_filter("fast_path_buyers", reason)
-                return (False, token_age)
-
-            logger.info(f"✅ Fast path PASSED: {unique_buyers} unique buyers")
-            holder_count = unique_buyers
-            concentration = 0  # Not calculated in fast path
-            needs_post_verification = True  # Flag for post-buy verification
-
-        else:  # STANDARD PATH for older tokens (already indexed)
-            logger.info(f"🐢 Standard path: Using Helius for {mint[:8]}... (age: {token_age:.1f}s)")
-            holder_result = await self._check_holders_helius(mint)
-
-            if not holder_result['passed']:
-                self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-                return (False, token_age)
-
-            holder_count = holder_result.get('holder_count', 0)
-            concentration = holder_result.get('concentration', 0)
-            needs_post_verification = False
-            self._last_holder_result = holder_result
-
+        # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
+        holder_task = asyncio.create_task(self._check_holders_helius(mint))
+        
+        # Wait for holder check with fast-fail
+        holder_result = await holder_task
+        
+        if not holder_result['passed']:
+            self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
+            return (False, token_age)
+        
         # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
-
+        holder_count = holder_result.get('holder_count', 0)
+        concentration = holder_result.get('concentration', 0)
+        
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f}")
         logger.info(f"   Momentum: {momentum:.1f}x | Token age: {token_age:.1f}s")
         logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
-        if needs_post_verification:
-            logger.info(f"   ⚠️ POST-BUY VERIFICATION REQUIRED")
-
-        # Return tuple with needs_post_verification flag
-        return (True, token_age, needs_post_verification)
+        
+        self._last_holder_result = holder_result
+        return (True, token_age)
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
