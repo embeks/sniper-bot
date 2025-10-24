@@ -1,6 +1,3 @@
-
-
-
 """
 PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES + AGE FIX
 All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
