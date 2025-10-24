@@ -22,22 +22,33 @@ class PumpPortalTrader:
     
     async def get_priority_fee(self, urgency: str = "normal") -> float:
         """
-        Dynamic priority fees for reliable confirmation
-        
+        OPTIMIZED for 0.05 SOL positions - 11% total fees (vs 26% before)
+
+        Fee philosophy:
+        - Buy: Lower fee OK (2-5s confirm, entry not time-critical)
+        - Sell: Higher fee CRITICAL (1-3s confirm, price decays fast)
+
         urgency levels:
-        - "low": 0.002 SOL (5x target)
-        - "normal": 0.003 SOL (regular buys, 2x/3x targets)
-        - "high": 0.005 SOL (stop-loss, early dump)
-        - "critical": 0.01 SOL (retries, must execute)
+        - "low": 0.001 SOL (5-10s confirm, off-peak only)
+        - "normal": 0.0015 SOL (BUY - 2-5s confirm, optimal for entry)
+        - "high": 0.003 SOL (3-5s confirm, fast but not urgent)
+        - "critical": 0.004 SOL (SELL - 1-3s confirm, exit priority)
+        - "ultra": 0.008 SOL (emergency retry, <1s confirm)
+
+        Breakeven analysis at 0.05 SOL:
+        - Total fees: 0.0015 (buy) + 0.004 (sell) = 0.0055 SOL
+        - Breakeven: +11% (vs +26% before)
+        - At +26% win: +0.0077 SOL profit (+15% ROI)
         """
         urgency_fees = {
-            "low": 0.002,
-            "normal": 0.003,
-            "high": 0.005,
-            "critical": 0.01
+            "low": 0.001,
+            "normal": 0.0015,      # BUY fee
+            "high": 0.003,
+            "critical": 0.004,     # SELL fee
+            "ultra": 0.008         # Emergency retry
         }
-        
-        fee = urgency_fees.get(urgency, 0.003)
+
+        fee = urgency_fees.get(urgency, 0.0015)
         logger.debug(f"Priority fee ({urgency}): {fee:.6f} SOL")
         return fee
     
