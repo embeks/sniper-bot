@@ -1,5 +1,3 @@
-
-
 """
 config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
 - Shorter timer (20s)
@@ -305,4 +303,3 @@ if DRY_RUN:
     print("⚠️ DRY RUN MODE - No real transactions will be executed")
 if DEBUG_MODE:
     print("🔍 DEBUG MODE - Verbose logging enabled")
-
