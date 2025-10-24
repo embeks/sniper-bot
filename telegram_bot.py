@@ -1,5 +1,3 @@
-
-
 """
 Telegram Bot
 """
@@ -672,4 +670,3 @@ Details: {details}
         """Stop the Telegram bot"""
         self.running = False
         logger.info("Telegram bot stopped")
-
