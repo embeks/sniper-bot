@@ -1,5 +1,3 @@
-
-
 """
 Performance Tracker - FINAL: Fixed CSV logging to show real P&L
 CRITICAL FIX: Uses actual pnl_sol parameter instead of recalculating
