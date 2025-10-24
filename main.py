@@ -1,5 +1,3 @@
-
-
 """
 Main Orchestrator - FINAL FIX: Entry price bookkeeping + Stop loss with source checking
 TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE
@@ -1652,5 +1650,3 @@ if __name__ == "__main__":
         logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc()
-
-
