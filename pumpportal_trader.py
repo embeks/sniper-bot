@@ -1,5 +1,3 @@
-
-
 """
 PumpPortal Trader
 UPDATED: Tighter slippage now that we validate liquidity first
