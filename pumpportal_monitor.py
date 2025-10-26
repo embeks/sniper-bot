@@ -514,7 +514,7 @@ class PumpPortalMonitor:
             return False
         
         # ===================================================================
-        # OPTIMIZATION 3: FIRST-SIGHTING COOLDOWN (0.5s confirmation)
+        # OPTIMIZATION 3: FIRST-SIGHTING COOLDOWN (2s confirmation)
         # CRITICAL FIX: Store token data for re-evaluation by background task
         # ===================================================================
         if mint not in self.first_sighting_times:
@@ -524,9 +524,13 @@ class PumpPortalMonitor:
             self.tokens_deferred += 1
             logger.info(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
             return False
-        
-        # This should never be reached now (handled by background task)
-        return False
+        else:
+            # Token is already in cooldown - store additional snapshot for velocity analysis
+            # This accumulates 5+ snapshots during the 2s cooldown period
+            self._store_recent_velocity_snapshot(mint, v_sol)
+            # Update pending data with latest info
+            self.pending_tokens[mint] = data
+            return False
     
     async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
         """
