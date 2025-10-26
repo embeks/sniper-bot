@@ -67,9 +67,9 @@ class PumpPortalMonitor:
             # OPTIMIZATION: Early curve prefilter
             'min_curve_sol_prefilter': 3.0,  # Skip tokens with <3 SOL (likely duds)
             
-            # FIX #2: Lowered from 0.1 to 0.095 to handle rounding edge cases
-            'min_creator_sol': 0.095,  # Allow 0.095-0.099 SOL range
-            'max_creator_sol': 5.0,
+            # OPTIMIZED: Based on live data (GSG: 0.50, Skeleton: 2.96, Rugs: <0.45 or >3.5)
+            'min_creator_sol': 0.45,  # Winners: 0.50-2.96 SOL, Rugs: 0.20-0.40 SOL
+            'max_creator_sol': 3.5,   # Block manipulation (NOKINGS had 3.46 and was a rug)
             'min_curve_sol': 15.0,
             'max_curve_sol': 45.0,
             'min_v_tokens': 500_000_000,
@@ -588,10 +588,93 @@ class PumpPortalMonitor:
         # Momentum check
         required_multiplier = 8 if v_sol < 35 else (5 if v_sol < 50 else 3)
         required_sol = creator_sol * required_multiplier
+        momentum = v_sol / creator_sol if creator_sol > 0 else 0
+
         if v_sol < required_sol:
-            self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f}")
+            self._log_filter("momentum", f"{momentum:.1f}x < {required_multiplier}x")
             return (False, token_age)
-        
+
+        # ═══════════════════════════════════════════════════════════════
+        # SUSTAINED VELOCITY CHECKS - Key to filtering single-spike rugs
+        # Winners: Multiple ticks, sustained buying (GSG, Skeleton)
+        # Rugs: Single spike then silence (BWC, BS, Dead House)
+        # ═══════════════════════════════════════════════════════════════
+
+        # Check 1: Tick density - must have consistent updates, not single spike
+        if mint in self.recent_velocity_snapshots:
+            snapshots = self.recent_velocity_snapshots[mint]
+            snapshot_count = len(snapshots)
+
+            if snapshot_count < 5:
+                self._log_filter("tick_density", f"only {snapshot_count} snapshots (need ≥5)")
+                return (False, token_age)
+
+            # Check 2: Sustained velocity - calculate avg and min over recent period
+            now = time.time()
+            lookback_window = 1.2  # Last 1.2 seconds
+            recent_snaps = [s for s in snapshots if now - s['timestamp'] <= lookback_window]
+
+            if len(recent_snaps) >= 3:
+                velocities = []
+                for i in range(1, len(recent_snaps)):
+                    time_delta = recent_snaps[i]['timestamp'] - recent_snaps[i-1]['timestamp']
+                    sol_delta = recent_snaps[i]['sol_raised'] - recent_snaps[i-1]['sol_raised']
+                    if time_delta > 0:
+                        vel = sol_delta / time_delta
+                        velocities.append(vel)
+
+                if velocities:
+                    avg_velocity = sum(velocities) / len(velocities)
+                    min_velocity = min(velocities)
+
+                    # Require sustained buying: avg ≥1.2 SOL/s, min ≥0.6 SOL/s
+                    if avg_velocity < 1.2:
+                        self._log_filter("avg_velocity_low", f"{avg_velocity:.2f} SOL/s < 1.2")
+                        return (False, token_age)
+
+                    if min_velocity < 0.6:
+                        self._log_filter("min_velocity_low", f"{min_velocity:.2f} SOL/s < 0.6 (not sustained)")
+                        return (False, token_age)
+
+                    logger.info(f"✓ Sustained velocity: avg={avg_velocity:.2f}, min={min_velocity:.2f} SOL/s")
+
+        # Check 3: High momentum requires even stronger sustain
+        if momentum > 90:
+            # Extreme momentum must prove it's organic, not bot coordination
+            if mint in self.recent_velocity_snapshots:
+                snapshots = self.recent_velocity_snapshots[mint]
+                recent_snaps = [s for s in snapshots if time.time() - s['timestamp'] <= 1.2]
+
+                if len(recent_snaps) >= 3:
+                    velocities = []
+                    for i in range(1, len(recent_snaps)):
+                        time_delta = recent_snaps[i]['timestamp'] - recent_snaps[i-1]['timestamp']
+                        sol_delta = recent_snaps[i]['sol_raised'] - recent_snaps[i-1]['sol_raised']
+                        if time_delta > 0:
+                            velocities.append(sol_delta / time_delta)
+
+                    if velocities:
+                        min_velocity = min(velocities)
+                        if min_velocity < 1.2:
+                            self._log_filter("high_momentum_weak_sustain", f"{momentum:.1f}x momentum but min_vel {min_velocity:.2f} < 1.2")
+                            return (False, token_age)
+
+        # Check 4: Public vs creator contribution (organic demand proxy)
+        public_sol = v_sol - creator_sol
+        public_to_creator_ratio = public_sol / creator_sol if creator_sol > 0 else 0
+
+        if public_to_creator_ratio < 4.0:
+            self._log_filter("low_public_interest", f"public/creator ratio {public_to_creator_ratio:.1f}x < 4x")
+            return (False, token_age)
+
+        logger.info(f"✓ Public interest strong: {public_to_creator_ratio:.1f}x creator buy")
+
+        # Check 5: Maximum momentum cap (backup for extreme bot pumps)
+        max_multiplier = 80 if v_sol < 35 else (60 if v_sol < 50 else 40)
+        if momentum > max_multiplier:
+            self._log_filter("momentum_too_high", f"{momentum:.1f}x > {max_multiplier}x")
+            return (False, token_age)
+
         # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
