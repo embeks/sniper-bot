@@ -524,9 +524,16 @@ class PumpPortalMonitor:
             self.tokens_deferred += 1
             logger.info(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
             return False
-        
-        # This should never be reached now (handled by background task)
-        return False
+        else:
+            # Token is already in cooldown - store additional snapshot for velocity analysis
+            # This accumulates 5+ snapshots during the 2s cooldown period
+            self._store_recent_velocity_snapshot(mint, v_sol)
+            snapshot_count = len(self.recent_velocity_snapshots.get(mint, []))
+            time_in_cooldown = now - self.first_sighting_times[mint]
+            logger.debug(f"📸 SNAPSHOT #{snapshot_count} for {mint[:8]}... at t={time_in_cooldown:.2f}s ({v_sol:.1f} SOL)")
+            # Update pending data with latest info
+            self.pending_tokens[mint] = data
+            return False
     
     async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
         """
@@ -605,8 +612,13 @@ class PumpPortalMonitor:
             snapshots = self.recent_velocity_snapshots[mint]
             snapshot_count = len(snapshots)
 
+            # Calculate time span of snapshots
+            if snapshot_count >= 2:
+                time_span = snapshots[-1]['timestamp'] - snapshots[0]['timestamp']
+                logger.info(f"📸 Snapshot analysis: {snapshot_count} snapshots over {time_span:.2f}s")
+
             if snapshot_count < 5:
-                self._log_filter("tick_density", f"only {snapshot_count} snapshots (need ≥5)")
+                self._log_filter("tick_density", f"only {snapshot_count} snapshots (need ≥5) - cooldown accumulation failed")
                 return (False, token_age)
 
             # Check 2: Sustained velocity - calculate avg and min over recent period
