@@ -44,6 +44,8 @@ class PumpPortalMonitor:
         # OPTIMIZATION: First-sighting cooldown with token data storage
         self.first_sighting_times = {}
         self.pending_tokens = {}  # Store token data for re-evaluation
+        self.websocket = None  # WebSocket connection for dynamic subscriptions
+        self.subscribed_tokens = set()  # Track tokens we're subscribed to for trades
         
         # Creator spam tracking
         self.creator_token_launches = {}
@@ -128,6 +130,41 @@ class PumpPortalMonitor:
         
         return self.sol_price_usd
     
+    async def _subscribe_to_token_trades(self, mint: str):
+        """
+        Subscribe to real-time trade updates for a specific token during cooldown.
+        This enables snapshot accumulation from continuous trade events.
+        """
+        if not self.websocket or mint in self.subscribed_tokens:
+            return
+
+        try:
+            subscribe_msg = {
+                "method": "subscribeTokenTrade",
+                "keys": [mint]
+            }
+            await self.websocket.send(json.dumps(subscribe_msg))
+            self.subscribed_tokens.add(mint)
+            logger.debug(f"📡 Subscribed to trades for {mint[:8]}... (snapshot accumulation)")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to trades for {mint[:8]}...: {e}")
+
+    async def _unsubscribe_from_token_trades(self, mint: str):
+        """Unsubscribe from token trades after cooldown completes"""
+        if not self.websocket or mint not in self.subscribed_tokens:
+            return
+
+        try:
+            unsubscribe_msg = {
+                "method": "unsubscribeTokenTrade",
+                "keys": [mint]
+            }
+            await self.websocket.send(json.dumps(unsubscribe_msg))
+            self.subscribed_tokens.discard(mint)
+            logger.debug(f"📡 Unsubscribed from trades for {mint[:8]}...")
+        except Exception as e:
+            logger.error(f"Failed to unsubscribe from trades for {mint[:8]}...: {e}")
+
     def _event_age_seconds(self, token_data: dict) -> float:
         """
         CRITICAL FIX: Get REAL token age from event data, not first sighting time
@@ -430,8 +467,12 @@ class PumpPortalMonitor:
                 # Re-evaluate tokens that passed cooldown
                 for mint, data in tokens_to_process:
                     logger.info(f"⏰ Cooldown complete for {mint[:8]}... - re-evaluating")
+
+                    # Unsubscribe from trades now that cooldown is complete
+                    await self._unsubscribe_from_token_trades(mint)
+
                     passed, token_age = await self._apply_quality_filters_post_cooldown(data)
-                    
+
                     if not passed:
                         self.tokens_filtered += 1
                         continue
@@ -523,6 +564,10 @@ class PumpPortalMonitor:
             self._store_recent_velocity_snapshot(mint, v_sol)
             self.tokens_deferred += 1
             logger.info(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
+
+            # Subscribe to trades for continuous snapshot accumulation during cooldown
+            await self._subscribe_to_token_trades(mint)
+
             return False
         else:
             # Token is already in cooldown - store additional snapshot for velocity analysis
@@ -769,29 +814,38 @@ class PumpPortalMonitor:
                     ping_timeout=10,
                     close_timeout=5
                 ) as websocket:
+                    # Store websocket reference for dynamic subscriptions
+                    self.websocket = websocket
+
                     logger.info("✅ Connected to PumpPortal WebSocket!")
-                    
+
                     subscribe_msg = {"method": "subscribeNewToken"}
                     await websocket.send(json.dumps(subscribe_msg))
-                    logger.info("📡 Subscribed to new token events")
+                    logger.info("📡 Subscribed to new token events (dynamic trade subscriptions enabled)")
                     
                     while self.running:
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=30)
                             data = json.loads(message)
-                            
+
+                            # Handle trade events for snapshot accumulation
+                            if self._is_trade_event(data):
+                                await self._handle_trade_event(data)
+                                continue
+
+                            # Handle new token events
                             if self._is_new_token(data):
                                 mint = self._extract_mint(data)
-                                
+
                                 if not mint:
                                     continue
-                                
+
                                 # FIXED: Increment evaluated counter for ALL tokens
                                 self.tokens_evaluated += 1
-                                
+
                                 # CRITICAL FIX: Check filters (stores for later if needed)
                                 passed = await self._apply_quality_filters(data)
-                                
+
                                 if not passed:
                                     # Token either filtered or deferred for cooldown
                                     # Stats logged every 10 tokens
@@ -811,6 +865,9 @@ class PumpPortalMonitor:
                             
             except Exception as e:
                 logger.error(f"WebSocket connection error: {e}")
+                # Cleanup websocket state
+                self.websocket = None
+                self.subscribed_tokens.clear()
                 if self.running:
                     self.seen_tokens.clear()
                     self.reconnect_count += 1
@@ -820,6 +877,45 @@ class PumpPortalMonitor:
         # Cleanup
         pending_task.cancel()
     
+    def _is_trade_event(self, data: dict) -> bool:
+        """Check if message is a trade event"""
+        # Trade events typically have txType field
+        if 'txType' in data:
+            return True
+        # Some trade events might have a different structure
+        if isinstance(data, dict) and 'signature' in data and 'mint' in data:
+            return True
+        return False
+
+    async def _handle_trade_event(self, data: dict):
+        """
+        Process trade events for tokens in cooldown to accumulate snapshots.
+        Trade events have updated vSolInBondingCurve values.
+        """
+        try:
+            mint = self._extract_mint(data)
+            if not mint or mint not in self.pending_tokens:
+                return  # Only process trades for tokens we're tracking
+
+            # Extract current SOL in bonding curve from trade event
+            v_sol = float(data.get('vSolInBondingCurve', 0))
+            if v_sol == 0:
+                # Try alternative field names
+                v_sol = float(data.get('solAmount', 0))
+
+            if v_sol > 0:
+                # Store snapshot for velocity analysis
+                self._store_recent_velocity_snapshot(mint, v_sol)
+                snapshot_count = len(self.recent_velocity_snapshots.get(mint, []))
+                time_in_cooldown = time.time() - self.first_sighting_times.get(mint, time.time())
+                logger.debug(f"📸 TRADE SNAPSHOT #{snapshot_count} for {mint[:8]}... at t={time_in_cooldown:.2f}s ({v_sol:.1f} SOL)")
+
+                # Update pending token data with latest trade info
+                self.pending_tokens[mint] = data
+
+        except Exception as e:
+            logger.error(f"Error handling trade event: {e}")
+
     def _is_new_token(self, data: dict) -> bool:
         """Check if message is a new token event"""
         if 'mint' in data:
