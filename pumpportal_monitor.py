@@ -838,27 +838,31 @@ class PumpPortalMonitor:
                                 last_heartbeat = time.time()
                                 message_count = 0
 
-                            # DEBUG: Log first few characters of every message to diagnose silence
-                            msg_preview = str(data)[:200] if isinstance(data, dict) else str(data)[:200]
-                            logger.info(f"📨 Received message: {msg_preview}")  # Temporarily INFO for debugging
+                            # DEBUG: Log FULL message structure to see all fields
+                            logger.info(f"📨 FULL MESSAGE: {json.dumps(data, indent=2)}")  # Temporarily INFO for debugging
 
                             # Handle trade events for snapshot accumulation
                             if self._is_trade_event(data):
+                                logger.info(f"✅ Detected as TRADE event")
                                 await self._handle_trade_event(data)
                                 continue
 
                             # Handle new token events
                             if self._is_new_token(data):
+                                logger.info(f"✅ Detected as NEW TOKEN event")
                                 mint = self._extract_mint(data)
 
                                 if not mint:
-                                    logger.warning(f"⚠️ New token event detected but no mint extracted: {msg_preview}")
+                                    logger.warning(f"⚠️ New token event detected but no mint extracted")
                                     continue
+
+                                logger.info(f"✅ Extracted mint: {mint[:8]}...")
 
                                 # FIXED: Increment evaluated counter for ALL tokens
                                 self.tokens_evaluated += 1
 
                                 # CRITICAL FIX: Check filters (stores for later if needed)
+                                logger.info(f"🔍 Running quality filters for {mint[:8]}...")
                                 passed = await self._apply_quality_filters(data)
 
                                 if not passed:
@@ -873,7 +877,7 @@ class PumpPortalMonitor:
                                     continue
                             else:
                                 # Message not recognized as token or trade event
-                                logger.debug(f"🤷 Unknown message type: {msg_preview}")
+                                logger.warning(f"🤷 Unknown message type - not token or trade event")
                         
                         except asyncio.TimeoutError:
                             logger.info(f"⏱️ No messages for 30s - sending keepalive ping ({message_count} msgs since last heartbeat)")
