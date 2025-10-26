@@ -601,45 +601,44 @@ class PumpPortalMonitor:
         # NOTE: Recent velocity check REMOVED from monitor
         # Velocity checking happens in main.py with live curve reads
         # We only have static snapshots here from WebSocket events
-        
+
         # ===================================================================
-        # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
-        # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
-        # CRITICAL: Wait 3s before first check to allow Helius indexing
+        # HOLDER CHECK DISABLED - Eliminates 3-6s Helius indexing delay
+        # Allows entry at 1-2s token age instead of 7-8s
+        # Trade-off: Relying on momentum/velocity/creator filters to avoid rugs
         # ===================================================================
-        logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
-        
-        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
-        # Without this, ALL tokens fail because they're too new
-        await asyncio.sleep(3)
-        
+        logger.info(f"🔍 Running market cap check for {mint[:8]}...")
+
+        # DISABLED: 3s sleep for Helius indexing (was causing entry delay)
+        # await asyncio.sleep(3)
+
         # Market cap calculation (fast, local)
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
-        
+
         if market_cap < self.filters['min_market_cap'] or market_cap > self.filters['max_market_cap']:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
-        
-        # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
-        holder_task = asyncio.create_task(self._check_holders_helius(mint))
-        
-        # Wait for holder check with fast-fail
-        holder_result = await holder_task
-        
-        if not holder_result['passed']:
-            self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-            return (False, token_age)
-        
+
+        # DISABLED: Holder check (was causing 3-6s delay)
+        # holder_task = asyncio.create_task(self._check_holders_helius(mint))
+        # holder_result = await holder_task
+        # if not holder_result['passed']:
+        #     self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
+        #     return (False, token_age)
+
+        # Placeholder (holder check disabled)
+        holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0}
+
         # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
         holder_count = holder_result.get('holder_count', 0)
         concentration = holder_result.get('concentration', 0)
-        
+
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f}")
         logger.info(f"   Momentum: {momentum:.1f}x | Token age: {token_age:.1f}s")
-        logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
+        logger.info(f"   Holders: DISABLED ⚡")
         
         self._last_holder_result = holder_result
         return (True, token_age)
