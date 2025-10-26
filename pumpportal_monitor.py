@@ -822,11 +822,25 @@ class PumpPortalMonitor:
                     subscribe_msg = {"method": "subscribeNewToken"}
                     await websocket.send(json.dumps(subscribe_msg))
                     logger.info("📡 Subscribed to new token events (dynamic trade subscriptions enabled)")
-                    
+
+                    last_heartbeat = time.time()
+                    message_count = 0
+
                     while self.running:
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=30)
                             data = json.loads(message)
+                            message_count += 1
+
+                            # Heartbeat: Log activity every 30 seconds
+                            if time.time() - last_heartbeat >= 30:
+                                logger.info(f"💓 Heartbeat: {message_count} messages received in last 30s")
+                                last_heartbeat = time.time()
+                                message_count = 0
+
+                            # DEBUG: Log first few characters of every message to diagnose silence
+                            msg_preview = str(data)[:200] if isinstance(data, dict) else str(data)[:200]
+                            logger.info(f"📨 Received message: {msg_preview}")  # Temporarily INFO for debugging
 
                             # Handle trade events for snapshot accumulation
                             if self._is_trade_event(data):
@@ -838,6 +852,7 @@ class PumpPortalMonitor:
                                 mint = self._extract_mint(data)
 
                                 if not mint:
+                                    logger.warning(f"⚠️ New token event detected but no mint extracted: {msg_preview}")
                                     continue
 
                                 # FIXED: Increment evaluated counter for ALL tokens
@@ -856,8 +871,12 @@ class PumpPortalMonitor:
                                             top_reasons = sorted(self.filter_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
                                             logger.info(f"   Top reasons: {top_reasons}")
                                     continue
+                            else:
+                                # Message not recognized as token or trade event
+                                logger.debug(f"🤷 Unknown message type: {msg_preview}")
                         
                         except asyncio.TimeoutError:
+                            logger.info(f"⏱️ No messages for 30s - sending keepalive ping ({message_count} msgs since last heartbeat)")
                             await websocket.ping()
                         except Exception as e:
                             logger.error(f"Message processing error: {e}")
