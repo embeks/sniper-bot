@@ -93,7 +93,7 @@ class PumpPortalMonitor:
             'max_tokens_per_creator_24h': 3,
             
             # OPTIMIZATION: First-sighting cooldown
-            'first_sighting_cooldown_seconds': 0.5,
+            'first_sighting_cooldown_seconds': 2.0,
             
             'filters_enabled': True
         }
