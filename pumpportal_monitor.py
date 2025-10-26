@@ -901,12 +901,10 @@ class PumpPortalMonitor:
         pending_task.cancel()
     
     def _is_trade_event(self, data: dict) -> bool:
-        """Check if message is a trade event"""
-        # Trade events typically have txType field
-        if 'txType' in data:
-            return True
-        # Some trade events might have a different structure
-        if isinstance(data, dict) and 'signature' in data and 'mint' in data:
+        """Check if message is a trade event (buy/sell only, NOT create)"""
+        tx_type = data.get('txType', '')
+        # Only match actual trades (buy/sell), NOT token creation
+        if tx_type in ('buy', 'sell'):
             return True
         return False
 
@@ -941,6 +939,10 @@ class PumpPortalMonitor:
 
     def _is_new_token(self, data: dict) -> bool:
         """Check if message is a new token event"""
+        # Check for explicit token creation event (PumpPortal format)
+        if data.get('txType') == 'create':
+            return True
+        # Legacy checks for other formats
         if 'mint' in data:
             return True
         if 'token' in data and isinstance(data['token'], dict):
