@@ -1,6 +1,7 @@
 """
 Bonding Curve State Reader - Read liquidity directly from chain
 ✅ OPUS FIX (Issue B): Add explicit price_lamports_per_atomic field for consistency
+✅ CRITICAL FIX: Add explicit 'processed' commitment for instant reads
 """
 
 import struct
@@ -9,6 +10,7 @@ import time
 from typing import Optional, Dict, Tuple
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
+from solana.rpc.commitment import Processed
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,10 @@ class BondingCurveReader:
             return None
     
     def get_curve_state(self, mint: str, use_cache: bool = True) -> Optional[Dict]:
-        """Get current curve state"""
+        """
+        Get current curve state
+        ✅ CRITICAL FIX: Use 'processed' commitment for instant reads
+        """
         if use_cache and mint in self.cache:
             cached = self.cache[mint]
             if time.time() - cached['timestamp'] < self.CACHE_TTL:
@@ -87,7 +92,10 @@ class BondingCurveReader:
             mint_pubkey = Pubkey.from_string(mint)
             curve_pda, _ = self.derive_curve_pda(mint_pubkey)
             
-            response = self.client.get_account_info(curve_pda)
+            # ✅ CRITICAL FIX: Explicitly use 'processed' commitment
+            # This allows the RPC to return newly created accounts immediately
+            # instead of waiting 5-8 seconds for finalization
+            response = self.client.get_account_info(curve_pda, commitment=Processed)
             
             if not response.value or not response.value.data:
                 return None
