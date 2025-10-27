@@ -1,10 +1,13 @@
 """
-PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES + AGE FIX
-All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
-- Fix #1: Adaptive velocity window (no false 0.00 SOL/s)
-- Fix #2: Creator buy rounding tolerance (0.095 SOL minimum)
-- Fix #3: Fast Helius retry with 2 attempts (2.5s + 2.5s)
-- Fix #4: PASS TOKEN AGE + SOL TO CALLBACK (for main.py velocity check)
+PumpPortal WebSocket Monitor - COMPLETE WITH TRADE SUBSCRIPTIONS V2
+Fixed: Trade events now properly store snapshots during cooldown
+
+Key Features:
+- Dynamic trade subscriptions during cooldown (collect 5-10 snapshots)
+- Sustained velocity analysis (avg ≥1.2, min ≥0.6 SOL/s)
+- Public/creator ratio check (≥4x organic demand)
+- Tick density filter (≥5 snapshots = active buying)
+- Maximum momentum cap (80x for bot pump detection)
 """
 
 import asyncio
@@ -38,14 +41,16 @@ class PumpPortalMonitor:
         self.token_history = {}
         self.filter_reasons = {}
         
-        # Recent velocity snapshots (high-frequency during first 3s)
+        # Recent velocity snapshots (high-frequency during cooldown)
         self.recent_velocity_snapshots = {}
+        
+        # WebSocket reference for dynamic subscriptions
+        self.websocket = None
+        self.trade_subscriptions = set()  # Track which tokens we're subscribed to
         
         # OPTIMIZATION: First-sighting cooldown with token data storage
         self.first_sighting_times = {}
         self.pending_tokens = {}  # Store token data for re-evaluation
-        self.websocket = None  # WebSocket connection for dynamic subscriptions
-        self.subscribed_tokens = set()  # Track tokens we're subscribed to for trades
         
         # Creator spam tracking
         self.creator_token_launches = {}
@@ -61,7 +66,7 @@ class PumpPortalMonitor:
         self.sol_price_usd = 250
         self.last_sol_price_update = 0
         
-        # Filters - OPTIMIZED ORDER
+        # Filters - OPTIMIZED with sustained velocity checks
         self.filters = {
             # CRITICAL: Age check FIRST (before expensive RPC calls)
             'max_token_age_seconds': 4.0,  # Only process tokens <4s old
@@ -90,21 +95,108 @@ class PumpPortalMonitor:
                 'pepe', 'elon', 'trump', 'inu', 'doge', 'shib', 'floki',
                 'moon', 'safe', 'baby', 'mini', 'rocket', 'gem'
             ],
-            # FIXED: Match velocity_checker.py settings (3.0 SOL/s minimum)
             'min_recent_velocity_sol_per_sec': 3.0,
             'max_tokens_per_creator_24h': 3,
             
-            # OPTIMIZATION: First-sighting cooldown
+            # OPTIMIZATION: First-sighting cooldown (2s allows RPC indexing + velocity snapshots)
             'first_sighting_cooldown_seconds': 2.0,
             
             'filters_enabled': True
         }
         
         # Statistics
-        self.tokens_evaluated = 0  # Total tokens evaluated
-        self.tokens_deferred = 0  # ADDED: Tokens in cooldown (not filtered)
-        self.tokens_filtered = 0  # Actually filtered out
-        self.tokens_passed = 0  # Passed all filters
+        self.tokens_evaluated = 0
+        self.tokens_deferred = 0
+        self.tokens_filtered = 0
+        self.tokens_passed = 0
+    
+    async def _subscribe_to_token_trades(self, mint: str):
+        """Subscribe to real-time trades for a specific token during cooldown"""
+        if not self.websocket or mint in self.trade_subscriptions:
+            return
+        
+        try:
+            subscribe_msg = {
+                "method": "subscribeTokenTrade",
+                "keys": [mint]
+            }
+            await self.websocket.send(json.dumps(subscribe_msg))
+            self.trade_subscriptions.add(mint)
+            logger.info(f"📡 Subscribed to trades for {mint[:8]}... (snapshot accumulation)")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to trades for {mint[:8]}...: {e}")
+    
+    async def _unsubscribe_from_token_trades(self, mint: str):
+        """Unsubscribe from token trades after cooldown completes"""
+        if not self.websocket or mint not in self.trade_subscriptions:
+            return
+        
+        try:
+            unsubscribe_msg = {
+                "method": "unsubscribeTokenTrade",
+                "keys": [mint]
+            }
+            await self.websocket.send(json.dumps(unsubscribe_msg))
+            self.trade_subscriptions.discard(mint)
+            logger.debug(f"📡 Unsubscribed from trades for {mint[:8]}...")
+        except Exception as e:
+            logger.debug(f"Failed to unsubscribe from {mint[:8]}...: {e}")
+    
+    def _is_trade_event(self, data: dict) -> bool:
+        """Check if message is a trade event"""
+        # Primary indicator: txType field
+        if 'txType' in data:
+            tx_type = data['txType']
+            if tx_type in ['buy', 'sell', 'create']:
+                # Exclude 'create' events with initialBuy (those are new tokens)
+                if tx_type == 'create' and 'initialBuy' in data:
+                    return False
+                return True
+        
+        if 'transactionType' in data:
+            return True
+        
+        # Signature + tokenAmount usually indicates a trade
+        if 'signature' in data and 'tokenAmount' in data:
+            return True
+        
+        return False
+    
+    async def _handle_trade_event(self, data: dict):
+        """Handle real-time trade events for tokens in cooldown"""
+        mint = self._extract_mint(data)
+        
+        if not mint:
+            return
+        
+        # CRITICAL: Check if we're tracking this token
+        # Trade events can come in BEFORE or AFTER we add to first_sighting_times
+        # So we check both first_sighting_times AND pending_tokens
+        is_tracking = (mint in self.first_sighting_times or mint in self.pending_tokens)
+        
+        if not is_tracking:
+            # Not tracking this token, ignore
+            return
+        
+        # Extract current SOL in curve from trade event
+        v_sol = float(data.get('vSolInBondingCurve', 0))
+        if v_sol == 0:
+            # Try alternate field names
+            v_sol = float(data.get('solAmount', 0))
+        
+        if v_sol > 0:
+            # Store snapshot
+            self._store_recent_velocity_snapshot(mint, v_sol)
+            
+            # Calculate time since first sighting (if available)
+            if mint in self.first_sighting_times:
+                time_since_first = time.time() - self.first_sighting_times[mint]
+            else:
+                time_since_first = 0
+                
+            snapshot_count = len(self.recent_velocity_snapshots.get(mint, []))
+            
+            logger.info(f"📸 TRADE SNAPSHOT #{snapshot_count} for {mint[:8]}... at t={time_since_first:.2f}s ({v_sol:.1f} SOL)")
     
     async def _get_sol_price(self) -> float:
         """Get current SOL price with caching (5 min cache)"""
@@ -130,46 +222,8 @@ class PumpPortalMonitor:
         
         return self.sol_price_usd
     
-    async def _subscribe_to_token_trades(self, mint: str):
-        """
-        Subscribe to real-time trade updates for a specific token during cooldown.
-        This enables snapshot accumulation from continuous trade events.
-        """
-        if not self.websocket or mint in self.subscribed_tokens:
-            return
-
-        try:
-            subscribe_msg = {
-                "method": "subscribeTokenTrade",
-                "keys": [mint]
-            }
-            await self.websocket.send(json.dumps(subscribe_msg))
-            self.subscribed_tokens.add(mint)
-            logger.debug(f"📡 Subscribed to trades for {mint[:8]}... (snapshot accumulation)")
-        except Exception as e:
-            logger.error(f"Failed to subscribe to trades for {mint[:8]}...: {e}")
-
-    async def _unsubscribe_from_token_trades(self, mint: str):
-        """Unsubscribe from token trades after cooldown completes"""
-        if not self.websocket or mint not in self.subscribed_tokens:
-            return
-
-        try:
-            unsubscribe_msg = {
-                "method": "unsubscribeTokenTrade",
-                "keys": [mint]
-            }
-            await self.websocket.send(json.dumps(unsubscribe_msg))
-            self.subscribed_tokens.discard(mint)
-            logger.debug(f"📡 Unsubscribed from trades for {mint[:8]}...")
-        except Exception as e:
-            logger.error(f"Failed to unsubscribe from trades for {mint[:8]}...: {e}")
-
     def _event_age_seconds(self, token_data: dict) -> float:
-        """
-        CRITICAL FIX: Get REAL token age from event data, not first sighting time
-        This prevents bypassing age checks on tokens that are already old
-        """
+        """Get REAL token age from event data, not first sighting time"""
         now = time.time()
         
         # Prefer explicit age if provided
@@ -195,11 +249,7 @@ class PumpPortalMonitor:
         return 0.0
     
     def _calculate_market_cap(self, token_data: dict) -> float:
-        """
-        Calculate market cap from bonding curve data
-        TODO: vTokensInBondingCurve may be in atomic units - verify with PumpPortal
-        If atomic, need to normalize by 10**decimals
-        """
+        """Calculate market cap from bonding curve data"""
         try:
             v_sol = float(token_data.get('vSolInBondingCurve', 0))
             v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
@@ -207,38 +257,38 @@ class PumpPortalMonitor:
             if v_sol == 0 or v_tokens == 0:
                 return 0
             
-            # Assuming v_tokens is in human-readable units (typical for PumpPortal)
-            # If you see MC values 1000x off, v_tokens is likely atomic
             price_sol = v_sol / v_tokens
             total_supply = 1_000_000_000
-            market_cap_usd = total_supply * price_sol * self.sol_price_usd
+            
+            market_cap_sol = price_sol * total_supply
+            market_cap_usd = market_cap_sol * self.sol_price_usd
             
             return market_cap_usd
         except Exception as e:
-            logger.error(f"MC calculation error: {e}")
+            logger.error(f"Market cap calculation error: {e}")
             return 0
     
     def _store_recent_velocity_snapshot(self, mint: str, sol_raised: float):
-        """OPTIMIZED: Store snapshot with high frequency during first 3s"""
-        now = time.time()
-        
+        """Store recent velocity snapshot"""
         if mint not in self.recent_velocity_snapshots:
             self.recent_velocity_snapshots[mint] = []
         
-        self.recent_velocity_snapshots[mint].append({
-            'timestamp': now,
+        snapshot = {
+            'timestamp': time.time(),
             'sol_raised': sol_raised
-        })
+        }
         
-        # Keep only last 10 snapshots (~3 seconds of history)
-        if len(self.recent_velocity_snapshots[mint]) > 10:
-            self.recent_velocity_snapshots[mint] = self.recent_velocity_snapshots[mint][-10:]
+        self.recent_velocity_snapshots[mint].append(snapshot)
+        
+        # Keep only last 5 seconds of data
+        cutoff_time = time.time() - 5.0
+        self.recent_velocity_snapshots[mint] = [
+            s for s in self.recent_velocity_snapshots[mint]
+            if s['timestamp'] > cutoff_time
+        ]
     
     def _check_recent_velocity(self, mint: str, current_sol: float) -> tuple:
-        """
-        Check velocity in LAST 1 SECOND to catch dying pumps
-        FIX #1: Adaptive time window - don't fail young tokens with insufficient history
-        """
+        """Check velocity in LAST 1 SECOND to catch dying pumps"""
         try:
             if mint not in self.recent_velocity_snapshots or len(self.recent_velocity_snapshots[mint]) < 2:
                 return (True, None, "insufficient_history")
@@ -246,7 +296,7 @@ class PumpPortalMonitor:
             history = self.recent_velocity_snapshots[mint]
             now = time.time()
             
-            # CRITICAL FIX: Calculate actual time elapsed since first snapshot
+            # Calculate actual time elapsed since first snapshot
             first_snapshot_time = history[0]['timestamp']
             time_elapsed = now - first_snapshot_time
             
@@ -256,7 +306,7 @@ class PumpPortalMonitor:
                 return (True, None, f"deferred_young_token: {time_elapsed:.2f}s")
             
             # Use adaptive lookback window (max 1.0s, but use actual elapsed time if less)
-            lookback_window = min(1.0, time_elapsed - 0.1)  # Leave 0.1s buffer
+            lookback_window = min(1.0, time_elapsed - 0.1)
             target_time = now - lookback_window
             
             closest_snapshot = None
@@ -289,20 +339,16 @@ class PumpPortalMonitor:
             return (True, None, f"error: {e}")
     
     def _check_creator_spam(self, creator_address: str) -> tuple:
-        """
-        Check if creator is spamming tokens.
-        FIXED: Thread-safe counter update
-        """
+        """Check if creator is spamming tokens"""
         try:
             now = time.time()
             
-            # FIXED: Use setdefault to avoid race conditions
             self.creator_token_launches.setdefault(creator_address, [])
             
             # Clean up old entries (> 24h)
             self.creator_token_launches[creator_address] = [
                 ts for ts in self.creator_token_launches[creator_address]
-                if now - ts < 86400  # 24 hours
+                if now - ts < 86400
             ]
             
             # Check how many tokens this creator launched in 24h
@@ -314,124 +360,126 @@ class PumpPortalMonitor:
                     f"❌ CREATOR SPAM: {creator_address[:8]}... launched "
                     f"{token_count} tokens in 24h (max {max_allowed})"
                 )
-                return (False, token_count, f"creator_spam: {token_count}_tokens")
+                return (False, token_count, f"spam: {token_count} launches")
             
-            # Record this token launch
+            # Record this launch
             self.creator_token_launches[creator_address].append(now)
-            
-            return (True, token_count + 1, "ok")
+            return (True, token_count, "ok")
             
         except Exception as e:
             logger.error(f"Error checking creator spam: {e}")
             return (True, 0, f"error: {e}")
     
     async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
-        """
-        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
-        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
-        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
-        """
-        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        """Check holder distribution using Helius API with FAST retries"""
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
         
         for attempt in range(max_retries + 1):
             try:
                 async with aiohttp.ClientSession() as session:
-                    url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-                    
                     payload = {
                         "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "getTokenLargestAccounts",
-                        "params": [mint]
+                        "id": f"holder-check-{mint[:8]}",
+                        "method": "getTokenAccounts",
+                        "params": {
+                            "mint": mint,
+                            "limit": 100,
+                            "page": 1
+                        }
                     }
                     
-                    # OPTIMIZATION: 0.8s timeout for fast-fail
-                    timeout = aiohttp.ClientTimeout(total=0.8)
+                    timeout = aiohttp.ClientTimeout(total=2.5)
                     
-                    try:
-                        async with session.post(url, json=payload, timeout=timeout) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"Helius API returned {resp.status} for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
+                    async with session.post(url, json=payload, timeout=timeout) as resp:
+                        if resp.status != 200:
+                            if attempt < max_retries:
+                                logger.debug(f"Helius attempt {attempt + 1}: HTTP {resp.status}, retrying...")
+                                await asyncio.sleep(0.5)
+                                continue
+                            return {'passed': False, 'reason': f'http_{resp.status}'}
+                        
+                        data = await resp.json()
+                        
+                        if 'error' in data:
+                            error_msg = data['error'].get('message', 'unknown')
+                            if 'not found' in error_msg.lower() or 'not indexed' in error_msg.lower():
                                 if attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                                    logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
-                                    await asyncio.sleep(retry_delay)
+                                    logger.debug(f"Helius attempt {attempt + 1}: not indexed yet, retrying...")
+                                    await asyncio.sleep(0.5)
                                     continue
-                                return {'passed': False, 'reason': f'HTTP {resp.status}'}
+                            return {'passed': False, 'reason': f'error: {error_msg}'}
+                        
+                        result = data.get('result', {})
+                        token_accounts = result.get('token_accounts', [])
+                        
+                        if not token_accounts:
+                            if attempt < max_retries:
+                                logger.debug(f"Helius attempt {attempt + 1}: no accounts, retrying...")
+                                await asyncio.sleep(0.5)
+                                continue
+                            return {'passed': False, 'reason': 'no_holders'}
+                        
+                        # Calculate holder distribution
+                        holders = {}
+                        total_supply = 0
+                        
+                        for acc in token_accounts:
+                            owner = acc.get('owner', '')
+                            amount = float(acc.get('amount', 0))
                             
-                            data = await resp.json()
+                            if owner not in holders:
+                                holders[owner] = 0
+                            holders[owner] += amount
+                            total_supply += amount
+                        
+                        holder_count = len(holders)
+                        
+                        if holder_count < self.filters['min_holders']:
+                            return {
+                                'passed': False,
+                                'reason': f'low_holders: {holder_count}',
+                                'holder_count': holder_count
+                            }
+                        
+                        if self.filters['check_concentration'] and total_supply > 0:
+                            sorted_holders = sorted(holders.values(), reverse=True)
+                            top10_supply = sum(sorted_holders[:10])
+                            concentration = (top10_supply / total_supply) * 100
                             
-                            if 'error' in data:
-                                error_msg = data['error'].get('message', '')
-                                
-                                # Handle "not a Token mint" error with retry
-                                if 'not a Token mint' in error_msg and attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                                    logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
-                                    await asyncio.sleep(retry_delay)
-                                    continue
-                                
-                                logger.warning(f"Helius API error for {mint[:8]}...: {error_msg}")
-                                return {'passed': False, 'reason': error_msg}
-                            
-                            if 'result' not in data or 'value' not in data['result']:
-                                logger.warning(f"Malformed response for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
-                                if attempt < max_retries:
-                                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                                    await asyncio.sleep(retry_delay)
-                                    continue
-                                return {'passed': False, 'reason': 'malformed response'}
-                            
-                            accounts = data['result']['value']
-                            account_count = len(accounts)
-                            
-                            if account_count < self.filters['min_holders']:
+                            if concentration > self.filters['max_top10_concentration']:
                                 return {
                                     'passed': False,
-                                    'holder_count': account_count,
-                                    'reason': f'only {account_count} holders'
+                                    'reason': f'high_concentration: {concentration:.1f}%',
+                                    'holder_count': holder_count,
+                                    'concentration': concentration
                                 }
                             
-                            total_supply = sum(float(acc.get('amount', 0)) for acc in accounts)
-                            if total_supply == 0:
-                                return {'passed': False, 'reason': 'zero supply'}
-                            
-                            top_10_count = min(10, account_count)
-                            top_10_supply = sum(float(acc.get('amount', 0)) for acc in accounts[:top_10_count])
-                            concentration = (top_10_supply / total_supply * 100)
-                            
-                            if self.filters.get('check_concentration', False):
-                                if concentration > self.filters['max_top10_concentration']:
-                                    return {
-                                        'passed': False,
-                                        'holder_count': account_count,
-                                        'concentration': concentration,
-                                        'reason': f'concentration {concentration:.1f}%'
-                                    }
-                            
-                            logger.debug(f"✅ Token {mint[:8]}... has {account_count} holders (attempt {attempt + 1})")
                             return {
                                 'passed': True,
-                                'holder_count': account_count,
+                                'holder_count': holder_count,
                                 'concentration': concentration
                             }
-                    
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Timeout for {mint[:8]}... (attempt {attempt + 1}/{max_retries + 1})")
-                        if attempt < max_retries:
-                            retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                            logger.info(f"⏳ Waiting {retry_delay:.1f}s and retrying...")
-                            await asyncio.sleep(retry_delay)
-                            continue
-                        return {'passed': False, 'reason': 'holder_timeout'}
-                        
-            except Exception as e:
-                logger.error(f"Helius exception for {mint[:8]}...: {e}")
+                        else:
+                            return {
+                                'passed': True,
+                                'holder_count': holder_count,
+                                'concentration': 0
+                            }
+                            
+            except asyncio.TimeoutError:
                 if attempt < max_retries:
-                    retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
-                    await asyncio.sleep(retry_delay)
+                    logger.debug(f"Helius attempt {attempt + 1}: timeout, retrying...")
+                    await asyncio.sleep(0.5)
                     continue
-                return {'passed': False, 'reason': str(e)}
+                logger.warning(f"❌ Helius timeout for {mint[:8]}... after {max_retries + 1} attempts")
+                return {'passed': False, 'reason': f'timeout_after_{max_retries + 1}_attempts'}
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.debug(f"Helius attempt {attempt + 1}: {str(e)[:50]}, retrying...")
+                    await asyncio.sleep(0.5)
+                    continue
+                logger.error(f"Helius error for {mint[:8]}...: {e}")
+                return {'passed': False, 'reason': f'error: {str(e)[:30]}'}
         
         logger.warning(f"❌ Failed to get holder count for {mint[:8]}... after {max_retries + 1} attempts")
         return {'passed': False, 'reason': f'failed_after_{max_retries + 1}_attempts'}
@@ -444,13 +492,10 @@ class PumpPortalMonitor:
         logger.info(f"❌ Filtered ({reason}): {detail}")
     
     async def _process_pending_tokens(self):
-        """
-        CRITICAL FIX: Re-evaluate tokens after cooldown expires
-        This background task checks pending tokens and re-processes them
-        """
+        """Re-evaluate tokens after cooldown expires"""
         while self.running:
             try:
-                await asyncio.sleep(0.1)  # Check every 100ms
+                await asyncio.sleep(0.1)
                 
                 now = time.time()
                 tokens_to_process = []
@@ -463,16 +508,15 @@ class PumpPortalMonitor:
                     if time_since_first >= self.filters['first_sighting_cooldown_seconds']:
                         tokens_to_process.append((mint, stored_data))
                         del self.pending_tokens[mint]
+                        
+                        # Unsubscribe from trade events
+                        await self._unsubscribe_from_token_trades(mint)
                 
                 # Re-evaluate tokens that passed cooldown
                 for mint, data in tokens_to_process:
                     logger.info(f"⏰ Cooldown complete for {mint[:8]}... - re-evaluating")
-
-                    # Unsubscribe from trades now that cooldown is complete
-                    await self._unsubscribe_from_token_trades(mint)
-
                     passed, token_age = await self._apply_quality_filters_post_cooldown(data)
-
+                    
                     if not passed:
                         self.tokens_filtered += 1
                         continue
@@ -524,10 +568,7 @@ class PumpPortalMonitor:
     
     async def _apply_quality_filters(self, data: dict) -> bool:
         """
-        OPTIMIZED FILTER ORDER - FIRST PASS ONLY:
-        1. Age check (before expensive RPC)
-        2. Curve prefilter (skip obvious duds)
-        3. First-sighting cooldown (0.5s confirmation) - STORE TOKEN FOR RE-EVAL
+        FIRST PASS - Age check, curve prefilter, then cooldown
         """
         if not self.filters['filters_enabled']:
             return True
@@ -538,53 +579,38 @@ class PumpPortalMonitor:
         now = time.time()
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
         
-        # ===================================================================
-        # CRITICAL FIX: Use REAL token age from event, not first sighting
-        # ===================================================================
+        # Age check FIRST
         token_age = self._event_age_seconds(token_data)
         
         if token_age > self.filters['max_token_age_seconds']:
             self._log_filter("too_old_prefilter", f"{token_age:.1f}s > {self.filters['max_token_age_seconds']}s")
             return False
         
-        # ===================================================================
-        # OPTIMIZATION 2: CURVE PREFILTER (skip obvious duds early)
-        # ===================================================================
+        # Curve prefilter
         if v_sol < self.filters['min_curve_sol_prefilter']:
             self._log_filter("low_curve_prefilter", f"{v_sol:.2f} SOL < {self.filters['min_curve_sol_prefilter']}")
             return False
         
-        # ===================================================================
-        # OPTIMIZATION 3: FIRST-SIGHTING COOLDOWN (0.5s confirmation)
-        # CRITICAL FIX: Store token data for re-evaluation by background task
-        # ===================================================================
+        # First-sighting cooldown - store token and subscribe to trades
         if mint not in self.first_sighting_times:
             self.first_sighting_times[mint] = now
-            self.pending_tokens[mint] = data  # Store for later re-evaluation
+            self.pending_tokens[mint] = data
             self._store_recent_velocity_snapshot(mint, v_sol)
             self.tokens_deferred += 1
+            
             logger.info(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
-
-            # Subscribe to trades for continuous snapshot accumulation during cooldown
+            
+            # Subscribe to real-time trades for this token
             await self._subscribe_to_token_trades(mint)
-
+            
             return False
-        else:
-            # Token is already in cooldown - store additional snapshot for velocity analysis
-            # This accumulates 5+ snapshots during the 2s cooldown period
-            self._store_recent_velocity_snapshot(mint, v_sol)
-            snapshot_count = len(self.recent_velocity_snapshots.get(mint, []))
-            time_in_cooldown = now - self.first_sighting_times[mint]
-            logger.debug(f"📸 SNAPSHOT #{snapshot_count} for {mint[:8]}... at t={time_in_cooldown:.2f}s ({v_sol:.1f} SOL)")
-            # Update pending data with latest info
-            self.pending_tokens[mint] = data
-            return False
+        
+        return False
     
     async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
         """
-        SECOND PASS - After cooldown expires:
+        SECOND PASS - After cooldown expires with sustained velocity checks
         Returns (passed: bool, token_age: float)
-        ALL 3 FIXES APPLIED HERE
         """
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
@@ -595,8 +621,7 @@ class PumpPortalMonitor:
         # Re-check age (token is now older)
         token_age = self._event_age_seconds(token_data)
         
-        # CRITICAL FIX: Continue storing velocity snapshots during evaluation
-        # We need at least 0.9s of history for velocity check
+        # Store final snapshot
         self._store_recent_velocity_snapshot(mint, v_sol)
         
         logger.info(f"✓ Token {mint[:8]}... passed cooldown: {token_age:.1f}s old, {v_sol:.1f} SOL")
@@ -605,7 +630,7 @@ class PumpPortalMonitor:
         creator_sol = float(token_data.get('solAmount', 0))
         creator_address = str(token_data.get('traderPublicKey', 'unknown'))
         
-        # FIX #2: Lowered minimum to 0.095 to handle rounding (0.099 SOL now passes!)
+        # Creator buy filter (optimized range)
         if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
             return (False, token_age)
@@ -632,45 +657,43 @@ class PumpPortalMonitor:
                 self._log_filter("blacklist", f"'{blacklisted}' in {name}")
                 return (False, token_age)
         
-        # Bonding curve SOL range
+        # Curve range
         if v_sol < self.filters['min_curve_sol'] or v_sol > self.filters['max_curve_sol']:
             self._log_filter("curve_range", f"{v_sol:.2f} SOL")
             return (False, token_age)
         
-        # Momentum check
+        # Momentum check (MINIMUM)
         required_multiplier = 8 if v_sol < 35 else (5 if v_sol < 50 else 3)
         required_sol = creator_sol * required_multiplier
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
-
+        
         if v_sol < required_sol:
             self._log_filter("momentum", f"{momentum:.1f}x < {required_multiplier}x")
             return (False, token_age)
-
+        
         # ═══════════════════════════════════════════════════════════════
         # SUSTAINED VELOCITY CHECKS - Key to filtering single-spike rugs
-        # Winners: Multiple ticks, sustained buying (GSG, Skeleton)
-        # Rugs: Single spike then silence (BWC, BS, Dead House)
         # ═══════════════════════════════════════════════════════════════
-
-        # Check 1: Tick density - must have consistent updates, not single spike
+        
+        # Check 1: Tick density - must have consistent updates
         if mint in self.recent_velocity_snapshots:
             snapshots = self.recent_velocity_snapshots[mint]
             snapshot_count = len(snapshots)
-
-            # Calculate time span of snapshots
-            if snapshot_count >= 2:
+            
+            # Show snapshot timeline
+            if snapshot_count > 0:
                 time_span = snapshots[-1]['timestamp'] - snapshots[0]['timestamp']
                 logger.info(f"📸 Snapshot analysis: {snapshot_count} snapshots over {time_span:.2f}s")
-
+            
             if snapshot_count < 5:
-                self._log_filter("tick_density", f"only {snapshot_count} snapshots (need ≥5) - cooldown accumulation failed")
+                self._log_filter("tick_density", f"only {snapshot_count} snapshots (need ≥5)")
                 return (False, token_age)
-
-            # Check 2: Sustained velocity - calculate avg and min over recent period
+            
+            # Check 2: Sustained velocity - calculate avg and min
             now = time.time()
-            lookback_window = 1.2  # Last 1.2 seconds
+            lookback_window = 1.2
             recent_snaps = [s for s in snapshots if now - s['timestamp'] <= lookback_window]
-
+            
             if len(recent_snaps) >= 3:
                 velocities = []
                 for i in range(1, len(recent_snaps)):
@@ -679,29 +702,28 @@ class PumpPortalMonitor:
                     if time_delta > 0:
                         vel = sol_delta / time_delta
                         velocities.append(vel)
-
+                
                 if velocities:
                     avg_velocity = sum(velocities) / len(velocities)
                     min_velocity = min(velocities)
-
+                    
                     # Require sustained buying: avg ≥1.2 SOL/s, min ≥0.6 SOL/s
                     if avg_velocity < 1.2:
                         self._log_filter("avg_velocity_low", f"{avg_velocity:.2f} SOL/s < 1.2")
                         return (False, token_age)
-
+                    
                     if min_velocity < 0.6:
-                        self._log_filter("min_velocity_low", f"{min_velocity:.2f} SOL/s < 0.6 (not sustained)")
+                        self._log_filter("min_velocity_low", f"{min_velocity:.2f} SOL/s < 0.6")
                         return (False, token_age)
-
+                    
                     logger.info(f"✓ Sustained velocity: avg={avg_velocity:.2f}, min={min_velocity:.2f} SOL/s")
-
-        # Check 3: High momentum requires even stronger sustain
+        
+        # Check 3: High momentum gate
         if momentum > 90:
-            # Extreme momentum must prove it's organic, not bot coordination
             if mint in self.recent_velocity_snapshots:
                 snapshots = self.recent_velocity_snapshots[mint]
                 recent_snaps = [s for s in snapshots if time.time() - s['timestamp'] <= 1.2]
-
+                
                 if len(recent_snaps) >= 3:
                     velocities = []
                     for i in range(1, len(recent_snaps)):
@@ -709,165 +731,115 @@ class PumpPortalMonitor:
                         sol_delta = recent_snaps[i]['sol_raised'] - recent_snaps[i-1]['sol_raised']
                         if time_delta > 0:
                             velocities.append(sol_delta / time_delta)
-
+                    
                     if velocities:
                         min_velocity = min(velocities)
                         if min_velocity < 1.2:
-                            self._log_filter("high_momentum_weak_sustain", f"{momentum:.1f}x momentum but min_vel {min_velocity:.2f} < 1.2")
+                            self._log_filter("high_momentum_weak_sustain", f"{momentum:.1f}x but min_vel {min_velocity:.2f} < 1.2")
                             return (False, token_age)
-
-        # Check 4: Public vs creator contribution (organic demand proxy)
+        
+        # Check 4: Public vs creator contribution
         public_sol = v_sol - creator_sol
         public_to_creator_ratio = public_sol / creator_sol if creator_sol > 0 else 0
-
+        
         if public_to_creator_ratio < 4.0:
             self._log_filter("low_public_interest", f"public/creator ratio {public_to_creator_ratio:.1f}x < 4x")
             return (False, token_age)
-
+        
         logger.info(f"✓ Public interest strong: {public_to_creator_ratio:.1f}x creator buy")
-
-        # Check 5: Maximum momentum cap (backup for extreme bot pumps)
+        
+        # Check 5: Maximum momentum cap
         max_multiplier = 80 if v_sol < 35 else (60 if v_sol < 50 else 40)
         if momentum > max_multiplier:
             self._log_filter("momentum_too_high", f"{momentum:.1f}x > {max_multiplier}x")
             return (False, token_age)
-
+        
         # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
-            self._log_filter("tokens_low", f"{v_tokens:,.0f}")
+            self._log_filter("v_tokens", f"{v_tokens:,.0f} < {self.filters['min_v_tokens']:,.0f}")
             return (False, token_age)
         
-        # NOTE: Recent velocity check REMOVED from monitor
-        # Velocity checking happens in main.py with live curve reads
-        # We only have static snapshots here from WebSocket events
-
-        # ===================================================================
-        # HOLDER CHECK DISABLED - Eliminates 3-6s Helius indexing delay
-        # Allows entry at 1-2s token age instead of 7-8s
-        # Trade-off: Relying on momentum/velocity/creator filters to avoid rugs
-        # ===================================================================
+        # Market cap check
         logger.info(f"🔍 Running market cap check for {mint[:8]}...")
-
-        # DISABLED: 3s sleep for Helius indexing (was causing entry delay)
-        # await asyncio.sleep(3)
-
-        # Market cap calculation (fast, local)
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
-
+        
         if market_cap < self.filters['min_market_cap'] or market_cap > self.filters['max_market_cap']:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
-
-        # DISABLED: Holder check (was causing 3-6s delay)
-        # holder_task = asyncio.create_task(self._check_holders_helius(mint))
-        # holder_result = await holder_task
-        # if not holder_result['passed']:
-        #     self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-        #     return (False, token_age)
-
-        # Placeholder (holder check disabled)
-        holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0}
-
+        
         # All filters passed!
-        momentum = v_sol / creator_sol if creator_sol > 0 else 0
-        holder_count = holder_result.get('holder_count', 0)
-        concentration = holder_result.get('concentration', 0)
-
+        holder_count = 0
+        concentration = 0
+        
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f}")
         logger.info(f"   Momentum: {momentum:.1f}x | Token age: {token_age:.1f}s")
         logger.info(f"   Holders: DISABLED ⚡")
         
-        self._last_holder_result = holder_result
+        self._last_holder_result = {
+            'passed': True,
+            'holder_count': holder_count,
+            'concentration': concentration
+        }
+        
         return (True, token_age)
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP + AGE/SOL PASSING")
-        logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
-        logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
-        logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
-        logger.info(f"  Fix #4: PASS TOKEN AGE + SOL TO CALLBACK FOR MAIN.PY")
-        logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
-        logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
-        logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
-        logger.info(f"  Concurrent checks: ENABLED")
-        logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
+        logger.info(f"Strategy: OPTIMIZED + SUSTAINED VELOCITY + TRADE SUBSCRIPTIONS V2")
+        logger.info(f"  ✅ Creator buy: {self.filters['min_creator_sol']}-{self.filters['max_creator_sol']} SOL")
+        logger.info(f"  ✅ Tick density: ≥5 snapshots (real-time trades)")
+        logger.info(f"  ✅ Sustained velocity: avg ≥1.2, min ≥0.6 SOL/s")
+        logger.info(f"  ✅ Public/creator ratio: ≥4x organic demand")
+        logger.info(f"  ✅ Maximum momentum: 80x cap")
+        logger.info(f"  ✅ Cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
         
         uri = "wss://pumpportal.fun/api/data"
         
-        # Start background task for re-evaluating pending tokens
+        # Start background task
         pending_task = asyncio.create_task(self._process_pending_tokens())
         
         while self.running:
             try:
-                # FIXED: Add WebSocket keepalive params
                 async with websockets.connect(
                     uri,
                     ping_interval=20,
                     ping_timeout=10,
                     close_timeout=5
                 ) as websocket:
-                    # Store websocket reference for dynamic subscriptions
                     self.websocket = websocket
-
                     logger.info("✅ Connected to PumpPortal WebSocket!")
-
+                    
                     subscribe_msg = {"method": "subscribeNewToken"}
                     await websocket.send(json.dumps(subscribe_msg))
-                    logger.info("📡 Subscribed to new token events (dynamic trade subscriptions enabled)")
-
-                    last_heartbeat = time.time()
-                    message_count = 0
-
+                    logger.info("📡 Subscribed to new token events")
+                    
                     while self.running:
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=30)
                             data = json.loads(message)
-                            message_count += 1
-
-                            # Heartbeat: Log activity every 30 seconds
-                            if time.time() - last_heartbeat >= 30:
-                                logger.info(f"💓 Heartbeat: {message_count} messages received in last 30s")
-                                last_heartbeat = time.time()
-                                message_count = 0
-
-                            # DEBUG: Log FULL message structure to see all fields
-                            logger.info(f"📨 FULL MESSAGE: {json.dumps(data, indent=2)}")  # Temporarily INFO for debugging
-
-                            # Handle trade events for snapshot accumulation
+                            
+                            # Handle trade events (real-time snapshots)
                             if self._is_trade_event(data):
-                                logger.info(f"✅ Detected as TRADE event")
                                 await self._handle_trade_event(data)
                                 continue
-
+                            
                             # Handle new token events
                             if self._is_new_token(data):
-                                logger.info(f"✅ Detected as NEW TOKEN event")
                                 mint = self._extract_mint(data)
-
+                                
                                 if not mint:
-                                    logger.warning(f"⚠️ New token event detected but no mint extracted")
                                     continue
-
-                                logger.info(f"✅ Extracted mint: {mint[:8]}...")
-
-                                # FIXED: Increment evaluated counter for ALL tokens
+                                
                                 self.tokens_evaluated += 1
-
-                                # CRITICAL FIX: Check filters (stores for later if needed)
-                                logger.info(f"🔍 Running quality filters for {mint[:8]}...")
+                                
                                 passed = await self._apply_quality_filters(data)
-
+                                
                                 if not passed:
-                                    # Token either filtered or deferred for cooldown
-                                    # Stats logged every 10 tokens
                                     if self.tokens_evaluated % 10 == 0:
                                         filter_rate = (self.tokens_filtered / self.tokens_evaluated * 100) if self.tokens_evaluated > 0 else 0
                                         logger.info(f"📊 Filter stats: {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_deferred} deferred / {self.tokens_evaluated} evaluated ({filter_rate:.1f}% filtered)")
@@ -875,12 +847,8 @@ class PumpPortalMonitor:
                                             top_reasons = sorted(self.filter_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
                                             logger.info(f"   Top reasons: {top_reasons}")
                                     continue
-                            else:
-                                # Message not recognized as token or trade event
-                                logger.warning(f"🤷 Unknown message type - not token or trade event")
                         
                         except asyncio.TimeoutError:
-                            logger.info(f"⏱️ No messages for 30s - sending keepalive ping ({message_count} msgs since last heartbeat)")
                             await websocket.ping()
                         except Exception as e:
                             logger.error(f"Message processing error: {e}")
@@ -888,9 +856,8 @@ class PumpPortalMonitor:
                             
             except Exception as e:
                 logger.error(f"WebSocket connection error: {e}")
-                # Cleanup websocket state
                 self.websocket = None
-                self.subscribed_tokens.clear()
+                self.trade_subscriptions.clear()
                 if self.running:
                     self.seen_tokens.clear()
                     self.reconnect_count += 1
@@ -899,50 +866,10 @@ class PumpPortalMonitor:
         
         # Cleanup
         pending_task.cancel()
+        self.websocket = None
     
-    def _is_trade_event(self, data: dict) -> bool:
-        """Check if message is a trade event (buy/sell only, NOT create)"""
-        tx_type = data.get('txType', '')
-        # Only match actual trades (buy/sell), NOT token creation
-        if tx_type in ('buy', 'sell'):
-            return True
-        return False
-
-    async def _handle_trade_event(self, data: dict):
-        """
-        Process trade events for tokens in cooldown to accumulate snapshots.
-        Trade events have updated vSolInBondingCurve values.
-        """
-        try:
-            mint = self._extract_mint(data)
-            if not mint or mint not in self.pending_tokens:
-                return  # Only process trades for tokens we're tracking
-
-            # Extract current SOL in bonding curve from trade event
-            v_sol = float(data.get('vSolInBondingCurve', 0))
-            if v_sol == 0:
-                # Try alternative field names
-                v_sol = float(data.get('solAmount', 0))
-
-            if v_sol > 0:
-                # Store snapshot for velocity analysis
-                self._store_recent_velocity_snapshot(mint, v_sol)
-                snapshot_count = len(self.recent_velocity_snapshots.get(mint, []))
-                time_in_cooldown = time.time() - self.first_sighting_times.get(mint, time.time())
-                logger.debug(f"📸 TRADE SNAPSHOT #{snapshot_count} for {mint[:8]}... at t={time_in_cooldown:.2f}s ({v_sol:.1f} SOL)")
-
-                # Update pending token data with latest trade info
-                self.pending_tokens[mint] = data
-
-        except Exception as e:
-            logger.error(f"Error handling trade event: {e}")
-
     def _is_new_token(self, data: dict) -> bool:
         """Check if message is a new token event"""
-        # Check for explicit token creation event (PumpPortal format)
-        if data.get('txType') == 'create':
-            return True
-        # Legacy checks for other formats
         if 'mint' in data:
             return True
         if 'token' in data and isinstance(data['token'], dict):
@@ -992,6 +919,8 @@ class PumpPortalMonitor:
     
     def stop(self):
         self.running = False
+        self.websocket = None
+        self.trade_subscriptions.clear()
         stats = self.get_stats()
         logger.info(f"PumpPortal monitor stopped")
         logger.info(f"Stats: {stats['tokens_passed']} passed / {stats['tokens_filtered']} filtered / {stats['tokens_deferred']} deferred / {stats['tokens_evaluated']} evaluated ({stats['filter_rate']:.1f}% filtered)")
