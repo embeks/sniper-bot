@@ -1,12 +1,12 @@
+
 """
-config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION + RPC COMMITMENT FIX
+config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
 - Shorter timer (20s)
 - Tighter velocity drop (25%)
 - Faster monitoring (0.5s)
 - Increased position size (0.05 SOL)
 - FIXED: Token age limit increased to 25s (accounts for monitor delays)
 - NEW: Profit protection (Extreme TP + Trailing Stop)
-- CRITICAL FIX: RPC commitment set to 'processed' for instant account reads
 """
 
 import os
@@ -26,12 +26,8 @@ if not PRIVATE_KEY:
 # RPC CONFIGURATION
 # ============================================
 HELIUS_API_KEY = os.getenv('HELIUS_API') or os.getenv('HELIUS_API_KEY', '')
-
-# CRITICAL FIX: Added &commitment=processed for instant account reads
-# This allows RPC to return bonding curve data immediately instead of waiting 5-8s for finalization
-RPC_ENDPOINT = os.getenv('RPC_URL') or os.getenv('RPC_ENDPOINT') or f'https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}&commitment=processed'
-
-WS_ENDPOINT = RPC_ENDPOINT.replace('https://', 'wss://').replace('http://', 'ws://').replace('&commitment=processed', '')
+RPC_ENDPOINT = os.getenv('RPC_URL') or os.getenv('RPC_ENDPOINT') or f'https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}'
+WS_ENDPOINT = RPC_ENDPOINT.replace('https://', 'wss://').replace('http://', 'ws://')
 
 BACKUP_RPC_ENDPOINTS = [
     os.getenv('BACKUP_RPC_1', 'https://api.mainnet-beta.solana.com'),
