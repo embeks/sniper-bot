@@ -573,11 +573,20 @@ class PumpPortalMonitor:
         mint = self._extract_mint(data)
         
         now = time.time()
-        v_sol = float(token_data.get('vSolInBondingCurve', 0))
+        
+        # CRITICAL FIX: Use LATEST snapshot SOL, not first-sighting SOL!
+        if mint in self.recent_velocity_snapshots and len(self.recent_velocity_snapshots[mint]) > 0:
+            # Use most recent snapshot
+            v_sol = self.recent_velocity_snapshots[mint][-1]['sol_raised']
+            logger.debug(f"Using latest snapshot SOL: {v_sol:.2f}")
+        else:
+            # Fallback to original data
+            v_sol = float(token_data.get('vSolInBondingCurve', 0))
+            logger.warning(f"No snapshots available, using original SOL: {v_sol:.2f}")
         
         token_age = self._event_age_seconds(token_data)
         
-        # Store final snapshot
+        # Store final snapshot (in case it wasn't already)
         self._store_recent_velocity_snapshot(mint, v_sol)
         
         logger.info(f"✓ Token {mint[:8]}... passed cooldown: {token_age:.1f}s old, {v_sol:.1f} SOL")
