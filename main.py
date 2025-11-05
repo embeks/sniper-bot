@@ -1,5 +1,5 @@
 """
-Main Orchestrator - PROBE/CONFIRM + DYNAMIC TPS + HEALTH CHECK + TRAILING STOP
+Main Orchestrator - PROBE/CONFIRM + DYNAMIC TPS + HEALTH CHECK + TRAILING 
 ✅ NEW: Split entry (0.03 SOL probe + 0.05 SOL confirm)
 ✅ NEW: Health check moved to 8-12s
 ✅ NEW: Dynamic TP levels based on entry MC
