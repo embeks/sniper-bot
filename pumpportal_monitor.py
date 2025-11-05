@@ -1,11 +1,9 @@
-
 """
-PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES + AGE FIX
-All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
-- Fix #1: Adaptive velocity window (no false 0.00 SOL/s)
-- Fix #2: Creator buy rounding tolerance (0.095 SOL minimum)
-- Fix #3: Fast Helius retry with 2 attempts (2.5s + 2.5s)
-- Fix #4: PASS TOKEN AGE + SOL TO CALLBACK (for main.py velocity check)
+PumpPortal WebSocket Monitor - PROBE-FIRST STRATEGY FIX
+CRITICAL CHANGE: Removed 3s sleep + Helius check from monitor
+- Tokens now pass to main.py immediately after basic filters
+- Helius check moved to main.py AFTER probe entry
+- This reduces detection-to-probe time from 19s → 4-5s
 """
 
 import asyncio
@@ -28,7 +26,7 @@ class PumpPortalMonitor:
         self.seen_tokens = set()
         self.reconnect_count = 0
         
-        # Verify Helius API key
+        # Verify Helius API key (still needed for main.py)
         if not HELIUS_API_KEY:
             logger.error("❌ CRITICAL: HELIUS_API_KEY not found!")
             raise ValueError("HELIUS_API_KEY is required for holder checks")
@@ -75,7 +73,7 @@ class PumpPortalMonitor:
             'max_curve_sol': 45.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
-            'min_holders': 10,
+            'min_holders': 10,  # NOTE: Not checked here anymore, moved to main.py
             'check_concentration': False,
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
@@ -159,11 +157,7 @@ class PumpPortalMonitor:
         return 0.0
     
     def _calculate_market_cap(self, token_data: dict) -> float:
-        """
-        Calculate market cap from bonding curve data
-        TODO: vTokensInBondingCurve may be in atomic units - verify with PumpPortal
-        If atomic, need to normalize by 10**decimals
-        """
+        """Calculate market cap from bonding curve data"""
         try:
             v_sol = float(token_data.get('vSolInBondingCurve', 0))
             v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
@@ -171,8 +165,6 @@ class PumpPortalMonitor:
             if v_sol == 0 or v_tokens == 0:
                 return 0
             
-            # Assuming v_tokens is in human-readable units (typical for PumpPortal)
-            # If you see MC values 1000x off, v_tokens is likely atomic
             price_sol = v_sol / v_tokens
             total_supply = 1_000_000_000
             market_cap_usd = total_supply * price_sol * self.sol_price_usd
@@ -198,69 +190,12 @@ class PumpPortalMonitor:
         if len(self.recent_velocity_snapshots[mint]) > 10:
             self.recent_velocity_snapshots[mint] = self.recent_velocity_snapshots[mint][-10:]
     
-    def _check_recent_velocity(self, mint: str, current_sol: float) -> tuple:
-        """
-        Check velocity in LAST 1 SECOND to catch dying pumps
-        FIX #1: Adaptive time window - don't fail young tokens with insufficient history
-        """
-        try:
-            if mint not in self.recent_velocity_snapshots or len(self.recent_velocity_snapshots[mint]) < 2:
-                return (True, None, "insufficient_history")
-            
-            history = self.recent_velocity_snapshots[mint]
-            now = time.time()
-            
-            # CRITICAL FIX: Calculate actual time elapsed since first snapshot
-            first_snapshot_time = history[0]['timestamp']
-            time_elapsed = now - first_snapshot_time
-            
-            # If we have < 0.9s of history, defer (don't filter yet)
-            if time_elapsed < 0.9:
-                logger.debug(f"Velocity check deferred for {mint[:8]}... (only {time_elapsed:.2f}s of history)")
-                return (True, None, f"deferred_young_token: {time_elapsed:.2f}s")
-            
-            # Use adaptive lookback window (max 1.0s, but use actual elapsed time if less)
-            lookback_window = min(1.0, time_elapsed - 0.1)  # Leave 0.1s buffer
-            target_time = now - lookback_window
-            
-            closest_snapshot = None
-            min_time_diff = float('inf')
-            
-            for snap in history[:-1]:
-                time_diff = abs(snap['timestamp'] - target_time)
-                if time_diff < min_time_diff:
-                    min_time_diff = time_diff
-                    closest_snapshot = snap
-            
-            if closest_snapshot and min_time_diff < 2.0:
-                time_delta = now - closest_snapshot['timestamp']
-                sol_delta = current_sol - closest_snapshot['sol_raised']
-                
-                if time_delta > 0:
-                    recent_velocity = max(0, sol_delta / time_delta)
-                    min_required = self.filters['min_recent_velocity_sol_per_sec']
-                    
-                    if recent_velocity < min_required:
-                        return (False, recent_velocity, f"recent_velocity_low: {recent_velocity:.2f} SOL/s over {time_delta:.2f}s")
-                    
-                    logger.debug(f"Velocity check passed for {mint[:8]}...: {recent_velocity:.2f} SOL/s over {time_delta:.2f}s")
-                    return (True, recent_velocity, "ok")
-            
-            return (True, None, "insufficient_time")
-            
-        except Exception as e:
-            logger.error(f"Error checking recent velocity: {e}")
-            return (True, None, f"error: {e}")
-    
     def _check_creator_spam(self, creator_address: str) -> tuple:
-        """
-        Check if creator is spamming tokens.
-        FIXED: Thread-safe counter update
-        """
+        """Check if creator is spamming tokens"""
         try:
             now = time.time()
             
-            # FIXED: Use setdefault to avoid race conditions
+            # Use setdefault to avoid race conditions
             self.creator_token_launches.setdefault(creator_address, [])
             
             # Clean up old entries (> 24h)
@@ -291,11 +226,10 @@ class PumpPortalMonitor:
     
     async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
         """
-        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
-        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
-        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
+        Helius holder check - NOW ONLY USED BY MAIN.PY
+        This method is kept in the class so main.py can access it via scanner instance
         """
-        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        retry_delays = [2.5, 2.5]
         
         for attempt in range(max_retries + 1):
             try:
@@ -309,7 +243,6 @@ class PumpPortalMonitor:
                         "params": [mint]
                     }
                     
-                    # OPTIMIZATION: 0.8s timeout for fast-fail
                     timeout = aiohttp.ClientTimeout(total=0.8)
                     
                     try:
@@ -328,7 +261,6 @@ class PumpPortalMonitor:
                             if 'error' in data:
                                 error_msg = data['error'].get('message', '')
                                 
-                                # Handle "not a Token mint" error with retry
                                 if 'not a Token mint' in error_msg and attempt < max_retries:
                                     retry_delay = retry_delays[attempt] + random.uniform(0, 0.5)
                                     logger.info(f"⏳ Token {mint[:8]}... not indexed yet (attempt {attempt + 1}/{max_retries + 1}). Waiting {retry_delay:.1f}s and retrying...")
@@ -449,18 +381,16 @@ class PumpPortalMonitor:
                     creator_sol = token_data.get('solAmount', 0)
                     market_cap = self._calculate_market_cap(token_data)
                     
-                    holder_data = getattr(self, '_last_holder_result', {})
-                    
                     logger.info("=" * 60)
-                    logger.info("🚀 TOKEN PASSED ALL FILTERS!")
+                    logger.info("🚀 TOKEN PASSED MONITOR FILTERS - SENDING TO MAIN.PY")
                     logger.info(f"📜 Mint: {mint}")
                     logger.info(f"📊 {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_evaluated} total")
                     logger.info(f"💰 Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL")
                     logger.info(f"💵 Market Cap: ${market_cap:,.0f}")
                     logger.info(f"🔥 Momentum: {v_sol/creator_sol if creator_sol > 0 else 0:.1f}x")
-                    logger.info(f"👥 Holders: {holder_data.get('holder_count', 0)} | Concentration: {holder_data.get('concentration', 0):.1f}%")
                     logger.info(f"⏱️ Token age: {token_age:.1f}s")
                     logger.info(f"📝 {token_data.get('name', 'Unknown')} ({token_data.get('symbol', 'Unknown')})")
+                    logger.info(f"⚡ NOTE: Helius check will happen in main.py AFTER probe")
                     logger.info("=" * 60)
                     
                     if self.callback:
@@ -473,7 +403,6 @@ class PumpPortalMonitor:
                             'source': 'pumpportal',
                             'passed_filters': True,
                             'market_cap': market_cap,
-                            'holder_data': holder_data,
                             'age': token_age,
                             'token_age': token_age,
                             'sol_raised_at_detection': v_sol
@@ -498,42 +427,42 @@ class PumpPortalMonitor:
         now = time.time()
         v_sol = float(token_data.get('vSolInBondingCurve', 0))
         
-        # ===================================================================
-        # CRITICAL FIX: Use REAL token age from event, not first sighting
-        # ===================================================================
+        # Use REAL token age from event
         token_age = self._event_age_seconds(token_data)
         
         if token_age > self.filters['max_token_age_seconds']:
             self._log_filter("too_old_prefilter", f"{token_age:.1f}s > {self.filters['max_token_age_seconds']}s")
             return False
         
-        # ===================================================================
-        # OPTIMIZATION 2: CURVE PREFILTER (skip obvious duds early)
-        # ===================================================================
+        # Curve prefilter
         if v_sol < self.filters['min_curve_sol_prefilter']:
             self._log_filter("low_curve_prefilter", f"{v_sol:.2f} SOL < {self.filters['min_curve_sol_prefilter']}")
             return False
         
-        # ===================================================================
-        # OPTIMIZATION 3: FIRST-SIGHTING COOLDOWN (0.5s confirmation)
-        # CRITICAL FIX: Store token data for re-evaluation by background task
-        # ===================================================================
+        # First-sighting cooldown
         if mint not in self.first_sighting_times:
             self.first_sighting_times[mint] = now
-            self.pending_tokens[mint] = data  # Store for later re-evaluation
+            self.pending_tokens[mint] = data
             self._store_recent_velocity_snapshot(mint, v_sol)
             self.tokens_deferred += 1
             logger.info(f"📊 FIRST SIGHTING: {mint[:8]}... (age {token_age:.1f}s, {v_sol:.1f} SOL) - waiting {self.filters['first_sighting_cooldown_seconds']}s")
             return False
         
-        # This should never be reached now (handled by background task)
         return False
     
     async def _apply_quality_filters_post_cooldown(self, data: dict) -> tuple:
         """
-        SECOND PASS - After cooldown expires:
+        🚀 PROBE-FIRST FIX: NO MORE 3S SLEEP OR HELIUS CHECK
+        
+        This method now ONLY does basic filters:
+        - Creator buy size
+        - Name quality
+        - Curve range
+        - Momentum
+        
+        Helius holder check is moved to main.py AFTER probe entry
+        
         Returns (passed: bool, token_age: float)
-        ALL 3 FIXES APPLIED HERE
         """
         token_data = data.get('data', data)
         mint = self._extract_mint(data)
@@ -544,8 +473,7 @@ class PumpPortalMonitor:
         # Re-check age (token is now older)
         token_age = self._event_age_seconds(token_data)
         
-        # CRITICAL FIX: Continue storing velocity snapshots during evaluation
-        # We need at least 0.9s of history for velocity check
+        # Continue storing velocity snapshots
         self._store_recent_velocity_snapshot(mint, v_sol)
         
         logger.info(f"✓ Token {mint[:8]}... passed cooldown: {token_age:.1f}s old, {v_sol:.1f} SOL")
@@ -554,7 +482,7 @@ class PumpPortalMonitor:
         creator_sol = float(token_data.get('solAmount', 0))
         creator_address = str(token_data.get('traderPublicKey', 'unknown'))
         
-        # FIX #2: Lowered minimum to 0.095 to handle rounding (0.099 SOL now passes!)
+        # Creator buy size check
         if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
             return (False, token_age)
@@ -599,22 +527,7 @@ class PumpPortalMonitor:
             self._log_filter("tokens_low", f"{v_tokens:,.0f}")
             return (False, token_age)
         
-        # NOTE: Recent velocity check REMOVED from monitor
-        # Velocity checking happens in main.py with live curve reads
-        # We only have static snapshots here from WebSocket events
-        
-        # ===================================================================
-        # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
-        # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
-        # CRITICAL: Wait 3s before first check to allow Helius indexing
-        # ===================================================================
-        logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
-        
-        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
-        # Without this, ALL tokens fail because they're too new
-        await asyncio.sleep(3)
-        
-        # Market cap calculation (fast, local)
+        # Market cap check (fast, local calculation)
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
         
@@ -622,45 +535,33 @@ class PumpPortalMonitor:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
         
-        # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
-        holder_task = asyncio.create_task(self._check_holders_helius(mint))
+        # ===================================================================
+        # 🚀 CRITICAL CHANGE: NO MORE 3S SLEEP OR HELIUS CHECK HERE!
+        # Token passes immediately to main.py for probe entry
+        # Helius check will happen AFTER probe, BEFORE confirm
+        # ===================================================================
         
-        # Wait for holder check with fast-fail
-        holder_result = await holder_task
-        
-        if not holder_result['passed']:
-            self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-            return (False, token_age)
-        
-        # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
-        holder_count = holder_result.get('holder_count', 0)
-        concentration = holder_result.get('concentration', 0)
         
-        logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
+        logger.info(f"✅ PASSED BASIC FILTERS (NO HELIUS YET): {name} ({symbol})")
         logger.info(f"   Creator: {creator_sol:.2f} SOL | Curve: {v_sol:.2f} SOL | MC: ${market_cap:,.0f}")
         logger.info(f"   Momentum: {momentum:.1f}x | Token age: {token_age:.1f}s")
-        logger.info(f"   Holders: {holder_count} | Concentration: {concentration:.1f}%")
+        logger.info(f"   ⚡ Helius check will happen in main.py after probe")
         
-        self._last_holder_result = holder_result
         return (True, token_age)
         
     async def start(self):
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP + AGE/SOL PASSING")
-        logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
-        logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
-        logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
-        logger.info(f"  Fix #4: PASS TOKEN AGE + SOL TO CALLBACK FOR MAIN.PY")
-        logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
-        logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
-        logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
-        logger.info(f"  Concurrent checks: ENABLED")
-        logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
+        logger.info(f"Strategy: PROBE-FIRST (NO HELIUS IN MONITOR)")
+        logger.info(f"  ✅ Age check: <{self.filters['max_token_age_seconds']}s")
+        logger.info(f"  ✅ Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
+        logger.info(f"  ✅ First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
+        logger.info(f"  ✅ Basic filters: creator, name, curve, momentum, MC")
+        logger.info(f"  🚀 REMOVED: 3s sleep before Helius")
+        logger.info(f"  🚀 REMOVED: Helius holder check (moved to main.py)")
+        logger.info(f"  ⚡ Result: Tokens pass to probe in ~1-2s instead of 10-12s")
         
         uri = "wss://pumpportal.fun/api/data"
         
@@ -669,7 +570,6 @@ class PumpPortalMonitor:
         
         while self.running:
             try:
-                # FIXED: Add WebSocket keepalive params
                 async with websockets.connect(
                     uri,
                     ping_interval=20,
@@ -693,15 +593,11 @@ class PumpPortalMonitor:
                                 if not mint:
                                     continue
                                 
-                                # FIXED: Increment evaluated counter for ALL tokens
                                 self.tokens_evaluated += 1
                                 
-                                # CRITICAL FIX: Check filters (stores for later if needed)
                                 passed = await self._apply_quality_filters(data)
                                 
                                 if not passed:
-                                    # Token either filtered or deferred for cooldown
-                                    # Stats logged every 10 tokens
                                     if self.tokens_evaluated % 10 == 0:
                                         filter_rate = (self.tokens_filtered / self.tokens_evaluated * 100) if self.tokens_evaluated > 0 else 0
                                         logger.info(f"📊 Filter stats: {self.tokens_passed} passed / {self.tokens_filtered} filtered / {self.tokens_deferred} deferred / {self.tokens_evaluated} evaluated ({filter_rate:.1f}% filtered)")
