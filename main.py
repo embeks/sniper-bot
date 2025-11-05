@@ -197,7 +197,11 @@ class SniperBot:
         self.session_loss_count = 0
         
         self.telegram_enabled = ENABLE_TELEGRAM_NOTIFICATIONS
-        
+
+        # ✅ NEW: Track velocity filter stats
+        self.velocity_prefilter_skipped = 0
+        self.velocity_prefilter_passed = 0
+
         self._log_startup_info()
     
     def _log_startup_info(self):
@@ -206,33 +210,25 @@ class SniperBot:
         tradeable_balance = max(0, sol_balance - MIN_SOL_BALANCE)
         max_trades = int(tradeable_balance / BUY_AMOUNT_SOL) if tradeable_balance > 0 else 0
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
-        
+
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: PROBE/CONFIRM + DYNAMIC TPS + HEALTH CHECK + TRAILING")
-        
+        logger.info(f"  • Strategy: OPTIMIZED PROBE/CONFIRM")
+        logger.info(f"  • ✅ NEW: Light velocity pre-filter (1.5 SOL/s)")
+        logger.info(f"  • ✅ NEW: Dynamic probe sizing (0.02-0.05 SOL)")
+        logger.info(f"  • ✅ NEW: WebSocket liquidity fallback")
+
         if ENABLE_PROBE_ENTRY:
-            logger.info(f"  • Entry: {PROBE_AMOUNT_SOL} SOL probe + {CONFIRM_AMOUNT_SOL} SOL confirm = {BUY_AMOUNT_SOL} SOL total")
+            logger.info(f"  • Entry: Dynamic probe + {CONFIRM_AMOUNT_SOL} SOL confirm")
             logger.info(f"  • Probe: Skip Helius for speed")
-            logger.info(f"  • Confirm: After {CONFIRM_DELAY_SECONDS}s + momentum + Helius check")
-        else:
-            logger.info(f"  • Entry: Single {BUY_AMOUNT_SOL} SOL buy")
-        
-        logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
-        logger.info(f"  • Health check: {HEALTH_CHECK_START}-{HEALTH_CHECK_END}s (velocity {HEALTH_CHECK_VELOCITY_THRESHOLD*100:.0f}%, MC {HEALTH_CHECK_MC_THRESHOLD*100:.0f}%)")
-        logger.info(f"  • Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}% or {FAIL_FAST_VELOCITY_THRESHOLD}% velocity")
-        
-        if ENABLE_DYNAMIC_TPS:
-            logger.info(f"  • Dynamic TPs: Early {TP_LEVELS_EARLY}, Mid {TP_LEVELS_MID}, Late {TP_LEVELS_LATE}")
-            logger.info(f"  • TP sizes: {TP_SELL_PERCENTS}%")
-        
-        if ENABLE_TRAILING_STOP:
-            logger.info(f"  • Trailing stop: -{TRAILING_STOP_DRAWDOWN}% from peak after first TP")
-        
-        logger.info(f"  • Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s → auto-extend to {TIMER_AUTO_EXTEND_TO}s if strong")
+            logger.info(f"  • Confirm: After {CONFIRM_DELAY_SECONDS}s + momentum + Helius")
+
+        logger.info(f"  • Pre-filter: ≥1.5 SOL/s, ≥3 buyers (before probe)")
+        logger.info(f"  • Confirm gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
+        logger.info(f"  • Health: {HEALTH_CHECK_START}-{HEALTH_CHECK_END}s")
+        logger.info(f"  • Timer: {TIMER_EXIT_BASE_SECONDS}→{TIMER_AUTO_EXTEND_TO}s")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
-        logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
     
@@ -504,7 +500,9 @@ class SniperBot:
             'positions': len(self.positions),
             'can_trade': self.wallet.can_trade(),
             'consecutive_losses': self.consecutive_losses,
-            'session_losses': self.session_loss_count
+            'session_losses': self.session_loss_count,
+            'velocity_prefilter_skipped': self.velocity_prefilter_skipped,
+            'velocity_prefilter_passed': self.velocity_prefilter_passed
         }
     
     async def on_token_found(self, token_data: Dict):
@@ -565,19 +563,41 @@ class SniperBot:
             if len(name) < 3:
                 return
             
-            # Liquidity validation
-            passed, reason, curve_data = self.curve_reader.validate_liquidity(
-                mint=mint,
-                buy_size_sol=BUY_AMOUNT_SOL,
-                min_multiplier=LIQUIDITY_MULTIPLIER,
-                min_absolute_sol=MIN_LIQUIDITY_SOL
-            )
-            
-            if not passed:
-                logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
-                return
-            
-            logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
+            # ================================================================
+            # ✅ NEW: FIXED LIQUIDITY CHECK (WebSocket fallback)
+            # ================================================================
+            logger.info(f"🔍 Checking liquidity for {mint[:8]}...")
+
+            # Try WebSocket data first (instant, no RPC delay)
+            curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=False)
+
+            if curve_data and curve_data.get('sol_raised', 0) >= MIN_LIQUIDITY_SOL:
+                sol_raised = curve_data.get('sol_raised', 0)
+                required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
+
+                if sol_raised >= required_sol:
+                    logger.info(f"✅ Liquidity OK (WebSocket): {sol_raised:.4f} SOL")
+                    passed = True
+                else:
+                    logger.warning(f"❌ Insufficient liquidity: {sol_raised:.2f} < {required_sol:.2f}")
+                    return
+            else:
+                # Fallback to chain read with retry
+                logger.debug(f"WebSocket data unavailable, trying chain read...")
+                await asyncio.sleep(0.5)
+
+                passed, reason, curve_data = self.curve_reader.validate_liquidity(
+                    mint=mint,
+                    buy_size_sol=BUY_AMOUNT_SOL,
+                    min_multiplier=LIQUIDITY_MULTIPLIER,
+                    min_absolute_sol=MIN_LIQUIDITY_SOL
+                )
+
+                if not passed:
+                    logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
+                    return
+
+                logger.info(f"✅ Liquidity validated (chain): {curve_data['sol_raised']:.4f} SOL")
             
             # Get token age (for velocity check later)
             token_age = None
@@ -594,7 +614,36 @@ class SniperBot:
                     token_age = min(sol_raised / 1.0, VELOCITY_MAX_TOKEN_AGE)
                 else:
                     token_age = VELOCITY_MAX_TOKEN_AGE / 2
-            
+
+            # ================================================================
+            # ✅ NEW: LIGHT VELOCITY PRE-FILTER (saves gas on obvious rugs)
+            # ================================================================
+            logger.info(f"⚡ Pre-filter velocity check for {mint[:8]}...")
+
+            sol_raised = curve_data.get('sol_raised', 0)
+
+            # Relaxed thresholds (not as strict as confirm phase)
+            min_velocity = 1.5  # SOL/s (relaxed from 2.0)
+            min_buyers = 3      # estimated buyers (relaxed from 5)
+
+            if token_age > 0:
+                avg_velocity = sol_raised / token_age
+                estimated_buyers = int(sol_raised / 0.4)  # ~0.4 SOL per buyer
+
+                if avg_velocity < min_velocity or estimated_buyers < min_buyers:
+                    self.velocity_prefilter_skipped += 1
+                    logger.info(
+                        f"❌ VELOCITY PRE-FILTER: Skipping {mint[:8]}... "
+                        f"(velocity: {avg_velocity:.2f} SOL/s, buyers: ~{estimated_buyers})"
+                    )
+                    return
+
+                self.velocity_prefilter_passed += 1
+                logger.info(
+                    f"✅ VELOCITY PRE-FILTER PASSED: {avg_velocity:.2f} SOL/s, ~{estimated_buyers} buyers "
+                    f"(passed {self.velocity_prefilter_passed}, skipped {self.velocity_prefilter_skipped})"
+                )
+
             # ✅ SKIP early velocity check - we'll check during momentum phase
             # This allows probe to execute first, then we check velocity for confirm decision
             
@@ -626,8 +675,24 @@ class SniperBot:
             # ✅ PHASE 1: PROBE ENTRY (Fast, No Helius)
             # ==============================================
             if ENABLE_PROBE_ENTRY:
-                probe_sol = PROBE_AMOUNT_SOL
-                
+                # ✅ NEW: DYNAMIC PROBE SIZING (based on confidence)
+                if token_age < 2.0 and avg_velocity > 3.0:
+                    # Very early + very fast = high confidence
+                    probe_sol = 0.05
+                    confirm_sol = 0.05
+                    confidence = "HIGH"
+                elif token_age < 4.0 and avg_velocity > 2.0:
+                    # Standard case
+                    probe_sol = PROBE_AMOUNT_SOL
+                    confirm_sol = CONFIRM_AMOUNT_SOL
+                    confidence = "MEDIUM"
+                else:
+                    # Older/slower = lower confidence
+                    probe_sol = 0.02
+                    confirm_sol = 0.03
+                    confidence = "LOW"
+
+                logger.info(f"🎯 Confidence: {confidence} (probe: {probe_sol}, confirm: {confirm_sol})")
                 logger.info(f"🔍 PROBE ENTRY: {probe_sol:.4f} SOL (no Helius check)")
                 
                 execution_start = time.time()
@@ -779,8 +844,6 @@ class SniperBot:
                 # ==============================================
                 # ✅ PHASE 4: CONFIRM ENTRY (60% remaining)
                 # ==============================================
-                confirm_sol = CONFIRM_AMOUNT_SOL
-                
                 logger.info(f"✅ HOLDER CHECK PASSED - confirming with {confirm_sol:.4f} SOL")
                 
                 confirm_signature = await self.trader.create_buy_transaction(
