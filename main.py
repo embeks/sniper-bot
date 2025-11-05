@@ -1,5 +1,5 @@
 """
-Main Orchestrator - PROBE/CONFIRM + DYNAMIC TPS + HEALTH CHECK + TRAILING 
+Main Orchestrator - PROBE/CONFIRM + DYNAMIC TPS + HEALTH CHECK + TRAILING STOP
 ✅ NEW: Split entry (0.03 SOL probe + 0.05 SOL confirm)
 ✅ NEW: Health check moved to 8-12s
 ✅ NEW: Dynamic TP levels based on entry MC
@@ -436,9 +436,9 @@ class SniperBot:
                 self.telegram = None
     
     async def stop_scanner(self):
-        """Stop the scanner"""
+        """Stop the scanner without shutting down the entire bot"""
         self.running = False
-        self.shutdown_requested = True
+        self.paused = True  # Also set paused to prevent new trades
         
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
@@ -452,16 +452,16 @@ class SniperBot:
             self.scanner.stop()
             logger.info("Scanner stopped")
         
-        logger.info("✅ Bot stopped")
+        logger.info("✅ Bot stopped (scanner halted, use /start to resume)")
+        # ✅ DON'T set shutdown_requested - that causes full process exit
     
     async def start_scanner(self):
         """Start the scanner"""
-        if self.shutdown_requested:
-            self.shutdown_requested = False
+        # If scanner was stopped, just resume it
+        if not self.running and not self.shutdown_requested:
             self.running = True
             self.paused = False
-            logger.info("✅ Bot resuming from idle")
-            return
+            logger.info("✅ Bot resuming from stopped state")
         
         if self.running and self.scanner_task and not self.scanner_task.done():
             logger.info("Scanner already running")
@@ -469,7 +469,6 @@ class SniperBot:
         
         self.running = True
         self.paused = False
-        self.shutdown_requested = False
         self.consecutive_losses = 0
         
         if not self.scanner:
@@ -672,34 +671,48 @@ class SniperBot:
                 
                 logger.info(f"📊 MOMENTUM CHECK (after {CONFIRM_DELAY_SECONDS}s)...")
                 
-                # Get current velocity
-                current_velocity = self.velocity_checker.get_current_velocity(mint)
-                pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
-                velocity_ratio = current_velocity / pre_buy_velocity if pre_buy_velocity > 0 else 0
-                
-                # Estimate buyer growth from SOL increase
+                # Get current curve state
                 current_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
                 current_sol = current_curve.get('sol_raised', 0) if current_curve else 0
-                buyer_delta = int((current_sol - curve_data.get('sol_raised', 0)) / 0.4) if current_sol > 0 else 0
+                initial_sol = curve_data.get('sol_raised', 0)
                 
-                # ✅ Also check absolute velocity (not just ratio)
-                # This catches tokens that had low velocity from the start
+                # Calculate velocity metrics manually
+                time_elapsed = CONFIRM_DELAY_SECONDS + token_age
+                sol_added = current_sol - initial_sol
+                
+                # Calculate velocity before probe (initial velocity)
+                pre_velocity = initial_sol / max(token_age, 0.1) if token_age > 0 else 0
+                
+                # Calculate velocity during confirm delay (recent velocity)
+                recent_velocity = sol_added / CONFIRM_DELAY_SECONDS if CONFIRM_DELAY_SECONDS > 0 else 0
+                
+                # Velocity ratio (recent vs initial)
+                velocity_ratio = recent_velocity / pre_velocity if pre_velocity > 0 else 0
+                
+                # Estimate buyer growth (roughly 1 buyer per 0.4 SOL)
+                buyer_delta = int(sol_added / 0.4) if sol_added > 0 else 0
+                
+                # Check absolute velocity using velocity_checker
+                # This ensures the overall velocity is still strong
                 velocity_check_passed, velocity_reason = self.velocity_checker.check_velocity(
                     mint=mint,
                     curve_data=current_curve if current_curve else curve_data,
-                    token_age_seconds=token_age + CONFIRM_DELAY_SECONDS
+                    token_age_seconds=time_elapsed
                 )
                 
                 momentum_passed = (
                     velocity_ratio >= CONFIRM_MIN_VELOCITY_RATIO and
                     buyer_delta >= CONFIRM_MIN_BUYER_DELTA and
-                    velocity_check_passed  # Must also pass absolute velocity check
+                    velocity_check_passed
                 )
                 
                 if not momentum_passed:
                     logger.warning(f"⚠️ MOMENTUM CHECK FAILED - managing probe only")
+                    logger.info(f"   Pre-velocity: {pre_velocity:.2f} SOL/s")
+                    logger.info(f"   Recent velocity: {recent_velocity:.2f} SOL/s")
                     logger.info(f"   Velocity ratio: {velocity_ratio:.2f} (need {CONFIRM_MIN_VELOCITY_RATIO})")
                     logger.info(f"   Buyer delta: {buyer_delta} (need {CONFIRM_MIN_BUYER_DELTA})")
+                    logger.info(f"   SOL added: {sol_added:.2f} in {CONFIRM_DELAY_SECONDS}s")
                     if not velocity_check_passed:
                         logger.info(f"   Velocity check: {velocity_reason}")
                     
@@ -1576,8 +1589,14 @@ class SniperBot:
             
             last_stats_time = time.time()
             
-            while self.running and not self.shutdown_requested:
+            # ✅ FIXED: Only exit on shutdown_requested, not on running=False
+            # This allows /stop to pause without exiting the process
+            while not self.shutdown_requested:
                 await asyncio.sleep(10)
+                
+                # Only log stats if running
+                if not self.running or self.paused:
+                    continue
                 
                 if time.time() - last_stats_time > 60:
                     if self.positions:
