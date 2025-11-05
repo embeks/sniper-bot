@@ -580,7 +580,7 @@ class SniperBot:
             
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
             
-            # Get token age
+            # Get token age (for velocity check later)
             token_age = None
             if 'data' in token_data and 'age' in token_data['data']:
                 token_age = token_data['data']['age']
@@ -596,16 +596,8 @@ class SniperBot:
                 else:
                     token_age = VELOCITY_MAX_TOKEN_AGE / 2
             
-            # Velocity check
-            velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
-                mint=mint,
-                curve_data=curve_data,
-                token_age_seconds=token_age
-            )
-            
-            if not velocity_passed:
-                logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
-                return
+            # ✅ SKIP early velocity check - we'll check during momentum phase
+            # This allows probe to execute first, then we check velocity for confirm decision
             
             # Store estimated entry price
             estimated_entry_price = curve_data.get('price_lamports_per_atomic', 0)
@@ -690,15 +682,26 @@ class SniperBot:
                 current_sol = current_curve.get('sol_raised', 0) if current_curve else 0
                 buyer_delta = int((current_sol - curve_data.get('sol_raised', 0)) / 0.4) if current_sol > 0 else 0
                 
+                # ✅ Also check absolute velocity (not just ratio)
+                # This catches tokens that had low velocity from the start
+                velocity_check_passed, velocity_reason = self.velocity_checker.check_velocity(
+                    mint=mint,
+                    curve_data=current_curve if current_curve else curve_data,
+                    token_age_seconds=token_age + CONFIRM_DELAY_SECONDS
+                )
+                
                 momentum_passed = (
                     velocity_ratio >= CONFIRM_MIN_VELOCITY_RATIO and
-                    buyer_delta >= CONFIRM_MIN_BUYER_DELTA
+                    buyer_delta >= CONFIRM_MIN_BUYER_DELTA and
+                    velocity_check_passed  # Must also pass absolute velocity check
                 )
                 
                 if not momentum_passed:
                     logger.warning(f"⚠️ MOMENTUM CHECK FAILED - managing probe only")
                     logger.info(f"   Velocity ratio: {velocity_ratio:.2f} (need {CONFIRM_MIN_VELOCITY_RATIO})")
                     logger.info(f"   Buyer delta: {buyer_delta} (need {CONFIRM_MIN_BUYER_DELTA})")
+                    if not velocity_check_passed:
+                        logger.info(f"   Velocity check: {velocity_reason}")
                     
                     # Create position with probe only
                     position = Position(mint, probe_sol, probe_tokens, entry_market_cap)
