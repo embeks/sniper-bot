@@ -289,13 +289,13 @@ class PumpPortalMonitor:
             logger.error(f"Error checking creator spam: {e}")
             return (True, 0, f"error: {e}")
     
-    async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
+    async def _check_holders_helius(self, mint: str, max_retries: int = 1) -> dict:
         """
-        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
-        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
-        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
+        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 1 retry
+        ✅ LATENCY FIX: Single fast retry at 1.5s (we removed the 3s sleep, so be aggressive)
+        NOTE: No sleep before this call anymore - tokens are fresh
         """
-        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
+        retry_delays = [1.5]  # Single fast retry at 1.5s (we removed the 3s sleep, so be aggressive)
         
         for attempt in range(max_retries + 1):
             try:
@@ -606,13 +606,13 @@ class PumpPortalMonitor:
         # ===================================================================
         # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
         # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
-        # CRITICAL: Wait 3s before first check to allow Helius indexing
+        # ✅ LATENCY FIX: No sleep - fast-fail holder check with retries
         # ===================================================================
         logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
-        
-        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
-        # Without this, ALL tokens fail because they're too new
-        await asyncio.sleep(3)
+
+        # ✅ LATENCY FIX: Remove 3s sleep, use fast-fail holder check instead
+        # We'll do parallel validation in main.py now
+        logger.info(f"🚀 Fast-track validation for {mint[:8]}... (no sleep)")
         
         # Market cap calculation (fast, local)
         await self._get_sol_price()

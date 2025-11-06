@@ -43,6 +43,30 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
+# ============================================
+# FEE STRUCTURE & NET P&L TRACKING
+# ============================================
+# Calculate total fees for net P&L decisions
+BUY_PRIORITY_FEE = 0.0015  # Normal urgency buy
+SELL_PRIORITY_FEE = 0.004   # Critical urgency sell
+PLATFORM_FEE_RATE = 0.01    # 1% PumpFun fee on buys
+NETWORK_FEE_PER_TX = 0.000005  # Base network fee
+
+# Total fees per round trip (buy + sell)
+TOTAL_FEES_SOL = (
+    BUY_PRIORITY_FEE +
+    SELL_PRIORITY_FEE +
+    (BUY_AMOUNT_SOL * PLATFORM_FEE_RATE) +
+    (NETWORK_FEE_PER_TX * 2)
+)
+
+# Net breakeven percentage (what you need to profit after fees)
+NET_BREAKEVEN_PCT = (TOTAL_FEES_SOL / BUY_AMOUNT_SOL) * 100
+# For 0.05 SOL: ~12% breakeven
+
+# Entry drift protection (abort buy if price moved too much)
+MAX_ENTRY_DRIFT_PERCENT = 10.0
+
 # Risk management
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
