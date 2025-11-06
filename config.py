@@ -1,10 +1,12 @@
+
 """
-config - PROBE/CONFIRM + DYNAMIC TPS + HEALTH CHECK + TRAILING STOP
-- Split entry: 0.03 SOL probe + 0.05 SOL confirm (total 0.08 SOL)
-- Health check moved to 8-12s (from 10-15s)
-- Dynamic TP levels based on entry MC
-- Trailing stop after first TP
-- Timer extended to 25-33s
+config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
+- Shorter timer (20s)
+- Tighter velocity drop (25%)
+- Faster monitoring (0.5s)
+- Increased position size (0.05 SOL)
+- FIXED: Token age limit increased to 25s (accounts for monitor delays)
+- NEW: Profit protection (Extreme TP + Trailing Stop)
 """
 
 import os
@@ -35,8 +37,8 @@ BACKUP_RPC_ENDPOINTS = [
 # ============================================
 # TRADING PARAMETERS
 # ============================================
-# NEW: Increased to 0.08 SOL (split as 0.03 probe + 0.05 confirm)
-BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.08'))
+# FIXED: Increased from 0.01 to 0.05 SOL (fees require larger positions)
+BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
 PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
@@ -46,103 +48,38 @@ STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # ============================================
-# PROBE/CONFIRM ENTRY SETTINGS (NEW!)
-# ============================================
-# Enable split entry strategy
-ENABLE_PROBE_ENTRY = True
-
-# Probe: Fast entry without Helius check
-PROBE_AMOUNT_SOL = 0.03  # 37.5% of total position
-
-# Confirm: Add remaining after validation
-CONFIRM_AMOUNT_SOL = 0.05  # 62.5% of total position
-
-# Skip Helius holder check for probe (speed over safety)
-PROBE_SKIP_HELIUS = True
-
-# Wait time before momentum check (seconds)
-CONFIRM_DELAY_SECONDS = 1.2
-
-# Momentum requirements to confirm
-CONFIRM_MIN_VELOCITY_RATIO = 1.15  # Need 15% velocity increase
-CONFIRM_MIN_BUYER_DELTA = 6  # Need +6 unique buyers (estimated)
-
-# ============================================
 # VELOCITY GATE SETTINGS
 # ============================================
+# Minimum SOL/second inflow rate to enter
 VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.0'))
+
+# Minimum unique buyers required (estimated)
 VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
+
+# CRITICAL FIX: Increased from 6.0 to 25.0 to account for monitor delays
+# Timeline: 0.5s cooldown + 3s sleep + 0-6s retries + processing = ~10-20s
 VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '25.0'))
+
+# Recent velocity thresholds (last 1-3 seconds)
 VELOCITY_MIN_RECENT_1S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_1S_SOL', '2.0'))
 VELOCITY_MIN_RECENT_3S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_3S_SOL', '4.0'))
+
+# FIXED: Tightened from 40% to 25% (reject if velocity dropping >25%)
 VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0'))
+
+# CRITICAL FIX: Changed from 2 to 1 (allow buy on first detection)
 VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
 
 # ============================================
-# HEALTH CHECK SETTINGS (UPDATED!)
+# TIMER-BASED EXIT SETTINGS
 # ============================================
-# NEW: Moved from 10-15s to 8-12s (faster detection of dying tokens)
-HEALTH_CHECK_START = 8.0
-HEALTH_CHECK_END = 12.0
-
-# Exit if velocity drops below this % of pre-buy
-HEALTH_CHECK_VELOCITY_THRESHOLD = 0.35  # 35%
-
-# Exit if MC drops below this % of entry
-HEALTH_CHECK_MC_THRESHOLD = 0.80  # 80%
-
-# ============================================
-# FAIL-FAST EXIT SETTINGS (UPDATED!)
-# ============================================
-FAIL_FAST_CHECK_TIME = float(os.getenv('FAIL_FAST_CHECK_TIME', '5.0'))
-
-# NEW: Adjusted from -10% to -15% (less aggressive)
-FAIL_FAST_PNL_THRESHOLD = float(os.getenv('FAIL_FAST_PNL_THRESHOLD', '-15.0'))
-
-# NEW: Aligned with health check (35% of pre-buy velocity)
-FAIL_FAST_VELOCITY_THRESHOLD = float(os.getenv('FAIL_FAST_VELOCITY_THRESHOLD', '35.0'))
-
-# ============================================
-# DYNAMIC TAKE-PROFIT SETTINGS (NEW!)
-# ============================================
-# Enable MC-based scaled exits
-ENABLE_DYNAMIC_TPS = True
-
-# TP multipliers based on entry MC
-# Early entries (≤12K MC): More room to run
-TP_LEVELS_EARLY = [2.6, 3.2, 3.9, 4.8]
-
-# Mid entries (12-22K MC): Moderate targets
-TP_LEVELS_MID = [2.4, 3.0, 3.6, 4.5]
-
-# Late entries (>22K MC): Tighter targets (less headroom)
-TP_LEVELS_LATE = [2.2, 2.8, 3.4, 4.2]
-
-# Percentage to sell at each TP level
-TP_SELL_PERCENTS = [25, 25, 30, 20]  # 25%, 25%, 30%, 20%
-
-# Wait after buy before allowing TPs (avoid post-buy spikes)
-TP_COOLDOWN_SECONDS = 2.0
-
-# ============================================
-# TRAILING STOP SETTINGS (NEW!)
-# ============================================
-# Enable trailing stop after first TP
-ENABLE_TRAILING_STOP = True
-
-# Exit if price drops this % from peak MC (after first TP taken)
-TRAILING_STOP_DRAWDOWN = 18.0  # -18% from peak
-
-# ============================================
-# TIMER-BASED EXIT SETTINGS (UPDATED!)
-# ============================================
-# NEW: Extended from 20s to 25s base
-TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '25'))
+# FIXED: Shortened from 30s to 20s base
+TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '20'))
 
 # Random variance to add (+/- seconds)
 TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '5'))
 
-# Extension for mega-pumps
+# Extension for mega-pumps (if velocity still rising and P&L > threshold)
 TIMER_EXTENSION_SECONDS = int(os.getenv('TIMER_EXTENSION_SECONDS', '10'))
 
 # P&L threshold to consider extension (%)
@@ -151,28 +88,95 @@ TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD',
 # Maximum total extensions allowed
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
 
-# NEW: Auto-extend to this duration if momentum strong
-TIMER_AUTO_EXTEND_TO = 33  # seconds
+# ============================================
+# PROFIT PROTECTION SETTINGS (NEW!)
+# ============================================
+# These work alongside your timer-based exits to protect extreme gains
+# All checks are CHAIN-GATED (only trigger on blockchain data, not WebSocket)
 
-# ============================================
-# PROFIT PROTECTION SETTINGS (EXISTING)
-# ============================================
 # Extreme Take-Profit: Exit immediately if profit goes parabolic
+# Example: If you hit +150% (2.5x), lock it in regardless of timer
+# Set to 999.0 to disable
 EXTREME_TP_PERCENT = float(os.getenv('EXTREME_TP_PERCENT', '150.0'))
 
 # Trailing Stop: Protect profits after hitting a certain level
+# TRAIL_START_PERCENT: Start trailing once you've hit this profit
+# TRAIL_GIVEBACK_PERCENT: Exit if you give back this much from peak
+# Example: Hit +191% peak, currently +85% = 106pp drop → Exit if drop >= 50pp
+# Set both to 999.0 to disable
 TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '100.0'))
 TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '50.0'))
 
 # ============================================
-# LIQUIDITY VALIDATION
+# HOW PROFIT PROTECTION WORKS:
 # ============================================
-LIQUIDITY_MULTIPLIER = float(os.getenv('LIQUIDITY_MULTIPLIER', '5.0'))
-MIN_LIQUIDITY_SOL = float(os.getenv('MIN_LIQUIDITY_SOL', '0.6'))
-MAX_SLIPPAGE_PERCENT = float(os.getenv('MAX_SLIPPAGE_PERCENT', '2.5'))
+# 
+# Priority order (from highest to lowest):
+# 1. Extreme TP (150%+) - Locks in parabolic gains immediately
+# 2. Trailing Stop (100%+ then -50pp drop) - Protects from fast rugs
+# 3. Fail-Fast (5s check at -10%) - Exits early losers
+# 4. Rug Trap (-40% or -60% if <3s) - Emergency exits
+# 5. Stop Loss (-40%) - Standard loss protection  
+# 6. Timer Exit (20s) - Your main strategy (80% of trades)
+#
+# Most trades (80%): Exit on timer as normal
+# Extreme pumps (10%): Exit early via Extreme TP or Trailing Stop
+# Fast rugs (10%): Exit early via Fail-Fast or Rug Trap
+#
+# All profit exits require CHAIN confirmation (same as stop-loss)
+# This prevents WebSocket false signals from triggering exits
+#
+# EXAMPLE WITH YOUR ACTUAL TRADE (GOLDALON):
+# Without profit protection:
+#   06:29:43 - Peak: +191.7% (bot keeps holding)
+#   06:30:04 - Timer exit: -0.8%
+#   Result: -0.0085 SOL loss
+#
+# With Extreme TP = 150%:
+#   06:29:43 - Peak: +191.7%
+#   → +191.7% >= 150% ✓ on [chain] tick
+#   → EXTREME TP TRIGGERED!
+#   → Exit at +191.7% (~2s after buy)
+#   Result: +0.0383 SOL profit (+0.0468 SOL better!)
+#
+# TUNING GUIDE:
+# Conservative (lock profits early):
+#   EXTREME_TP_PERCENT = 100.0      # Exit at 2x
+#   TRAIL_START_PERCENT = 75.0      # Trail after 1.75x
+#   TRAIL_GIVEBACK_PERCENT = 30.0   # Tighter trail
+#
+# Moderate (recommended):
+#   EXTREME_TP_PERCENT = 150.0      # Exit at 2.5x
+#   TRAIL_START_PERCENT = 100.0     # Trail after 2x
+#   TRAIL_GIVEBACK_PERCENT = 50.0   # Exit if -50pp from peak
+#
+# Aggressive (let winners run):
+#   EXTREME_TP_PERCENT = 200.0      # Exit at 3x
+#   TRAIL_START_PERCENT = 150.0     # Trail after 2.5x
+#   TRAIL_GIVEBACK_PERCENT = 70.0   # Wider trail
+#
+# Disabled (pure timer strategy):
+#   EXTREME_TP_PERCENT = 999.0      # Never trigger
+#   TRAIL_START_PERCENT = 999.0     # Never trigger
+#   TRAIL_GIVEBACK_PERCENT = 999.0  # Never trigger
+#
+# ============================================
+
+# ============================================
+# FAIL-FAST EXIT SETTINGS
+# ============================================
+# Time after buy to check for early failure (seconds)
+FAIL_FAST_CHECK_TIME = float(os.getenv('FAIL_FAST_CHECK_TIME', '5.0'))
+
+# P&L threshold for early exit (%)
+FAIL_FAST_PNL_THRESHOLD = float(os.getenv('FAIL_FAST_PNL_THRESHOLD', '-10.0'))
+
+# Velocity death threshold (% of pre-buy velocity)
+FAIL_FAST_VELOCITY_THRESHOLD = float(os.getenv('FAIL_FAST_VELOCITY_THRESHOLD', '30.0'))
 
 # ============================================
 # LEGACY PARTIAL PROFIT SETTINGS (DEPRECATED)
+# These are kept for backward compatibility but not used in timer mode
 # ============================================
 PARTIAL_TAKE_PROFIT = {}
 tp1, sp1 = os.getenv('TAKE_PROFIT_1'), os.getenv('SELL_PERCENT_1')
@@ -189,8 +193,20 @@ if tp3 and sp3:
 # Timing
 SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '0'))
 MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '120'))
+
+# FIXED: Changed from 1s to 0.5s for more precise fail-fast timing
 MONITOR_CHECK_INTERVAL = float(os.getenv('MONITOR_CHECK_INTERVAL', '0.5'))
 DATA_FAILURE_TOLERANCE = int(os.getenv('DATA_FAILURE_TOLERANCE', '10'))
+
+# ============================================
+# LIQUIDITY VALIDATION
+# ============================================
+# Require 5x liquidity (e.g. 0.25 SOL raised for 0.05 SOL buy)
+LIQUIDITY_MULTIPLIER = float(os.getenv('LIQUIDITY_MULTIPLIER', '5.0'))
+# Absolute minimum SOL raised
+MIN_LIQUIDITY_SOL = float(os.getenv('MIN_LIQUIDITY_SOL', '0.6'))
+# Maximum slippage tolerance
+MAX_SLIPPAGE_PERCENT = float(os.getenv('MAX_SLIPPAGE_PERCENT', '2.5'))
 
 # ============================================
 # PUMPFUN SPECIFIC CONFIGURATION
