@@ -612,7 +612,10 @@ class PumpPortalMonitor:
 
         # ✅ LATENCY FIX: Remove 3s sleep, use fast-fail holder check instead
         # We'll do parallel validation in main.py now
-        logger.info(f"🚀 Fast-track validation for {mint[:8]}... (no sleep)")
+        logger.info(f"🚀 Fast-track validation for {mint[:8]}...")
+        logger.info(f"⏳ Giving Helius 1.5s to index token...")
+        await asyncio.sleep(1.5)  # Compromise: faster than 3s, but gives Helius time to index
+        logger.info(f"✓ Helius indexing delay complete - checking holders...")
         
         # Market cap calculation (fast, local)
         await self._get_sol_price()
