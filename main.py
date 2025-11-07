@@ -493,15 +493,22 @@ class SniperBot:
 
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
 
-            # ✅ FIX 2: Force fresh chain data to avoid stale WebSocket data
-            # This ensures accurate price/SOL data at entry time
-            curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+            # ✅ FIX: Preserve sol_raised from liquidity validation while updating price from fresh chain data
+            # Store sol_raised BEFORE getting fresh data
+            sol_raised_validated = curve_data['sol_raised']
 
-            if not curve_data:
-                logger.warning(f"❌ Could not get fresh curve data for {mint[:8]}...")
-                return
+            # Get fresh chain data for price accuracy
+            fresh_curve = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
 
-            logger.debug(f"✅ Fresh chain data retrieved: {curve_data.get('sol_in_curve', 0):.4f} SOL")
+            if fresh_curve:
+                # Update curve_data with fresh price data but keep sol_raised
+                curve_data.update(fresh_curve)
+                curve_data['sol_raised'] = sol_raised_validated  # ← Restore the validated amount
+                logger.info(f"🔎 Updated with fresh chain data (kept sol_raised: {sol_raised_validated:.4f})")
+            else:
+                logger.warning(f"⚠️ Fresh chain data unavailable, using liquidity check data")
+
+            logger.debug(f"✅ Real-time chain data: {curve_data.get('sol_in_curve', 0):.4f} SOL in curve, {curve_data['sol_raised']:.4f} SOL raised")
 
             token_age = None
             
