@@ -612,10 +612,12 @@ class PumpPortalMonitor:
         
         # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
         # Without this, ALL tokens fail because they're too new
+        # ✅ FIX 4: Pre-warm SOL price fetch during the wait
+        sol_price_task = asyncio.create_task(self._get_sol_price())
         await asyncio.sleep(3)
-        
-        # Market cap calculation (fast, local)
-        await self._get_sol_price()
+
+        # By now, SOL price should be ready
+        await sol_price_task
         market_cap = self._calculate_market_cap(token_data)
         
         if market_cap < self.filters['min_market_cap'] or market_cap > self.filters['max_market_cap']:

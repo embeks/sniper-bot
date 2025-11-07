@@ -113,9 +113,10 @@ class PumpFunDEX:
             if not prefer_chain and mint in self.token_websocket_data:
                 ws_data = self.token_websocket_data[mint]
                 data_age = time.time() - ws_data['timestamp']
-                
-                # Use WebSocket data only if fresh (under 10 seconds)
-                if data_age < 10:
+
+                # ✅ FIX 3: Reduced trust window from 10s to 3s to avoid stale data
+                # WebSocket only updates on trades, so stale data is dangerous for volatile tokens
+                if data_age < 3:
                     token_data = ws_data['data']
                     if 'data' in token_data:
                         token_data = token_data['data']

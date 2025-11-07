@@ -461,20 +461,48 @@ class SniperBot:
             
             if len(name) < 3:
                 return
-            
-            passed, reason, curve_data = self.curve_reader.validate_liquidity(
-                mint=mint,
-                buy_size_sol=BUY_AMOUNT_SOL,
-                min_multiplier=LIQUIDITY_MULTIPLIER,
-                min_absolute_sol=MIN_LIQUIDITY_SOL
+
+            # ✅ FIX 1: Parallelize RPC calls to save ~220ms
+            # Start all RPC calls simultaneously
+            liquidity_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.curve_reader.validate_liquidity,
+                    mint=mint,
+                    buy_size_sol=BUY_AMOUNT_SOL,
+                    min_multiplier=LIQUIDITY_MULTIPLIER,
+                    min_absolute_sol=MIN_LIQUIDITY_SOL
+                )
             )
-            
+
+            decimals_task = asyncio.create_task(
+                asyncio.to_thread(self.wallet.get_token_decimals, mint)
+            )
+
+            slippage_task = asyncio.create_task(
+                asyncio.to_thread(self.curve_reader.estimate_slippage, mint, BUY_AMOUNT_SOL)
+            )
+
+            # Wait for all to complete
+            passed, reason, curve_data = await liquidity_task
+            token_decimals = await decimals_task
+            estimated_slippage = await slippage_task
+
             if not passed:
                 logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
                 return
-            
+
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
-            
+
+            # ✅ FIX 2: Force fresh chain data to avoid stale WebSocket data
+            # This ensures accurate price/SOL data at entry time
+            curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+
+            if not curve_data:
+                logger.warning(f"❌ Could not get fresh curve data for {mint[:8]}...")
+                return
+
+            logger.debug(f"✅ Fresh chain data retrieved: {curve_data.get('sol_in_curve', 0):.4f} SOL")
+
             token_age = None
             
             if 'data' in token_data and 'age' in token_data['data']:
@@ -515,16 +543,15 @@ class SniperBot:
             # ✅ Store the ESTIMATED entry price from detection (for comparison later)
             raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
             estimated_entry_price = raw_entry_price
-            
-            token_decimals = self.wallet.get_token_decimals(mint)
+
+            # ✅ FIX 1: token_decimals and estimated_slippage already fetched in parallel above
             if isinstance(token_decimals, tuple):
                 token_decimals = token_decimals[0]
             if not token_decimals or token_decimals == 0:
                 token_decimals = 6
-            
+
             logger.debug(f"Estimated entry price (at detection): {estimated_entry_price:.10f} lamports/atomic")
-            
-            estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
+
             if estimated_slippage:
                 logger.info(f"📊 Estimated slippage: {estimated_slippage:.2f}%")
                 if estimated_slippage > MAX_SLIPPAGE_PERCENT:
