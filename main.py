@@ -409,7 +409,47 @@ class SniperBot:
             'consecutive_losses': self.consecutive_losses,
             'session_losses': self.session_loss_count
         }
-    
+
+    async def retry_blockchain_query(self, mint: str, max_attempts: int = 3, retry_delay: float = 0.8):
+        """
+        Retry blockchain curve data query with exponential backoff
+
+        Args:
+            mint: Token mint address
+            max_attempts: Maximum number of retry attempts (default: 3)
+            retry_delay: Delay between retries in seconds (default: 0.8s)
+
+        Returns:
+            blockchain_curve dict or None if all attempts fail
+        """
+        blockchain_curve = None
+
+        for attempt in range(max_attempts):
+            try:
+                blockchain_curve = await asyncio.to_thread(
+                    self.dex.get_bonding_curve_data,
+                    mint,
+                    True  # prefer_chain=True - force blockchain read
+                )
+
+                if blockchain_curve:
+                    if attempt > 0:
+                        logger.info(f"✅ Blockchain data retrieved on attempt {attempt + 1}/{max_attempts}")
+                    return blockchain_curve
+                else:
+                    logger.warning(f"⏳ No blockchain data (attempt {attempt + 1}/{max_attempts})")
+
+            except Exception as e:
+                logger.warning(f"⏳ Blockchain query error (attempt {attempt + 1}/{max_attempts}): {e}")
+
+            # Wait before next attempt (but not after the last one)
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(retry_delay)
+
+        # All attempts failed
+        logger.warning(f"❌ Blockchain query failed after {max_attempts} attempts for {mint[:8]}...")
+        return None
+
     async def on_token_found(self, token_data: Dict):
         """
         Handle new token found - OPTIMIZED VERSION
@@ -493,13 +533,9 @@ class SniperBot:
                 )
             )
 
-            # ✅ CRITICAL: Get fresh blockchain curve data (not PumpPortal!)
+            # ✅ CRITICAL: Get fresh blockchain curve data with retry logic (runs in parallel)
             blockchain_curve_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.dex.get_bonding_curve_data,
-                    mint,
-                    True  # prefer_chain=True - force blockchain read
-                )
+                self.retry_blockchain_query(mint, max_attempts=3, retry_delay=0.8)
             )
 
             # Wait for both to complete (runs in parallel, saves 0.3-0.4s)
@@ -514,7 +550,7 @@ class SniperBot:
 
             # ✅ FIX 3: Use BLOCKCHAIN data for velocity, not PumpPortal!
             if not blockchain_curve:
-                logger.warning(f"❌ No blockchain data for {mint[:8]}... - skipping")
+                logger.warning(f"❌ No blockchain data for {mint[:8]}... after retries - skipping token")
                 return
 
             blockchain_sol = blockchain_curve.get('sol_in_curve', 0)
