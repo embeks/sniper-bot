@@ -462,53 +462,59 @@ class SniperBot:
             if len(name) < 3:
                 return
 
-            # ✅ FIX 1: Parallelize RPC calls to save ~220ms
-            # Start all RPC calls simultaneously
-            liquidity_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.curve_reader.validate_liquidity,
-                    mint=mint,
-                    buy_size_sol=BUY_AMOUNT_SOL,
-                    min_multiplier=LIQUIDITY_MULTIPLIER,
-                    min_absolute_sol=MIN_LIQUIDITY_SOL
-                )
-            )
+            # ============================================================================
+            # SPEED OPTIMIZATION: Use WebSocket data instead of RPC calls
+            # This eliminates 3-4 RPC round trips, saving 400-800ms per token
+            # ============================================================================
 
-            decimals_task = asyncio.create_task(
-                asyncio.to_thread(self.wallet.get_token_decimals, mint)
-            )
+            # Extract WebSocket data
+            token_data_ws = token_data.get('data', token_data) if 'data' in token_data else token_data
+            ws_sol = float(token_data_ws.get('vSolInBondingCurve', 0))
+            ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
 
-            slippage_task = asyncio.create_task(
-                asyncio.to_thread(self.curve_reader.estimate_slippage, mint, BUY_AMOUNT_SOL)
-            )
+            # Liquidity validation using WebSocket data (no RPC)
+            required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
 
-            # Wait for all to complete
-            passed, reason, curve_data = await liquidity_task
-            token_decimals = await decimals_task
-            estimated_slippage = await slippage_task
-
-            if not passed:
-                logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
+            if ws_sol < MIN_LIQUIDITY_SOL:
+                logger.warning(f"❌ Liquidity too low: {ws_sol:.4f} SOL < {MIN_LIQUIDITY_SOL} minimum")
                 return
 
-            logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
+            if ws_sol < required_sol:
+                logger.warning(f"❌ Insufficient liquidity: {ws_sol:.4f} SOL < {required_sol:.4f} ({LIQUIDITY_MULTIPLIER}x)")
+                return
 
-            # ✅ FIX: Preserve sol_raised from liquidity validation while updating price from fresh chain data
-            # Store sol_raised BEFORE getting fresh data
-            sol_raised_validated = curve_data['sol_raised']
+            logger.info(f"✅ Liquidity OK (WebSocket): {ws_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
 
-            # Get fresh chain data for price accuracy
-            fresh_curve = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+            # Get token decimals (only RPC call we still need for transaction building)
+            token_decimals = self.wallet.get_token_decimals(mint)
+            if isinstance(token_decimals, tuple):
+                token_decimals = token_decimals[0]
+            if not token_decimals or token_decimals == 0:
+                token_decimals = 6  # PumpFun standard
 
-            if fresh_curve:
-                # Update curve_data with fresh price data but keep sol_raised
-                curve_data.update(fresh_curve)
-                curve_data['sol_raised'] = sol_raised_validated  # ← Restore the validated amount
-                logger.info(f"🔎 Updated with fresh chain data (kept sol_raised: {sol_raised_validated:.4f})")
-            else:
-                logger.warning(f"⚠️ Fresh chain data unavailable, using liquidity check data")
+            # Build curve_data from WebSocket (no RPC calls)
+            # Convert to atomic units for consistency with rest of codebase
+            v_sol_lamports = int(ws_sol * 1e9)
+            v_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
 
-            logger.debug(f"✅ Real-time chain data: {curve_data.get('sol_in_curve', 0):.4f} SOL in curve, {curve_data['sol_raised']:.4f} SOL raised")
+            # Calculate price in atomic units
+            price_lamports_per_atomic = (v_sol_lamports / v_tokens_atomic) if v_tokens_atomic > 0 else 0
+
+            curve_data = {
+                'sol_raised': ws_sol,
+                'sol_in_curve': ws_sol,
+                'virtual_sol_reserves': v_sol_lamports,
+                'virtual_token_reserves': v_tokens_atomic,
+                'price_lamports_per_atomic': price_lamports_per_atomic,
+                'source': 'websocket',
+                'is_valid': True,
+                'is_migrated': False
+            }
+
+            estimated_slippage = None  # Not needed for WebSocket-based entry
+
+            logger.info(f"⚡ Using WebSocket data: {ws_sol:.4f} SOL, price={price_lamports_per_atomic:.10f} lamports/atom")
+            logger.debug(f"✅ Curve data built from WebSocket (no RPC delay)")
 
             token_age = None
             
