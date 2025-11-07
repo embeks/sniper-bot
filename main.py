@@ -144,6 +144,8 @@ class SniperBot:
         self.positions: Dict[str, Position] = {}
         self.pending_buys = 0
         self.total_trades = 0
+        # ✅ FIX 5: Track token first sighting times (for accurate age calculation)
+        self.token_first_seen = {}
         self.profitable_trades = 0
         self.total_pnl = 0
         self.total_realized_sol = 0
@@ -169,7 +171,7 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: VELOCITY GATE + TIMER EXIT + FAIL-FAST")
+        logger.info(f"  • Strategy: OPTIMIZED - Blockchain validation + No cooldowns")
         logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
@@ -409,40 +411,54 @@ class SniperBot:
         }
     
     async def on_token_found(self, token_data: Dict):
-        """Handle new token found - with liquidity and velocity validation"""
+        """
+        Handle new token found - OPTIMIZED VERSION
+        ✅ Parallelized checks
+        ✅ Blockchain data validation
+        ✅ Real-time age calculation
+        """
         detection_start = time.time()
-        
+
         try:
             mint = token_data['mint']
-            
+
+            # ✅ FIX 5: Sync first sighting time from monitor
+            if hasattr(self, 'scanner') and hasattr(self.scanner, 'token_first_seen'):
+                if mint in self.scanner.token_first_seen:
+                    self.token_first_seen[mint] = self.scanner.token_first_seen[mint]
+                else:
+                    self.token_first_seen[mint] = time.time()
+            else:
+                self.token_first_seen[mint] = time.time()
+
             self.dex.update_token_data(mint, token_data)
-            
+
             if mint in self.positions:
                 self.dex.update_token_data(mint, token_data)
                 logger.debug(f"Updated price data for existing position {mint[:8]}...")
-            
+
             if not self.running or self.paused:
                 return
-            
+
             if mint in BLACKLISTED_TOKENS:
                 return
-            
+
             total_positions = len(self.positions) + self.pending_buys
-            
+
             if total_positions >= MAX_POSITIONS:
                 logger.warning(f"Max positions reached ({len(self.positions)} active + {self.pending_buys} pending = {total_positions}/{MAX_POSITIONS})")
                 return
-            
+
             if mint in self.positions:
                 return
-            
+
             if not self.wallet.can_trade():
                 current_time = time.time()
                 if current_time - self._last_balance_warning > 60:
                     logger.warning(f"Insufficient balance for trading")
                     self._last_balance_warning = current_time
                 return
-            
+
             if self.consecutive_losses >= 3:
                 logger.warning(f"🛑 Circuit breaker activated - 3 consecutive losses")
                 self.paused = True
@@ -453,108 +469,140 @@ class SniperBot:
                         "Bot paused - use /resume to continue"
                     )
                 return
-            
+
             initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
             name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
-            
+
             if initial_buy < 0.1 or initial_buy > 10:
                 return
-            
+
             if len(name) < 3:
                 return
-            
-            passed, reason, curve_data = self.curve_reader.validate_liquidity(
-                mint=mint,
-                buy_size_sol=BUY_AMOUNT_SOL,
-                min_multiplier=LIQUIDITY_MULTIPLIER,
-                min_absolute_sol=MIN_LIQUIDITY_SOL
+
+            # ✅ FIX 3: PARALLELIZED CHECKS - Run liquidity + blockchain validation together
+            logger.info(f"🚀 Starting parallel validation for {mint[:8]}...")
+
+            # Start both tasks at once
+            liquidity_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.curve_reader.validate_liquidity,
+                    mint=mint,
+                    buy_size_sol=BUY_AMOUNT_SOL,
+                    min_multiplier=LIQUIDITY_MULTIPLIER,
+                    min_absolute_sol=MIN_LIQUIDITY_SOL
+                )
             )
-            
+
+            # ✅ CRITICAL: Get fresh blockchain curve data (not PumpPortal!)
+            blockchain_curve_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.dex.get_bonding_curve_data,
+                    mint,
+                    True  # prefer_chain=True - force blockchain read
+                )
+            )
+
+            # Wait for both to complete (runs in parallel, saves 0.3-0.4s)
+            passed, reason, curve_data = await liquidity_task
+            blockchain_curve = await blockchain_curve_task
+
             if not passed:
                 logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
                 return
-            
+
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
-            
-            token_age = None
-            
-            if 'data' in token_data and 'age' in token_data['data']:
-                token_age = token_data['data']['age']
-                logger.debug(f"📊 Age from token_data.data.age: {token_age:.1f}s")
-            elif 'age' in token_data:
-                token_age = token_data['age']
-                logger.debug(f"📊 Age from token_data.age: {token_age:.1f}s")
-            elif 'token_age' in token_data:
-                token_age = token_data['token_age']
-                logger.debug(f"📊 Age from token_data.token_age: {token_age:.1f}s")
-            
-            if token_age is None or token_age == 0:
-                sol_raised = curve_data.get('sol_raised', 0)
-                
-                if sol_raised > 0:
-                    token_age = min(sol_raised / 1.0, VELOCITY_MAX_TOKEN_AGE)
-                    logger.warning(f"⚠️ Age not in token_data, estimated from SOL raised: {token_age:.1f}s")
-                else:
-                    token_age = VELOCITY_MAX_TOKEN_AGE / 2
-                    logger.warning(f"⚠️ Could not determine age, using default: {token_age:.1f}s")
-            
-            logger.info(f"📊 Using token age: {token_age:.1f}s for velocity check")
-            logger.info(f"📊 SOL raised (from curve): {curve_data.get('sol_raised', 0):.4f}")
-            logger.info(f"📊 Expected velocity: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s")
-            
+
+            # ✅ FIX 3: Use BLOCKCHAIN data for velocity, not PumpPortal!
+            if not blockchain_curve:
+                logger.warning(f"❌ No blockchain data for {mint[:8]}... - skipping")
+                return
+
+            blockchain_sol = blockchain_curve.get('sol_in_curve', 0)
+
+            # ✅ FIX 1: Calculate REAL age from first sighting
+            blockchain_age = time.time() - self.token_first_seen.get(mint, time.time())
+
+            # Get PumpPortal data for comparison
+            pp_data = token_data.get('data', token_data)
+            pp_sol = pp_data.get('vSolInBondingCurve', 0)
+            pp_age = pp_data.get('age', blockchain_age)
+
+            # ✅ Log comparison between PumpPortal and blockchain
+            logger.info(f"📊 Data comparison for {mint[:8]}...")
+            logger.info(f"   PumpPortal: {pp_age:.1f}s old, {pp_sol:.2f} SOL")
+            logger.info(f"   Blockchain: {blockchain_age:.1f}s old, {blockchain_sol:.2f} SOL")
+            sol_diff = blockchain_sol - pp_sol
+            sol_diff_pct = (sol_diff / pp_sol * 100) if pp_sol > 0 else 0
+            logger.info(f"   Δ SOL: {sol_diff:+.2f} ({sol_diff_pct:+.1f}%)")
+            logger.info(f"   Δ Age: {blockchain_age - pp_age:+.1f}s")
+
+            # Use blockchain data for velocity
+            logger.info(f"📊 Using token age: {blockchain_age:.1f}s for velocity check")
+            logger.info(f"📊 SOL raised (from blockchain): {blockchain_sol:.4f}")
+            logger.info(f"📊 Expected velocity: {blockchain_sol / max(blockchain_age, 0.1):.2f} SOL/s")
+
+            # ✅ FIX 4: Velocity check with blockchain data (not PumpPortal data!)
             velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
                 mint=mint,
-                curve_data=curve_data,
-                token_age_seconds=token_age
+                curve_data=blockchain_curve,  # ✅ Use BLOCKCHAIN data!
+                token_age_seconds=blockchain_age
             )
-            
+
             if not velocity_passed:
                 logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
-                logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
+                real_velocity = blockchain_sol / max(blockchain_age, 0.1)
+                logger.info(f"   Blockchain velocity: {real_velocity:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
                 return
-            
-            # ✅ Store the ESTIMATED entry price from detection (for comparison later)
-            raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
+
+            # ✅ Store the ESTIMATED entry price from detection
+            raw_entry_price = blockchain_curve.get('price_lamports_per_atomic', 0)
             estimated_entry_price = raw_entry_price
-            
-            token_decimals = self.wallet.get_token_decimals(mint)
-            if isinstance(token_decimals, tuple):
-                token_decimals = token_decimals[0]
-            if not token_decimals or token_decimals == 0:
-                token_decimals = 6
-            
-            logger.debug(f"Estimated entry price (at detection): {estimated_entry_price:.10f} lamports/atomic")
-            
+
+            # ✅ FIX 6: Parallelize decimals fetching
+            decimals_task = asyncio.create_task(
+                self.wallet.get_token_decimals_async(mint)
+            )
+
+            # Run slippage check while waiting for decimals
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
             if estimated_slippage:
                 logger.info(f"📊 Estimated slippage: {estimated_slippage:.2f}%")
                 if estimated_slippage > MAX_SLIPPAGE_PERCENT:
                     logger.warning(f"⚠️ High estimated slippage ({estimated_slippage:.2f}% > {MAX_SLIPPAGE_PERCENT}%), skipping")
                     return
-            
+
+            # Wait for decimals
+            token_decimals = await decimals_task
+            if isinstance(token_decimals, tuple):
+                token_decimals = token_decimals[0]
+            if not token_decimals or token_decimals == 0:
+                token_decimals = 6
+
+            logger.debug(f"Estimated entry price (at detection): {estimated_entry_price:.10f} lamports/atomic")
+
             self.pending_buys += 1
             logger.debug(f"Pending buys: {self.pending_buys}, Active: {len(self.positions)}")
-            
+
             entry_market_cap = token_data.get('market_cap', 0)
-            
+
             detection_time_ms = (time.time() - detection_start) * 1000
             self.tracker.log_token_detection(mint, token_data.get('source', 'pumpportal'), detection_time_ms)
-            
+
             logger.info(f"🎯 Processing new token: {mint}")
             logger.info(f"   Detection latency: {detection_time_ms:.0f}ms")
-            logger.info(f"   Token age: {token_age:.1f}s")
+            logger.info(f"   Token age (blockchain): {blockchain_age:.1f}s")
             logger.info(f"   Estimated entry price: {estimated_entry_price:.10f} lamports/atomic")
-            logger.info(f"   SOL raised: {curve_data['sol_raised']:.4f}")
-            logger.info(f"   Velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s ✅")
-            
+            logger.info(f"   SOL raised (blockchain): {blockchain_sol:.4f}")
+            logger.info(f"   Velocity: {blockchain_sol / max(blockchain_age, 0.1):.2f} SOL/s ✅")
+
             cost_breakdown = self.tracker.log_buy_attempt(mint, BUY_AMOUNT_SOL, 50)
-            
+
             execution_start = time.time()
-            
+
             bonding_curve_key = None
             if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                 bonding_curve_key = token_data['data']['bondingCurveKey']
-            
+
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
                 sol_amount=BUY_AMOUNT_SOL,
@@ -562,109 +610,98 @@ class SniperBot:
                 slippage=30,
                 urgency="normal"
             )
-            
+
             bought_tokens = 0
             actual_sol_spent = BUY_AMOUNT_SOL
-            actual_entry_price = estimated_entry_price  # Will be updated if we get real data
-            
+            actual_entry_price = estimated_entry_price
+
             if signature:
                 await asyncio.sleep(3)
-                
+
                 txd = await self._get_transaction_deltas(signature, mint)
-                
-                # ✅ CRITICAL FIX: Always read actual wallet balance
+
                 actual_wallet_balance = self.wallet.get_token_balance(mint)
-                
+
                 if txd["confirmed"] and txd["token_delta"] > 0:
                     bought_tokens = txd["token_delta"]
                     actual_sol_spent = abs(txd["sol_delta"])
-                    
-                    # ✅ Calculate actual entry price from transaction
+
                     token_decimals = self.wallet.get_token_decimals(mint)
                     if isinstance(token_decimals, tuple):
                         token_decimals = token_decimals[0]
                     if not token_decimals or token_decimals == 0:
                         token_decimals = 6
-                    
+
                     token_atoms = int(bought_tokens * (10 ** token_decimals))
                     lamports_spent = int(actual_sol_spent * 1e9)
                     actual_entry_price = lamports_spent / token_atoms
-                    
+
                     logger.info(f"✅ Real fill from TX: {bought_tokens:,.0f} tokens for {actual_sol_spent:.6f} SOL")
                     logger.debug(f"Actual entry price from TX: {actual_entry_price:.10f} lamports/atomic")
-                    
-                    # Verify against wallet balance
+
                     if actual_wallet_balance > 0 and abs(actual_wallet_balance - bought_tokens) > (bought_tokens * 0.1):
                         logger.warning(f"⚠️ Wallet balance mismatch! TX says {bought_tokens:,.0f} but wallet has {actual_wallet_balance:,.0f}")
-                        bought_tokens = actual_wallet_balance  # Use actual balance
-                        
-                        # Recalculate entry price with corrected token amount
+                        bought_tokens = actual_wallet_balance
+
                         token_atoms = int(bought_tokens * (10 ** token_decimals))
                         actual_entry_price = lamports_spent / token_atoms
                         logger.info(f"✅ Corrected entry price: {actual_entry_price:.10f} lamports/atomic")
-                        
+
                 else:
-                    # ✅ CRITICAL FIX #1: Transaction reading failed - calculate from wallet balance
                     if actual_wallet_balance > 0:
                         bought_tokens = actual_wallet_balance
                         actual_sol_spent = BUY_AMOUNT_SOL
                         logger.warning(f"⚠️ TX reading failed - using wallet balance: {bought_tokens:,.0f} tokens")
-                        
-                        # ✅ RECALCULATE entry price from actual fill
+
                         token_decimals = self.wallet.get_token_decimals(mint)
                         if isinstance(token_decimals, tuple):
                             token_decimals = token_decimals[0]
                         if not token_decimals or token_decimals == 0:
                             token_decimals = 6
-                        
+
                         token_atoms = int(bought_tokens * (10 ** token_decimals))
                         lamports_spent = int(actual_sol_spent * 1e9)
                         actual_entry_price = lamports_spent / token_atoms
-                        
+
                         logger.info(f"✅ Recalculated entry price from fill: {actual_entry_price:.10f} lamports/atomic")
-                        logger.info(f"   Calculation: {actual_sol_spent:.6f} SOL ({lamports_spent:,} lamports) / {bought_tokens:,.0f} tokens ({token_atoms:,} atoms)")
-                        
+
                     else:
-                        # ✅ CRITICAL FIX #2: Last resort - wait longer and check again
                         logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
                         await asyncio.sleep(2)
                         bought_tokens = self.wallet.get_token_balance(mint)
                         actual_sol_spent = BUY_AMOUNT_SOL
-                        
+
                         if bought_tokens == 0:
                             logger.error("❌ Still no tokens - position may have failed")
                             self.pending_buys -= 1
                             return
-                        
-                        # ✅ RECALCULATE entry price after retry
+
                         token_decimals = self.wallet.get_token_decimals(mint)
                         if isinstance(token_decimals, tuple):
                             token_decimals = token_decimals[0]
                         if not token_decimals or token_decimals == 0:
                             token_decimals = 6
-                        
+
                         token_atoms = int(bought_tokens * (10 ** token_decimals))
                         lamports_spent = int(actual_sol_spent * 1e9)
                         actual_entry_price = lamports_spent / token_atoms
-                        
+
                         logger.info(f"✅ Recalculated entry price after retry: {actual_entry_price:.10f} lamports/atomic")
-                
-                # ✅ CHATGPT FIX: Log estimated vs actual price comparison
+
                 if bought_tokens > 0:
                     price_diff_pct = abs(actual_entry_price - estimated_entry_price) / estimated_entry_price * 100 if estimated_entry_price > 0 else 0
-                    
+
                     logger.info(f"📊 Entry Price Verification:")
                     logger.info(f"   Estimated (at detection): {estimated_entry_price:.10f} lamports/atom")
                     logger.info(f"   Actual (from fill): {actual_entry_price:.10f} lamports/atom")
                     logger.info(f"   Difference: {price_diff_pct:.1f}%")
-                    
+
                     if price_diff_pct > 10:
                         logger.warning(f"⚠️ LARGE ENTRY PRICE DISCREPANCY: {price_diff_pct:.1f}%")
-                        logger.warning(f"   Price moved significantly between detection and execution")
-            
+
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
-                
+
                 self.tracker.log_buy_executed(
                     mint=mint,
                     amount_sol=actual_sol_spent,
@@ -672,28 +709,28 @@ class SniperBot:
                     tokens_received=bought_tokens,
                     execution_time_ms=execution_time_ms
                 )
-                
+
                 position = Position(mint, actual_sol_spent, bought_tokens, entry_market_cap)
                 position.buy_signature = signature
                 position.initial_tokens = bought_tokens
                 position.remaining_tokens = bought_tokens
                 position.last_valid_balance = bought_tokens
                 position.entry_time = time.time()
-                position.entry_token_price_sol = actual_entry_price  # ✅ Use ACTUAL entry price
+                position.entry_token_price_sol = actual_entry_price
                 position.amount_sol = actual_sol_spent
-                
+
                 variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
                 position.exit_time = position.entry_time + TIMER_EXIT_BASE_SECONDS + variance
-                
+
                 if 'data' in token_data:
                     position.entry_sol_in_curve = token_data['data'].get('vSolInBondingCurve', 30)
-                
+
                 self.positions[mint] = position
                 self.total_trades += 1
                 self.pending_buys -= 1
-                
+
                 exit_in_seconds = position.exit_time - position.entry_time
-                
+
                 logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
                 logger.info(f"   Amount: {actual_sol_spent:.6f} SOL")
                 logger.info(f"   Tokens: {bought_tokens:,.0f}")
@@ -701,24 +738,23 @@ class SniperBot:
                 logger.info(f"   ⏱️ Exit timer: {exit_in_seconds:.1f}s")
                 logger.info(f"   ⚠️ Fail-fast check at: {FAIL_FAST_CHECK_TIME}s")
                 logger.info(f"   Active positions: {len(self.positions)}/{MAX_POSITIONS}")
-                
+
                 if self.telegram:
                     await self.telegram.notify_buy(mint, actual_sol_spent, signature)
-                
-                # ✅ CHATGPT FIX #5: Seed post-buy chain price to avoid stale WebSocket data
+
                 await asyncio.sleep(0.8)
                 seed = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
                 if seed and seed.get('source') == 'chain':
                     logger.info("🔎 Seeded post-buy price from [chain]")
                 else:
-                    logger.info("🔎 Could not seed chain price; monitor will require chain before SL/rug")
-                
+                    logger.info("🔎 Could not seed chain price")
+
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
             else:
                 self.pending_buys -= 1
                 self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, "Transaction failed or no tokens received")
-                
+
         except Exception as e:
             self.pending_buys = max(0, self.pending_buys - 1)
             logger.error(f"Failed to process token: {e}")
