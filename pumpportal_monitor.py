@@ -1,5 +1,4 @@
 
-
 """
 PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES + AGE FIX
 All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
@@ -18,7 +17,7 @@ import random
 import websockets
 import aiohttp
 from datetime import datetime
-from config import HELIUS_API_KEY, HELIUS_TIMEOUT_SECONDS
+from config import HELIUS_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -290,13 +289,13 @@ class PumpPortalMonitor:
             logger.error(f"Error checking creator spam: {e}")
             return (True, 0, f"error: {e}")
     
-    async def _check_holders_helius(self, mint: str, max_retries: int = 1) -> dict:
+    async def _check_holders_helius(self, mint: str, max_retries: int = 2) -> dict:
         """
-        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 1 retry
-        ✅ LATENCY FIX: Single fast retry at 1.5s (we removed the 3s sleep, so be aggressive)
-        NOTE: No sleep before this call anymore - tokens are fresh
+        OPTIMIZED: Fast-fail RPC with 0.8s timeout + 2 retries
+        FIX #3: Two retry attempts (2.5s + 2.5s) for fresh tokens that need more time
+        NOTE: Main flow includes 3s sleep BEFORE calling this, so token is already ~3.5s old
         """
-        retry_delays = [1.5]  # Single fast retry at 1.5s (we removed the 3s sleep, so be aggressive)
+        retry_delays = [2.5, 2.5]  # First retry at +2.5s, second retry at +2.5s more
         
         for attempt in range(max_retries + 1):
             try:
@@ -607,45 +606,31 @@ class PumpPortalMonitor:
         # ===================================================================
         # OPTIMIZATION 4: CONCURRENT HOLDERS + LIQUIDITY + MC
         # FIX #3: Fast Helius retry with 3 attempts (2.5s + 2.5s + 2.5s) implemented above
-        # ✅ LATENCY FIX: No sleep - fast-fail holder check with retries
+        # CRITICAL: Wait 3s before first check to allow Helius indexing
         # ===================================================================
         logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
-
-        # ✅ LATENCY FIX: Remove 3s sleep, use fast-fail holder check instead
-        # We'll do parallel validation in main.py now
-        logger.info(f"🚀 Fast-track validation for {mint[:8]}...")
-
+        
+        # CRITICAL FIX: Give token 3s to get indexed by Helius before checking
+        # Without this, ALL tokens fail because they're too new
+        await asyncio.sleep(3)
+        
         # Market cap calculation (fast, local)
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
-
+        
         if market_cap < self.filters['min_market_cap'] or market_cap > self.filters['max_market_cap']:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
-
-        # ============================================
-        # PATH C PHASE 2: FAST HELIUS (NO DELAY)
-        # ============================================
-        # Skip 1.5s delay, use timeout-based holder check
-        logger.info(f"⚡ Helius check with {HELIUS_TIMEOUT_SECONDS}s timeout...")
-
+        
+        # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
         holder_task = asyncio.create_task(self._check_holders_helius(mint))
-
-        try:
-            # Try to get holder result within timeout
-            holder_result = await asyncio.wait_for(holder_task, timeout=HELIUS_TIMEOUT_SECONDS)
-
-            if not holder_result['passed']:
-                logger.info(f"⚠️ Holder check failed (but proceeding): {holder_result.get('reason', 'unknown')}")
-                # Store for monitoring but don't block entry
-                holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0, 'holder_failed': True}
-            else:
-                logger.info(f"✅ Holder check passed: {holder_result.get('holder_count', 0)} holders")
-
-        except asyncio.TimeoutError:
-            logger.info(f"⏱️ Holder check timeout ({HELIUS_TIMEOUT_SECONDS}s) - proceeding anyway")
-            # Proceed without holder data
-            holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0, 'holder_timeout': True}
+        
+        # Wait for holder check with fast-fail
+        holder_result = await holder_task
+        
+        if not holder_result['passed']:
+            self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
+            return (False, token_age)
         
         # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
@@ -664,7 +649,7 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: PATH C (VELOCITY + TIMER + RISING CURVE)")
+        logger.info(f"Strategy: OPTIMIZED + ALL 3 CHATGPT FIXES + 3S SLEEP + AGE/SOL PASSING")
         logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
         logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
@@ -672,11 +657,10 @@ class PumpPortalMonitor:
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        logger.info(f"  ⚡ Fast Helius: {HELIUS_TIMEOUT_SECONDS}s timeout (no 1.5s delay)")
-        logger.info(f"  ⚡ Expected entry: ~T=1.9s")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries")
+        logger.info(f"  CRITICAL: 3s sleep before Helius check (allows indexing)")
+        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
         logger.info(f"  Concurrent checks: ENABLED")
-        logger.info(f"  Note: Velocity gate + rising curve check runs in main.py")
+        logger.info(f"  Note: Velocity gate runs in main.py with CORRECT AGE + SOL")
         
         uri = "wss://pumpportal.fun/api/data"
         
