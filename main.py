@@ -1,3 +1,4 @@
+
 """
 Main Orchestrator - FINAL FIX: Entry price bookkeeping + Stop loss with source checking
 TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE
@@ -68,7 +69,6 @@ class Position:
         self.entry_price = 0
         self.current_price = 0
         self.pnl_percent = 0
-        self.net_pnl_percent = 0  # P&L after fees
         self.pnl_usd = 0
         self.status = 'active'
         self.buy_signature = None
@@ -169,11 +169,10 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: PATH C (VELOCITY + TIMER + RISING CURVE)")
+        logger.info(f"  • Strategy: VELOCITY GATE + TIMER EXIT + FAIL-FAST")
         logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
-        logger.info(f"  • Rising curve: Prevents buying peaks/falling knives")
         logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
         logger.info(f"  • Extension: +{TIMER_EXTENSION_SECONDS}s if >{TIMER_EXTENSION_PNL_THRESHOLD}% and accelerating")
         logger.info(f"  • Fail-fast: Exit at {FAIL_FAST_CHECK_TIME}s if P&L <{FAIL_FAST_PNL_THRESHOLD}% or velocity dead")
@@ -212,29 +211,16 @@ class SniperBot:
         try:
             if market_cap_usd == 0:
                 return 0
-
+            
             total_supply = 1_000_000_000
             price_per_token_usd = market_cap_usd / total_supply
             price_per_token_sol = price_per_token_usd / sol_price_usd
-
+            
             return price_per_token_sol
         except Exception as e:
             logger.error(f"Token price calculation error: {e}")
             return 0
-
-    def _calculate_net_pnl(self, gross_pnl_percent: float) -> float:
-        """
-        Calculate net P&L after fees
-
-        Args:
-            gross_pnl_percent: Gross P&L percentage from price change
-
-        Returns:
-            Net P&L percentage after subtracting fees
-        """
-        from config import NET_BREAKEVEN_PCT
-        return gross_pnl_percent - NET_BREAKEVEN_PCT
-
+    
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
         """
         Calculate current token price - returns lamports per atomic (same units as entry price)
@@ -323,65 +309,7 @@ class SniperBot:
             import traceback
             logger.debug(traceback.format_exc())
             return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
-
-    async def _wait_for_confirmation(
-        self,
-        signature: str,
-        timeout: float = 10.0,
-        check_interval: float = 1.0
-    ) -> bool:
-        """
-        Wait for transaction confirmation with timeout
-
-        Args:
-            signature: Transaction signature to monitor
-            timeout: Maximum seconds to wait
-            check_interval: How often to check status (seconds)
-
-        Returns:
-            True if confirmed, False if timeout
-        """
-        from solders.signature import Signature as SoldersSignature
-
-        start = time.time()
-        first_seen = None
-
-        while time.time() - start < timeout:
-            try:
-                sig_list = [SoldersSignature.from_string(signature)]
-                status = self.trader.client.get_signature_statuses(sig_list)
-
-                if status and status.value and status.value[0]:
-                    if first_seen is None:
-                        first_seen = time.time() - start
-                        logger.debug(f"✓ TX appeared at {first_seen:.1f}s")
-
-                    status_obj = status.value[0]
-                    confirmation_status = status_obj.confirmation_status
-
-                    if confirmation_status and str(confirmation_status) in ["confirmed", "finalized"]:
-                        if status_obj.err:
-                            logger.error(f"❌ TX failed on-chain: {status_obj.err}")
-                            return False
-                        else:
-                            elapsed = time.time() - start
-                            logger.info(f"✅ TX confirmed at {elapsed:.1f}s")
-                            return True
-
-            except Exception as e:
-                logger.debug(f"Status check error: {e}")
-
-            await asyncio.sleep(check_interval)
-
-        # Timeout reached
-        elapsed = time.time() - start
-        if first_seen:
-            logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but not confirmed in {elapsed:.1f}s")
-        else:
-            logger.warning(f"⏱️ Timeout: TX never appeared in {elapsed:.1f}s")
-
-        return False
-
+    
     async def initialize_telegram(self):
         """Initialize Telegram bot after event loop is ready"""
         if self.telegram_enabled and not self.telegram:
@@ -535,43 +463,21 @@ class SniperBot:
             if len(name) < 3:
                 return
             
-            # ✅ PARALLEL VALIDATION: Run all checks concurrently
-            logger.info(f"🚀 Starting parallel validation checks...")
-            validation_start = time.time()
-
-            # First get fresh curve data (this is fast and needed for other checks)
             passed, reason, curve_data = self.curve_reader.validate_liquidity(
                 mint=mint,
                 buy_size_sol=BUY_AMOUNT_SOL,
                 min_multiplier=LIQUIDITY_MULTIPLIER,
                 min_absolute_sol=MIN_LIQUIDITY_SOL
             )
-
+            
             if not passed:
                 logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
                 return
-
+            
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
-
-            # ============================================
-            # CRITICAL: RISING CURVE CHECK (PATH C)
-            # ============================================
-            is_rising, rising_reason = self.velocity_checker.is_curve_rising(
-                mint,
-                curve_data['sol_raised']
-            )
-
-            if not is_rising:
-                logger.warning(f"❌ CURVE NOT RISING for {mint[:8]}...: {rising_reason}")
-                logger.warning(f"   This prevents buying peaks and falling knives")
-                self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, f"curve_not_rising_{rising_reason}")
-                return
-
-            logger.info(f"✅ RISING CURVE CHECK PASSED: {rising_reason}")
-
-            # Extract token age
+            
             token_age = None
-
+            
             if 'data' in token_data and 'age' in token_data['data']:
                 token_age = token_data['data']['age']
                 logger.debug(f"📊 Age from token_data.data.age: {token_age:.1f}s")
@@ -581,106 +487,51 @@ class SniperBot:
             elif 'token_age' in token_data:
                 token_age = token_data['token_age']
                 logger.debug(f"📊 Age from token_data.token_age: {token_age:.1f}s")
-
+            
             if token_age is None or token_age == 0:
                 sol_raised = curve_data.get('sol_raised', 0)
-
+                
                 if sol_raised > 0:
                     token_age = min(sol_raised / 1.0, VELOCITY_MAX_TOKEN_AGE)
                     logger.warning(f"⚠️ Age not in token_data, estimated from SOL raised: {token_age:.1f}s")
                 else:
                     token_age = VELOCITY_MAX_TOKEN_AGE / 2
                     logger.warning(f"⚠️ Could not determine age, using default: {token_age:.1f}s")
-
+            
             logger.info(f"📊 Using token age: {token_age:.1f}s for velocity check")
             logger.info(f"📊 SOL raised (from curve): {curve_data.get('sol_raised', 0):.4f}")
             logger.info(f"📊 Expected velocity: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s")
-
-            # Now run velocity check in parallel with slippage check (both use curve_data)
-            velocity_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.velocity_checker.check_velocity,
-                    mint=mint,
-                    curve_data=curve_data,
-                    token_age_seconds=token_age
-                )
+            
+            velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
+                mint=mint,
+                curve_data=curve_data,
+                token_age_seconds=token_age
             )
-
-            slippage_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.curve_reader.estimate_slippage,
-                    mint, BUY_AMOUNT_SOL
-                )
-            )
-
-            # Wait for both checks
-            (velocity_passed, velocity_reason), slippage_check = await asyncio.gather(velocity_task, slippage_task)
-
-            validation_elapsed = time.time() - validation_start
-            logger.info(f"⚡ Parallel validation completed in {validation_elapsed:.3f}s")
-
-            # Check velocity result
+            
             if not velocity_passed:
                 logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
                 logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
                 return
             
-            # Check slippage result (from parallel check)
-            if slippage_check:
-                logger.info(f"📊 Estimated slippage: {slippage_check:.2f}%")
-                if slippage_check > MAX_SLIPPAGE_PERCENT:
-                    logger.warning(f"⚠️ High estimated slippage ({slippage_check:.2f}% > {MAX_SLIPPAGE_PERCENT}%), skipping")
-                    return
-
             # ✅ Store the ESTIMATED entry price from detection (for comparison later)
             raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
             estimated_entry_price = raw_entry_price
-
+            
             token_decimals = self.wallet.get_token_decimals(mint)
             if isinstance(token_decimals, tuple):
                 token_decimals = token_decimals[0]
             if not token_decimals or token_decimals == 0:
                 token_decimals = 6
-
+            
             logger.debug(f"Estimated entry price (at detection): {estimated_entry_price:.10f} lamports/atomic")
-
-            # ✅ ENTRY DRIFT PROTECTION: Refresh quote right before buying
-            logger.info("🔄 Refreshing quote for drift check...")
-            drift_check_start = time.time()
-
-            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-            if not fresh_curve:
-                logger.warning("❌ Could not refresh quote - ABORTING BUY")
-                return
-
-            fresh_price = fresh_curve.get('price_lamports_per_atomic', 0)
-            drift_elapsed = time.time() - drift_check_start
-
-            # Calculate entry drift
-            if estimated_entry_price > 0:
-                entry_drift_pct = abs((fresh_price - estimated_entry_price) / estimated_entry_price) * 100
-            else:
-                entry_drift_pct = 0
-
-            logger.info(f"📊 Entry Drift Check:")
-            logger.info(f"   Drift check took: {drift_elapsed:.3f}s")
-            logger.info(f"   Detection price: {estimated_entry_price:.10f} lamports/atom")
-            logger.info(f"   Current price: {fresh_price:.10f} lamports/atom")
-            logger.info(f"   Price drift: {entry_drift_pct:+.1f}%")
-
-            # ABORT if drift too high
-            from config import MAX_ENTRY_DRIFT_PERCENT
-            if entry_drift_pct > MAX_ENTRY_DRIFT_PERCENT:
-                logger.warning(f"⚠️ EXCESSIVE ENTRY DRIFT ({entry_drift_pct:.1f}% > {MAX_ENTRY_DRIFT_PERCENT}%)")
-                logger.warning(f"   Token price moved too much since detection - SKIPPING")
-                self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, f"entry_drift_{entry_drift_pct:.1f}%")
-                return
-
-            logger.info(f"✅ Entry drift acceptable ({entry_drift_pct:.1f}% < {MAX_ENTRY_DRIFT_PERCENT}%)")
-
-            # Update estimated entry price to current price for better logging
-            estimated_entry_price = fresh_price
-
+            
+            estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
+            if estimated_slippage:
+                logger.info(f"📊 Estimated slippage: {estimated_slippage:.2f}%")
+                if estimated_slippage > MAX_SLIPPAGE_PERCENT:
+                    logger.warning(f"⚠️ High estimated slippage ({estimated_slippage:.2f}% > {MAX_SLIPPAGE_PERCENT}%), skipping")
+                    return
+            
             self.pending_buys += 1
             logger.debug(f"Pending buys: {self.pending_buys}, Active: {len(self.positions)}")
             
@@ -959,13 +810,8 @@ class SniperBot:
                         price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
                     else:
                         price_change = 0
-
+                    
                     position.pnl_percent = price_change
-
-                    # Calculate net P&L (after fees)
-                    net_pnl = self._calculate_net_pnl(price_change)
-                    position.net_pnl_percent = net_pnl  # Store for later use
-
                     position.current_price = current_token_price_sol
                     position.max_pnl_reached = max(position.max_pnl_reached, price_change)
                     
@@ -977,7 +823,7 @@ class SniperBot:
                         logger.info(f"📊 First price check for {mint[:8]}...")
                         logger.info(f"   Entry: {position.entry_token_price_sol:.10f} lamports/atomic")
                         logger.info(f"   Current: {current_token_price_sol:.10f} lamports/atomic")
-                        logger.info(f"   Gross P&L: {price_change:+.1f}% | Net P&L: {net_pnl:+.1f}%")
+                        logger.info(f"   P&L: {price_change:+.1f}%")
                     
                     self.velocity_checker.update_snapshot(
                         mint, 
@@ -1027,7 +873,7 @@ class SniperBot:
                             # PNL branch (gated to chain)
                             if price_change < FAIL_FAST_PNL_THRESHOLD:
                                 logger.warning(
-                                    f"⚠️ FAIL-FAST: Gross P&L {price_change:.1f}% (Net: {net_pnl:.1f}%) < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s "
+                                    f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s "
                                     f"(on [chain]) - exiting immediately"
                                 )
                                 await self._close_position_full(mint, reason="fail_fast_pnl")
@@ -1099,7 +945,7 @@ class SniperBot:
                     
                     if check_count % 3 == 1:
                         logger.info(
-                            f"⏱️ {mint[:8]}... | Gross: {price_change:+.1f}% | Net: {net_pnl:+.1f}% | "
+                            f"⏱️ {mint[:8]}... | P&L: {price_change:+.1f}% | "
                             f"Exit in: {time_until_exit:.1f}s | "
                             f"Extensions: {position.extensions_used}/{TIMER_MAX_EXTENSIONS}"
                         )
@@ -1110,7 +956,7 @@ class SniperBot:
                             logger.warning(f"🚧 STOP LOSS signal from [{source}] ignored until first [chain] tick")
                         else:
                             logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... (on [chain] source)")
-                            logger.warning(f"   Gross P&L: {price_change:.1f}% | Net P&L: {net_pnl:.1f}% | Threshold: -{STOP_LOSS_PERCENTAGE}%")
+                            logger.warning(f"   P&L: {price_change:.1f}% <= -{STOP_LOSS_PERCENTAGE}%")
                             await self._close_position_full(mint, reason="stop_loss")
                             break
                 
@@ -1449,56 +1295,60 @@ class SniperBot:
                     self.velocity_checker.clear_history(mint)
                 return
             
-            # ✅ IMPROVED: Use helper method for confirmation
+            # ✅ CRITICAL FIX: Use same robust confirmation as partial sells
             logger.info(f"⏳ Confirming full close for {mint[:8]}...")
             logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
-
-            confirmed = await self._wait_for_confirmation(signature, timeout=10.0)
-
+            
+            first_seen = None
+            start = time.time()
+            confirmed = False
+            
+            # Poll for up to 25 seconds (same as partial sells)
+            try:
+                while time.time() - start < 25:
+                    try:
+                        # ✅ FIX: Proper signature handling for get_signature_statuses
+                        from solders.signature import Signature as SoldersSignature
+                        sig_list = [SoldersSignature.from_string(signature)]
+                        status = self.trader.client.get_signature_statuses(sig_list)
+                        
+                        if status and status.value and status.value[0]:
+                            if first_seen is None:
+                                first_seen = time.time() - start
+                                logger.info(f"✓ Transaction appeared in RPC at {first_seen:.1f}s")
+                            
+                            status_obj = status.value[0]
+                            confirmation_status = status_obj.confirmation_status
+                            
+                            if confirmation_status and str(confirmation_status) in ["confirmed", "finalized"]:
+                                if status_obj.err:
+                                    logger.error(f"❌ Sell FAILED on-chain: {status_obj.err}")
+                                    confirmed = False
+                                    break
+                                else:
+                                    confirmed = True
+                                    logger.info(f"✅ Sell confirmed on-chain at {time.time() - start:.1f}s")
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Status check error (retrying): {e}")
+                    
+                    await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"❌ CRITICAL: Confirmation loop crashed: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Handle timeout
             if not confirmed:
-                logger.warning("⚠️ Initial sell confirmation timeout - checking balance...")
-
-                # Verify if sell executed by checking balances
-                await asyncio.sleep(2)
-                post_sol = self.wallet.get_sol_balance()
-                post_tokens = self.wallet.get_token_balance(mint)
-
-                sol_delta = post_sol - pre_sol_balance
-                tokens_remaining = post_tokens
-
-                # If most tokens are gone, sell probably succeeded
-                if tokens_remaining < (ui_token_balance * 0.1):
-                    logger.info(f"✅ Sell likely succeeded (tokens gone: {ui_token_balance:,.2f} → {tokens_remaining:,.2f})")
-                    logger.info(f"   SOL received: {sol_delta:+.6f} SOL")
-                    confirmed = True  # Mark as confirmed for rest of logic
-                    actual_sol_received = sol_delta
-                    actual_tokens_sold = ui_token_balance - tokens_remaining
+                elapsed = time.time() - start
+                if first_seen is None:
+                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s")
                 else:
-                    # Sell definitely failed - retry with ultra urgency
-                    logger.error(f"❌ Sell FAILED - {tokens_remaining:,.2f} tokens still in wallet!")
-                    logger.error(f"   Retrying with ULTRA urgency (0.008 SOL fee)...")
-
-                    retry_signature = await self.trader.create_sell_transaction(
-                        mint=mint,
-                        token_amount=tokens_remaining,
-                        slippage=100,
-                        token_decimals=token_decimals,
-                        urgency="ultra"
-                    )
-
-                    if retry_signature and not retry_signature.startswith("1111111"):
-                        logger.info(f"🔄 Retry transaction sent: {retry_signature}")
-                        confirmed = await self._wait_for_confirmation(retry_signature, timeout=10.0)
-
-                        if confirmed:
-                            logger.info("✅ RETRY SUCCESSFUL!")
-                            # Use retry signature for rest of processing
-                            signature = retry_signature
-                        else:
-                            logger.error("❌ RETRY ALSO FAILED - manual intervention required")
-                            logger.error(f"   Check wallet manually and sweep remaining tokens")
-                    else:
-                        logger.error("❌ Could not create retry transaction")
+                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm")
+                
+                logger.error(f"⚠️ SELL MAY HAVE FAILED - CHECK WALLET MANUALLY")
+                logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
+                logger.error(f"   Check Solscan and verify tokens are gone from wallet!")
             
             # Get actual results from transaction or wallet balance
             actual_sol_received = 0
