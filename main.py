@@ -462,53 +462,34 @@ class SniperBot:
             if len(name) < 3:
                 return
 
-            # ✅ FIX 1: Parallelize RPC calls to save ~220ms
-            # Start all RPC calls simultaneously
-            liquidity_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.curve_reader.validate_liquidity,
-                    mint=mint,
-                    buy_size_sol=BUY_AMOUNT_SOL,
-                    min_multiplier=LIQUIDITY_MULTIPLIER,
-                    min_absolute_sol=MIN_LIQUIDITY_SOL
-                )
-            )
+            # SPEED OPTIMIZATION: Use WebSocket data for liquidity check (no RPC)
+            ws_sol = token_data.get('vSolInBondingCurve', 0)
+            required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
 
-            decimals_task = asyncio.create_task(
-                asyncio.to_thread(self.wallet.get_token_decimals, mint)
-            )
-
-            slippage_task = asyncio.create_task(
-                asyncio.to_thread(self.curve_reader.estimate_slippage, mint, BUY_AMOUNT_SOL)
-            )
-
-            # Wait for all to complete
-            passed, reason, curve_data = await liquidity_task
-            token_decimals = await decimals_task
-            estimated_slippage = await slippage_task
-
-            if not passed:
-                logger.warning(f"❌ Liquidity check failed for {mint[:8]}...: {reason}")
+            if ws_sol < MIN_LIQUIDITY_SOL:
+                logger.warning(f"❌ Liquidity check failed: {ws_sol:.4f} SOL < {MIN_LIQUIDITY_SOL} minimum")
                 return
 
-            logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
+            if ws_sol < required_sol:
+                logger.warning(f"❌ Liquidity check failed: {ws_sol:.4f} SOL < {required_sol:.4f} ({LIQUIDITY_MULTIPLIER}x)")
+                return
 
-            # ✅ FIX: Preserve sol_raised from liquidity validation while updating price from fresh chain data
-            # Store sol_raised BEFORE getting fresh data
-            sol_raised_validated = curve_data['sol_raised']
+            logger.info(f"✅ Liquidity OK (WebSocket): {ws_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
 
-            # Get fresh chain data for price accuracy
-            fresh_curve = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+            # Create curve_data from WebSocket
+            curve_data = {
+                'sol_raised': ws_sol,
+                'sol_in_curve': ws_sol,
+                'source': 'websocket',
+                'is_valid': True
+            }
 
-            if fresh_curve:
-                # Update curve_data with fresh price data but keep sol_raised
-                curve_data.update(fresh_curve)
-                curve_data['sol_raised'] = sol_raised_validated  # ← Restore the validated amount
-                logger.info(f"🔎 Updated with fresh chain data (kept sol_raised: {sol_raised_validated:.4f})")
-            else:
-                logger.warning(f"⚠️ Fresh chain data unavailable, using liquidity check data")
+            # Get decimals only (still needed for buy transaction)
+            token_decimals = await asyncio.to_thread(self.wallet.get_token_decimals, mint)
 
-            logger.debug(f"✅ Real-time chain data: {curve_data.get('sol_in_curve', 0):.4f} SOL in curve, {curve_data['sol_raised']:.4f} SOL raised")
+            # Skip slippage estimation - we trust WebSocket liquidity data
+            estimated_slippage = None
+            logger.debug(f"⚡ Skipped slippage estimation for speed")
 
             token_age = None
             
