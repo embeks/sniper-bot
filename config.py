@@ -95,6 +95,22 @@ VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0')
 VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
 
 # ============================================
+# RISING CURVE DETECTION (PATH C)
+# ============================================
+# Prevents buying peaks and falling knives
+RISING_CURVE_ENABLED = os.getenv('RISING_CURVE_ENABLED', 'true').lower() == 'true'
+RISING_CURVE_MIN_INCREASE_SOL = float(os.getenv('RISING_CURVE_MIN_INCREASE', '1.0'))
+RISING_CURVE_MAX_DECEL_PERCENT = float(os.getenv('RISING_CURVE_MAX_DECEL', '60.0'))
+
+# ============================================
+# ASYNC HELIUS (PATH C - PHASE 2)
+# ============================================
+# Don't wait for Helius - use result for monitoring
+# Set to false initially, enable after testing rising curve
+HELIUS_ASYNC_MODE = os.getenv('HELIUS_ASYNC_MODE', 'false').lower() == 'true'
+HELIUS_TIMEOUT_SECONDS = float(os.getenv('HELIUS_TIMEOUT', '2.0'))
+
+# ============================================
 # TIMER-BASED EXIT SETTINGS
 # ============================================
 # FIXED: Shortened from 30s to 20s base
