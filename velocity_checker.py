@@ -1,5 +1,3 @@
-
-
 """
 Velocity Checker - FINAL: Two-snapshot rule to prevent buying tops
 Only allows entries after confirming velocity is STILL pumping
@@ -384,4 +382,3 @@ class VelocityChecker:
             del self.velocity_history[mint]
         if mint in self.pre_buy_velocity:
             del self.pre_buy_velocity[mint]
-
