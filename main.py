@@ -169,10 +169,11 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: VELOCITY GATE + TIMER EXIT + FAIL-FAST")
+        logger.info(f"  • Strategy: PATH C (VELOCITY + TIMER + RISING CURVE)")
         logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
+        logger.info(f"  • Rising curve: Prevents buying peaks/falling knives")
         logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
         logger.info(f"  • Extension: +{TIMER_EXTENSION_SECONDS}s if >{TIMER_EXTENSION_PNL_THRESHOLD}% and accelerating")
         logger.info(f"  • Fail-fast: Exit at {FAIL_FAST_CHECK_TIME}s if P&L <{FAIL_FAST_PNL_THRESHOLD}% or velocity dead")
@@ -551,6 +552,22 @@ class SniperBot:
                 return
 
             logger.info(f"✅ Liquidity validated: {curve_data['sol_raised']:.4f} SOL raised")
+
+            # ============================================
+            # CRITICAL: RISING CURVE CHECK (PATH C)
+            # ============================================
+            is_rising, rising_reason = self.velocity_checker.is_curve_rising(
+                mint,
+                curve_data['sol_raised']
+            )
+
+            if not is_rising:
+                logger.warning(f"❌ CURVE NOT RISING for {mint[:8]}...: {rising_reason}")
+                logger.warning(f"   This prevents buying peaks and falling knives")
+                self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, f"curve_not_rising_{rising_reason}")
+                return
+
+            logger.info(f"✅ RISING CURVE CHECK PASSED: {rising_reason}")
 
             # Extract token age
             token_age = None

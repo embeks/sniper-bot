@@ -95,6 +95,22 @@ VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0')
 VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
 
 # ============================================
+# RISING CURVE DETECTION (PATH C)
+# ============================================
+# Prevents buying peaks and falling knives
+RISING_CURVE_ENABLED = os.getenv('RISING_CURVE_ENABLED', 'true').lower() == 'true'
+RISING_CURVE_MIN_INCREASE_SOL = float(os.getenv('RISING_CURVE_MIN_INCREASE', '1.0'))
+RISING_CURVE_MAX_DECEL_PERCENT = float(os.getenv('RISING_CURVE_MAX_DECEL', '60.0'))
+
+# ============================================
+# FAST HELIUS (PATH C - PHASE 2)
+# ============================================
+# No 1.5s delay - uses timeout-based holder check
+# Reduces entry time from T=4.3s to T=1.9s
+# Proceeds even if holder check times out or fails
+HELIUS_TIMEOUT_SECONDS = float(os.getenv('HELIUS_TIMEOUT', '2.0'))
+
+# ============================================
 # TIMER-BASED EXIT SETTINGS
 # ============================================
 # FIXED: Shortened from 30s to 20s base
