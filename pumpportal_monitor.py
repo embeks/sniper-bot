@@ -453,16 +453,13 @@ class PumpPortalMonitor:
             self._log_filter("mc_range", f"${market_cap:,.0f}")
             return (False, token_age)
         
-        # Helius holder check (still included but can be removed later based on data)
-        logger.info(f"🔍 Running concurrent checks for {mint[:8]}...")
-        holder_result = await self._check_holders_helius(mint)
-        
-        if not holder_result['passed']:
-            self._log_filter("holder_distribution", holder_result['reason'])
-            return (False, token_age)
-        
-        holder_count = holder_result.get('holder_count', 0)
-        concentration = holder_result.get('concentration', 0)
+        # ✅ HELIUS REMOVED - Blockchain validation only (saves 6+ seconds)
+        logger.info(f"✅ Fast-track validation: Skipping Helius (blockchain-only)")
+        holder_count = 0  # Unknown (Helius skipped for speed)
+        concentration = 0  # Unknown (Helius skipped for speed)
+
+        # Log why we skipped it
+        logger.debug(f"   Helius check bypassed - relying on blockchain liquidity & velocity validation")
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
         
         logger.info(f"✅ PASSED ALL FILTERS: {name} ({symbol})")
