@@ -1,3 +1,4 @@
+
 """
 Velocity Checker - FINAL: Two-snapshot rule to prevent buying tops
 Only allows entries after confirming velocity is STILL pumping
@@ -367,93 +368,11 @@ class VelocityChecker:
                 )
             
             return is_accelerating
-
+            
         except Exception as e:
             logger.error(f"Error checking velocity acceleration: {e}")
             return False
-
-    def is_curve_rising(self, mint: str, current_sol: float) -> Tuple[bool, str]:
-        """
-        CRITICAL: Check if SOL is CURRENTLY rising (not just high)
-        Prevents buying peaks and falling knives
-
-        Args:
-            mint: Token mint address
-            current_sol: Current SOL raised in bonding curve
-
-        Returns:
-            (is_rising, reason) tuple
-            - is_rising: True if curve is rising steadily
-            - reason: Description of check result
-        """
-        if mint not in self.velocity_history:
-            logger.debug(f"No history for {mint[:8]}, assuming rising")
-            return True, "first_check"
-
-        history = self.velocity_history[mint]
-
-        if len(history) < 2:
-            logger.debug(f"Insufficient history ({len(history)} snapshots)")
-            return True, "insufficient_history"
-
-        # Get last 3 snapshots (covers ~1.5s with 0.5s intervals)
-        recent = history[-3:] if len(history) >= 3 else history[-2:]
-
-        # CRITICAL CHECK 1: SOL must be INCREASING each snapshot
-        for i in range(len(recent) - 1):
-            prev_sol = recent[i]['sol_raised']
-            curr_sol = recent[i+1]['sol_raised']
-
-            if curr_sol < prev_sol:
-                drop_pct = ((prev_sol - curr_sol) / prev_sol * 100) if prev_sol > 0 else 0
-                logger.warning(
-                    f"⚠️ CURVE FALLING: {prev_sol:.2f} → {curr_sol:.2f} SOL "
-                    f"(-{drop_pct:.1f}%) at snapshot {i+1}"
-                )
-                return False, f"falling: -{drop_pct:.1f}%"
-
-            # Also check for flat/stalled curve (< 1 SOL increase)
-            sol_increase = curr_sol - prev_sol
-            if sol_increase < 1.0:
-                logger.warning(
-                    f"⚠️ CURVE STALLED: only +{sol_increase:.2f} SOL in last snapshot"
-                )
-                return False, f"stalled: +{sol_increase:.2f} SOL"
-
-        # CRITICAL CHECK 2: Rate of increase must not be decelerating sharply
-        if len(recent) >= 3:
-            # Calculate velocity between snapshots
-            time_delta = recent[1]['timestamp'] - recent[0]['timestamp']
-            if time_delta > 0:
-                early_rate = (recent[1]['sol_raised'] - recent[0]['sol_raised']) / time_delta
-                late_rate = (recent[2]['sol_raised'] - recent[1]['sol_raised']) / time_delta
-
-                # Allow deceleration but not crash (>60% drop in rate)
-                if late_rate < (early_rate * 0.4) and early_rate > 2.0:
-                    decel_pct = ((early_rate - late_rate) / early_rate * 100) if early_rate > 0 else 0
-                    logger.warning(
-                        f"⚠️ CURVE DECELERATING: {early_rate:.2f} → {late_rate:.2f} SOL/s "
-                        f"(-{decel_pct:.1f}%)"
-                    )
-                    return False, f"decelerating: -{decel_pct:.1f}%"
-
-                logger.debug(
-                    f"Curve velocity: {early_rate:.2f} → {late_rate:.2f} SOL/s"
-                )
-
-        # CRITICAL CHECK 3: Current SOL vs latest history (detect dumps between checks)
-        latest_snapshot_sol = recent[-1]['sol_raised']
-        if current_sol < (latest_snapshot_sol * 0.8):
-            drop_pct = ((latest_snapshot_sol - current_sol) / latest_snapshot_sol * 100)
-            logger.warning(
-                f"⚠️ DUMP DETECTED: {latest_snapshot_sol:.2f} → {current_sol:.2f} SOL "
-                f"(-{drop_pct:.1f}%) since last snapshot"
-            )
-            return False, f"dump_detected: -{drop_pct:.1f}%"
-
-        logger.info(f"✅ CURVE RISING STEADILY: {recent[0]['sol_raised']:.1f} → {current_sol:.1f} SOL")
-        return True, "rising"
-
+    
     def update_snapshot(self, mint: str, sol_raised: float, buyers: int):
         """Update velocity snapshot during monitoring"""
         self._store_velocity_snapshot(mint, sol_raised, buyers, time.time())
