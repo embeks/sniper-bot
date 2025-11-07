@@ -1,7 +1,8 @@
+
+
 """
-Velocity Checker - SURGICAL FIX APPLIED
-✅ Fix 4: Removed 2-snapshot requirement (now only needs 1 snapshot)
-✅ Validates velocity immediately without waiting for confirmation
+Velocity Checker - FINAL: Two-snapshot rule to prevent buying tops
+Only allows entries after confirming velocity is STILL pumping
 """
 
 import logging
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 class VelocityChecker:
     """
     Checks token velocity before allowing buy.
-    ✅ FIXED: Now only requires 1 snapshot (removed 2-snapshot delay)
+    CRITICAL FIX: Requires 2 snapshots minimum to prevent buying dying pumps
     """
     
     def __init__(
@@ -24,7 +25,7 @@ class VelocityChecker:
         min_recent_1s_sol: float = 2.0,
         min_recent_3s_sol: float = 4.0,
         max_drop_percent: float = 25.0,
-        min_snapshots: int = 1  # ✅ FIXED: Changed from 2 to 1
+        min_snapshots: int = 2
     ):
         """
         Args:
@@ -34,7 +35,7 @@ class VelocityChecker:
             min_recent_1s_sol: Minimum SOL in last 1 second (default 2.0)
             min_recent_3s_sol: Minimum SOL in last 3 seconds (default 4.0)
             max_drop_percent: Max velocity drop allowed (default 25%)
-            min_snapshots: Minimum snapshots required (default 1) ✅ FIXED
+            min_snapshots: Minimum snapshots required before buying (default 2)
         """
         self.min_sol_per_second = min_sol_per_second
         self.min_unique_buyers = min_unique_buyers
@@ -42,7 +43,7 @@ class VelocityChecker:
         self.min_recent_1s_sol = min_recent_1s_sol
         self.min_recent_3s_sol = min_recent_3s_sol
         self.max_drop_percent = max_drop_percent
-        self.min_snapshots = min_snapshots  # ✅ FIXED: Now 1 instead of 2
+        self.min_snapshots = min_snapshots
         
         # Track velocity snapshots for dynamic checks
         self.velocity_history: Dict[str, list] = {}
@@ -57,8 +58,8 @@ class VelocityChecker:
         token_age_seconds: float
     ) -> Tuple[bool, str]:
         """
-        ✅ FIXED: Only requires 1 snapshot (removed 2-snapshot delay)
-        Validates velocity using fresh blockchain data
+        CRITICAL FIX: Requires 2 snapshots before allowing buy.
+        This prevents buying tokens that HAD momentum but are dying.
         
         Args:
             mint: Token mint address
@@ -69,7 +70,7 @@ class VelocityChecker:
             (passed, reason) tuple
         """
         try:
-            # Age gate
+            # Age gate - skip if too old
             if token_age_seconds > self.max_token_age_seconds:
                 logger.info(
                     f"❌ VELOCITY FAILED: token age {token_age_seconds:.1f}s > "
@@ -77,7 +78,7 @@ class VelocityChecker:
                 )
                 return False, f"too_old: {token_age_seconds:.1f}s"
             
-            sol_raised = curve_data.get('sol_raised', 0) or curve_data.get('sol_in_curve', 0)
+            sol_raised = curve_data.get('sol_raised', 0)
             
             # Estimate unique buyers
             unique_buyers = self._estimate_unique_buyers(sol_raised, token_age_seconds)
@@ -85,17 +86,30 @@ class VelocityChecker:
             # Avoid division by zero
             age = max(token_age_seconds, 0.1)
             
-            # Calculate AVERAGE velocity
+            # Calculate AVERAGE velocity over lifetime
             avg_sol_per_second = sol_raised / age
             
-            # ✅ REMOVED 2-SNAPSHOT RULE - Process immediately
-            # Store snapshot for monitoring
+            # ===================================================================
+            # CRITICAL FIX: TWO-SNAPSHOT RULE
+            # Don't buy on first detection - wait for confirmation
+            # ===================================================================
+            
+            # Store current snapshot
             self._store_velocity_snapshot(mint, sol_raised, unique_buyers, time.time())
             
+            # Check if we have enough snapshots
             snapshot_count = len(self.velocity_history.get(mint, []))
-            logger.debug(f"📊 Velocity check for {mint[:8]}... (snapshot {snapshot_count})")
             
-            # Basic velocity checks
+            if snapshot_count < self.min_snapshots:
+                logger.info(
+                    f"📊 FIRST DETECTION: {mint[:8]}... stored snapshot {snapshot_count}/{self.min_snapshots} "
+                    f"(avg: {avg_sol_per_second:.2f} SOL/s, ~{unique_buyers} buyers)"
+                )
+                return False, f"first_detection: need {self.min_snapshots} snapshots (have {snapshot_count})"
+            
+            # We have 2+ snapshots - now validate velocity
+            
+            # Check average thresholds (basic filter)
             sol_check = avg_sol_per_second >= self.min_sol_per_second
             buyers_check = unique_buyers >= self.min_unique_buyers
             
@@ -110,36 +124,39 @@ class VelocityChecker:
                 logger.info(f"❌ VELOCITY FAILED: {reason_str}")
                 return False, f"low_velocity: {reason_str}"
             
-            # ✅ If we have 2+ snapshots, check for dying velocity
-            # But don't REQUIRE 2 snapshots - this is just extra validation
-            if snapshot_count >= 2:
-                velocity_drop = self._get_velocity_drop_percent(mint, sol_raised)
-                
-                if velocity_drop is not None and velocity_drop > self.max_drop_percent:
-                    logger.info(
-                        f"❌ VELOCITY DYING: dropped {velocity_drop:.1f}% from previous snapshot "
-                        f"(max allowed: {self.max_drop_percent}%)"
-                    )
-                    return False, f"velocity_dying: {velocity_drop:.1f}% drop"
-                
-                logger.debug(f"✓ Velocity stable: {velocity_drop:+.1f}% change from previous")
+            # ===================================================================
+            # CRITICAL: Check if velocity is STILL STRONG (not dying)
+            # This is what prevents the -33% dumps
+            # ===================================================================
             
-            # Get recent velocity if we have enough history
+            velocity_drop = self._get_velocity_drop_percent(mint, sol_raised)
+            
+            if velocity_drop is not None and velocity_drop > self.max_drop_percent:
+                logger.info(
+                    f"❌ VELOCITY DYING: dropped {velocity_drop:.1f}% from previous snapshot "
+                    f"(max allowed: {self.max_drop_percent}%) - pump is ending"
+                )
+                return False, f"velocity_dying: {velocity_drop:.1f}% drop"
+            
+            # ===================================================================
+            # Get recent velocity (last 1-3 seconds)
+            # ===================================================================
+            
             recent_1s_sol = self._get_recent_sol_delta(mint, sol_raised, 1.0)
             recent_3s_sol = self._get_recent_sol_delta(mint, sol_raised, 3.0)
             
-            # Check if recent flow meets minimums (optional if we have data)
+            # Check if recent flow meets minimums
             if recent_1s_sol is not None and recent_1s_sol < self.min_recent_1s_sol:
                 logger.info(
                     f"❌ RECENT VELOCITY TOO LOW: {recent_1s_sol:.2f} SOL in last 1s "
-                    f"(need ≥{self.min_recent_1s_sol})"
+                    f"(need ≥{self.min_recent_1s_sol}) - pump is dying"
                 )
                 return False, f"recent_1s_low: {recent_1s_sol:.2f} SOL"
             
             if recent_3s_sol is not None and recent_3s_sol < self.min_recent_3s_sol:
                 logger.info(
                     f"❌ RECENT VELOCITY TOO LOW: {recent_3s_sol:.2f} SOL in last 3s "
-                    f"(need ≥{self.min_recent_3s_sol})"
+                    f"(need ≥{self.min_recent_3s_sol}) - pump is dying"
                 )
                 return False, f"recent_3s_low: {recent_3s_sol:.2f} SOL"
             
@@ -147,13 +164,15 @@ class VelocityChecker:
             self.pre_buy_velocity[mint] = avg_sol_per_second
             
             logger.info(
-                f"✅ VELOCITY PASSED: Avg {avg_sol_per_second:.2f} SOL/s "
+                f"✅ VELOCITY PASSED (2nd check): Avg {avg_sol_per_second:.2f} SOL/s "
                 f"({sol_raised:.2f} SOL / {age:.1f}s), ~{unique_buyers} buyers"
             )
             if recent_1s_sol is not None:
-                logger.debug(f"   Recent flow: {recent_1s_sol:.2f} SOL (last 1s)")
+                logger.info(f"   Recent flow: {recent_1s_sol:.2f} SOL (last 1s)")
             if recent_3s_sol is not None:
-                logger.debug(f"   Recent flow: {recent_3s_sol:.2f} SOL (last 3s)")
+                logger.info(f"   Recent flow: {recent_3s_sol:.2f} SOL (last 3s)")
+            if velocity_drop is not None:
+                logger.info(f"   Velocity change: {velocity_drop:+.1f}% (stable)")
             
             return True, "velocity_passed"
             
@@ -213,9 +232,9 @@ class VelocityChecker:
         current_sol_raised: float
     ) -> Optional[float]:
         """
-        Calculate velocity drop % from previous snapshot to current.
-        Positive value = velocity decreased (BAD)
-        Negative value = velocity increased (GOOD)
+        CRITICAL: Calculate velocity drop % from previous snapshot to current.
+        Positive value = velocity decreased (BAD - pump is dying)
+        Negative value = velocity increased (GOOD - pump is accelerating)
         
         Returns:
             Drop percentage, or None if not enough history
@@ -283,7 +302,7 @@ class VelocityChecker:
             'timestamp': timestamp
         })
         
-        # Keep only last 15 snapshots
+        # Keep only last 15 snapshots (enough for 10-15 seconds of history)
         if len(self.velocity_history[mint]) > 15:
             self.velocity_history[mint] = self.velocity_history[mint][-15:]
     
@@ -365,3 +384,4 @@ class VelocityChecker:
             del self.velocity_history[mint]
         if mint in self.pre_buy_velocity:
             del self.pre_buy_velocity[mint]
+
