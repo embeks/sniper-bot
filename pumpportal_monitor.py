@@ -17,7 +17,7 @@ import random
 import websockets
 import aiohttp
 from datetime import datetime
-from config import HELIUS_API_KEY, HELIUS_ASYNC_MODE, HELIUS_TIMEOUT_SECONDS
+from config import HELIUS_API_KEY, HELIUS_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -623,45 +623,28 @@ class PumpPortalMonitor:
             return (False, token_age)
 
         # ============================================
-        # PATH C PHASE 2: ASYNC HELIUS MODE
+        # PATH C PHASE 2: FAST HELIUS (NO DELAY)
         # ============================================
-        if HELIUS_ASYNC_MODE:
-            # ASYNC MODE: Skip delay, fire-and-forget holder check with short timeout
-            logger.info(f"⚡ ASYNC MODE: Skipping Helius delay, checking with {HELIUS_TIMEOUT_SECONDS}s timeout...")
+        # Skip 1.5s delay, use timeout-based holder check
+        logger.info(f"⚡ Helius check with {HELIUS_TIMEOUT_SECONDS}s timeout...")
 
-            holder_task = asyncio.create_task(self._check_holders_helius(mint))
+        holder_task = asyncio.create_task(self._check_holders_helius(mint))
 
-            try:
-                # Try to get holder result within timeout
-                holder_result = await asyncio.wait_for(holder_task, timeout=HELIUS_TIMEOUT_SECONDS)
-
-                if not holder_result['passed']:
-                    logger.info(f"⚠️ Holder check failed (but proceeding): {holder_result.get('reason', 'unknown')}")
-                    # Store for monitoring but don't block entry
-                    holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0, 'async_failed': True}
-                else:
-                    logger.info(f"✅ Holder check passed within timeout: {holder_result.get('holder_count', 0)} holders")
-
-            except asyncio.TimeoutError:
-                logger.info(f"⏱️ Holder check timeout ({HELIUS_TIMEOUT_SECONDS}s) - proceeding without holder data")
-                # Proceed anyway, holder check will complete in background for monitoring
-                holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0, 'async_timeout': True}
-
-        else:
-            # SYNC MODE (original): Wait for Helius to index, then require holder check to pass
-            logger.info(f"⏳ SYNC MODE: Giving Helius 1.5s to index token...")
-            await asyncio.sleep(1.5)  # Compromise: faster than 3s, but gives Helius time to index
-            logger.info(f"✓ Helius indexing delay complete - checking holders...")
-
-            # CONCURRENT: Holder check (this is the slow part, but now with 2 retries!)
-            holder_task = asyncio.create_task(self._check_holders_helius(mint))
-
-            # Wait for holder check with fast-fail
-            holder_result = await holder_task
+        try:
+            # Try to get holder result within timeout
+            holder_result = await asyncio.wait_for(holder_task, timeout=HELIUS_TIMEOUT_SECONDS)
 
             if not holder_result['passed']:
-                self._log_filter("holder_distribution", holder_result.get('reason', 'unknown'))
-                return (False, token_age)
+                logger.info(f"⚠️ Holder check failed (but proceeding): {holder_result.get('reason', 'unknown')}")
+                # Store for monitoring but don't block entry
+                holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0, 'holder_failed': True}
+            else:
+                logger.info(f"✅ Holder check passed: {holder_result.get('holder_count', 0)} holders")
+
+        except asyncio.TimeoutError:
+            logger.info(f"⏱️ Holder check timeout ({HELIUS_TIMEOUT_SECONDS}s) - proceeding anyway")
+            # Proceed without holder data
+            holder_result = {'passed': True, 'holder_count': 0, 'concentration': 0, 'holder_timeout': True}
         
         # All filters passed!
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
@@ -680,7 +663,7 @@ class PumpPortalMonitor:
         """Connect to PumpPortal WebSocket"""
         self.running = True
         logger.info("🔍 Connecting to PumpPortal WebSocket...")
-        logger.info(f"Strategy: PATH C (VELOCITY + TIMER + RISING CURVE + ASYNC HELIUS)")
+        logger.info(f"Strategy: PATH C (VELOCITY + TIMER + RISING CURVE)")
         logger.info(f"  Fix #1: Adaptive velocity window (handled in main.py)")
         logger.info(f"  Fix #2: Creator buy tolerance (≥0.095 SOL)")
         logger.info(f"  Fix #3: Helius retry with 2 attempts (2.5s + 2.5s)")
@@ -688,13 +671,9 @@ class PumpPortalMonitor:
         logger.info(f"  Age check: <{self.filters['max_token_age_seconds']}s (BEFORE RPC)")
         logger.info(f"  Curve prefilter: ≥{self.filters['min_curve_sol_prefilter']} SOL")
         logger.info(f"  First-sighting cooldown: {self.filters['first_sighting_cooldown_seconds']}s")
-        if HELIUS_ASYNC_MODE:
-            logger.info(f"  ⚡ ASYNC MODE: Helius check with {HELIUS_TIMEOUT_SECONDS}s timeout (non-blocking)")
-            logger.info(f"  ⚡ Expected entry time: T=1.9s (vs T=4.3s sync mode)")
-        else:
-            logger.info(f"  ⏳ SYNC MODE: 1.5s Helius indexing delay (blocking)")
-            logger.info(f"  ⏳ Expected entry time: T=4.3s")
-        logger.info(f"  RPC timeout: 0.8s with 2 retries (max 6s after sleep)")
+        logger.info(f"  ⚡ Fast Helius: {HELIUS_TIMEOUT_SECONDS}s timeout (no 1.5s delay)")
+        logger.info(f"  ⚡ Expected entry: ~T=1.9s")
+        logger.info(f"  RPC timeout: 0.8s with 2 retries")
         logger.info(f"  Concurrent checks: ENABLED")
         logger.info(f"  Note: Velocity gate + rising curve check runs in main.py")
         
