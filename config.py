@@ -1,5 +1,4 @@
 
-
 """
 config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
 - Shorter timer (20s)
@@ -44,30 +43,6 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-# ============================================
-# FEE STRUCTURE & NET P&L TRACKING
-# ============================================
-# Calculate total fees for net P&L decisions
-BUY_PRIORITY_FEE = 0.0015  # Normal urgency buy
-SELL_PRIORITY_FEE = 0.004   # Critical urgency sell
-PLATFORM_FEE_RATE = 0.01    # 1% PumpFun fee on buys
-NETWORK_FEE_PER_TX = 0.000005  # Base network fee
-
-# Total fees per round trip (buy + sell)
-TOTAL_FEES_SOL = (
-    BUY_PRIORITY_FEE +
-    SELL_PRIORITY_FEE +
-    (BUY_AMOUNT_SOL * PLATFORM_FEE_RATE) +
-    (NETWORK_FEE_PER_TX * 2)
-)
-
-# Net breakeven percentage (what you need to profit after fees)
-NET_BREAKEVEN_PCT = (TOTAL_FEES_SOL / BUY_AMOUNT_SOL) * 100
-# For 0.05 SOL: ~12% breakeven
-
-# Entry drift protection (abort buy if price moved too much)
-MAX_ENTRY_DRIFT_PERCENT = 10.0
-
 # Risk management
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
@@ -94,22 +69,6 @@ VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0')
 
 # CRITICAL FIX: Changed from 2 to 1 (allow buy on first detection)
 VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
-
-# ============================================
-# RISING CURVE DETECTION (PATH C)
-# ============================================
-# Prevents buying peaks and falling knives
-RISING_CURVE_ENABLED = os.getenv('RISING_CURVE_ENABLED', 'true').lower() == 'true'
-RISING_CURVE_MIN_INCREASE_SOL = float(os.getenv('RISING_CURVE_MIN_INCREASE', '1.0'))
-RISING_CURVE_MAX_DECEL_PERCENT = float(os.getenv('RISING_CURVE_MAX_DECEL', '60.0'))
-
-# ============================================
-# FAST HELIUS (PATH C - PHASE 2)
-# ============================================
-# No 1.5s delay - uses timeout-based holder check
-# Reduces entry time from T=4.3s to T=1.9s
-# Proceeds even if holder check times out or fails
-HELIUS_TIMEOUT_SECONDS = float(os.getenv('HELIUS_TIMEOUT', '2.0'))
 
 # ============================================
 # TIMER-BASED EXIT SETTINGS
