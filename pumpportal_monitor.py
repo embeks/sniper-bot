@@ -555,7 +555,7 @@ class PumpPortalMonitor:
         if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
             return (False, token_age)
-        
+
         # Creator spam check
         creator_passed, _, _ = self._check_creator_spam(creator_address)
         if not creator_passed:

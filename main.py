@@ -28,7 +28,9 @@ from config import (
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
     TIMER_EXTENSION_SECONDS, TIMER_EXTENSION_PNL_THRESHOLD, TIMER_MAX_EXTENSIONS,
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD, FAIL_FAST_VELOCITY_THRESHOLD,
-    VELOCITY_MIN_RECENT_1S_SOL, VELOCITY_MIN_RECENT_3S_SOL, VELOCITY_MAX_DROP_PERCENT
+    VELOCITY_MIN_RECENT_1S_SOL, VELOCITY_MIN_RECENT_3S_SOL, VELOCITY_MAX_DROP_PERCENT,
+    # NEW: Import velocity ceiling parameters
+    VELOCITY_MAX_SOL_PER_SECOND, VELOCITY_MAX_RECENT_1S_SOL, VELOCITY_MAX_RECENT_3S_SOL
 )
 
 # ✅ NEW: Import profit protection settings
@@ -134,7 +136,11 @@ class SniperBot:
             min_recent_1s_sol=VELOCITY_MIN_RECENT_1S_SOL,
             min_recent_3s_sol=VELOCITY_MIN_RECENT_3S_SOL,
             max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
-            min_snapshots=1  
+            min_snapshots=1,
+            # NEW: Add velocity ceiling parameters
+            max_sol_per_second=VELOCITY_MAX_SOL_PER_SECOND,
+            max_recent_1s_sol=VELOCITY_MAX_RECENT_1S_SOL,
+            max_recent_3s_sol=VELOCITY_MAX_RECENT_3S_SOL
         )
         
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
@@ -169,7 +175,8 @@ class SniperBot:
         
         logger.info(f"📊 STARTUP STATUS:")
         logger.info(f"  • Strategy: VELOCITY GATE + TIMER EXIT + FAIL-FAST")
-        logger.info(f"  • Velocity gate: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
+        logger.info(f"  • Velocity gate: {VELOCITY_MIN_SOL_PER_SECOND}-{VELOCITY_MAX_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
+        logger.info(f"  • Bot pump rejection: >{VELOCITY_MAX_SOL_PER_SECOND} SOL/s avg or >{VELOCITY_MAX_RECENT_1S_SOL} SOL in 1s")
         logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
         logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
