@@ -535,15 +535,28 @@ class SniperBot:
                 token_age = token_data['token_age']
                 logger.debug(f"📊 Age from token_data.token_age: {token_age:.1f}s")
             
-            if token_age is None or token_age == 0:
+            if token_age is None or token_age < 0.5:  # Minimum 0.5s to avoid division issues
                 sol_raised = curve_data.get('sol_raised', 0)
-                
+
                 if sol_raised > 0:
-                    token_age = min(sol_raised / 1.0, VELOCITY_MAX_TOKEN_AGE)
-                    logger.warning(f"⚠️ Age not in token_data, estimated from SOL raised: {token_age:.1f}s")
+                    # Estimate age using realistic velocity assumptions
+                    # Organic pumps: 2-4 SOL/s average
+                    # Bot pumps: 8-15 SOL/s average
+                    # Use 3.5 SOL/s as baseline (middle ground)
+                    estimated_age = sol_raised / 3.5
+
+                    # Clamp between 1.0s minimum and 15s maximum
+                    # (tokens younger than 1s are unrealistic due to network/detection delays)
+                    token_age = max(1.0, min(estimated_age, 15.0))
+
+                    logger.info(
+                        f"📊 Estimated age from SOL raised: {sol_raised:.2f} SOL ÷ 3.5 SOL/s "
+                        f"= {token_age:.1f}s (clamped 1.0-15.0s)"
+                    )
                 else:
-                    token_age = VELOCITY_MAX_TOKEN_AGE / 2
-                    logger.warning(f"⚠️ Could not determine age, using default: {token_age:.1f}s")
+                    # Default to 2.5s if no curve data
+                    token_age = 2.5
+                    logger.warning(f"⚠️ No SOL raised data, using default age: {token_age:.1f}s")
             
             logger.info(f"📊 Using token age: {token_age:.1f}s for velocity check")
             logger.info(f"📊 SOL raised (from curve): {curve_data.get('sol_raised', 0):.4f}")
