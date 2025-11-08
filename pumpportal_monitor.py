@@ -69,8 +69,8 @@ class PumpPortalMonitor:
             'min_curve_sol_prefilter': 3.0,  # Skip tokens with <3 SOL (likely duds)
             
             # FIX #2: Lowered from 0.1 to 0.095 to handle rounding edge cases
-            'min_creator_sol': 0.5,    # Raised from 0.095 - require serious dev commitment
-            'max_creator_sol': 3.0,    # Lowered from 5.0 - avoid desperate pumpers
+            'min_creator_sol': 0.095,  # Allow 0.095-0.099 SOL range
+            'max_creator_sol': 5.0,
             'min_curve_sol': 15.0,
             'max_curve_sol': 45.0,
             'min_v_tokens': 500_000_000,
@@ -79,8 +79,8 @@ class PumpPortalMonitor:
             'check_concentration': False,
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
-            'min_market_cap': 5000,   # Raised from 4K - whale's sweet spot starts here
-            'max_market_cap': 15000,  # Lowered from 35K - avoid SELLEO-type late entries
+            'min_market_cap': 4000,
+            'max_market_cap': 35000,
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
@@ -508,14 +508,6 @@ class PumpPortalMonitor:
             self._log_filter("too_old_prefilter", f"{token_age:.1f}s > {self.filters['max_token_age_seconds']}s")
             return (False, token_age)
 
-        # CRITICAL: Don't catch the absolute 0.0s pump (exit liquidity risk)
-        # Wait for slight confirmation before entry
-        if token_age < 0.5:
-            self._log_filter("too_fresh", f"{token_age:.1f}s < 0.5s (need confirmation)")
-            return (False, token_age)
-
-        logger.debug(f"✅ Token age OK: {token_age:.1f}s")
-
         # ===================================================================
         # OPTIMIZATION 2: CURVE PREFILTER (skip obvious duds early)
         # ===================================================================
@@ -563,17 +555,6 @@ class PumpPortalMonitor:
         if creator_sol < self.filters['min_creator_sol'] or creator_sol > self.filters['max_creator_sol']:
             self._log_filter("creator_buy", f"{creator_sol:.3f} SOL")
             return (False, token_age)
-
-        # CRITICAL: Block parabolic momentum (scam pump indicator)
-        # Calculate momentum from curve SOL vs creator buy
-        v_sol = float(token_data.get('vSolInBondingCurve', 0))
-        momentum = v_sol / creator_sol if creator_sol > 0 else 0
-
-        if momentum > 60:  # Whale's winners had reasonable momentum, losers had 100x+
-            self._log_filter("momentum_parabolic", f"{momentum:.1f}x > 60x (parabolic pump)")
-            return (False, token_age)
-
-        logger.debug(f"✅ Momentum OK: {momentum:.1f}x")
 
         # Creator spam check
         creator_passed, _, _ = self._check_creator_spam(creator_address)
