@@ -703,13 +703,26 @@ class SniperBot:
             
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
-                
+
+                # Calculate momentum for logging
+                token_data_inner = token_data.get('data', token_data) if 'data' in token_data else token_data
+                creator_sol_amount = token_data_inner.get('solAmount', 1)
+                sol_in_curve_amount = curve_data.get('sol_raised', 0)
+                momentum_value = sol_in_curve_amount / creator_sol_amount if creator_sol_amount > 0 else 0
+
                 self.tracker.log_buy_executed(
                     mint=mint,
                     amount_sol=actual_sol_spent,
                     signature=signature,
                     tokens_received=bought_tokens,
-                    execution_time_ms=execution_time_ms
+                    execution_time_ms=execution_time_ms,
+                    age_at_detection=token_data.get('age', 0),
+                    age_at_buy=token_age,
+                    sol_in_curve=sol_in_curve_amount,
+                    creator_sol=creator_sol_amount,
+                    momentum=momentum_value,
+                    mc_at_entry=entry_market_cap,
+                    entry_price=actual_entry_price
                 )
                 
                 position = Position(mint, actual_sol_spent, bought_tokens, entry_market_cap)
@@ -1477,7 +1490,10 @@ class SniperBot:
                 pnl_sol=final_pnl_sol,
                 pnl_percent=position.pnl_percent,
                 hold_time_seconds=hold_time,
-                reason=reason
+                reason=reason,
+                max_pnl_reached=position.max_pnl_reached,
+                exit_price=position.current_price,
+                mc_at_exit=getattr(position, 'current_market_cap', 0)
             )
             
             logger.info(f"✅ POSITION CLOSED: {mint[:8]}...")
