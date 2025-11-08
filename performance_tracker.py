@@ -68,8 +68,14 @@ class PerformanceTracker:
             # Create new file with headers
             with open(self.csv_file, 'w', newline='') as f:
                 fieldnames = [
-                    'timestamp', 'event_type', 'mint', 'amount_sol', 
-                    'pnl_sol', 'fees_sol', 'tokens', 'execution_ms', 'reason'
+                    'timestamp', 'event_type', 'mint', 'amount_sol',
+                    'pnl_sol', 'pnl_percent', 'fees_sol', 'tokens', 'execution_ms', 'reason',
+                    # Detection metrics
+                    'age_at_detection', 'age_at_buy', 'sol_in_curve', 'creator_sol',
+                    'momentum', 'mc_at_entry', 'mc_at_exit',
+                    # Performance metrics
+                    'entry_price', 'exit_price', 'max_pnl_reached', 'hold_seconds',
+                    'buy_tx', 'sell_tx'
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
@@ -95,8 +101,14 @@ class PerformanceTracker:
         try:
             with open(self.csv_file, 'a', newline='') as f:
                 fieldnames = [
-                    'timestamp', 'event_type', 'mint', 'amount_sol', 
-                    'pnl_sol', 'fees_sol', 'tokens', 'execution_ms', 'reason'
+                    'timestamp', 'event_type', 'mint', 'amount_sol',
+                    'pnl_sol', 'pnl_percent', 'fees_sol', 'tokens', 'execution_ms', 'reason',
+                    # Detection metrics
+                    'age_at_detection', 'age_at_buy', 'sol_in_curve', 'creator_sol',
+                    'momentum', 'mc_at_entry', 'mc_at_exit',
+                    # Performance metrics
+                    'entry_price', 'exit_price', 'max_pnl_reached', 'hold_seconds',
+                    'buy_tx', 'sell_tx'
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 
@@ -107,10 +119,26 @@ class PerformanceTracker:
                     'mint': data.get('mint', '')[:16] if data.get('mint') else '',
                     'amount_sol': data.get('amount_sol', 0),
                     'pnl_sol': data.get('pnl_sol', 0),
+                    'pnl_percent': data.get('pnl_percent', 0),
                     'fees_sol': data.get('fees_sol', 0),
                     'tokens': data.get('tokens', 0),
                     'execution_ms': data.get('execution_ms', 0),
-                    'reason': data.get('reason', '')
+                    'reason': data.get('reason', ''),
+                    # Detection metrics
+                    'age_at_detection': data.get('age_at_detection', 0),
+                    'age_at_buy': data.get('age_at_buy', 0),
+                    'sol_in_curve': data.get('sol_in_curve', 0),
+                    'creator_sol': data.get('creator_sol', 0),
+                    'momentum': data.get('momentum', 0),
+                    'mc_at_entry': data.get('mc_at_entry', 0),
+                    'mc_at_exit': data.get('mc_at_exit', 0),
+                    # Performance metrics
+                    'entry_price': data.get('entry_price', 0),
+                    'exit_price': data.get('exit_price', 0),
+                    'max_pnl_reached': data.get('max_pnl_reached', 0),
+                    'hold_seconds': data.get('hold_seconds', 0),
+                    'buy_tx': data.get('buy_tx', ''),
+                    'sell_tx': data.get('sell_tx', '')
                 }
                 
                 writer.writerow(row)
@@ -236,20 +264,33 @@ class PerformanceTracker:
         
         return cost_breakdown
     
-    def log_buy_executed(self, mint: str, amount_sol: float, signature: str, 
-                        tokens_received: float, execution_time_ms: float):
-        """Log successful buy execution"""
+    def log_buy_executed(self, mint: str, amount_sol: float, signature: str,
+                        tokens_received: float, execution_time_ms: float,
+                        age_at_detection: float = 0, age_at_buy: float = 0,
+                        sol_in_curve: float = 0, creator_sol: float = 0,
+                        momentum: float = 0, mc_at_entry: float = 0,
+                        entry_price: float = 0):
+        """Log successful buy execution with detection metrics"""
         cost_breakdown = self.calculate_total_cost(amount_sol)
         self.metrics['execution_times'].append(execution_time_ms)
-        
+
         self.log_event('buy_executed', {
             'mint': mint,
             'signature': signature,
             'tokens_received': tokens_received,
             'execution_time_ms': execution_time_ms,
+            'buy_tx': signature,
+            'age_at_detection': age_at_detection,
+            'age_at_buy': age_at_buy,
+            'sol_in_curve': sol_in_curve,
+            'creator_sol': creator_sol,
+            'momentum': momentum,
+            'mc_at_entry': mc_at_entry,
+            'entry_price': entry_price,
+            'pnl_percent': 0,  # Will be updated on sell
             **cost_breakdown
         })
-        
+
         logger.info(f"📊 Buy logged to CSV for {mint[:8]}...")
     
     def log_buy_failed(self, mint: str, amount_sol: float, error: str):
@@ -262,9 +303,11 @@ class PerformanceTracker:
     
     def log_sell_executed(self, mint: str, tokens_sold: float, signature: str,
                          sol_received: float, pnl_sol: float, pnl_percent: float,
-                         hold_time_seconds: float, reason: str):
+                         hold_time_seconds: float, reason: str,
+                         max_pnl_reached: float = 0, exit_price: float = 0,
+                         mc_at_exit: float = 0):
         """
-        CRITICAL FIX: Log successful sell execution
+        CRITICAL FIX: Log successful sell execution with performance metrics
         Uses pnl_sol parameter DIRECTLY - doesn't recalculate
         """
         self.log_event('sell_executed', {
@@ -275,9 +318,14 @@ class PerformanceTracker:
             'pnl_sol': pnl_sol,  # USE THIS EXACT VALUE
             'pnl_percent': pnl_percent,
             'hold_time_seconds': hold_time_seconds,
-            'reason': reason
+            'hold_seconds': hold_time_seconds,
+            'reason': reason,
+            'sell_tx': signature,
+            'max_pnl_reached': max_pnl_reached,
+            'exit_price': exit_price,
+            'mc_at_exit': mc_at_exit
         })
-        
+
         logger.info(f"📊 Sell logged to CSV for {mint[:8]}... P&L: {pnl_sol:+.4f} SOL")
     
     def log_partial_sell(self, mint: str, target_name: str, percent_sold: float,
