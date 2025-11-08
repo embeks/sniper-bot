@@ -16,14 +16,18 @@ class VelocityChecker:
     """
     
     def __init__(
-        self, 
-        min_sol_per_second: float = 2.0, 
+        self,
+        min_sol_per_second: float = 2.0,
         min_unique_buyers: int = 5,
         max_token_age_seconds: float = 6.0,
         min_recent_1s_sol: float = 2.0,
         min_recent_3s_sol: float = 4.0,
         max_drop_percent: float = 25.0,
-        min_snapshots: int = 2
+        min_snapshots: int = 2,
+        # NEW: Add maximum velocity parameters
+        max_sol_per_second: float = 6.0,
+        max_recent_1s_sol: float = 8.0,
+        max_recent_3s_sol: float = 12.0
     ):
         """
         Args:
@@ -34,6 +38,9 @@ class VelocityChecker:
             min_recent_3s_sol: Minimum SOL in last 3 seconds (default 4.0)
             max_drop_percent: Max velocity drop allowed (default 25%)
             min_snapshots: Minimum snapshots required before buying (default 2)
+            max_sol_per_second: Maximum average SOL/s to reject bot pumps (default 6.0)
+            max_recent_1s_sol: Maximum SOL in 1s to reject parabolic spikes (default 8.0)
+            max_recent_3s_sol: Maximum SOL in 3s to reject parabolic spikes (default 12.0)
         """
         self.min_sol_per_second = min_sol_per_second
         self.min_unique_buyers = min_unique_buyers
@@ -42,10 +49,15 @@ class VelocityChecker:
         self.min_recent_3s_sol = min_recent_3s_sol
         self.max_drop_percent = max_drop_percent
         self.min_snapshots = min_snapshots
-        
+
+        # NEW: Store maximum velocity thresholds
+        self.max_sol_per_second = max_sol_per_second
+        self.max_recent_1s_sol = max_recent_1s_sol
+        self.max_recent_3s_sol = max_recent_3s_sol
+
         # Track velocity snapshots for dynamic checks
         self.velocity_history: Dict[str, list] = {}
-        
+
         # Track pre-buy velocity for fail-fast comparison
         self.pre_buy_velocity: Dict[str, float] = {}
     
@@ -121,7 +133,23 @@ class VelocityChecker:
                 reason_str = ", ".join(reasons)
                 logger.info(f"❌ VELOCITY FAILED: {reason_str}")
                 return False, f"low_velocity: {reason_str}"
-            
+
+            # ===================================================================
+            # NEW: Check for BOT PUMP (velocity too high - parabolic)
+            # ===================================================================
+            if avg_sol_per_second > self.max_sol_per_second:
+                logger.warning(
+                    f"❌ BOT PUMP DETECTED: {avg_sol_per_second:.2f} SOL/s average "
+                    f"> {self.max_sol_per_second} max (parabolic pump rejected)"
+                )
+                logger.warning(
+                    f"   Token {mint[:8]}... pumped too fast - likely bot manipulation"
+                )
+                logger.warning(
+                    f"   Whale's organic wins: ~0.4-1.5 SOL/s | Your bot pump losses: >10 SOL/s"
+                )
+                return False, f"bot_pump_avg: {avg_sol_per_second:.2f} SOL/s"
+
             # ===================================================================
             # CRITICAL: Check if velocity is STILL STRONG (not dying)
             # This is what prevents the -33% dumps
@@ -157,7 +185,30 @@ class VelocityChecker:
                     f"(need ≥{self.min_recent_3s_sol}) - pump is dying"
                 )
                 return False, f"recent_3s_low: {recent_3s_sol:.2f} SOL"
-            
+
+            # ===================================================================
+            # NEW: Check for PARABOLIC SPIKE (recent velocity too high)
+            # ===================================================================
+            if recent_1s_sol is not None and recent_1s_sol > self.max_recent_1s_sol:
+                logger.warning(
+                    f"❌ PARABOLIC SPIKE: {recent_1s_sol:.2f} SOL in last 1s "
+                    f"> {self.max_recent_1s_sol} max (vertical candle rejected)"
+                )
+                logger.warning(
+                    f"   Token {mint[:8]}... spiking too fast - likely bot front-run"
+                )
+                return False, f"parabolic_1s: {recent_1s_sol:.2f} SOL in 1s"
+
+            if recent_3s_sol is not None and recent_3s_sol > self.max_recent_3s_sol:
+                logger.warning(
+                    f"❌ PARABOLIC SPIKE: {recent_3s_sol:.2f} SOL in last 3s "
+                    f"> {self.max_recent_3s_sol} max (vertical pump rejected)"
+                )
+                logger.warning(
+                    f"   Token {mint[:8]}... sustained spike too high"
+                )
+                return False, f"parabolic_3s: {recent_3s_sol:.2f} SOL in 3s"
+
             # Store pre-buy velocity for fail-fast comparison later
             self.pre_buy_velocity[mint] = avg_sol_per_second
             

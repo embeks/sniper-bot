@@ -71,6 +71,17 @@ VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0')
 VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
 
 # ============================================
+# NEW: VELOCITY CEILING (BOT PUMP PROTECTION)
+# ============================================
+# Maximum average velocity - reject parabolic bot pumps
+# Whale wins: 0.38 SOL/s (organic) vs Your losses: 14.2 SOL/s (bot pump)
+VELOCITY_MAX_SOL_PER_SECOND = float(os.getenv('VELOCITY_MAX_SOL_PER_SECOND', '6.0'))
+
+# Maximum recent velocity - reject parabolic spikes
+VELOCITY_MAX_RECENT_1S_SOL = float(os.getenv('VELOCITY_MAX_RECENT_1S_SOL', '8.0'))
+VELOCITY_MAX_RECENT_3S_SOL = float(os.getenv('VELOCITY_MAX_RECENT_3S_SOL', '12.0'))
+
+# ============================================
 # TIMER-BASED EXIT SETTINGS
 # ============================================
 # FIXED: Shortened from 30s to 20s base
