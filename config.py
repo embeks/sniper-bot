@@ -220,6 +220,14 @@ MIN_LIQUIDITY_SOL = float(os.getenv('MIN_LIQUIDITY_SOL', '0.6'))
 MAX_SLIPPAGE_PERCENT = float(os.getenv('MAX_SLIPPAGE_PERCENT', '2.5'))
 
 # ============================================
+# SLIPPAGE PROTECTION
+# ============================================
+# Maximum allowed slippage between estimated and actual entry price
+# If actual slippage exceeds this, immediately exit the position
+# This protects against buying during bot swarms and price spikes
+MAX_ENTRY_SLIPPAGE_PERCENT = float(os.getenv('MAX_ENTRY_SLIPPAGE_PERCENT', '15.0'))
+
+# ============================================
 # PUMPFUN SPECIFIC CONFIGURATION
 # ============================================
 PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")

@@ -711,15 +711,63 @@ class SniperBot:
                 # ✅ CHATGPT FIX: Log estimated vs actual price comparison
                 if bought_tokens > 0:
                     price_diff_pct = abs(actual_entry_price - estimated_entry_price) / estimated_entry_price * 100 if estimated_entry_price > 0 else 0
-                    
+
                     logger.info(f"📊 Entry Price Verification:")
                     logger.info(f"   Estimated (at detection): {estimated_entry_price:.10f} lamports/atom")
                     logger.info(f"   Actual (from fill): {actual_entry_price:.10f} lamports/atom")
                     logger.info(f"   Difference: {price_diff_pct:.1f}%")
-                    
+
                     if price_diff_pct > 10:
                         logger.warning(f"⚠️ LARGE ENTRY PRICE DISCREPANCY: {price_diff_pct:.1f}%")
                         logger.warning(f"   Price moved significantly between detection and execution")
+
+                    # 🚨 SLIPPAGE PROTECTION - Exit immediately if slippage too high
+                    from config import MAX_ENTRY_SLIPPAGE_PERCENT
+                    if price_diff_pct > MAX_ENTRY_SLIPPAGE_PERCENT:
+                        logger.error(f"🚨 EXCESSIVE SLIPPAGE DETECTED: {price_diff_pct:.1f}% > {MAX_ENTRY_SLIPPAGE_PERCENT}% threshold")
+                        logger.error(f"   This indicates you bought during a price spike (bot swarm)")
+                        expected_tokens = (actual_sol_spent * 1e9) / estimated_entry_price if estimated_entry_price > 0 else 0
+                        token_shortfall = ((expected_tokens - bought_tokens) / expected_tokens * 100) if expected_tokens > 0 else 0
+                        logger.error(f"   Expected: {expected_tokens:,.0f} tokens")
+                        logger.error(f"   Received: {bought_tokens:,.0f} tokens ({token_shortfall:.1f}% fewer)")
+                        logger.error(f"   Exiting immediately to limit damage...")
+
+                        # Record the buy first (so we have a position to close)
+                        self.tracker.log_buy_executed(
+                            mint=mint,
+                            amount_sol=actual_sol_spent,
+                            signature=signature,
+                            tokens_received=bought_tokens,
+                            execution_time_ms=execution_time_ms,
+                            age_at_detection=token_data.get('age', 0),
+                            age_at_buy=token_age,
+                            sol_in_curve=sol_in_curve_amount,
+                            creator_sol=creator_sol_amount,
+                            momentum=momentum_value,
+                            mc_at_entry=entry_market_cap,
+                            entry_price=actual_entry_price
+                        )
+
+                        # Create position object
+                        position = Position(
+                            mint=mint,
+                            sol_amount=actual_sol_spent,
+                            token_amount=bought_tokens,
+                            entry_market_cap=entry_market_cap
+                        )
+                        position.buy_signature = signature
+                        position.entry_time = time.time()
+                        position.entry_token_price_sol = actual_entry_price
+                        position.entry_sol_in_curve = curve_data.get('sol_raised', 0.0) if curve_data else 0.0
+
+                        # Add to positions dict temporarily
+                        self.positions[mint] = position
+                        self.pending_buys -= 1
+
+                        # Wait 0.5s for transaction to settle, then sell immediately
+                        await asyncio.sleep(0.5)
+                        await self._close_position_full(mint, reason="high_slippage")
+                        return
             
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
