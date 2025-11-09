@@ -30,7 +30,11 @@ from config import (
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD, FAIL_FAST_VELOCITY_THRESHOLD,
     VELOCITY_MIN_RECENT_1S_SOL, VELOCITY_MIN_RECENT_3S_SOL, VELOCITY_MAX_DROP_PERCENT,
     # NEW: Import velocity ceiling parameters
-    VELOCITY_MAX_SOL_PER_SECOND, VELOCITY_MAX_RECENT_1S_SOL, VELOCITY_MAX_RECENT_3S_SOL
+    VELOCITY_MAX_SOL_PER_SECOND, VELOCITY_MAX_RECENT_1S_SOL, VELOCITY_MAX_RECENT_3S_SOL,
+    # NEW: Import momentum exit parameters
+    MOMENTUM_MAX_DRAWDOWN_PP, MOMENTUM_MIN_PEAK_PERCENT,
+    MOMENTUM_VELOCITY_DEATH_PERCENT, MOMENTUM_BIG_WIN_PERCENT,
+    MOMENTUM_MAX_HOLD_SECONDS
 )
 
 # ✅ NEW: Import profit protection settings
@@ -847,18 +851,23 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position - TIMER + FAIL-FAST EXIT STRATEGY"""
+        """Monitor position - MOMENTUM-BASED EXITS"""
         try:
             position = self.positions.get(mint)
             if not position:
                 return
-            
-            logger.info(f"📈 Starting TIMER monitoring for {mint[:8]}...")
+
+            # ✅ ADD THESE NEW VARIABLES
+            max_pnl_reached = 0  # Track peak P&L for drawdown detection
+            last_sol_raised = 0  # Track SOL flow for velocity
+            last_velocity_check = time.time()
+
+            logger.info(f"📈 Starting MOMENTUM monitoring for {mint[:8]}...")
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} lamports/atomic")
             logger.info(f"   Exit Time: {position.exit_time - position.entry_time:.1f}s from now")
             logger.info(f"   Fail-fast check: {FAIL_FAST_CHECK_TIME}s")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
-            
+
             check_count = 0
             consecutive_data_failures = 0
             
@@ -934,7 +943,10 @@ class SniperBot:
                     position.pnl_percent = price_change
                     position.current_price = current_token_price_sol
                     position.max_pnl_reached = max(position.max_pnl_reached, price_change)
-                    
+
+                    # ✅ ADD: Update local tracking
+                    max_pnl_reached = max(max_pnl_reached, price_change)
+
                     consecutive_data_failures = 0
                     position.last_valid_price = current_token_price_sol
                     position.last_price_update = time.time()
@@ -1035,7 +1047,65 @@ class SniperBot:
                             )
                             await self._close_position_full(mint, reason="rug_trap")
                             break
-                    
+
+                    # ============================================
+                    # NEW EXIT SIGNAL 1: Peak Drawdown (Momentum Death)
+                    # ============================================
+                    if max_pnl_reached > MOMENTUM_MIN_PEAK_PERCENT and not position.is_closing:
+                        drawdown_from_peak = max_pnl_reached - price_change
+
+                        if drawdown_from_peak >= MOMENTUM_MAX_DRAWDOWN_PP:
+                            logger.warning(
+                                f"💨 MOMENTUM DEATH: Peak {max_pnl_reached:+.1f}% → Now {price_change:+.1f}% "
+                                f"(drawdown: {drawdown_from_peak:.1f}pp, threshold: {MOMENTUM_MAX_DRAWDOWN_PP:.1f}pp)"
+                            )
+                            await self._close_position_full(mint, reason="momentum_death")
+                            break
+
+                    # ============================================
+                    # NEW EXIT SIGNAL 2: Velocity Death Check
+                    # ============================================
+                    if age >= 5.0 and age < 6.0 and not position.fail_fast_checked:  # Check once at 5s
+                        position.fail_fast_checked = True
+
+                        pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
+                        if pre_buy_velocity:
+                            current_velocity = current_sol_in_curve / max(age, 0.1)
+                            velocity_ratio = (current_velocity / pre_buy_velocity) * 100
+
+                            if velocity_ratio < MOMENTUM_VELOCITY_DEATH_PERCENT:
+                                logger.warning(
+                                    f"💨 VELOCITY DIED: {current_velocity:.2f} SOL/s = {velocity_ratio:.0f}% "
+                                    f"of entry ({pre_buy_velocity:.2f} SOL/s), threshold: {MOMENTUM_VELOCITY_DEATH_PERCENT:.0f}%"
+                                )
+                                await self._close_position_full(mint, reason="velocity_death")
+                                break
+
+                    # ============================================
+                    # NEW EXIT SIGNAL 3: Big Win Take Profit
+                    # ============================================
+                    if price_change >= MOMENTUM_BIG_WIN_PERCENT and not position.is_closing:
+                        logger.info(
+                            f"💰 BIG WIN TAKE PROFIT: {price_change:+.1f}% "
+                            f"(peak: {max_pnl_reached:+.1f}%, threshold: {MOMENTUM_BIG_WIN_PERCENT:.1f}%)"
+                        )
+                        await self._close_position_full(mint, reason="big_win_tp")
+                        break
+
+                    # ============================================
+                    # NEW EXIT SIGNAL 4: Max Hold Time Backstop
+                    # ============================================
+                    if age > MOMENTUM_MAX_HOLD_SECONDS and not position.is_closing:
+                        logger.warning(
+                            f"⏰ MAX HOLD TIME: {age:.1f}s > {MOMENTUM_MAX_HOLD_SECONDS:.0f}s limit "
+                            f"(P&L: {price_change:+.1f}%, peak: {max_pnl_reached:+.1f}%)"
+                        )
+                        await self._close_position_full(mint, reason="max_hold_time")
+                        break
+
+                    # ============================================
+                    # KEEP EXISTING: Timer exit (but will rarely trigger now)
+                    # ============================================
                     if time_until_exit <= 0 and not position.is_closing:
                         logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
                         logger.info(f"   Final P&L: {price_change:+.1f}%")
