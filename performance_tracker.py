@@ -69,7 +69,8 @@ class PerformanceTracker:
             with open(self.csv_file, 'w', newline='') as f:
                 fieldnames = [
                     'timestamp', 'event_type', 'mint', 'amount_sol',
-                    'pnl_sol', 'pnl_percent', 'fees_sol', 'tokens', 'execution_ms', 'reason',
+                    'pnl_sol', 'pnl_percent', 'fees_paid', 'net_pnl',  # ✅ NEW FIELDS
+                    'fees_sol', 'tokens', 'execution_ms', 'reason',
                     # Detection metrics
                     'age_at_detection', 'age_at_buy', 'sol_in_curve', 'creator_sol',
                     'momentum', 'mc_at_entry', 'mc_at_exit',
@@ -102,7 +103,8 @@ class PerformanceTracker:
             with open(self.csv_file, 'a', newline='') as f:
                 fieldnames = [
                     'timestamp', 'event_type', 'mint', 'amount_sol',
-                    'pnl_sol', 'pnl_percent', 'fees_sol', 'tokens', 'execution_ms', 'reason',
+                    'pnl_sol', 'pnl_percent', 'fees_paid', 'net_pnl',  # ✅ NEW FIELDS
+                    'fees_sol', 'tokens', 'execution_ms', 'reason',
                     # Detection metrics
                     'age_at_detection', 'age_at_buy', 'sol_in_curve', 'creator_sol',
                     'momentum', 'mc_at_entry', 'mc_at_exit',
@@ -111,7 +113,7 @@ class PerformanceTracker:
                     'buy_tx', 'sell_tx'
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
-                
+
                 # Prepare row data
                 row = {
                     'timestamp': data.get('timestamp', datetime.now().isoformat()),
@@ -120,6 +122,8 @@ class PerformanceTracker:
                     'amount_sol': data.get('amount_sol', 0),
                     'pnl_sol': data.get('pnl_sol', 0),
                     'pnl_percent': data.get('pnl_percent', 0),
+                    'fees_paid': data.get('fees_paid', 0),  # ✅ NEW
+                    'net_pnl': data.get('pnl_sol', 0) - data.get('fees_paid', 0),  # ✅ NEW: Net after fees
                     'fees_sol': data.get('fees_sol', 0),
                     'tokens': data.get('tokens', 0),
                     'execution_ms': data.get('execution_ms', 0),
@@ -140,7 +144,7 @@ class PerformanceTracker:
                     'buy_tx': data.get('buy_tx', ''),
                     'sell_tx': data.get('sell_tx', '')
                 }
-                
+
                 writer.writerow(row)
                 return True
                 
@@ -304,18 +308,21 @@ class PerformanceTracker:
     def log_sell_executed(self, mint: str, tokens_sold: float, signature: str,
                          sol_received: float, pnl_sol: float, pnl_percent: float,
                          hold_time_seconds: float, reason: str,
+                         fees_paid: float = 0,  # ✅ NEW PARAMETER
                          max_pnl_reached: float = 0, exit_price: float = 0,
                          mc_at_exit: float = 0):
         """
         CRITICAL FIX: Log successful sell execution with performance metrics
         Uses pnl_sol parameter DIRECTLY - doesn't recalculate
+        Now separates trading P&L from transaction fees
         """
         self.log_event('sell_executed', {
             'mint': mint,
             'signature': signature,
             'tokens_sold': tokens_sold,
             'sol_received': sol_received,
-            'pnl_sol': pnl_sol,  # USE THIS EXACT VALUE
+            'pnl_sol': pnl_sol,  # Pure trading P&L
+            'fees_paid': fees_paid,  # ✅ NEW: Track fees separately
             'pnl_percent': pnl_percent,
             'hold_time_seconds': hold_time_seconds,
             'hold_seconds': hold_time_seconds,
@@ -326,7 +333,7 @@ class PerformanceTracker:
             'mc_at_exit': mc_at_exit
         })
 
-        logger.info(f"📊 Sell logged to CSV for {mint[:8]}... P&L: {pnl_sol:+.4f} SOL")
+        logger.info(f"📊 Sell logged to CSV for {mint[:8]}... P&L: {pnl_sol:+.4f} SOL, Fees: {fees_paid:.4f} SOL")
     
     def log_partial_sell(self, mint: str, target_name: str, percent_sold: float,
                         tokens_sold: float, sol_received: float, pnl_sol: float):
