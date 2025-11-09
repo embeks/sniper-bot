@@ -183,7 +183,7 @@ FAIL_FAST_CHECK_TIME = float(os.getenv('FAIL_FAST_CHECK_TIME', '5.0'))
 FAIL_FAST_PNL_THRESHOLD = float(os.getenv('FAIL_FAST_PNL_THRESHOLD', '-10.0'))
 
 # Velocity death threshold (% of pre-buy velocity)
-FAIL_FAST_VELOCITY_THRESHOLD = float(os.getenv('FAIL_FAST_VELOCITY_THRESHOLD', '30.0'))
+FAIL_FAST_VELOCITY_THRESHOLD = float(os.getenv('FAIL_FAST_VELOCITY_THRESHOLD', '0.0'))
 
 # ============================================
 # LEGACY PARTIAL PROFIT SETTINGS (DEPRECATED)
