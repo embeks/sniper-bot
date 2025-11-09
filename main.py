@@ -1448,9 +1448,7 @@ class SniperBot:
             logger.info(f"   Hold time: {hold_time:.1f}s")
             logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
             logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
-            
-            pre_sol_balance = self.wallet.get_sol_balance()
-            
+
             actual_balance = self.wallet.get_token_balance(mint)
             if actual_balance > 0:
                 ui_token_balance = actual_balance
@@ -1460,9 +1458,12 @@ class SniperBot:
             
             curve_data = self.dex.get_bonding_curve_data(mint)
             is_migrated = curve_data is None or curve_data.get('is_migrated', False)
-            
+
             token_decimals = self.wallet.get_token_decimals(mint)
-            
+
+            # ✅ Measure balance RIGHT BEFORE sell to prevent contamination from other trades
+            pre_sol_balance = self.wallet.get_sol_balance()
+
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
@@ -1470,7 +1471,19 @@ class SniperBot:
                 token_decimals=token_decimals,
                 urgency="critical"
             )
-            
+
+            # ✅ Measure balance RIGHT AFTER sell (3s wait only) to capture THIS trade's impact
+            # This happens BEFORE the confirmation loop, preventing other trades from contaminating the delta
+            await asyncio.sleep(3)
+            post_sol_balance = self.wallet.get_sol_balance()
+            wallet_sol_delta = post_sol_balance - pre_sol_balance
+            logger.info(f"📊 SOL balance delta (immediate): {wallet_sol_delta:+.6f} SOL")
+
+            # Check token balance to see if sell actually executed
+            after_tokens = self.wallet.get_token_balance(mint)
+            actual_tokens_sold = max(0.0, ui_token_balance - after_tokens)
+            logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
+
             if not signature or signature.startswith("1111111"):
                 logger.error(f"❌ Close transaction failed")
                 position.status = 'close_failed'
@@ -1568,22 +1581,16 @@ class SniperBot:
             # Method 2: If TX reading failed, use wallet balance delta but add fees back
             if not confirmed or actual_token_sale_sol == 0:
                 try:
-                    await asyncio.sleep(2)  # Give network time to update
-                    post_sol_balance = self.wallet.get_sol_balance()
-                    wallet_sol_delta = post_sol_balance - pre_sol_balance
-                    logger.info(f"📊 SOL balance delta: {wallet_sol_delta:+.6f} SOL")
-                    
+                    # ✅ Use the balance delta we already captured immediately after the sell
+                    # (wallet_sol_delta was calculated right after the sell transaction above)
+
                     # Estimate fees: 0.005 (gas) + 0.004 (priority) = ~0.009 SOL
                     estimated_fees = 0.009
                     actual_token_sale_sol = wallet_sol_delta + estimated_fees
                     logger.info(f"📊 Sale proceeds (estimated): {actual_token_sale_sol:.6f} SOL (wallet delta + fees)")
 
-                    # Check token balance to see if sell actually executed
-                    after_tokens = self.wallet.get_token_balance(mint)
-                    actual_tokens_sold = max(0.0, ui_token_balance - after_tokens)
-                    logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
-
                     # ✅ CRITICAL CHECK: Did tokens actually leave wallet?
+                    # (after_tokens and actual_tokens_sold were already calculated above)
                     if after_tokens > (ui_token_balance * 0.9):  # Still have >90% of tokens
                         logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
                         logger.error(f"   Expected to sell: {ui_token_balance:,.2f}")
@@ -1608,22 +1615,37 @@ class SniperBot:
                     import traceback
                     logger.error(traceback.format_exc())
             
-            # Calculate TRUE trading P&L (pure trading performance, excluding fees)
-            final_pnl_sol = actual_token_sale_sol - position.amount_sol
+            # ✅ CORRECT P&L CALCULATION
+            # wallet_sol_delta already captured earlier = net SOL change from this trade only
+            # It represents: (sale_proceeds - sell_fees)
 
-            # Calculate fees separately (wallet delta vs actual sale proceeds)
-            if confirmed:
-                # For confirmed TX, we have wallet balance change
-                post_sol_balance = self.wallet.get_sol_balance()
-                wallet_sol_delta = post_sol_balance - pre_sol_balance
+            estimated_fees = 0.009
+
+            # Pure trading P&L (excluding fees) = add fees back to wallet delta
+            # This gives us the actual SOL received from the sale
+            if confirmed and actual_token_sale_sol > 0:
+                # Use transaction data if available
+                gross_sale_proceeds = actual_token_sale_sol
                 actual_fees_paid = actual_token_sale_sol - wallet_sol_delta
             else:
-                # For unconfirmed/estimated, use estimated fees
-                actual_fees_paid = 0.009
+                # Use wallet delta + estimated fees
+                gross_sale_proceeds = wallet_sol_delta + estimated_fees
+                actual_fees_paid = estimated_fees
+
+            # Trading P&L = what we got back - what we put in
+            trading_pnl_sol = gross_sale_proceeds - position.amount_sol
+
+            # Final P&L (this is what gets logged)
+            final_pnl_sol = trading_pnl_sol
+
+            # Log for verification
+            logger.info(f"📊 Gross sale proceeds: {gross_sale_proceeds:.6f} SOL")
+            logger.info(f"📊 Trading P&L: {trading_pnl_sol:+.6f} SOL (pure trading)")
+            logger.info(f"📊 Fees paid: {actual_fees_paid:.6f} SOL")
 
             # Detect suspicious/failed sells (check actual sale proceeds)
-            if actual_token_sale_sol > 0 and actual_token_sale_sol < (position.amount_sol * 0.1):
-                logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_token_sale_sol:.6f} SOL from sale (invested {position.amount_sol} SOL)")
+            if gross_sale_proceeds > 0 and gross_sale_proceeds < (position.amount_sol * 0.1):
+                logger.error(f"⚠️ SUSPICIOUS SELL: Only got {gross_sale_proceeds:.6f} SOL from sale (invested {position.amount_sol} SOL)")
                 logger.error(f"   This suggests curve was dead/migrated during sell")
                 logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
             elif final_pnl_sol < 0:
@@ -1646,9 +1668,9 @@ class SniperBot:
                 mint=mint,
                 tokens_sold=actual_tokens_sold,
                 signature=signature,
-                sol_received=actual_token_sale_sol,  # ✅ Actual sale proceeds
+                sol_received=gross_sale_proceeds,  # ✅ Gross sale proceeds (corrected timing)
                 pnl_sol=final_pnl_sol,  # ✅ Pure trading P&L
-                fees_paid=actual_fees_paid,  # ✅ NEW: Separate fees
+                fees_paid=actual_fees_paid,  # ✅ Separate fees
                 pnl_percent=position.pnl_percent,
                 hold_time_seconds=hold_time,
                 reason=reason,
