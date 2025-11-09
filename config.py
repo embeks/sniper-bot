@@ -100,6 +100,24 @@ TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD',
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
 
 # ============================================
+# MOMENTUM EXIT SETTINGS
+# ============================================
+# Peak drawdown before exit (percentage points)
+MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '5.0'))
+
+# Minimum peak required before drawdown matters
+MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '3.0'))
+
+# Velocity death threshold (% of pre-buy velocity)
+MOMENTUM_VELOCITY_DEATH_PERCENT = float(os.getenv('MOMENTUM_VELOCITY_DEATH_PERCENT', '50.0'))
+
+# Big win take profit threshold
+MOMENTUM_BIG_WIN_PERCENT = float(os.getenv('MOMENTUM_BIG_WIN_PERCENT', '50.0'))
+
+# Max hold time backstop (seconds)
+MOMENTUM_MAX_HOLD_SECONDS = float(os.getenv('MOMENTUM_MAX_HOLD_SECONDS', '45.0'))
+
+# ============================================
 # PROFIT PROTECTION SETTINGS (NEW!)
 # ============================================
 # These work alongside your timer-based exits to protect extreme gains
