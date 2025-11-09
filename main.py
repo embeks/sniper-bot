@@ -736,6 +736,9 @@ class SniperBot:
                         logger.error(f"   Received: {bought_tokens:,.0f} tokens ({token_shortfall:.1f}% fewer)")
                         logger.error(f"   Exiting immediately to limit damage...")
 
+                        # ✅ FIX: Calculate execution time before logging
+                        execution_time_ms = (time.time() - execution_start) * 1000
+
                         # Record the buy first (so we have a position to close)
                         self.tracker.log_buy_executed(
                             mint=mint,
@@ -1236,8 +1239,8 @@ class SniperBot:
             first_seen = None
             start = time.time()
             confirmed = False
-            
-            while time.time() - start < 25:
+
+            while time.time() - start < 35:
                 try:
                     status = self.trader.client.get_signature_statuses([signature])
                     if status and status.value and status.value[0]:
@@ -1492,10 +1495,10 @@ class SniperBot:
             first_seen = None
             start = time.time()
             confirmed = False
-            
-            # Poll for up to 25 seconds (same as partial sells)
+
+            # Poll for up to 35 seconds (extended for network congestion)
             try:
-                while time.time() - start < 25:
+                while time.time() - start < 35:
                     try:
                         # ✅ FIX: Proper signature handling for get_signature_statuses
                         from solders.signature import Signature as SoldersSignature
@@ -1598,11 +1601,13 @@ class SniperBot:
                     import traceback
                     logger.error(traceback.format_exc())
             
-            # Detect suspicious/failed sells
-            if actual_sol_received < (position.amount_sol * 0.1):
+            # Detect suspicious/failed sells (actual_sol_received includes P&L, can be negative)
+            if actual_sol_received > 0 and actual_sol_received < (position.amount_sol * 0.1):
                 logger.error(f"⚠️ SUSPICIOUS SELL: Only got {actual_sol_received:.6f} SOL back (invested {position.amount_sol} SOL)")
                 logger.error(f"   This suggests curve was dead/migrated during sell")
                 logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
+            elif actual_sol_received < 0:
+                logger.debug(f"Normal loss: Got {actual_sol_received:+.6f} SOL back (includes P&L)")
             
             # Calculate final P&L
             final_pnl_sol = actual_sol_received - position.amount_sol
