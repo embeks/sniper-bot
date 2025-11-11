@@ -315,7 +315,145 @@ class SniperBot:
             import traceback
             logger.debug(traceback.format_exc())
             return {"confirmed": False, "sol_delta": 0.0, "token_delta": 0.0}
-    
+
+    async def _get_transaction_proceeds_robust(
+        self,
+        signature: str,
+        mint: str,
+        max_wait: int = 30
+    ) -> dict:
+        """
+        Robust transaction parsing with polling - reads EXACT SOL proceeds from blockchain
+
+        This method:
+        1. Polls RPC until transaction appears (up to max_wait seconds)
+        2. Parses the transaction to extract EXACT SOL received and tokens sold
+        3. Returns structured dict with success status and values
+
+        This eliminates contamination from overlapping trades by reading directly from the transaction.
+        """
+        try:
+            from solders.signature import Signature as SoldersSignature
+
+            tx_sig = SoldersSignature.from_string(signature)
+            start = time.time()
+
+            logger.debug(f"🔍 Polling for transaction {signature[:8]}...")
+
+            # Poll for transaction to appear
+            tx = None
+            while time.time() - start < max_wait:
+                try:
+                    # Check if transaction exists in RPC
+                    status = self.trader.client.get_signature_statuses([tx_sig])
+
+                    if status and status.value and status.value[0]:
+                        # Transaction found, now fetch full details
+                        tx_response = self.trader.client.get_transaction(
+                            tx_sig,
+                            encoding="jsonParsed",
+                            max_supported_transaction_version=0
+                        )
+
+                        if tx_response and tx_response.value:
+                            tx = tx_response.value
+                            logger.debug(f"✓ Transaction found at {time.time() - start:.1f}s")
+                            break
+
+                except Exception as e:
+                    logger.debug(f"Poll attempt failed (retrying): {e}")
+
+                await asyncio.sleep(0.5)
+
+            # Check if we got the transaction
+            if not tx:
+                wait_time = time.time() - start
+                logger.warning(f"⏱️ Transaction not found after {wait_time:.1f}s timeout")
+                return {
+                    "success": False,
+                    "sol_received": 0,
+                    "tokens_sold": 0,
+                    "wait_time": wait_time
+                }
+
+            # Check if transaction failed
+            if tx.transaction.meta is None or tx.transaction.meta.err is not None:
+                logger.error(f"❌ Transaction failed on-chain: {tx.transaction.meta.err if tx.transaction.meta else 'no meta'}")
+                return {
+                    "success": False,
+                    "sol_received": 0,
+                    "tokens_sold": 0,
+                    "wait_time": time.time() - start
+                }
+
+            # Parse transaction to extract SOL and token deltas
+            meta = tx.transaction.meta
+            my_pubkey_str = str(self.wallet.pubkey)
+
+            # Extract SOL delta
+            sol_delta = 0.0
+            account_keys = [str(key) for key in tx.transaction.transaction.message.account_keys]
+
+            try:
+                wallet_index = account_keys.index(my_pubkey_str)
+                pre_sol_lamports = meta.pre_balances[wallet_index]
+                post_sol_lamports = meta.post_balances[wallet_index]
+                sol_delta = (post_sol_lamports - pre_sol_lamports) / 1e9
+            except (ValueError, IndexError) as e:
+                logger.error(f"❌ Wallet not found in transaction accounts: {e}")
+                return {
+                    "success": False,
+                    "sol_received": 0,
+                    "tokens_sold": 0,
+                    "wait_time": time.time() - start
+                }
+
+            # Extract token delta
+            token_delta = 0.0
+            pre_token_amount = 0.0
+            post_token_amount = 0.0
+
+            for balance in (meta.pre_token_balances or []):
+                if balance.mint == mint and balance.owner == my_pubkey_str:
+                    ui_amount = balance.ui_token_amount.ui_amount
+                    pre_token_amount = float(ui_amount) if ui_amount is not None else 0.0
+                    break
+
+            for balance in (meta.post_token_balances or []):
+                if balance.mint == mint and balance.owner == my_pubkey_str:
+                    ui_amount = balance.ui_token_amount.ui_amount
+                    post_token_amount = float(ui_amount) if ui_amount is not None else 0.0
+                    break
+
+            token_delta = post_token_amount - pre_token_amount
+            tokens_sold = abs(token_delta)
+
+            wait_time = time.time() - start
+
+            # Success - log details
+            logger.info(f"✅ Transaction parsed successfully:")
+            logger.info(f"   SOL received: {sol_delta:+.6f} SOL")
+            logger.info(f"   Tokens sold: {tokens_sold:,.2f}")
+            logger.info(f"   Wait time: {wait_time:.1f}s")
+
+            return {
+                "success": True,
+                "sol_received": sol_delta,
+                "tokens_sold": tokens_sold,
+                "wait_time": wait_time
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in robust transaction parsing: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return {
+                "success": False,
+                "sol_received": 0,
+                "tokens_sold": 0,
+                "wait_time": time.time() - start if 'start' in locals() else 0
+            }
+
     async def initialize_telegram(self):
         """Initialize Telegram bot after event loop is ready"""
         if self.telegram_enabled and not self.telegram:
@@ -1457,9 +1595,6 @@ class SniperBot:
 
             token_decimals = self.wallet.get_token_decimals(mint)
 
-            # ✅ Measure balance RIGHT BEFORE sell to prevent contamination from other trades
-            pre_sol_balance = self.wallet.get_sol_balance()
-
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
@@ -1467,18 +1602,6 @@ class SniperBot:
                 token_decimals=token_decimals,
                 urgency="critical"
             )
-
-            # ✅ Measure balance RIGHT AFTER sell (3s wait only) to capture THIS trade's impact
-            # This happens BEFORE the confirmation loop, preventing other trades from contaminating the delta
-            await asyncio.sleep(3)
-            post_sol_balance = self.wallet.get_sol_balance()
-            wallet_sol_delta = post_sol_balance - pre_sol_balance
-            logger.info(f"📊 SOL balance delta (immediate): {wallet_sol_delta:+.6f} SOL")
-
-            # Check token balance to see if sell actually executed
-            after_tokens = self.wallet.get_token_balance(mint)
-            actual_tokens_sold = max(0.0, ui_token_balance - after_tokens)
-            logger.info(f"📊 Tokens sold (from balance): {actual_tokens_sold:,.2f}")
 
             if not signature or signature.startswith("1111111"):
                 logger.error(f"❌ Close transaction failed")
@@ -1496,148 +1619,52 @@ class SniperBot:
                     del self.positions[mint]
                     self.velocity_checker.clear_history(mint)
                 return
-            
-            # ✅ CRITICAL FIX: Use same robust confirmation as partial sells
-            logger.info(f"⏳ Confirming full close for {mint[:8]}...")
+
+            # ✅ ROBUST: Parse transaction directly (NO wallet balance delta!)
+            logger.info(f"⏳ Parsing transaction proceeds from blockchain...")
             logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
-            
-            first_seen = None
-            start = time.time()
-            confirmed = False
-            
-            # Poll for up to 35 seconds (extended for network congestion)
-            try:
-                while time.time() - start < 35:
-                    try:
-                        # ✅ FIX: Proper signature handling for get_signature_statuses
-                        from solders.signature import Signature as SoldersSignature
-                        sig_list = [SoldersSignature.from_string(signature)]
-                        status = self.trader.client.get_signature_statuses(sig_list)
-                        
-                        if status and status.value and status.value[0]:
-                            if first_seen is None:
-                                first_seen = time.time() - start
-                                logger.info(f"✓ Transaction appeared in RPC at {first_seen:.1f}s")
-                            
-                            status_obj = status.value[0]
-                            confirmation_status = status_obj.confirmation_status
-                            
-                            if confirmation_status and str(confirmation_status) in ["confirmed", "finalized"]:
-                                if status_obj.err:
-                                    logger.error(f"❌ Sell FAILED on-chain: {status_obj.err}")
-                                    confirmed = False
-                                    break
-                                else:
-                                    confirmed = True
-                                    logger.info(f"✅ Sell confirmed on-chain at {time.time() - start:.1f}s")
-                                    break
-                    except Exception as e:
-                        logger.debug(f"Status check error (retrying): {e}")
-                    
-                    await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"❌ CRITICAL: Confirmation loop crashed: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-            
-            # Handle timeout
-            if not confirmed:
-                elapsed = time.time() - start
-                if first_seen is None:
-                    logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {elapsed:.1f}s")
-                else:
-                    logger.warning(f"⏱️ Timeout: TX appeared at {first_seen:.1f}s but didn't confirm")
-                
-                logger.error(f"⚠️ SELL MAY HAVE FAILED - CHECK WALLET MANUALLY")
-                logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-                logger.error(f"   Check Solscan and verify tokens are gone from wallet!")
-            
-            # Calculate ACTUAL trading P&L (excluding fees)
-            # Method 1: Try to read from transaction first
-            actual_token_sale_sol = 0
-            actual_tokens_sold = 0
 
-            if confirmed:
-                # Try to read from transaction first
-                try:
-                    txd = await self._get_transaction_deltas(signature, mint)
-                    if txd["confirmed"] and txd["sol_delta"] > 0:
-                        # This is the RAW SOL received from token sale (before fees deducted)
-                        actual_token_sale_sol = txd["sol_delta"]
-                        actual_tokens_sold = abs(txd["token_delta"]) if txd["token_delta"] < 0 else 0
-                        logger.info(f"📊 Sale proceeds from TX: {actual_token_sale_sol:.6f} SOL")
-                    else:
-                        # Fallback to wallet balance
-                        logger.warning(f"Transaction delta failed, using wallet balance")
-                        confirmed = False
-                except Exception as e:
-                    logger.error(f"❌ Error reading transaction deltas: {e}")
-                    confirmed = False
+            tx_result = await self._get_transaction_proceeds_robust(signature, mint, max_wait=30)
 
-            # Method 2: If TX reading failed, use wallet balance delta but add fees back
-            if not confirmed or actual_token_sale_sol == 0:
-                try:
-                    # ✅ Use the balance delta we already captured immediately after the sell
-                    # (wallet_sol_delta was calculated right after the sell transaction above)
+            if tx_result["success"]:
+                # Got EXACT proceeds from transaction
+                actual_sol_received = tx_result["sol_received"]
+                actual_tokens_sold = tx_result["tokens_sold"]
 
-                    # Estimate fees: 0.005 (gas) + 0.004 (priority) = ~0.009 SOL
-                    estimated_fees = 0.009
-                    actual_token_sale_sol = wallet_sol_delta + estimated_fees
-                    logger.info(f"📊 Sale proceeds (estimated): {actual_token_sale_sol:.6f} SOL (wallet delta + fees)")
+                logger.info(f"✅ Transaction parsing successful:")
+                logger.info(f"   Wait time: {tx_result['wait_time']:.1f}s")
+                logger.info(f"   SOL received: {actual_sol_received:+.6f} SOL")
+                logger.info(f"   Tokens sold: {actual_tokens_sold:,.2f}")
 
-                    # ✅ CRITICAL CHECK: Did tokens actually leave wallet?
-                    # (after_tokens and actual_tokens_sold were already calculated above)
-                    if after_tokens > (ui_token_balance * 0.9):  # Still have >90% of tokens
-                        logger.error(f"❌ SELL FAILED: Still have {after_tokens:,.2f} tokens in wallet!")
-                        logger.error(f"   Expected to sell: {ui_token_balance:,.2f}")
-                        logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
-                        logger.error(f"   ⚠️ MANUAL ACTION REQUIRED - Check Solscan and sell manually if needed")
-                        
-                        position.status = 'sell_failed'
-                        if mint in self.positions:
-                            del self.positions[mint]
-                            self.velocity_checker.clear_history(mint)
-                        
-                        if self.telegram:
-                            await self.telegram.send_message(
-                                f"❌ SELL FAILED for {mint[:16]}\n"
-                                f"Still have {after_tokens:,.0f} tokens in wallet\n"
-                                f"TX: https://solscan.io/tx/{signature}\n"
-                                f"⚠️ Manual sell required!"
-                            )
-                        return
-                except Exception as e:
-                    logger.error(f"❌ CRITICAL: Balance check failed: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            
-            # ✅ CORRECT P&L CALCULATION
-            # wallet_sol_delta already captured earlier = net SOL change from this trade only
-            # It represents: (sale_proceeds - sell_fees)
+                # Calculate accurate P&L
+                estimated_fees = 0.009
+                trading_pnl_sol = actual_sol_received - position.amount_sol
 
-            estimated_fees = 0.009
+                logger.info(f"📊 P&L Calculation:")
+                logger.info(f"   SOL received: {actual_sol_received:.6f}")
+                logger.info(f"   SOL invested: {position.amount_sol:.6f}")
+                logger.info(f"   Trading P&L: {trading_pnl_sol:+.6f} SOL")
+                logger.info(f"   Estimated fees: {estimated_fees:.6f} SOL")
 
-            # Pure trading P&L (excluding fees) = add fees back to wallet delta
-            # This gives us the actual SOL received from the sale
-            if confirmed and actual_token_sale_sol > 0:
-                # Use transaction data if available
-                gross_sale_proceeds = actual_token_sale_sol
-                actual_fees_paid = actual_token_sale_sol - wallet_sol_delta
+                gross_sale_proceeds = actual_sol_received
+                actual_fees_paid = estimated_fees
+                final_pnl_sol = trading_pnl_sol
+
             else:
-                # Use wallet delta + estimated fees
-                gross_sale_proceeds = wallet_sol_delta + estimated_fees
+                # Transaction parsing failed - use conservative fallback
+                logger.warning("⚠️ Transaction parsing failed after 30s")
+                logger.warning("   Using conservative estimate - check Solscan manually!")
+                logger.warning(f"   Transaction: https://solscan.io/tx/{signature}")
+
+                # Conservative estimate: assume small loss equal to fees
+                estimated_fees = 0.009
+                trading_pnl_sol = -estimated_fees
+                actual_sol_received = position.amount_sol - estimated_fees
+                actual_tokens_sold = ui_token_balance
                 actual_fees_paid = estimated_fees
 
-            # Trading P&L = what we got back - what we put in
-            trading_pnl_sol = gross_sale_proceeds - position.amount_sol
-
-            # Final P&L (this is what gets logged)
-            final_pnl_sol = trading_pnl_sol
-
-            # Log for verification
-            logger.info(f"📊 Gross sale proceeds: {gross_sale_proceeds:.6f} SOL")
-            logger.info(f"📊 Trading P&L: {trading_pnl_sol:+.6f} SOL (pure trading)")
-            logger.info(f"📊 Fees paid: {actual_fees_paid:.6f} SOL")
+                gross_sale_proceeds = actual_sol_received
+                final_pnl_sol = trading_pnl_sol
 
             # Detect suspicious/failed sells (check actual sale proceeds)
             if gross_sale_proceeds > 0 and gross_sale_proceeds < (position.amount_sol * 0.1):
