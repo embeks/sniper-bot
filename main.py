@@ -621,19 +621,52 @@ class SniperBot:
             curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
 
             if not curve_state or not curve_state.get('is_valid'):
-                logger.warning(f"❌ Could not read bonding curve from blockchain")
-                return
+                # FALLBACK: For brand new tokens (0-5s old), blockchain might not have the account yet
+                # Use WebSocket data with empirical correction factor
+                logger.warning(f"⚠️ Blockchain read failed (token too new?), using adjusted WebSocket data")
 
-            # Use REAL blockchain data for decisions
-            actual_sol = curve_state['sol_raised']
-            actual_tokens_atomic = curve_state['virtual_token_reserves']
-            actual_sol_lamports = curve_state['virtual_sol_reserves']
-            price_lamports_per_atomic = curve_state['price_lamports_per_atomic']
+                # Get WebSocket values
+                ws_sol = float(token_data_ws.get('vSolInBondingCurve', 0))
+                ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
 
-            # Calculate REAL market cap from blockchain
-            market_cap = actual_sol * 250  # This will show TRUE market cap
+                # Check if WebSocket has any data at all
+                if ws_sol < 0.1:
+                    logger.warning(f"❌ No valid data from WebSocket either, skipping token")
+                    return
 
-            logger.info(f"✅ Blockchain data: {actual_sol:.4f} SOL, MC: ${market_cap:,.0f}")
+                # Apply empirical correction factor (WebSocket reports ~60% higher than reality)
+                # Based on production data: WS shows 32 SOL when blockchain shows 20 SOL
+                actual_sol = ws_sol * 0.625
+
+                # Calculate corrected market cap
+                market_cap = actual_sol * 250
+
+                logger.info(f"📊 WebSocket adjustment: {ws_sol:.2f} SOL → {actual_sol:.2f} SOL (62.5% factor)")
+                logger.info(f"📊 Adjusted MC: ${market_cap:,.0f}")
+
+                # Get token decimals for price calculation
+                token_decimals = self.wallet.get_token_decimals(mint)
+                if isinstance(token_decimals, tuple):
+                    token_decimals = token_decimals[0]
+                if not token_decimals or token_decimals == 0:
+                    token_decimals = 6
+
+                # Build adjusted values
+                actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
+                actual_sol_lamports = int(actual_sol * 1e9)
+                price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
+
+                # Mark source as websocket_adjusted so we know it's not pure blockchain
+                source_type = 'websocket_adjusted'
+            else:
+                # Successfully read from blockchain
+                actual_sol = curve_state['sol_raised']
+                actual_tokens_atomic = curve_state['virtual_token_reserves']
+                actual_sol_lamports = curve_state['virtual_sol_reserves']
+                price_lamports_per_atomic = curve_state['price_lamports_per_atomic']
+                market_cap = actual_sol * 250
+                source_type = 'blockchain'
+                logger.info(f"✅ Blockchain data: {actual_sol:.4f} SOL, MC: ${market_cap:,.0f}")
 
             # Liquidity validation using REAL data
             required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
@@ -655,7 +688,7 @@ class SniperBot:
                 'virtual_sol_reserves': actual_sol_lamports,
                 'virtual_token_reserves': actual_tokens_atomic,
                 'price_lamports_per_atomic': price_lamports_per_atomic,
-                'source': 'blockchain',
+                'source': source_type,  # Use the source_type variable from above
                 'is_valid': True,
                 'is_migrated': False
             }
