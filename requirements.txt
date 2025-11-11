@@ -1,5 +1,4 @@
-# requirements.txt - Phase 1 Solana Sniper Bot
-# Core Solana libraries
+
 solana==0.32.0
 solders==0.20.0
 
@@ -12,8 +11,4 @@ requests==2.31.0
 python-dotenv==1.0.0
 base58==2.1.1
 
-# Note: Removed unused dependencies from old version
-# - httpx (not needed for v2)
-# - certifi (handled by aiohttp)
-# - fastapi/uvicorn (no API in Phase 1)
-# - psutil (not monitoring system resources)
+
