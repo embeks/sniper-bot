@@ -1,9 +1,5 @@
 """
 DEX - PumpFun Bonding Curves with Real-Time Price Parsing
-FINAL FIX (OPUS + CHATGPT): 
-✅ Issue A Fix: Convert vTokensInBondingCurve to atomic units before price calculation
-✅ CHATGPT FIXES: Source tracking, prefer_chain flag, real_sol_reserves
-✅ CHATGPT WS FIX: Float math + sanity check vs chain price
 """
 
 import time
