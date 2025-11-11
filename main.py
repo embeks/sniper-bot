@@ -608,58 +608,69 @@ class SniperBot:
                 return
 
             # ============================================================================
-            # SPEED OPTIMIZATION: Use WebSocket data instead of RPC calls
-            # This eliminates 3-4 RPC round trips, saving 400-800ms per token
+            # ACCURACY FIX: Use blockchain reads instead of WebSocket data
+            # WebSocket reports inflated values - blockchain is source of truth
             # ============================================================================
 
-            # Extract WebSocket data
+            # Extract mint for blockchain read
             token_data_ws = token_data.get('data', token_data) if 'data' in token_data else token_data
-            ws_sol = float(token_data_ws.get('vSolInBondingCurve', 0))
-            ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
+            mint = token_data['mint']
 
-            # Liquidity validation using WebSocket data (no RPC)
+            # READ ACTUAL BLOCKCHAIN STATE instead of trusting WebSocket
+            logger.info(f"📊 Reading actual blockchain state for {mint[:8]}...")
+            curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+            if not curve_state or not curve_state.get('is_valid'):
+                logger.warning(f"❌ Could not read bonding curve from blockchain")
+                return
+
+            # Use REAL blockchain data for decisions
+            actual_sol = curve_state['sol_raised']
+            actual_tokens_atomic = curve_state['virtual_token_reserves']
+            actual_sol_lamports = curve_state['virtual_sol_reserves']
+            price_lamports_per_atomic = curve_state['price_lamports_per_atomic']
+
+            # Calculate REAL market cap from blockchain
+            market_cap = actual_sol * 250  # This will show TRUE market cap
+
+            logger.info(f"✅ Blockchain data: {actual_sol:.4f} SOL, MC: ${market_cap:,.0f}")
+
+            # Liquidity validation using REAL data
             required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
 
-            if ws_sol < MIN_LIQUIDITY_SOL:
-                logger.warning(f"❌ Liquidity too low: {ws_sol:.4f} SOL < {MIN_LIQUIDITY_SOL} minimum")
+            if actual_sol < MIN_LIQUIDITY_SOL:
+                logger.warning(f"❌ Liquidity too low: {actual_sol:.4f} SOL < {MIN_LIQUIDITY_SOL} minimum")
                 return
 
-            if ws_sol < required_sol:
-                logger.warning(f"❌ Insufficient liquidity: {ws_sol:.4f} SOL < {required_sol:.4f} ({LIQUIDITY_MULTIPLIER}x)")
+            if actual_sol < required_sol:
+                logger.warning(f"❌ Insufficient liquidity: {actual_sol:.4f} SOL < {required_sol:.4f} ({LIQUIDITY_MULTIPLIER}x)")
                 return
 
-            logger.info(f"✅ Liquidity OK (WebSocket): {ws_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
+            logger.info(f"✅ Liquidity OK (Blockchain): {actual_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
 
-            # Get token decimals (only RPC call we still need for transaction building)
-            token_decimals = self.wallet.get_token_decimals(mint)
-            if isinstance(token_decimals, tuple):
-                token_decimals = token_decimals[0]
-            if not token_decimals or token_decimals == 0:
-                token_decimals = 6  # PumpFun standard
-
-            # Build curve_data from WebSocket (no RPC calls)
-            # Convert to atomic units for consistency with rest of codebase
-            v_sol_lamports = int(ws_sol * 1e9)
-            v_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
-
-            # Calculate price in atomic units
-            price_lamports_per_atomic = (v_sol_lamports / v_tokens_atomic) if v_tokens_atomic > 0 else 0
-
+            # Build curve_data from blockchain (not WebSocket)
             curve_data = {
-                'sol_raised': ws_sol,
-                'sol_in_curve': ws_sol,
-                'virtual_sol_reserves': v_sol_lamports,
-                'virtual_token_reserves': v_tokens_atomic,
+                'sol_raised': actual_sol,
+                'sol_in_curve': actual_sol,
+                'virtual_sol_reserves': actual_sol_lamports,
+                'virtual_token_reserves': actual_tokens_atomic,
                 'price_lamports_per_atomic': price_lamports_per_atomic,
-                'source': 'websocket',
+                'source': 'blockchain',
                 'is_valid': True,
                 'is_migrated': False
             }
 
-            estimated_slippage = None  # Not needed for WebSocket-based entry
+            # Get token decimals (still needed for transaction)
+            token_decimals = self.wallet.get_token_decimals(mint)
+            if isinstance(token_decimals, tuple):
+                token_decimals = token_decimals[0]
+            if not token_decimals or token_decimals == 0:
+                token_decimals = 6
 
-            logger.info(f"⚡ Using WebSocket data: {ws_sol:.4f} SOL, price={price_lamports_per_atomic:.10f} lamports/atom")
-            logger.debug(f"✅ Curve data built from WebSocket (no RPC delay)")
+            estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
+
+            logger.info(f"⚡ Using blockchain data: {actual_sol:.4f} SOL, price={price_lamports_per_atomic:.10f} lamports/atom")
+            logger.debug(f"✅ Curve data built from blockchain (accurate)")
 
             token_age = None
             
@@ -731,8 +742,8 @@ class SniperBot:
             
             self.pending_buys += 1
             logger.debug(f"Pending buys: {self.pending_buys}, Active: {len(self.positions)}")
-            
-            entry_market_cap = token_data.get('market_cap', 0)
+
+            entry_market_cap = market_cap  # Use REAL blockchain-based market cap
             
             detection_time_ms = (time.time() - detection_start) * 1000
             self.tracker.log_token_detection(mint, token_data.get('source', 'pumpportal'), detection_time_ms)
