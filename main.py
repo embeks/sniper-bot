@@ -616,57 +616,63 @@ class SniperBot:
             token_data_ws = token_data.get('data', token_data) if 'data' in token_data else token_data
             mint = token_data['mint']
 
-            # READ ACTUAL BLOCKCHAIN STATE instead of trusting WebSocket
-            logger.info(f"📊 Reading actual blockchain state for {mint[:8]}...")
-            curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+            # SPEED OPTIMIZATION: Skip blockchain for brand new tokens (always fails anyway)
+            token_age = token_data.get('age', 0) or token_data.get('token_age', 0) or 0
+            if token_age < 10:  # Skip blockchain for tokens < 10s old
+                # Go straight to WebSocket adjustment (saves 156ms)
+                logger.info(f"⚡ Skipping blockchain for new token (age: {token_age:.1f}s), using adjusted WebSocket")
 
-            if not curve_state or not curve_state.get('is_valid'):
-                # FALLBACK: For brand new tokens (0-5s old), blockchain might not have the account yet
-                # Use WebSocket data with empirical correction factor
-                logger.warning(f"⚠️ Blockchain read failed (token too new?), using adjusted WebSocket data")
-
-                # Get WebSocket values
                 ws_sol = float(token_data_ws.get('vSolInBondingCurve', 0))
                 ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
 
-                # Check if WebSocket has any data at all
                 if ws_sol < 0.1:
-                    logger.warning(f"❌ No valid data from WebSocket either, skipping token")
+                    logger.warning(f"❌ No valid data from WebSocket, skipping token")
                     return
 
-                # Apply empirical correction factor (WebSocket reports ~60% higher than reality)
-                # Based on production data: WS shows 32 SOL when blockchain shows 20 SOL
                 actual_sol = ws_sol * 0.625
-
-                # Calculate corrected market cap
                 market_cap = actual_sol * 250
 
                 logger.info(f"📊 WebSocket adjustment: {ws_sol:.2f} SOL → {actual_sol:.2f} SOL (62.5% factor)")
                 logger.info(f"📊 Adjusted MC: ${market_cap:,.0f}")
 
-                # Get token decimals for price calculation
-                token_decimals = self.wallet.get_token_decimals(mint)
-                if isinstance(token_decimals, tuple):
-                    token_decimals = token_decimals[0]
-                if not token_decimals or token_decimals == 0:
-                    token_decimals = 6
+                # Hardcode decimals for PumpFun (saves 126ms RPC call)
+                token_decimals = 6  # PumpFun ALWAYS uses 6 decimals
 
-                # Build adjusted values
                 actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
                 actual_sol_lamports = int(actual_sol * 1e9)
                 price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
-
-                # Mark source as websocket_adjusted so we know it's not pure blockchain
                 source_type = 'websocket_adjusted'
             else:
-                # Successfully read from blockchain
-                actual_sol = curve_state['sol_raised']
-                actual_tokens_atomic = curve_state['virtual_token_reserves']
-                actual_sol_lamports = curve_state['virtual_sol_reserves']
-                price_lamports_per_atomic = curve_state['price_lamports_per_atomic']
-                market_cap = actual_sol * 250
-                source_type = 'blockchain'
-                logger.info(f"✅ Blockchain data: {actual_sol:.4f} SOL, MC: ${market_cap:,.0f}")
+                # Only try blockchain for older tokens
+                logger.info(f"📊 Reading blockchain for mature token (age: {token_age:.1f}s)")
+                curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                if not curve_state or not curve_state.get('is_valid'):
+                    # Fallback for older tokens if blockchain fails
+                    logger.warning(f"⚠️ Blockchain read failed, using adjusted WebSocket")
+                    ws_sol = float(token_data_ws.get('vSolInBondingCurve', 0))
+                    ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
+
+                    if ws_sol < 0.1:
+                        logger.warning(f"❌ No valid data available")
+                        return
+
+                    actual_sol = ws_sol * 0.625
+                    market_cap = actual_sol * 250
+                    token_decimals = 6
+                    actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
+                    actual_sol_lamports = int(actual_sol * 1e9)
+                    price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
+                    source_type = 'websocket_adjusted'
+                else:
+                    actual_sol = curve_state['sol_raised']
+                    actual_tokens_atomic = curve_state['virtual_token_reserves']
+                    actual_sol_lamports = curve_state['virtual_sol_reserves']
+                    price_lamports_per_atomic = curve_state['price_lamports_per_atomic']
+                    market_cap = actual_sol * 250
+                    token_decimals = 6  # Hardcode for PumpFun
+                    source_type = 'blockchain'
+                    logger.info(f"✅ Blockchain data: {actual_sol:.4f} SOL, MC: ${market_cap:,.0f}")
 
             # Liquidity validation using REAL data
             required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
@@ -692,13 +698,6 @@ class SniperBot:
                 'is_valid': True,
                 'is_migrated': False
             }
-
-            # Get token decimals (still needed for transaction)
-            token_decimals = self.wallet.get_token_decimals(mint)
-            if isinstance(token_decimals, tuple):
-                token_decimals = token_decimals[0]
-            if not token_decimals or token_decimals == 0:
-                token_decimals = 6
 
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
 
@@ -809,8 +808,8 @@ class SniperBot:
             actual_entry_price = estimated_entry_price  # Will be updated if we get real data
             
             if signature:
-                await asyncio.sleep(3)
-                
+                await asyncio.sleep(1.5)  # Reduced from 3s to 1.5s for faster confirmation
+
                 txd = await self._get_transaction_deltas(signature, mint)
                 
                 # ✅ CRITICAL FIX: Always read actual wallet balance
@@ -905,6 +904,13 @@ class SniperBot:
 
                     # 🚨 SLIPPAGE PROTECTION - Exit immediately if slippage too high
                     from config import MAX_ENTRY_SLIPPAGE_PERCENT
+
+                    # Define variables for logging (prevent UnboundLocalError)
+                    token_data_inner = token_data.get('data', token_data) if 'data' in token_data else token_data
+                    creator_sol_amount = float(token_data_inner.get('solAmount', 1))
+                    sol_in_curve_amount = actual_sol  # Use the actual_sol from earlier
+                    momentum_value = sol_in_curve_amount / creator_sol_amount if creator_sol_amount > 0 else 0
+
                     if price_diff_pct > MAX_ENTRY_SLIPPAGE_PERCENT:
                         logger.error(f"🚨 EXCESSIVE SLIPPAGE DETECTED: {price_diff_pct:.1f}% > {MAX_ENTRY_SLIPPAGE_PERCENT}% threshold")
                         logger.error(f"   This indicates you bought during a price spike (bot swarm)")

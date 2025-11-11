@@ -79,7 +79,7 @@ class PumpPortalMonitor:
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
             'min_market_cap': 3000,  # Lowered from 4000 to 3000
-            'max_market_cap': 8000,  # Lowered from 35000 to 8000
+            'max_market_cap': 6000,  # Tightened from 8000 to avoid late entries
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
