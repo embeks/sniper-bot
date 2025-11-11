@@ -1,12 +1,6 @@
 
 """
 config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
-- Shorter timer (20s)
-- Tighter velocity drop (25%)
-- Faster monitoring (0.5s)
-- Increased position size (0.05 SOL)
-- FIXED: Token age limit increased to 25s (accounts for monitor delays)
-- NEW: Profit protection (Extreme TP + Trailing Stop)
 """
 
 import os
