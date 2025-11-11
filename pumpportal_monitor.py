@@ -1,11 +1,6 @@
 
 """
 PumpPortal WebSocket Monitor - FINAL OPTIMIZED + CHATGPT FIXES + 2 RETRIES + AGE FIX
-All 3 critical fixes applied + CRITICAL FIX #4: Pass token age to callback
-- Fix #1: Adaptive velocity window (no false 0.00 SOL/s)
-- Fix #2: Creator buy rounding tolerance (0.095 SOL minimum)
-- Fix #3: Fast Helius retry with 2 attempts (2.5s + 2.5s)
-- Fix #4: PASS TOKEN AGE + SOL TO CALLBACK (for main.py velocity check)
 """
 
 import asyncio
