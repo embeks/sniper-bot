@@ -64,23 +64,27 @@ class PumpPortalMonitor:
         self.filters = {
             # CRITICAL: Age check FIRST (before expensive RPC calls)
             'max_token_age_seconds': 4.0,  # Only process tokens <4s old
-            
+
             # OPTIMIZATION: Early curve prefilter
             'min_curve_sol_prefilter': 3.0,  # Skip tokens with <3 SOL (likely duds)
-            
-            # FIX #2: Lowered from 0.1 to 0.095 to handle rounding edge cases
-            'min_creator_sol': 0.095,  # Allow 0.095-0.099 SOL range
+
+            # Raised from 0.095 to 0.5 to filter out low-effort launches
+            'min_creator_sol': 0.5,
             'max_creator_sol': 5.0,
             'min_curve_sol': 15.0,
             'max_curve_sol': 45.0,
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
+
+            # NEW: Reject bot pumps with excessive momentum
+            'max_momentum': 25.0,  # Reject parabolic bot pumps >25x
+
             'min_holders': 10,
             'check_concentration': False,
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
-            'min_market_cap': 4000,
-            'max_market_cap': 35000,
+            'min_market_cap': 3000,  # Lowered from 4000 to 3000
+            'max_market_cap': 6500,  # Lowered from 35000 to 6500
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
@@ -589,7 +593,18 @@ class PumpPortalMonitor:
         if v_sol < required_sol:
             self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f}")
             return (False, token_age)
-        
+
+        # ===================================================================
+        # NEW: MOMENTUM CEILING (reject parabolic bot pumps)
+        # ===================================================================
+        momentum = v_sol / creator_sol if creator_sol > 0 else 0
+        max_momentum = self.filters.get('max_momentum', 25.0)
+
+        if momentum > max_momentum:
+            self._log_filter("bot_pump_momentum", f"{momentum:.1f}x > {max_momentum}x")
+            return (False, token_age)
+        # ===================================================================
+
         # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
         if v_tokens < self.filters['min_v_tokens']:
