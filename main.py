@@ -1,9 +1,5 @@
 """
 Main Orchestrator - FINAL FIX: Entry price bookkeeping + Stop loss with source checking
-TIMER-BASED EXIT + FAIL-FAST + VELOCITY GATE
-✅ CRITICAL FIX: Entry price now recalculated from actual fill in ALL fallback paths
-✅ CHATGPT FIX: Added estimated vs actual price comparison logging
-✅ Stop loss requires [chain] source like rug trap
 """
 
 import asyncio
