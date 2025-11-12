@@ -64,7 +64,7 @@ class PumpPortalMonitor:
             'min_curve_sol_prefilter': 3.0,  # Skip tokens with <3 SOL (likely duds)
 
             # Raised from 0.095 to 0.5 to filter out low-effort launches
-            'min_creator_sol': 0.35,
+            'min_creator_sol': 0.095,
             'max_creator_sol': 5.0,
             'min_curve_sol': 15.0,
             'max_curve_sol': 45.0,
@@ -72,14 +72,14 @@ class PumpPortalMonitor:
             'min_name_length': 3,
 
             # NEW: Reject bot pumps with excessive momentum
-            'max_momentum': 30.0,  # Reject parabolic bot pumps >30x
+            'max_momentum': 35.0,  # Reject parabolic bot pumps >30x
 
             'min_holders': 10,
             'check_concentration': False,
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
-            'min_market_cap': 3000,  # Lowered from 4000 to 3000
-            'max_market_cap': 6000,  # Tightened from 8000 to avoid late entries
+            'min_market_cap': 4000,  
+            'max_market_cap': 35000,  
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
