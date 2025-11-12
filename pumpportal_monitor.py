@@ -58,7 +58,7 @@ class PumpPortalMonitor:
         # Filters - OPTIMIZED ORDER
         self.filters = {
             # CRITICAL: Age check FIRST (before expensive RPC calls)
-            'max_token_age_seconds': 4.0,  # Only process tokens <4s old
+            'max_token_age_seconds': 2.0,  # Down from 4.0 - only super fresh tokens
 
             # OPTIMIZATION: Early curve prefilter
             'min_curve_sol_prefilter': 3.0,  # Skip tokens with <3 SOL (likely duds)

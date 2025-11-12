@@ -53,12 +53,12 @@ class PumpPortalTrader:
         return fee
     
     async def create_buy_transaction(
-        self, 
-        mint: str, 
+        self,
+        mint: str,
         sol_amount: float,
         bonding_curve_key: str = None,
         slippage: int = 30,  # UPDATED: Tighter default (0.3%) since we validate liquidity
-        urgency: str = "normal"
+        urgency: str = "high"  # Default to high priority
     ) -> Optional[str]:
         """Get a buy transaction from PumpPortal API with dynamic fees"""
         try:

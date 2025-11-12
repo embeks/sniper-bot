@@ -193,7 +193,30 @@ class SniperBot:
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
-    
+
+    def predict_execution_price(self, current_sol: float, token_age: float, execution_delay: float = 1.5) -> dict:
+        """
+        Predict price at execution based on current velocity
+        """
+        # Calculate velocity
+        velocity_sol_per_sec = current_sol / max(token_age, 0.1)
+
+        # Predict SOL at execution time
+        predicted_sol = current_sol + (velocity_sol_per_sec * execution_delay)
+
+        # Bonding curve: price increases quadratically
+        # If SOL doubles, price roughly 4x
+        sol_ratio = predicted_sol / current_sol
+        price_multiplier = sol_ratio ** 1.5  # More conservative than ^2
+
+        return {
+            'current_sol': current_sol,
+            'predicted_sol': predicted_sol,
+            'velocity': velocity_sol_per_sec,
+            'price_multiplier': price_multiplier,
+            'expected_slippage': (price_multiplier - 1) * 100
+        }
+
     def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float = 250) -> float:
         """Calculate market cap from bonding curve data"""
         try:
@@ -607,74 +630,66 @@ class SniperBot:
             if len(name) < 3:
                 return
 
-            # ============================================================================
-            # ACCURACY FIX: Use blockchain reads instead of WebSocket data
-            # WebSocket reports inflated values - blockchain is source of truth
-            # ============================================================================
-
-            # Extract mint for blockchain read
-            token_data_ws = token_data.get('data', token_data) if 'data' in token_data else token_data
+            # Get real blockchain state (no adjustments!)
             mint = token_data['mint']
+            token_age = token_data.get('age', 0) or token_data.get('token_age', 0) or 2.0
 
-            # SPEED OPTIMIZATION: Skip blockchain for brand new tokens (always fails anyway)
-            token_age = token_data.get('age', 0) or token_data.get('token_age', 0) or 0
-            if token_age < 10:  # Skip blockchain for tokens < 10s old
-                # Go straight to WebSocket adjustment (saves 156ms)
-                logger.info(f"⚡ Skipping blockchain for new token (age: {token_age:.1f}s), using adjusted WebSocket")
-
-                ws_sol = float(token_data_ws.get('vSolInBondingCurve', 0))
-                ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
-
-                if ws_sol < 0.1:
-                    logger.warning(f"❌ No valid data from WebSocket, skipping token")
-                    return
-
-                actual_sol = ws_sol * 0.625
-                market_cap = actual_sol * 250
-
-                logger.info(f"📊 WebSocket adjustment: {ws_sol:.2f} SOL → {actual_sol:.2f} SOL (62.5% factor)")
-                logger.info(f"📊 Adjusted MC: ${market_cap:,.0f}")
-
-                # Hardcode decimals for PumpFun (saves 126ms RPC call)
-                token_decimals = 6  # PumpFun ALWAYS uses 6 decimals
-
-                actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
-                actual_sol_lamports = int(actual_sol * 1e9)
-                price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
-                source_type = 'websocket_adjusted'
+            # For very young tokens, use WebSocket directly (it's actually more current)
+            if token_age < 1.0:
+                actual_sol = float(token_data.get('data', {}).get('vSolInBondingCurve', 0))
+                source_type = 'websocket_direct'
             else:
-                # Only try blockchain for older tokens
-                logger.info(f"📊 Reading blockchain for mature token (age: {token_age:.1f}s)")
+                # Try blockchain for older tokens
                 curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
 
-                if not curve_state or not curve_state.get('is_valid'):
-                    # Fallback for older tokens if blockchain fails
-                    logger.warning(f"⚠️ Blockchain read failed, using adjusted WebSocket")
-                    ws_sol = float(token_data_ws.get('vSolInBondingCurve', 0))
-                    ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
-
-                    if ws_sol < 0.1:
-                        logger.warning(f"❌ No valid data available")
-                        return
-
-                    actual_sol = ws_sol * 0.625
-                    market_cap = actual_sol * 250
-                    token_decimals = 6
-                    actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
-                    actual_sol_lamports = int(actual_sol * 1e9)
-                    price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
-                    source_type = 'websocket_adjusted'
-                else:
+                if curve_state and curve_state.get('is_valid'):
                     actual_sol = curve_state['sol_raised']
-                    actual_tokens_atomic = curve_state['virtual_token_reserves']
-                    actual_sol_lamports = curve_state['virtual_sol_reserves']
-                    price_lamports_per_atomic = curve_state['price_lamports_per_atomic']
-                    market_cap = actual_sol * 250
-                    token_decimals = 6  # Hardcode for PumpFun
                     source_type = 'blockchain'
-                    logger.info(f"✅ Blockchain data: {actual_sol:.4f} SOL, MC: ${market_cap:,.0f}")
+                else:
+                    actual_sol = float(token_data.get('data', {}).get('vSolInBondingCurve', 0))
+                    source_type = 'websocket_fallback'
 
-            # Liquidity validation using REAL data
+            # CRITICAL: Predict execution price
+            prediction = self.predict_execution_price(actual_sol, token_age, execution_delay=1.5)
+
+            logger.info(f"📊 Price Prediction:")
+            logger.info(f"   Current: {actual_sol:.2f} SOL")
+            logger.info(f"   Velocity: {prediction['velocity']:.2f} SOL/s")
+            logger.info(f"   Predicted at execution: {prediction['predicted_sol']:.2f} SOL")
+            logger.info(f"   Expected slippage: {prediction['expected_slippage']:.1f}%")
+
+            # Only proceed if expected slippage is acceptable
+            if prediction['expected_slippage'] > 25:  # 25% threshold
+                logger.warning(f"❌ Skipping - predicted slippage too high: {prediction['expected_slippage']:.1f}%")
+                return
+
+            # Use CURRENT price for calculations (not predicted)
+            # The prediction is just for go/no-go decision
+            # Get token data
+            token_data_ws = token_data.get('data', token_data) if 'data' in token_data else token_data
+            ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
+            token_decimals = 6  # PumpFun ALWAYS uses 6 decimals
+
+            # Calculate price data from current SOL (not predicted)
+            actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
+            actual_sol_lamports = int(actual_sol * 1e9)
+            price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
+            market_cap = actual_sol * 250
+
+            curve_data = {
+                'sol_raised': actual_sol,
+                'sol_in_curve': actual_sol,
+                'virtual_sol_reserves': actual_sol_lamports,
+                'virtual_token_reserves': actual_tokens_atomic,
+                'price_lamports_per_atomic': price_lamports_per_atomic,
+                'predicted_sol': prediction['predicted_sol'],
+                'expected_slippage': prediction['expected_slippage'],
+                'source': source_type,
+                'is_valid': True,
+                'is_migrated': False
+            }
+
+            # Liquidity validation
             required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
 
             if actual_sol < MIN_LIQUIDITY_SOL:
@@ -685,23 +700,11 @@ class SniperBot:
                 logger.warning(f"❌ Insufficient liquidity: {actual_sol:.4f} SOL < {required_sol:.4f} ({LIQUIDITY_MULTIPLIER}x)")
                 return
 
-            logger.info(f"✅ Liquidity OK (Blockchain): {actual_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
-
-            # Build curve_data from blockchain (not WebSocket)
-            curve_data = {
-                'sol_raised': actual_sol,
-                'sol_in_curve': actual_sol,
-                'virtual_sol_reserves': actual_sol_lamports,
-                'virtual_token_reserves': actual_tokens_atomic,
-                'price_lamports_per_atomic': price_lamports_per_atomic,
-                'source': source_type,  # Use the source_type variable from above
-                'is_valid': True,
-                'is_migrated': False
-            }
+            logger.info(f"✅ Liquidity OK: {actual_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
 
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
 
-            logger.info(f"⚡ Using blockchain data: {actual_sol:.4f} SOL, price={price_lamports_per_atomic:.10f} lamports/atom")
+            logger.info(f"⚡ Using {source_type} data: {actual_sol:.4f} SOL, price={price_lamports_per_atomic:.10f} lamports/atom")
             logger.debug(f"✅ Curve data built from blockchain (accurate)")
 
             token_age = None
