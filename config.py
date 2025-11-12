@@ -69,7 +69,7 @@ VELOCITY_MIN_SNAPSHOTS = int(os.getenv('VELOCITY_MIN_SNAPSHOTS', '1'))
 # ============================================
 # Maximum average velocity - reject parabolic bot pumps
 # Whale wins: 0.38 SOL/s (organic) vs Your losses: 14.2 SOL/s (bot pump)
-VELOCITY_MAX_SOL_PER_SECOND = float(os.getenv('VELOCITY_MAX_SOL_PER_SECOND', '6.0'))
+VELOCITY_MAX_SOL_PER_SECOND = float(os.getenv('VELOCITY_MAX_SOL_PER_SECOND', '8.0'))
 
 # Maximum recent velocity - reject parabolic spikes
 VELOCITY_MAX_RECENT_1S_SOL = float(os.getenv('VELOCITY_MAX_RECENT_1S_SOL', '8.0'))
