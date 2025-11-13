@@ -31,6 +31,9 @@ BACKUP_RPC_ENDPOINTS = [
 # ============================================
 # TRADING PARAMETERS
 # ============================================
+# Approximate SOL price (used only if Birdeye API fails)
+APPROX_SOL_PRICE_USD = 130.0  # used only if Birdeye fails
+
 # FIXED: Increased from 0.01 to 0.05 SOL (fees require larger positions)
 BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
 PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
@@ -97,10 +100,10 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '1'))
 # MOMENTUM EXIT SETTINGS
 # ============================================
 # Peak drawdown before exit (percentage points)
-MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '5.0'))
+MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '15.0'))
 
 # Minimum peak required before drawdown matters
-MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '1.0'))
+MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '5.0'))
 
 # Velocity death threshold (% of pre-buy velocity)
 MOMENTUM_VELOCITY_DEATH_PERCENT = float(os.getenv('MOMENTUM_VELOCITY_DEATH_PERCENT', '50.0'))

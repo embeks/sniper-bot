@@ -166,7 +166,7 @@ class SniperBot:
 
         # Initialize SOL price cache
         self._sol_price_cache = {
-            'price': 250.0,  # Default fallback
+            'price': None,
             'timestamp': 0
         }
 
@@ -202,7 +202,7 @@ class SniperBot:
         logger.info("=" * 60)
 
 
-    def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float = 250) -> float:
+    def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float) -> float:
         """Calculate market cap from bonding curve data"""
         try:
             # ✅ CORRECT: Get reserves and convert to human-readable
@@ -245,32 +245,40 @@ class SniperBot:
 
     async def _get_sol_price_async(self) -> float:
         """
-        Get current SOL price from Birdeye API
-        Returns cached price if recent, otherwise fetches new
+        Get current SOL price in USD with proper API fallback handling.
+        Always try Birdeye first. Never use 250 fallback.
         """
         try:
-            # Check if we have recent price (cache for 5 minutes)
-            if hasattr(self, '_sol_price_cache'):
-                cache_age = time.time() - self._sol_price_cache['timestamp']
-                if cache_age < 300:  # 5 minutes
-                    return self._sol_price_cache['price']
+            # Use cached price if fresh
+            if (
+                self._sol_price_cache['price'] is not None and
+                (time.time() - self._sol_price_cache['timestamp'] < 300)
+            ):
+                return self._sol_price_cache['price']
 
-            # Fetch new price
             birdeye_key = os.getenv('BIRDEYE_API_KEY', '')
             if not birdeye_key:
-                # Fallback to reasonable estimate
-                return 250.0
+                # Config-level fallback only
+                from config import APPROX_SOL_PRICE_USD
+                self._sol_price_cache = {
+                    'price': APPROX_SOL_PRICE_USD,
+                    'timestamp': time.time()
+                }
+                logger.warning(f"⚠️ No BIRDEYE_API_KEY — using fallback SOL=${APPROX_SOL_PRICE_USD}")
+                return APPROX_SOL_PRICE_USD
+
+            url = (
+                "https://public-api.birdeye.so/public/price?"
+                "address=So11111111111111111111111111111111111111112"
+            )
+            headers = {"X-API-KEY": birdeye_key}
 
             import aiohttp
             async with aiohttp.ClientSession() as session:
-                url = "https://public-api.birdeye.so/public/price?address=So11111111111111111111111111111111111111112"
-                headers = {"X-API-KEY": birdeye_key}
-                timeout = aiohttp.ClientTimeout(total=2)
-
-                async with session.get(url, headers=headers, timeout=timeout) as resp:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=2)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        sol_price = float(data['data']['value'])
+                        sol_price = float(data["data"]["value"])
 
                         # Cache it
                         self._sol_price_cache = {
@@ -278,15 +286,27 @@ class SniperBot:
                             'timestamp': time.time()
                         }
 
-                        logger.debug(f"💵 SOL price updated: ${sol_price:.2f}")
+                        logger.debug(f"💵 SOL price refreshed from Birdeye: ${sol_price:.2f}")
                         return sol_price
 
-            # Fallback
-            return 250.0
+            # If we reach here, Birdeye failed
+            from config import APPROX_SOL_PRICE_USD
+            fallback = APPROX_SOL_PRICE_USD
+            self._sol_price_cache = {
+                'price': fallback,
+                'timestamp': time.time()
+            }
+            logger.warning(f"⚠️ Birdeye request failed (status={resp.status}), using fallback SOL=${fallback}")
+            return fallback
 
         except Exception as e:
-            logger.debug(f"SOL price fetch failed: {e}, using fallback")
-            return 250.0
+            logger.error(f"SOL price fetch error: {e}")
+            from config import APPROX_SOL_PRICE_USD
+            self._sol_price_cache = {
+                'price': APPROX_SOL_PRICE_USD,
+                'timestamp': time.time()
+            }
+            return APPROX_SOL_PRICE_USD
 
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
         """
