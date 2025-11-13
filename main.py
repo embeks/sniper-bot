@@ -194,28 +194,6 @@ class SniperBot:
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
 
-    def predict_execution_price(self, current_sol: float, token_age: float, execution_delay: float = 1.5) -> dict:
-        """
-        Predict price at execution based on current velocity
-        """
-        # Calculate velocity
-        velocity_sol_per_sec = current_sol / max(token_age, 0.1)
-
-        # Predict SOL at execution time
-        predicted_sol = current_sol + (velocity_sol_per_sec * execution_delay)
-
-        # Bonding curve: price increases quadratically
-        # If SOL doubles, price roughly 4x
-        sol_ratio = predicted_sol / current_sol
-        price_multiplier = sol_ratio ** 1.5  # More conservative than ^2
-
-        return {
-            'current_sol': current_sol,
-            'predicted_sol': predicted_sol,
-            'velocity': velocity_sol_per_sec,
-            'price_multiplier': price_multiplier,
-            'expected_slippage': (price_multiplier - 1) * 100
-        }
 
     def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float = 250) -> float:
         """Calculate market cap from bonding curve data"""
@@ -649,28 +627,17 @@ class SniperBot:
                     actual_sol = float(token_data.get('data', {}).get('vSolInBondingCurve', 0))
                     source_type = 'websocket_fallback'
 
-            # CRITICAL: Predict execution price
-            prediction = self.predict_execution_price(actual_sol, token_age, execution_delay=1.5)
+            # Slippage protection via curve reader (optional logging only)
+            estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
+            if estimated_slippage:
+                logger.info(f"📊 Curve-based slippage estimate: {estimated_slippage:.2f}%")
 
-            logger.info(f"📊 Price Prediction:")
-            logger.info(f"   Current: {actual_sol:.2f} SOL")
-            logger.info(f"   Velocity: {prediction['velocity']:.2f} SOL/s")
-            logger.info(f"   Predicted at execution: {prediction['predicted_sol']:.2f} SOL")
-            logger.info(f"   Expected slippage: {prediction['expected_slippage']:.1f}%")
-
-            # Only proceed if expected slippage is acceptable
-            if prediction['expected_slippage'] > 25:  # 25% threshold
-                logger.warning(f"❌ Skipping - predicted slippage too high: {prediction['expected_slippage']:.1f}%")
-                return
-
-            # Use CURRENT price for calculations (not predicted)
-            # The prediction is just for go/no-go decision
             # Get token data
             token_data_ws = token_data.get('data', token_data) if 'data' in token_data else token_data
             ws_tokens = float(token_data_ws.get('vTokensInBondingCurve', 800_000_000))
             token_decimals = 6  # PumpFun ALWAYS uses 6 decimals
 
-            # Calculate price data from current SOL (not predicted)
+            # Calculate price data from current SOL
             actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
             actual_sol_lamports = int(actual_sol * 1e9)
             price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
