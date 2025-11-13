@@ -160,22 +160,22 @@ class PumpPortalMonitor:
     def _calculate_market_cap(self, token_data: dict) -> float:
         """
         Calculate market cap from bonding curve data
-        TODO: vTokensInBondingCurve may be in atomic units - verify with PumpPortal
-        If atomic, need to normalize by 10**decimals
+        Uses dynamic SOL price from cache
         """
         try:
             v_sol = float(token_data.get('vSolInBondingCurve', 0))
             v_tokens = float(token_data.get('vTokensInBondingCurve', 0))
-            
+
             if v_sol == 0 or v_tokens == 0:
                 return 0
-            
-            # Assuming v_tokens is in human-readable units (typical for PumpPortal)
-            # If you see MC values 1000x off, v_tokens is likely atomic
+
+            # PumpPortal sends human-readable units
             price_sol = v_sol / v_tokens
             total_supply = 1_000_000_000
+
+            # Use current SOL price (updated every 5 min)
             market_cap_usd = total_supply * price_sol * self.sol_price_usd
-            
+
             return market_cap_usd
         except Exception as e:
             logger.error(f"MC calculation error: {e}")

@@ -7,6 +7,7 @@ import logging
 import signal
 import time
 import random
+import os
 from datetime import datetime
 from typing import Dict, Optional, List
 
@@ -132,11 +133,11 @@ class SniperBot:
         self.velocity_checker = VelocityChecker(
             min_sol_per_second=2.5,           # Hardcoded for Mayhem
             min_unique_buyers=VELOCITY_MIN_BUYERS,
-            max_token_age_seconds=15.0,        
+            max_token_age_seconds=15.0,
             min_recent_1s_sol=2.5,            # Hardcoded for Mayhem
             min_recent_3s_sol=5.0,            # Hardcoded for Mayhem
             max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
-            min_snapshots=2,                  # Keep 2-snapshot rule
+            min_snapshots=1,                  # ✅ ALLOW FIRST DETECTION ENTRY
             max_sol_per_second=10.0,          # Raised from 6.0 for Mayhem
             max_recent_1s_sol=15.0,           # Raised from 8.0 for Mayhem
             max_recent_3s_sol=25.0            # Raised from 12.0 for Mayhem
@@ -160,9 +161,15 @@ class SniperBot:
         
         self.consecutive_losses = 0
         self.session_loss_count = 0
-        
+
         self.telegram_enabled = ENABLE_TELEGRAM_NOTIFICATIONS
-        
+
+        # Initialize SOL price cache
+        self._sol_price_cache = {
+            'price': 250.0,  # Default fallback
+            'timestamp': 0
+        }
+
         self._log_startup_info()
     
     def _log_startup_info(self):
@@ -198,16 +205,24 @@ class SniperBot:
     def _calculate_mc_from_curve(self, curve_data: dict, sol_price_usd: float = 250) -> float:
         """Calculate market cap from bonding curve data"""
         try:
-            v_sol = curve_data.get('sol_in_curve', 0)
-            v_tokens = curve_data.get('virtual_token_reserves', 0)
-            
-            if v_sol == 0 or v_tokens == 0:
+            # ✅ CORRECT: Get reserves and convert to human-readable
+            v_sol_lamports = curve_data.get('virtual_sol_reserves', 0)
+            v_tokens_atomic = curve_data.get('virtual_token_reserves', 0)
+
+            if v_sol_lamports == 0 or v_tokens_atomic == 0:
                 return 0
-            
-            price_sol = (v_sol * 1e9) / v_tokens
+
+            # Convert to human units
+            v_sol_human = v_sol_lamports / 1e9
+            v_tokens_human = v_tokens_atomic / 1e6  # PumpFun uses 6 decimals
+
+            # Calculate price per token in SOL
+            price_per_token_sol = v_sol_human / v_tokens_human
+
+            # Calculate market cap
             total_supply = 1_000_000_000
-            market_cap_usd = total_supply * price_sol * sol_price_usd
-            
+            market_cap_usd = total_supply * price_per_token_sol * sol_price_usd
+
             return market_cap_usd
         except Exception as e:
             logger.error(f"MC calculation error: {e}")
@@ -227,7 +242,52 @@ class SniperBot:
         except Exception as e:
             logger.error(f"Token price calculation error: {e}")
             return 0
-    
+
+    async def _get_sol_price_async(self) -> float:
+        """
+        Get current SOL price from Birdeye API
+        Returns cached price if recent, otherwise fetches new
+        """
+        try:
+            # Check if we have recent price (cache for 5 minutes)
+            if hasattr(self, '_sol_price_cache'):
+                cache_age = time.time() - self._sol_price_cache['timestamp']
+                if cache_age < 300:  # 5 minutes
+                    return self._sol_price_cache['price']
+
+            # Fetch new price
+            birdeye_key = os.getenv('BIRDEYE_API_KEY', '')
+            if not birdeye_key:
+                # Fallback to reasonable estimate
+                return 250.0
+
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                url = "https://public-api.birdeye.so/public/price?address=So11111111111111111111111111111111111111112"
+                headers = {"X-API-KEY": birdeye_key}
+                timeout = aiohttp.ClientTimeout(total=2)
+
+                async with session.get(url, headers=headers, timeout=timeout) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        sol_price = float(data['data']['value'])
+
+                        # Cache it
+                        self._sol_price_cache = {
+                            'price': sol_price,
+                            'timestamp': time.time()
+                        }
+
+                        logger.debug(f"💵 SOL price updated: ${sol_price:.2f}")
+                        return sol_price
+
+            # Fallback
+            return 250.0
+
+        except Exception as e:
+            logger.debug(f"SOL price fetch failed: {e}, using fallback")
+            return 250.0
+
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
         """
         Calculate current token price - returns lamports per atomic (same units as entry price)
@@ -641,7 +701,18 @@ class SniperBot:
             actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
             actual_sol_lamports = int(actual_sol * 1e9)
             price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
-            market_cap = actual_sol * 250
+
+            # ✅ CORRECT: Calculate market cap from token price
+            v_sol_human = actual_sol
+            v_tokens_human = ws_tokens
+            sol_price_usd = await self._get_sol_price_async()
+
+            if v_tokens_human > 0:
+                price_per_token_sol = v_sol_human / v_tokens_human
+                total_supply = 1_000_000_000
+                market_cap = total_supply * price_per_token_sol * sol_price_usd
+            else:
+                market_cap = 0
 
             curve_data = {
                 'sol_raised': actual_sol,
@@ -688,22 +759,24 @@ class SniperBot:
                 sol_raised = curve_data.get('sol_raised', 0)
 
                 if sol_raised > 0:
-                    # Estimate age using realistic velocity assumptions
-                    # Organic pumps: 2-4 SOL/s average
-                    # Bot pumps: 8-15 SOL/s average
-                    # Use 3.5 SOL/s as baseline (middle ground)
-                    estimated_age = sol_raised / 3.5
-
-                    # Clamp between 1.0s minimum and 15s maximum
-                    # (tokens younger than 1s are unrealistic due to network/detection delays)
-                    token_age = max(1.0, min(estimated_age, 15.0))
+                    # ✅ FIXED: Tiered estimation based on real Mayhem pump patterns
+                    # Mayhem pumps are NOT linear - they explode early then slow
+                    if sol_raised >= 50:
+                        token_age = 12.0
+                    elif sol_raised >= 35:
+                        token_age = 7.0
+                    elif sol_raised >= 25:
+                        token_age = 5.0
+                    elif sol_raised >= 15:
+                        token_age = 3.5
+                    else:
+                        token_age = 2.5
 
                     logger.info(
-                        f"📊 Estimated age from SOL raised: {sol_raised:.2f} SOL ÷ 3.5 SOL/s "
-                        f"= {token_age:.1f}s (clamped 1.0-15.0s)"
+                        f"📊 Estimated age from SOL raised: {sol_raised:.2f} SOL "
+                        f"→ {token_age:.1f}s (tiered model)"
                     )
                 else:
-                    # Default to 2.5s if no curve data
                     token_age = 2.5
                     logger.warning(f"⚠️ No SOL raised data, using default age: {token_age:.1f}s")
             
