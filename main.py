@@ -130,17 +130,16 @@ class SniperBot:
         self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)
         
         self.velocity_checker = VelocityChecker(
-            min_sol_per_second=VELOCITY_MIN_SOL_PER_SECOND,
+            min_sol_per_second=2.5,           # Hardcoded for Mayhem
             min_unique_buyers=VELOCITY_MIN_BUYERS,
-            max_token_age_seconds=VELOCITY_MAX_TOKEN_AGE,
-            min_recent_1s_sol=VELOCITY_MIN_RECENT_1S_SOL,
-            min_recent_3s_sol=VELOCITY_MIN_RECENT_3S_SOL,
+            max_token_age_seconds=6.0,        # Tightened for Mayhem
+            min_recent_1s_sol=2.5,            # Hardcoded for Mayhem
+            min_recent_3s_sol=5.0,            # Hardcoded for Mayhem
             max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
-            min_snapshots=1,
-            # NEW: Add velocity ceiling parameters
-            max_sol_per_second=VELOCITY_MAX_SOL_PER_SECOND,
-            max_recent_1s_sol=VELOCITY_MAX_RECENT_1S_SOL,
-            max_recent_3s_sol=VELOCITY_MAX_RECENT_3S_SOL
+            min_snapshots=2,                  # Keep 2-snapshot rule
+            max_sol_per_second=10.0,          # Raised from 6.0 for Mayhem
+            max_recent_1s_sol=15.0,           # Raised from 8.0 for Mayhem
+            max_recent_3s_sol=25.0            # Raised from 12.0 for Mayhem
         )
         
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
@@ -174,13 +173,14 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: VELOCITY GATE + TIMER EXIT + FAIL-FAST")
-        logger.info(f"  • Velocity gate: {VELOCITY_MIN_SOL_PER_SECOND}-{VELOCITY_MAX_SOL_PER_SECOND} SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
-        logger.info(f"  • Bot pump rejection: >{VELOCITY_MAX_SOL_PER_SECOND} SOL/s avg or >{VELOCITY_MAX_RECENT_1S_SOL} SOL in 1s")
-        logger.info(f"  • Recent velocity: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
+        logger.info(f"  • Strategy: 🎪 MAYHEM MODE - FAST RECYCLING")
+        logger.info(f"  • Velocity gate: 2.5-10.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
+        logger.info(f"  • Velocity ceiling raised: Accepts up to 10 SOL/s organic pumps")
+        logger.info(f"  • Recent velocity: ≥2.5 SOL (1s), ≥5.0 SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
-        logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
-        logger.info(f"  • Extension: +{TIMER_EXTENSION_SECONDS}s if >{TIMER_EXTENSION_PNL_THRESHOLD}% and accelerating")
+        logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s (max 1 ext)")
+        logger.info(f"  • Trail: Starts at +70%, exits on 35pp giveback")
+        logger.info(f"  • Max hold: 60s hard cap")
         logger.info(f"  • Fail-fast: Exit at {FAIL_FAST_CHECK_TIME}s if P&L <{FAIL_FAST_PNL_THRESHOLD}% or velocity dead")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
         logger.info(f"  • Max slippage: {MAX_SLIPPAGE_PERCENT}%")
@@ -803,7 +803,7 @@ class SniperBot:
                 sol_amount=BUY_AMOUNT_SOL,
                 bonding_curve_key=bonding_curve_key,
                 slippage=30,
-                urgency="normal"
+                urgency="high"  # ✅ Critical for Mayhem
             )
             
             bought_tokens = 0
