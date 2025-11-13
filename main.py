@@ -649,8 +649,6 @@ class SniperBot:
                 'virtual_sol_reserves': actual_sol_lamports,
                 'virtual_token_reserves': actual_tokens_atomic,
                 'price_lamports_per_atomic': price_lamports_per_atomic,
-                'predicted_sol': prediction['predicted_sol'],
-                'expected_slippage': prediction['expected_slippage'],
                 'source': source_type,
                 'is_valid': True,
                 'is_migrated': False
