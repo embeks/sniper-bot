@@ -783,7 +783,16 @@ class SniperBot:
             logger.info(f"📊 Using token age: {token_age:.1f}s for velocity check")
             logger.info(f"📊 SOL raised (from curve): {curve_data.get('sol_raised', 0):.4f}")
             logger.info(f"📊 Expected velocity: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s")
-            
+
+            # Recalculate MC from final blockchain curve data
+            sol_price_usd = await self._get_sol_price_async()
+            entry_market_cap = self._calculate_mc_from_curve(curve_data, sol_price_usd)
+
+            logger.info(f"📊 FINAL ENTRY CONDITIONS:")
+            logger.info(f"   Market Cap: ${entry_market_cap:,.0f}")
+            logger.info(f"   SOL in Curve: {curve_data['sol_raised']:.4f}")
+            logger.info(f"   Velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s")
+
             velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
                 mint=mint,
                 curve_data=curve_data,
@@ -983,8 +992,8 @@ class SniperBot:
                         # Create position object
                         position = Position(
                             mint=mint,
-                            sol_amount=actual_sol_spent,
-                            token_amount=bought_tokens,
+                            amount_sol=actual_sol_spent,
+                            tokens=bought_tokens,
                             entry_market_cap=entry_market_cap
                         )
                         position.buy_signature = signature
@@ -1239,29 +1248,11 @@ class SniperBot:
                                 await self._close_position_full(mint, reason="fail_fast_pnl")
                                 break
 
-                            # Velocity branch (also on chain)
-                            pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
-                            if pre_buy_velocity:
-                                current_velocity = current_sol_in_curve / max(age, 0.1)
-                                velocity_percent = (current_velocity / pre_buy_velocity) * 100
-
-                                if velocity_percent < FAIL_FAST_VELOCITY_THRESHOLD:
-                                    logger.warning(
-                                        f"⚠️ FAIL-FAST: Velocity died ({velocity_percent:.1f}% of pre-buy) at {age:.1f}s - "
-                                        f"exiting immediately"
-                                    )
-                                    await self._close_position_full(mint, reason="fail_fast_velocity")
-                                    break
-                                else:
-                                    logger.info(
-                                        f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                        f"P&L {price_change:+.1f}%, velocity {velocity_percent:.0f}%"
-                                    )
-                            else:
-                                logger.info(
-                                    f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                    f"P&L {price_change:+.1f}%"
-                                )
+                            # Velocity fail-fast DISABLED - causes false exits on healthy consolidations
+                            logger.info(
+                                f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
+                                f"P&L {price_change:+.1f}% (velocity check disabled)"
+                            )
                     
                     # ✅ CHATGPT FIX #7: Only allow rug trap on chain price
                     rug_threshold = -60 if age < 3.0 else -40
