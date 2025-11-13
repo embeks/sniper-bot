@@ -22,30 +22,29 @@ class PumpPortalTrader:
     
     async def get_priority_fee(self, urgency: str = "normal") -> float:
         """
-        OPTIMIZED for 0.05 SOL positions - 11% total fees (vs 26% before)
+        MAYHEM MODE: Boosted priority fees for congestion
 
         Fee philosophy:
-        - Buy: Lower fee OK (2-5s confirm, entry not time-critical)
-        - Sell: Higher fee CRITICAL (1-3s confirm, price decays fast)
+        - Buy: Higher fee for fast entry (1-3s confirm)
+        - Sell: Critical priority for exits (1-2s confirm)
 
         urgency levels:
         - "low": 0.001 SOL (5-10s confirm, off-peak only)
-        - "normal": 0.0015 SOL (BUY - 2-5s confirm, optimal for entry)
-        - "high": 0.003 SOL (3-5s confirm, fast but not urgent)
-        - "critical": 0.004 SOL (SELL - 1-3s confirm, exit priority)
+        - "normal": 0.002 SOL (BUY - raised for Mayhem)
+        - "high": 0.004 SOL (raised for Mayhem)
+        - "critical": 0.006 SOL (SELL - raised for Mayhem)
         - "ultra": 0.008 SOL (emergency retry, <1s confirm)
 
         Breakeven analysis at 0.05 SOL:
-        - Total fees: 0.0015 (buy) + 0.004 (sell) = 0.0055 SOL
-        - Breakeven: +11% (vs +26% before)
-        - At +26% win: +0.0077 SOL profit (+15% ROI)
+        - Total fees: 0.002 (buy) + 0.006 (sell) = 0.008 SOL
+        - Breakeven: +16% (higher but faster execution)
         """
         urgency_fees = {
             "low": 0.001,
-            "normal": 0.0015,      # BUY fee
-            "high": 0.003,
-            "critical": 0.004,     # SELL fee
-            "ultra": 0.008         # Emergency retry
+            "normal": 0.002,      # Raised from 0.0015
+            "high": 0.004,        # Raised from 0.003
+            "critical": 0.006,    # Raised from 0.004
+            "ultra": 0.008
         }
 
         fee = urgency_fees.get(urgency, 0.0015)

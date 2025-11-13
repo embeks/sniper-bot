@@ -45,7 +45,7 @@ TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 # VELOCITY GATE SETTINGS
 # ============================================
 # Minimum SOL/second inflow rate to enter
-VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.0'))
+VELOCITY_MIN_SOL_PER_SECOND = float(os.getenv('VELOCITY_MIN_SOL_PER_SECOND', '2.5'))
 
 # Minimum unique buyers required (estimated)
 VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
@@ -55,8 +55,8 @@ VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
 VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '25.0'))
 
 # Recent velocity thresholds (last 1-3 seconds)
-VELOCITY_MIN_RECENT_1S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_1S_SOL', '2.0'))
-VELOCITY_MIN_RECENT_3S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_3S_SOL', '4.0'))
+VELOCITY_MIN_RECENT_1S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_1S_SOL', '2.5'))
+VELOCITY_MIN_RECENT_3S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_3S_SOL', '5.0'))
 
 # FIXED: Tightened from 40% to 25% (reject if velocity dropping >25%)
 VELOCITY_MAX_DROP_PERCENT = float(os.getenv('VELOCITY_MAX_DROP_PERCENT', '25.0'))
@@ -88,10 +88,10 @@ TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '5'))
 TIMER_EXTENSION_SECONDS = int(os.getenv('TIMER_EXTENSION_SECONDS', '10'))
 
 # P&L threshold to consider extension (%)
-TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD', '80'))
+TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD', '60'))
 
 # Maximum total extensions allowed
-TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
+TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '1'))
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
@@ -127,8 +127,8 @@ EXTREME_TP_PERCENT = float(os.getenv('EXTREME_TP_PERCENT', '150.0'))
 # TRAIL_GIVEBACK_PERCENT: Exit if you give back this much from peak
 # Example: Hit +191% peak, currently +85% = 106pp drop → Exit if drop >= 50pp
 # Set both to 999.0 to disable
-TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '100.0'))
-TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '50.0'))
+TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '70.0'))
+TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '35.0'))
 
 # ============================================
 # HOW PROFIT PROTECTION WORKS:
@@ -215,7 +215,7 @@ if tp3 and sp3:
 
 # Timing
 SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '0'))
-MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '120'))
+MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '60'))
 
 # FIXED: Changed from 1s to 0.5s for more precise fail-fast timing
 MONITOR_CHECK_INTERVAL = float(os.getenv('MONITOR_CHECK_INTERVAL', '0.5'))
