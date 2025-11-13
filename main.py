@@ -132,7 +132,7 @@ class SniperBot:
         self.velocity_checker = VelocityChecker(
             min_sol_per_second=2.5,           # Hardcoded for Mayhem
             min_unique_buyers=VELOCITY_MIN_BUYERS,
-            max_token_age_seconds=6.0,        # Tightened for Mayhem
+            max_token_age_seconds=15.0,        
             min_recent_1s_sol=2.5,            # Hardcoded for Mayhem
             min_recent_3s_sol=5.0,            # Hardcoded for Mayhem
             max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
