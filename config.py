@@ -32,7 +32,7 @@ BACKUP_RPC_ENDPOINTS = [
 # TRADING PARAMETERS
 # ============================================
 # Approximate SOL price (used only if Birdeye API fails)
-APPROX_SOL_PRICE_USD = 130.0  # used only if Birdeye fails
+APPROX_SOL_PRICE_USD = 235.0  # used only if Birdeye fails
 
 # FIXED: Increased from 0.01 to 0.05 SOL (fees require larger positions)
 BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
