@@ -55,7 +55,7 @@ VELOCITY_MIN_BUYERS = int(os.getenv('VELOCITY_MIN_BUYERS', '5'))
 
 # CRITICAL FIX: Increased from 6.0 to 25.0 to account for monitor delays
 # Timeline: 0.5s cooldown + 3s sleep + 0-6s retries + processing = ~10-20s
-VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '25.0'))
+VELOCITY_MAX_TOKEN_AGE = float(os.getenv('VELOCITY_MAX_TOKEN_AGE', '15.0'))
 
 # Recent velocity thresholds (last 1-3 seconds)
 VELOCITY_MIN_RECENT_1S_SOL = float(os.getenv('VELOCITY_MIN_RECENT_1S_SOL', '2.5'))
