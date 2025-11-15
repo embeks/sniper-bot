@@ -100,10 +100,13 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '1'))
 # MOMENTUM EXIT SETTINGS
 # ============================================
 # Peak drawdown before exit (percentage points)
-MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '15.0'))
+MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '25.0'))
 
 # Minimum peak required before drawdown matters
-MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '5.0'))
+MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '15.0'))
+
+# Minimum age before drawdown exit applies (seconds)
+MOMENTUM_DRAWDOWN_MIN_AGE = float(os.getenv('MOMENTUM_DRAWDOWN_MIN_AGE', '15.0'))
 
 # Velocity death threshold (% of pre-buy velocity)
 MOMENTUM_VELOCITY_DEATH_PERCENT = float(os.getenv('MOMENTUM_VELOCITY_DEATH_PERCENT', '50.0'))

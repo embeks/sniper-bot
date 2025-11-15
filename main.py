@@ -36,12 +36,13 @@ from config import (
 
 # ✅ NEW: Import profit protection settings
 try:
-    from config import EXTREME_TP_PERCENT, TRAIL_START_PERCENT, TRAIL_GIVEBACK_PERCENT
+    from config import EXTREME_TP_PERCENT, TRAIL_START_PERCENT, TRAIL_GIVEBACK_PERCENT, MOMENTUM_DRAWDOWN_MIN_AGE
 except ImportError:
     # Fallback defaults if not in config yet
     EXTREME_TP_PERCENT = 150.0
     TRAIL_START_PERCENT = 100.0
     TRAIL_GIVEBACK_PERCENT = 50.0
+    MOMENTUM_DRAWDOWN_MIN_AGE = 15.0
     logger.warning("⚠️ Profit protection settings not in config.py, using defaults")
 
 from wallet import WalletManager
@@ -1304,10 +1305,12 @@ class SniperBot:
                     if max_pnl_reached > MOMENTUM_MIN_PEAK_PERCENT and not position.is_closing:
                         drawdown_from_peak = max_pnl_reached - price_change
 
-                        if drawdown_from_peak >= MOMENTUM_MAX_DRAWDOWN_PP:
+                        # Don't exit on early volatility - let trade develop
+                        if age >= MOMENTUM_DRAWDOWN_MIN_AGE and drawdown_from_peak >= MOMENTUM_MAX_DRAWDOWN_PP:
                             logger.warning(
                                 f"💨 MOMENTUM DEATH: Peak {max_pnl_reached:+.1f}% → Now {price_change:+.1f}% "
-                                f"(drawdown: {drawdown_from_peak:.1f}pp, threshold: {MOMENTUM_MAX_DRAWDOWN_PP:.1f}pp)"
+                                f"(drawdown: {drawdown_from_peak:.1f}pp, threshold: {MOMENTUM_MAX_DRAWDOWN_PP:.1f}pp, "
+                                f"age: {age:.1f}s)"
                             )
                             await self._close_position_full(mint, reason="momentum_death")
                             break
