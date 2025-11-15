@@ -240,7 +240,7 @@ MAX_SLIPPAGE_PERCENT = float(os.getenv('MAX_SLIPPAGE_PERCENT', '2.5'))
 # Maximum allowed slippage between estimated and actual entry price
 # If actual slippage exceeds this, immediately exit the position
 # This protects against buying during bot swarms and price spikes
-MAX_ENTRY_SLIPPAGE_PERCENT = float(os.getenv('MAX_ENTRY_SLIPPAGE_PERCENT', '15.0'))
+MAX_ENTRY_SLIPPAGE_PERCENT = float(os.getenv('MAX_ENTRY_SLIPPAGE_PERCENT', '40.0'))
 
 # ============================================
 # PUMPFUN SPECIFIC CONFIGURATION
