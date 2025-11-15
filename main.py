@@ -133,7 +133,7 @@ class SniperBot:
         self.velocity_checker = VelocityChecker(
             min_sol_per_second=2.5,           # Hardcoded for Mayhem
             min_unique_buyers=VELOCITY_MIN_BUYERS,
-            max_token_age_seconds=15.0,
+            max_token_age_seconds=7.0,  # Moderate: catches most of initial pump
             min_recent_1s_sol=2.5,            # Hardcoded for Mayhem
             min_recent_3s_sol=5.0,            # Hardcoded for Mayhem
             max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
@@ -798,22 +798,14 @@ class SniperBot:
                 sol_raised = curve_data.get('sol_raised', 0)
 
                 if sol_raised > 0:
-                    # ✅ FIXED: Tiered estimation based on real Mayhem pump patterns
-                    # Mayhem pumps are NOT linear - they explode early then slow
-                    if sol_raised >= 50:
-                        token_age = 12.0
-                    elif sol_raised >= 35:
-                        token_age = 7.0
-                    elif sol_raised >= 25:
-                        token_age = 5.0
-                    elif sol_raised >= 15:
-                        token_age = 3.5
-                    else:
-                        token_age = 2.5
+                    # ✅ FIXED: Linear model to avoid underestimating age on recycled liquidity
+                    # Mayhem tokens pump at 3-5 SOL/s initially, then recycle between whales
+                    # Use conservative 3.0 SOL/s to account for pump/dump/recycle patterns
+                    token_age = max(sol_raised / 3.0, 2.0)
 
                     logger.info(
-                        f"📊 Estimated age from SOL raised: {sol_raised:.2f} SOL "
-                        f"→ {token_age:.1f}s (tiered model)"
+                        f"📊 Age estimate: {sol_raised:.2f} SOL ÷ 3.0 SOL/s "
+                        f"= {token_age:.1f}s (linear conservative)"
                     )
                 else:
                     token_age = 2.5
