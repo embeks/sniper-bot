@@ -1,5 +1,3 @@
-
-
 """
 Main Orchestrator - FINAL FIX: Entry price bookkeeping + Stop loss with source checking
 """
@@ -892,13 +890,12 @@ class SniperBot:
             actual_entry_price = estimated_entry_price  # Will be updated if we get real data
             
             if signature:
-                # ✅ FIX: Increase to 3s to allow token account creation + indexing
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(1.5)  # Reduced from 3s to 1.5s for faster confirmation
 
                 txd = await self._get_transaction_deltas(signature, mint)
-
-                # ✅ CRITICAL FIX: Always read actual wallet balance with MORE retries
-                actual_wallet_balance = self.wallet.get_token_balance(mint, max_retries=5, retry_delay=1.5)
+                
+                # ✅ CRITICAL FIX: Always read actual wallet balance
+                actual_wallet_balance = self.wallet.get_token_balance(mint)
                 
                 if txd["confirmed"] and txd["token_delta"] > 0:
                     bought_tokens = txd["token_delta"]
@@ -950,10 +947,10 @@ class SniperBot:
                         logger.info(f"   Calculation: {actual_sol_spent:.6f} SOL ({lamports_spent:,} lamports) / {bought_tokens:,.0f} tokens ({token_atoms:,} atoms)")
                         
                     else:
-                        # ✅ CRITICAL FIX #2: Last resort - wait LONGER with MORE retries
-                        logger.warning("⚠️ No tokens in wallet immediately - waiting 5s more with aggressive retries")
-                        await asyncio.sleep(5.0)
-                        bought_tokens = self.wallet.get_token_balance(mint, max_retries=8, retry_delay=1.5)
+                        # ✅ CRITICAL FIX #2: Last resort - wait longer and check again
+                        logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
+                        await asyncio.sleep(2)
+                        bought_tokens = self.wallet.get_token_balance(mint)
                         actual_sol_spent = BUY_AMOUNT_SOL
                         
                         if bought_tokens == 0:
