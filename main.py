@@ -1245,7 +1245,7 @@ class SniperBot:
                     # TRACK PEAK MC FOR CONSOLIDATION DETECTION
                     # ============================================
                     if not hasattr(position, 'peak_mc'):
-                        position.peak_mc = entry_market_cap
+                        position.peak_mc = position.entry_market_cap
                     sol_price_usd = await self._get_sol_price_async()
                     current_mc = self._calculate_mc_from_curve(curve_data, sol_price_usd)
                     position.peak_mc = max(position.peak_mc, current_mc)
