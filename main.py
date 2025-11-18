@@ -956,14 +956,27 @@ class SniperBot:
                         logger.info(f"   Calculation: {actual_sol_spent:.6f} SOL ({lamports_spent:,} lamports) / {bought_tokens:,.0f} tokens ({token_atoms:,} atoms)")
                         
                     else:
-                        # ✅ CRITICAL FIX #2: Last resort - wait longer and check again
-                        logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
-                        await asyncio.sleep(2)
-                        bought_tokens = self.wallet.get_token_balance(mint)
+                        # ✅ CRITICAL FIX #2: Last resort - wait longer and check again with retries
+                        # Helius RPC needs 5-10s to index new token accounts for ultra-fast entries
+                        max_retries = 4
+                        for retry in range(max_retries):
+                            bought_tokens = self.wallet.get_token_balance(mint)
+
+                            if bought_tokens > 0:
+                                logger.info(f"✅ Found tokens on retry {retry + 1}: {bought_tokens:,.0f}")
+                                break
+
+                            if retry < max_retries - 1:  # Don't sleep on last attempt
+                                wait_time = 2.5 if retry == 0 else 3.0
+                                logger.warning(f"⏳ No tokens yet, retry {retry + 1}/{max_retries} - waiting {wait_time}s...")
+                                await asyncio.sleep(wait_time)
+                            else:
+                                logger.error(f"❌ No tokens after {max_retries} retries (~{2.5 + 3 + 3}s total wait)")
+
                         actual_sol_spent = BUY_AMOUNT_SOL
-                        
+
                         if bought_tokens == 0:
-                            logger.error("❌ Still no tokens - position may have failed")
+                            logger.error("❌ Position may have failed - check wallet manually")
                             self.pending_buys -= 1
                             return
                         
