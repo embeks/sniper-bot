@@ -1,4 +1,3 @@
-
 """
 PumpPortal Trader
 UPDATED: Tighter slippage now that we validate liquidity first
@@ -139,18 +138,73 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions - use existing working code
-                        logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
+                        # Legacy transaction - manual signing with overflow protection
+                        logger.info("Legacy transaction - manual signing (robust varint parse + re-pack)")
                         try:
-                            from solana.transaction import Transaction
-                            tx = Transaction.deserialize(raw_tx_bytes)
-                            tx.sign_partial([self.wallet.keypair])
-                            signed_tx_bytes = tx.serialize()
-                            logger.info("Signed legacy transaction")
+                            b = raw_tx_bytes
+                            if len(b) < 2:
+                                logger.error(f"Legacy tx too small ({len(b)} bytes)")
+                                return None
+
+                            # Parse compact-u16 signature count with overflow protection
+                            idx = 0
+                            val = 0
+                            shift = 0
+                            while True:
+                                if idx >= len(b):
+                                    logger.error("Bad legacy varint for sig_count")
+                                    return None
+
+                                # Check shift BEFORE parsing to prevent overflow
+                                if shift > 14:
+                                    logger.error(f"sig_count varint too long (shift={shift}, would overflow u16)")
+                                    return None
+
+                                byte = b[idx]
+                                val |= (byte & 0x7F) << shift
+                                idx += 1
+
+                                # Check value BEFORE continuing to prevent overflow
+                                if val > 65535:
+                                    logger.error(f"sig_count varint value {val} exceeds u16 max (65535)")
+                                    return None
+
+                                if byte < 0x80:
+                                    break
+                                shift += 7
+
+                            sig_count = val
+
+                            # Additional validation
+                            if sig_count > 100:  # Sanity check
+                                logger.error(f"sig_count {sig_count} is suspiciously high, likely malformed")
+                                return None
+
+                            sig_section_end = idx + 64 * sig_count
+
+                            if sig_section_end > len(b):
+                                logger.error(f"Malformed legacy tx: sig_section_end {sig_section_end} > len {len(b)}")
+                                return None
+
+                            # Message is everything after signatures
+                            msg_bytes = b[sig_section_end:]
+                            if not msg_bytes:
+                                logger.error("Empty legacy message bytes")
+                                return None
+
+                            # Sign the message
+                            signature = self.wallet.keypair.sign_message(msg_bytes)
+
+                            # Repack: [sig_count=1] + [signature] + [message]
+                            signed_tx_bytes = bytes([0x01]) + bytes(signature) + msg_bytes
+
+                            logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
+
                         except Exception as e:
                             logger.error(f"Failed to sign legacy transaction: {e}")
-                            logger.info("Attempting to send without signing...")
-                            signed_tx_bytes = raw_tx_bytes
+                            import traceback
+                            logger.error(traceback.format_exc())
+                            return None
                     
                     logger.info(f"Sending transaction for {mint[:8]}...")
                     
@@ -300,15 +354,15 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transaction - manual signing
+                        # Legacy transaction - manual signing with overflow protection
                         logger.info("Legacy transaction - manual signing (robust varint parse + re-pack)")
                         try:
                             b = raw_tx_bytes
                             if len(b) < 2:
                                 logger.error(f"Legacy tx too small ({len(b)} bytes)")
                                 return None
-                            
-                            # Parse compact-u16 signature count
+
+                            # Parse compact-u16 signature count with overflow protection
                             idx = 0
                             val = 0
                             shift = 0
@@ -316,37 +370,56 @@ class PumpPortalTrader:
                                 if idx >= len(b):
                                     logger.error("Bad legacy varint for sig_count")
                                     return None
+
+                                # Check shift BEFORE parsing to prevent overflow
+                                if shift > 14:
+                                    logger.error(f"sig_count varint too long (shift={shift}, would overflow u16)")
+                                    return None
+
                                 byte = b[idx]
                                 val |= (byte & 0x7F) << shift
                                 idx += 1
+
+                                # Check value BEFORE continuing to prevent overflow
+                                if val > 65535:
+                                    logger.error(f"sig_count varint value {val} exceeds u16 max (65535)")
+                                    return None
+
                                 if byte < 0x80:
                                     break
                                 shift += 7
-                                if shift > 14:
-                                    logger.error("sig_count varint too long")
-                                    return None
+
                             sig_count = val
-                            sig_section_end = idx + 64 * sig_count
-                            
-                            if sig_section_end > len(b):
-                                logger.error("Malformed legacy tx")
+
+                            # Additional validation
+                            if sig_count > 100:  # Sanity check
+                                logger.error(f"sig_count {sig_count} is suspiciously high, likely malformed")
                                 return None
-                            
+
+                            sig_section_end = idx + 64 * sig_count
+
+                            if sig_section_end > len(b):
+                                logger.error(f"Malformed legacy tx: sig_section_end {sig_section_end} > len {len(b)}")
+                                return None
+
                             # Message is everything after signatures
                             msg_bytes = b[sig_section_end:]
                             if not msg_bytes:
                                 logger.error("Empty legacy message bytes")
                                 return None
-                            
+
                             # Sign the message
                             signature = self.wallet.keypair.sign_message(msg_bytes)
-                            
+
                             # Repack: [sig_count=1] + [signature] + [message]
                             signed_tx_bytes = bytes([0x01]) + bytes(signature) + msg_bytes
-                            
+
                             logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
+
                         except Exception as e:
                             logger.error(f"Failed to sign legacy transaction: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                             return None
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
