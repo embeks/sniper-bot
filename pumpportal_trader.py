@@ -76,7 +76,8 @@ class PumpPortalTrader:
                 "amount": sol_amount,
                 "slippage": slippage,  # Basis points (30 = 0.3%)
                 "priorityFee": priority_fee,
-                "pool": "pump"
+                "pool": "pump",
+                "txVersion": "v0"  # Force V0 format to reduce legacy transaction failures
             }
             
             if bonding_curve_key:
@@ -140,18 +141,56 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transactions - use existing working code
+                        # Legacy transaction - ROBUST signing with fallback
                         logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
                         try:
+                            # Method 1: Standard deserialization
                             from solana.transaction import Transaction
                             tx = Transaction.deserialize(raw_tx_bytes)
                             tx.sign_partial([self.wallet.keypair])
                             signed_tx_bytes = tx.serialize()
-                            logger.info("Signed legacy transaction")
-                        except Exception as e:
-                            logger.error(f"Failed to sign legacy transaction: {e}")
-                            logger.info("Attempting to send without signing...")
-                            signed_tx_bytes = raw_tx_bytes
+                            logger.info("✅ Signed legacy transaction (standard method)")
+                        except Exception as e1:
+                            logger.warning(f"⚠️ Standard signing failed: {e1}")
+                            logger.info("Trying direct message signing fallback...")
+                            try:
+                                # Method 2: Direct message signing (handles malformed transactions)
+                                # Parse signature count
+                                if len(raw_tx_bytes) < 2:
+                                    raise Exception(f"Transaction too short: {len(raw_tx_bytes)} bytes")
+
+                                sig_count = raw_tx_bytes[0]
+
+                                # Sanity check
+                                if sig_count > 20:
+                                    raise Exception(f"Invalid signature count: {sig_count}")
+
+                                # Calculate where message starts (after sig section)
+                                sig_section_end = 1 + (64 * sig_count)
+
+                                if sig_section_end > len(raw_tx_bytes):
+                                    raise Exception(f"Signature section exceeds transaction length")
+
+                                # Extract message bytes
+                                message_bytes = raw_tx_bytes[sig_section_end:]
+
+                                if len(message_bytes) < 10:
+                                    raise Exception(f"Message section too short: {len(message_bytes)} bytes")
+
+                                # Sign the message directly
+                                signature = self.wallet.keypair.sign_message(message_bytes)
+
+                                # Reconstruct signed transaction: [sig_count=1] + [signature] + [message]
+                                signed_tx_bytes = bytes([0x01]) + bytes(signature) + message_bytes
+
+                                logger.info("✅ Signed legacy transaction (direct method fallback)")
+
+                            except Exception as e2:
+                                logger.error(f"❌ Both signing methods failed!")
+                                logger.error(f"   Standard: {e1}")
+                                logger.error(f"   Direct: {e2}")
+                                logger.error(f"   This likely indicates a malformed transaction from PumpPortal API")
+                                return None
                     
                     logger.info(f"Sending transaction for {mint[:8]}...")
                     
@@ -234,7 +273,8 @@ class PumpPortalTrader:
                 "slippage": slippage,
                 "priorityFee": priority_fee,
                 "pool": "pump",
-                "tokenDecimals": token_decimals
+                "tokenDecimals": token_decimals,
+                "txVersion": "v0"  # Force V0 format to reduce legacy transaction failures
             }
             
             if bonding_curve_key:
@@ -301,54 +341,56 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transaction - manual signing
-                        logger.info("Legacy transaction - manual signing (robust varint parse + re-pack)")
+                        # Legacy transaction - ROBUST signing with fallback
+                        logger.info(f"Legacy transaction ({len(raw_tx_bytes)} bytes)")
                         try:
-                            b = raw_tx_bytes
-                            if len(b) < 2:
-                                logger.error(f"Legacy tx too small ({len(b)} bytes)")
+                            # Method 1: Standard deserialization
+                            from solana.transaction import Transaction
+                            tx = Transaction.deserialize(raw_tx_bytes)
+                            tx.sign_partial([self.wallet.keypair])
+                            signed_tx_bytes = tx.serialize()
+                            logger.info("✅ Signed legacy transaction (standard method)")
+                        except Exception as e1:
+                            logger.warning(f"⚠️ Standard signing failed: {e1}")
+                            logger.info("Trying direct message signing fallback...")
+                            try:
+                                # Method 2: Direct message signing (handles malformed transactions)
+                                # Parse signature count
+                                if len(raw_tx_bytes) < 2:
+                                    raise Exception(f"Transaction too short: {len(raw_tx_bytes)} bytes")
+
+                                sig_count = raw_tx_bytes[0]
+
+                                # Sanity check
+                                if sig_count > 20:
+                                    raise Exception(f"Invalid signature count: {sig_count}")
+
+                                # Calculate where message starts (after sig section)
+                                sig_section_end = 1 + (64 * sig_count)
+
+                                if sig_section_end > len(raw_tx_bytes):
+                                    raise Exception(f"Signature section exceeds transaction length")
+
+                                # Extract message bytes
+                                message_bytes = raw_tx_bytes[sig_section_end:]
+
+                                if len(message_bytes) < 10:
+                                    raise Exception(f"Message section too short: {len(message_bytes)} bytes")
+
+                                # Sign the message directly
+                                signature = self.wallet.keypair.sign_message(message_bytes)
+
+                                # Reconstruct signed transaction: [sig_count=1] + [signature] + [message]
+                                signed_tx_bytes = bytes([0x01]) + bytes(signature) + message_bytes
+
+                                logger.info("✅ Signed legacy transaction (direct method fallback)")
+
+                            except Exception as e2:
+                                logger.error(f"❌ Both signing methods failed!")
+                                logger.error(f"   Standard: {e1}")
+                                logger.error(f"   Direct: {e2}")
+                                logger.error(f"   This likely indicates a malformed transaction from PumpPortal API")
                                 return None
-                            
-                            # Parse compact-u16 signature count
-                            idx = 0
-                            val = 0
-                            shift = 0
-                            while True:
-                                if idx >= len(b):
-                                    logger.error("Bad legacy varint for sig_count")
-                                    return None
-                                byte = b[idx]
-                                val |= (byte & 0x7F) << shift
-                                idx += 1
-                                if byte < 0x80:
-                                    break
-                                shift += 7
-                                if shift > 14:
-                                    logger.error("sig_count varint too long")
-                                    return None
-                            sig_count = val
-                            sig_section_end = idx + 64 * sig_count
-                            
-                            if sig_section_end > len(b):
-                                logger.error("Malformed legacy tx")
-                                return None
-                            
-                            # Message is everything after signatures
-                            msg_bytes = b[sig_section_end:]
-                            if not msg_bytes:
-                                logger.error("Empty legacy message bytes")
-                                return None
-                            
-                            # Sign the message
-                            signature = self.wallet.keypair.sign_message(msg_bytes)
-                            
-                            # Repack: [sig_count=1] + [signature] + [message]
-                            signed_tx_bytes = bytes([0x01]) + bytes(signature) + msg_bytes
-                            
-                            logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
-                        except Exception as e:
-                            logger.error(f"Failed to sign legacy transaction: {e}")
-                            return None
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
                     
