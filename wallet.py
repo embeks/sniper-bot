@@ -82,7 +82,7 @@ class WalletManager:
             logger.error(f"Failed to get SOL balance: {e}")
             return 0.0
     
-    def get_token_balance(self, mint: str, max_retries: int = 3, retry_delay: float = 1.0) -> float:
+    def get_token_balance(self, mint: str, max_retries: int = 5, retry_delay: float = 1.5) -> float:
         """Get balance for a specific token - returns UI amount (human readable)"""
         for attempt in range(max_retries):
             try:
@@ -98,7 +98,9 @@ class WalletManager:
                     ui_amount = response.value.ui_amount
                     if ui_amount:
                         if attempt > 0:
-                            logger.debug(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f}")
+                            logger.info(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f} tokens")
+                        else:
+                            logger.info(f"✅ Got balance immediately: {float(ui_amount):,.2f} tokens")
                         return float(ui_amount)
                     else:
                         raw_amount = response.value.amount
@@ -106,12 +108,16 @@ class WalletManager:
                         if raw_amount and decimals:
                             calculated = float(int(raw_amount) / (10 ** int(decimals)))
                             if attempt > 0:
-                                logger.debug(f"✅ Calculated balance on retry {attempt + 1}: {calculated:,.2f}")
+                                logger.info(f"✅ Got balance on retry {attempt + 1}: {calculated:,.2f} tokens")
+                            else:
+                                logger.info(f"✅ Got balance immediately: {calculated:,.2f} tokens")
                             return calculated
                 
                 if attempt < max_retries - 1:
-                    logger.debug(f"⏳ Token account not ready (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
-                    time.sleep(retry_delay)
+                    # ✅ FIX: Exponential backoff for fresh token accounts
+                    wait_time = retry_delay * (1.5 ** attempt)  # 1.5s, 2.25s, 3.4s, 5.1s, etc.
+                    logger.debug(f"⏳ Token account not ready (attempt {attempt + 1}/{max_retries}), waiting {wait_time:.1f}s...")
+                    time.sleep(wait_time)
                     continue
                     
             except Exception as e:
