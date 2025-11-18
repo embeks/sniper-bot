@@ -1,5 +1,6 @@
 
 
+
 """
 config - FINAL: All fixes applied + VELOCITY AGE FIX + PROFIT PROTECTION
 """
@@ -82,21 +83,29 @@ VELOCITY_MAX_RECENT_3S_SOL = float(os.getenv('VELOCITY_MAX_RECENT_3S_SOL', '12.0
 # ============================================
 # TIMER-BASED EXIT SETTINGS
 # ============================================
-# Timer now acts as backstop, not primary exit
-TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '30'))
+# FIXED: Shortened from 30s to 20s base
+TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '20'))
+
+# Random variance to add (+/- seconds)
 TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '5'))
+
+# Extension for mega-pumps (if velocity still rising and P&L > threshold)
 TIMER_EXTENSION_SECONDS = int(os.getenv('TIMER_EXTENSION_SECONDS', '10'))
-TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD', '50'))
+
+# P&L threshold to consider extension (%)
+TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD', '60'))
+
+# Maximum total extensions allowed
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '1'))
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
 # ============================================
 # Peak drawdown before exit (percentage points)
-MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '15.0'))
+MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '25.0'))
 
 # Minimum peak required before drawdown matters
-MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '20.0'))
+MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '15.0'))
 
 # Minimum age before drawdown exit applies (seconds)
 MOMENTUM_DRAWDOWN_MIN_AGE = float(os.getenv('MOMENTUM_DRAWDOWN_MIN_AGE', '15.0'))
@@ -117,15 +126,17 @@ MOMENTUM_MAX_HOLD_SECONDS = float(os.getenv('MOMENTUM_MAX_HOLD_SECONDS', '45.0')
 # All checks are CHAIN-GATED (only trigger on blockchain data, not WebSocket)
 
 # Extreme Take-Profit: Exit immediately if profit goes parabolic
-# Example: If you hit +75% (1.75x), lock it in regardless of timer
-EXTREME_TP_PERCENT = float(os.getenv('EXTREME_TP_PERCENT', '75.0'))
+# Example: If you hit +150% (2.5x), lock it in regardless of timer
+# Set to 999.0 to disable
+EXTREME_TP_PERCENT = float(os.getenv('EXTREME_TP_PERCENT', '150.0'))
 
 # Trailing Stop: Protect profits after hitting a certain level
 # TRAIL_START_PERCENT: Start trailing once you've hit this profit
 # TRAIL_GIVEBACK_PERCENT: Exit if you give back this much from peak
-# Example: Hit +35% peak, currently +25% = 10pp drop → Exit if drop >= 10pp
-TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '20.0'))
-TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '10.0'))
+# Example: Hit +191% peak, currently +85% = 106pp drop → Exit if drop >= 50pp
+# Set both to 999.0 to disable
+TRAIL_START_PERCENT = float(os.getenv('TRAIL_START_PERCENT', '70.0'))
+TRAIL_GIVEBACK_PERCENT = float(os.getenv('TRAIL_GIVEBACK_PERCENT', '35.0'))
 
 # ============================================
 # HOW PROFIT PROTECTION WORKS:
