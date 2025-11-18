@@ -300,53 +300,20 @@ class PumpPortalTrader:
                             logger.error(f"Failed to sign v0 transaction: {e}")
                             return None
                     else:
-                        # Legacy transaction - manual signing
-                        logger.info("Legacy transaction - manual signing (robust varint parse + re-pack)")
+                        # Legacy transaction - use Transaction.deserialize (same method as BUY path)
+                        logger.info(f"Legacy transaction - signing with Transaction.deserialize")
                         try:
-                            b = raw_tx_bytes
-                            if len(b) < 2:
-                                logger.error(f"Legacy tx too small ({len(b)} bytes)")
-                                return None
-                            
-                            # Parse compact-u16 signature count
-                            idx = 0
-                            val = 0
-                            shift = 0
-                            while True:
-                                if idx >= len(b):
-                                    logger.error("Bad legacy varint for sig_count")
-                                    return None
-                                byte = b[idx]
-                                val |= (byte & 0x7F) << shift
-                                idx += 1
-                                if byte < 0x80:
-                                    break
-                                shift += 7
-                                if shift > 14:
-                                    logger.error("sig_count varint too long")
-                                    return None
-                            sig_count = val
-                            sig_section_end = idx + 64 * sig_count
-                            
-                            if sig_section_end > len(b):
-                                logger.error("Malformed legacy tx")
-                                return None
-                            
-                            # Message is everything after signatures
-                            msg_bytes = b[sig_section_end:]
-                            if not msg_bytes:
-                                logger.error("Empty legacy message bytes")
-                                return None
-                            
-                            # Sign the message
-                            signature = self.wallet.keypair.sign_message(msg_bytes)
-                            
-                            # Repack: [sig_count=1] + [signature] + [message]
-                            signed_tx_bytes = bytes([0x01]) + bytes(signature) + msg_bytes
-                            
-                            logger.info(f"Signed legacy transaction (len={len(signed_tx_bytes)})")
+                            from solana.transaction import Transaction
+
+                            tx = Transaction.deserialize(raw_tx_bytes)
+                            tx.sign_partial([self.wallet.keypair])
+                            signed_tx_bytes = tx.serialize()
+
+                            logger.info(f"Signed legacy transaction ({len(signed_tx_bytes)} bytes)")
                         except Exception as e:
                             logger.error(f"Failed to sign legacy transaction: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                             return None
                     
                     logger.info(f"Sending sell transaction for {mint[:8]}...")
