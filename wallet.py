@@ -148,7 +148,11 @@ class WalletManager:
             total_balance = 0.0
             account_count = 0
 
-            if response.value:
+            # Handle response - check if it's an error or valid response
+            if not response:
+                logger.debug(f"   Empty response from RPC")
+            elif hasattr(response, 'value') and response.value:
+                # Valid response with accounts
                 for account in response.value:
                     try:
                         account_data = account.account.data
@@ -172,6 +176,12 @@ class WalletManager:
                     except Exception as e:
                         logger.debug(f"   Skipped account: {e}")
                         continue
+            elif hasattr(response, 'value') and response.value is None:
+                # RPC returned success but no accounts found
+                logger.debug(f"   RPC returned no accounts for this mint")
+            else:
+                # Unexpected response format
+                logger.debug(f"   Unexpected response format: {type(response)}")
 
             if total_balance > 0:
                 logger.info(f"🧭 Fallback owner+mint search found {total_balance:,.2f} tokens across {account_count} account(s)")
@@ -181,6 +191,56 @@ class WalletManager:
 
         except Exception as e:
             logger.warning(f"⚠️ Owner+mint fallback error: {e}")
+            import traceback
+            logger.debug(f"   Traceback: {traceback.format_exc()}")
+
+        # Fallback 1.5: Try raw get_token_accounts_by_owner with mint filter (alternative API format)
+        try:
+            logger.debug(f"🧭 Trying alternative owner+mint search format...")
+
+            mint_pubkey = Pubkey.from_string(mint)
+
+            # Alternative format: use dict instead of TokenAccountOpts
+            response = self.client.get_token_accounts_by_owner_json_parsed(
+                self.pubkey,
+                {"mint": str(mint_pubkey)}
+            )
+
+            total_balance = 0.0
+            account_count = 0
+
+            if hasattr(response, 'value') and response.value:
+                for account in response.value:
+                    try:
+                        account_data = account.account.data
+
+                        if isinstance(account_data, dict) and 'parsed' in account_data:
+                            parsed = account_data.get('parsed', {})
+                            info = parsed.get('info', {})
+
+                            owner = info.get('owner')
+                            account_mint = info.get('mint')
+
+                            if owner == str(self.pubkey) and account_mint == mint:
+                                token_amount = info.get('tokenAmount', {})
+                                ui_amount = token_amount.get('uiAmount', 0)
+
+                                if ui_amount and ui_amount > 0:
+                                    total_balance += float(ui_amount)
+                                    account_count += 1
+                                    logger.debug(f"   Found {ui_amount:,.2f} tokens in account {str(account.pubkey)[:8]}...")
+                    except Exception as e:
+                        logger.debug(f"   Skipped account: {e}")
+                        continue
+
+            if total_balance > 0:
+                logger.info(f"🧭 Alternative owner+mint search found {total_balance:,.2f} tokens across {account_count} account(s)")
+                return total_balance
+            else:
+                logger.debug(f"   Alternative search found 0 accounts")
+
+        except Exception as e:
+            logger.debug(f"⚠️ Alternative owner+mint error: {e}")
 
         # Fallback 2: Try the old get_all_token_accounts method
         try:
