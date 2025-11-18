@@ -1,3 +1,4 @@
+
 """
 Wallet Management - LATENCY OPTIMIZED: Cached decimals + async wrapper
 """
@@ -82,7 +83,7 @@ class WalletManager:
             logger.error(f"Failed to get SOL balance: {e}")
             return 0.0
     
-    def get_token_balance(self, mint: str, max_retries: int = 5, retry_delay: float = 1.5) -> float:
+    def get_token_balance(self, mint: str, max_retries: int = 3, retry_delay: float = 1.0) -> float:
         """Get balance for a specific token - returns UI amount (human readable)"""
         for attempt in range(max_retries):
             try:
@@ -98,9 +99,7 @@ class WalletManager:
                     ui_amount = response.value.ui_amount
                     if ui_amount:
                         if attempt > 0:
-                            logger.info(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f} tokens")
-                        else:
-                            logger.info(f"✅ Got balance immediately: {float(ui_amount):,.2f} tokens")
+                            logger.debug(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f}")
                         return float(ui_amount)
                     else:
                         raw_amount = response.value.amount
@@ -108,16 +107,12 @@ class WalletManager:
                         if raw_amount and decimals:
                             calculated = float(int(raw_amount) / (10 ** int(decimals)))
                             if attempt > 0:
-                                logger.info(f"✅ Got balance on retry {attempt + 1}: {calculated:,.2f} tokens")
-                            else:
-                                logger.info(f"✅ Got balance immediately: {calculated:,.2f} tokens")
+                                logger.debug(f"✅ Calculated balance on retry {attempt + 1}: {calculated:,.2f}")
                             return calculated
                 
                 if attempt < max_retries - 1:
-                    # ✅ FIX: Exponential backoff for fresh token accounts
-                    wait_time = retry_delay * (1.5 ** attempt)  # 1.5s, 2.25s, 3.4s, 5.1s, etc.
-                    logger.debug(f"⏳ Token account not ready (attempt {attempt + 1}/{max_retries}), waiting {wait_time:.1f}s...")
-                    time.sleep(wait_time)
+                    logger.debug(f"⏳ Token account not ready (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
+                    time.sleep(retry_delay)
                     continue
                     
             except Exception as e:
@@ -129,75 +124,18 @@ class WalletManager:
                     logger.debug(f"RPC failed after {max_retries} attempts: {e}")
         
         logger.warning(f"⚠️ Direct balance query failed for {mint[:8]}..., trying fallback method...")
-
-        # Fallback 1: Try owner+mint search (finds Token-2022 and non-standard ATAs)
         try:
-            logger.debug(f"🧭 Searching for token accounts by owner+mint (bypasses program filter)...")
-
-            from solana.rpc.types import TokenAccountOpts
-
-            mint_pubkey = Pubkey.from_string(mint)
-            opts = TokenAccountOpts(mint=mint_pubkey)
-
-            # Search for ALL accounts owned by us with this mint (any program)
-            response = self.client.get_token_accounts_by_owner_json_parsed(
-                self.pubkey,
-                opts
-            )
-
-            total_balance = 0.0
-            account_count = 0
-
-            if response.value:
-                for account in response.value:
-                    try:
-                        account_data = account.account.data
-
-                        if isinstance(account_data, dict) and 'parsed' in account_data:
-                            parsed = account_data.get('parsed', {})
-                            info = parsed.get('info', {})
-
-                            # Verify this is OUR wallet and the right mint
-                            owner = info.get('owner')
-                            account_mint = info.get('mint')
-
-                            if owner == str(self.pubkey) and account_mint == mint:
-                                token_amount = info.get('tokenAmount', {})
-                                ui_amount = token_amount.get('uiAmount', 0)
-
-                                if ui_amount and ui_amount > 0:
-                                    total_balance += float(ui_amount)
-                                    account_count += 1
-                                    logger.debug(f"   Found {ui_amount:,.2f} tokens in account {str(account.pubkey)[:8]}...")
-                    except Exception as e:
-                        logger.debug(f"   Skipped account: {e}")
-                        continue
-
-            if total_balance > 0:
-                logger.info(f"🧭 Fallback owner+mint search found {total_balance:,.2f} tokens across {account_count} account(s)")
-                return total_balance
-            else:
-                logger.debug(f"   Owner+mint search found 0 accounts with positive balance")
-
-        except Exception as e:
-            logger.warning(f"⚠️ Owner+mint fallback error: {e}")
-
-        # Fallback 2: Try the old get_all_token_accounts method
-        try:
-            logger.debug(f"Trying get_all_token_accounts() fallback...")
             all_accounts = self.get_all_token_accounts()
             if mint in all_accounts:
                 balance = all_accounts[mint]['balance']
-                logger.info(f"✅ Found via get_all_token_accounts: {balance:,.2f} tokens for {mint[:8]}...")
+                logger.info(f"✅ Found via fallback: {balance:,.2f} tokens for {mint[:8]}...")
                 return balance
             else:
-                logger.debug(f"   Token {mint[:8]}... not in get_all_token_accounts() results")
+                logger.warning(f"❌ Token {mint[:8]}... not found in any token accounts")
+                return 0.0
         except Exception as e:
-            logger.warning(f"⚠️ get_all_token_accounts() fallback error: {e}")
-
-        # All methods failed
-        logger.warning(f"❌ Owner+mint fallback found 0 tokens for {mint[:8]}...")
-        return 0.0
+            logger.error(f"❌ Fallback method also failed: {e}")
+            return 0.0
     
     def get_token_balance_raw(self, mint: str) -> int:
         """Get RAW balance for a specific token (for selling to PumpPortal)"""
