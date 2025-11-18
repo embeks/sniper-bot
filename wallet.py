@@ -1,6 +1,7 @@
 """
 Wallet Management - LATENCY OPTIMIZED: Cached decimals + async wrapper
 TOKEN-2022 SUPPORT ADDED: Now scans both TOKEN_PROGRAM_ID and TOKEN_2022_PROGRAM_ID
+FIXED: Proper ATA derivation for both token programs + transaction confirmation waits
 """
 
 import base58
@@ -83,65 +84,139 @@ class WalletManager:
             logger.error(f"Failed to get SOL balance: {e}")
             return 0.0
     
-    def get_token_balance(self, mint: str, max_retries: int = 3, retry_delay: float = 1.0) -> float:
-        """Get balance for a specific token - returns UI amount (human readable)"""
+    def _get_token_account_for_mint(self, mint: str, force_check: bool = False):
+        """
+        Get the correct ATA for a mint, trying both SPL and Token-2022 programs
+        HELIUS OPTIMIZED: Uses 'processed' commitment for instant reads
+        Returns: (token_account_pubkey, program_id) or (None, None) if not found
+        
+        Args:
+            mint: Token mint address
+            force_check: If True, always check on-chain (no assumptions)
+        """
+        mint_pubkey = Pubkey.from_string(mint)
+        
+        # HELIUS OPTIMIZATION: Use faster commitment for balance checks
+        from solana.rpc.commitment import Processed
+        
+        # Try classic SPL first (most common)
+        try:
+            ata_classic = get_associated_token_address(self.pubkey, mint_pubkey)
+            response = self.client.get_account_info(ata_classic, commitment=Processed)
+            if response.value:
+                logger.debug(f"✅ Found classic SPL ATA for {mint[:8]}...")
+                return ata_classic, TOKEN_PROGRAM_ID
+        except:
+            pass
+        
+        # Try Token-2022 (newer tokens)
+        try:
+            # Token-2022 uses the same ATA derivation but different program ID
+            from spl.token.constants import ASSOCIATED_TOKEN_PROGRAM_ID as ATA_PROGRAM
+            
+            # Derive ATA for Token-2022
+            seeds = [
+                bytes(self.pubkey),
+                bytes(TOKEN_2022_PROGRAM_ID),
+                bytes(mint_pubkey)
+            ]
+            ata_2022 = Pubkey.find_program_address(seeds, ATA_PROGRAM)[0]
+            
+            response = self.client.get_account_info(ata_2022, commitment=Processed)
+            if response.value:
+                logger.debug(f"✅ Found Token-2022 ATA for {mint[:8]}...")
+                return ata_2022, TOKEN_2022_PROGRAM_ID
+        except:
+            pass
+        
+        # If neither exists, return classic SPL as default (will be created on first tx)
+        logger.debug(f"⚠️ No existing ATA found for {mint[:8]}..., using classic SPL default")
+        return get_associated_token_address(self.pubkey, mint_pubkey), TOKEN_PROGRAM_ID
+    
+    def get_token_balance(self, mint: str, max_retries: int = 6, retry_delay: float = 1.0) -> float:
+        """
+        Get balance for a specific token - returns UI amount (human readable)
+        HELIUS OPTIMIZED: Uses commitment levels for faster reads
+        Strategy:
+        1. Try with 'processed' commitment (fastest, ~400ms)
+        2. Try with 'confirmed' commitment (fast, ~1-2s)
+        3. Fall back to full wallet scan
+        """
         for attempt in range(max_retries):
+            # Use faster commitment on early attempts
+            commitment = "processed" if attempt < 3 else Confirmed
+            
             try:
-                mint_pubkey = Pubkey.from_string(mint)
-                token_account = get_associated_token_address(self.pubkey, mint_pubkey)
+                # Get the correct ATA (tries both SPL and Token-2022)
+                token_account, program_id = self._get_token_account_for_mint(mint)
+                
+                # HELIUS OPTIMIZATION: Use faster commitment levels
+                from solana.rpc.commitment import Processed
+                commitment_level = Processed if attempt < 3 else Confirmed
                 
                 response = self.client.get_token_account_balance(
                     token_account,
-                    commitment=Confirmed
+                    commitment=commitment_level
                 )
                 
                 if response.value:
                     ui_amount = response.value.ui_amount
-                    if ui_amount:
+                    if ui_amount and float(ui_amount) > 0:
                         if attempt > 0:
-                            logger.debug(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f}")
+                            logger.info(f"✅ Got balance on retry {attempt + 1}: {float(ui_amount):,.2f} (commitment: {commitment_level})")
                         return float(ui_amount)
                     else:
                         raw_amount = response.value.amount
                         decimals = response.value.decimals
                         if raw_amount and decimals:
                             calculated = float(int(raw_amount) / (10 ** int(decimals)))
-                            if attempt > 0:
-                                logger.debug(f"✅ Calculated balance on retry {attempt + 1}: {calculated:,.2f}")
-                            return calculated
+                            if calculated > 0:
+                                if attempt > 0:
+                                    logger.info(f"✅ Calculated balance on retry {attempt + 1}: {calculated:,.2f}")
+                                return calculated
+                
+                # Every 2nd attempt after the first, try full wallet scan
+                if attempt > 0 and attempt % 2 == 0:
+                    logger.debug(f"🔄 Attempt {attempt + 1}: Trying full wallet scan...")
+                    all_accounts = self.get_all_token_accounts()
+                    if mint in all_accounts and all_accounts[mint]['balance'] > 0:
+                        balance = all_accounts[mint]['balance']
+                        logger.info(f"✅ Found via mid-retry scan: {balance:,.2f} tokens")
+                        return balance
                 
                 if attempt < max_retries - 1:
-                    logger.debug(f"⏳ Token account not ready (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
+                    logger.debug(f"⏳ No balance yet (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...")
                     time.sleep(retry_delay)
                     continue
                     
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"⏳ RPC error for {mint[:8]}... (attempt {attempt + 1}/{max_retries}): {e}")
+                    logger.debug(f"⏳ RPC error (attempt {attempt + 1}/{max_retries}): {str(e)[:100]}")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.debug(f"RPC failed after {max_retries} attempts: {e}")
+                    logger.debug(f"Direct query failed after {max_retries} attempts: {e}")
         
-        logger.warning(f"⚠️ Direct balance query failed for {mint[:8]}..., trying fallback method...")
+        # FALLBACK: Full wallet scan with fresh query
+        logger.warning(f"⚠️ Direct queries failed, doing full wallet scan...")
         try:
             all_accounts = self.get_all_token_accounts()
             if mint in all_accounts:
                 balance = all_accounts[mint]['balance']
-                logger.info(f"✅ Found via fallback: {balance:,.2f} tokens for {mint[:8]}...")
-                return balance
-            else:
-                logger.warning(f"❌ Token {mint[:8]}... not found in any token accounts")
-                return 0.0
+                if balance > 0:
+                    logger.info(f"✅ Found via fallback scan: {balance:,.2f} tokens")
+                    return balance
         except Exception as e:
-            logger.error(f"❌ Fallback method also failed: {e}")
-            return 0.0
+            logger.debug(f"Fallback scan error: {e}")
+        
+        logger.error(f"❌ Could not find tokens after {max_retries} attempts + full scan")
+        return 0.0
     
     def get_token_balance_raw(self, mint: str) -> int:
         """Get RAW balance for a specific token (for selling to PumpPortal)"""
         try:
-            mint_pubkey = Pubkey.from_string(mint)
-            token_account = get_associated_token_address(self.pubkey, mint_pubkey)
+            # Get the correct ATA (tries both SPL and Token-2022)
+            token_account, program_id = self._get_token_account_for_mint(mint)
             
             response = self.client.get_token_account_balance(token_account)
             if response.value:
@@ -159,6 +234,7 @@ class WalletManager:
         """
         Get all token accounts owned by this wallet
         TOKEN-2022 SUPPORT: Now scans BOTH TOKEN_PROGRAM_ID and TOKEN_2022_PROGRAM_ID
+        HELIUS OPTIMIZED: Uses jsonParsed with 'processed' commitment for speed
         """
         try:
             token_accounts = {}
@@ -166,14 +242,17 @@ class WalletManager:
             # BOTH PROGRAMS - this is the fix!
             program_ids = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]
 
-            # 1. jsonParsed fast path
+            # 1. jsonParsed fast path (most reliable) with HELIUS OPTIMIZATION
             from solana.rpc.types import TokenAccountOpts
+            from solana.rpc.commitment import Processed
 
             for pid in program_ids:
                 try:
+                    # HELIUS OPTIMIZATION: Use 'processed' commitment for faster reads
                     response = self.client.get_token_accounts_by_owner_json_parsed(
                         self.pubkey,
-                        TokenAccountOpts(program_id=pid)
+                        TokenAccountOpts(program_id=pid),
+                        commitment=Processed  # ⚡ FASTER with Helius
                     )
                     if response.value:
                         for account in response.value:
@@ -183,26 +262,36 @@ class WalletManager:
                                     info = data["parsed"]["info"]
                                     mint = info["mint"]
                                     amt = info["tokenAmount"]
-                                    token_accounts[mint] = {
-                                        "pubkey": str(account.pubkey),
-                                        "balance": float(amt.get("uiAmount", 0)),
-                                        "decimals": amt.get("decimals", 0),
-                                        "raw_amount": amt.get("amount", "0")
-                                    }
-                            except:
+                                    
+                                    # Only add if balance > 0 OR if we don't have it yet
+                                    ui_amount = float(amt.get("uiAmount", 0))
+                                    if mint not in token_accounts or ui_amount > 0:
+                                        token_accounts[mint] = {
+                                            "pubkey": str(account.pubkey),
+                                            "balance": ui_amount,
+                                            "decimals": amt.get("decimals", 0),
+                                            "raw_amount": amt.get("amount", "0"),
+                                            "program_id": str(pid)
+                                        }
+                            except Exception as e:
+                                logger.debug(f"Failed to parse token account: {e}")
                                 continue
-                except:
+                except Exception as e:
+                    logger.debug(f"jsonParsed query failed for {str(pid)[:8]}...: {e}")
                     continue
 
             if token_accounts:
+                logger.debug(f"✅ Found {len(token_accounts)} token accounts via jsonParsed")
                 return token_accounts
 
-            # 2. Base64 fallback
+            # 2. Base64 fallback (if jsonParsed fails completely)
+            logger.debug("⏳ Falling back to base64 parsing...")
             for pid in program_ids:
                 try:
                     response = self.client.get_token_accounts_by_owner(
                         self.pubkey,
-                        {"programId": str(pid)}
+                        {"programId": str(pid)},
+                        commitment=Processed  # ⚡ FASTER with Helius
                     )
                     if response.value:
                         for account in response.value:
@@ -227,17 +316,27 @@ class WalletManager:
                                 decimals = self.get_token_decimals(mint)
                                 ui_amount = raw_amount / (10 ** decimals)
 
-                                token_accounts[mint] = {
-                                    "pubkey": str(account.pubkey),
-                                    "balance": float(ui_amount),
-                                    "decimals": decimals,
-                                    "raw_amount": str(raw_amount)
-                                }
-                            except:
+                                # Only add if balance > 0 OR if we don't have it yet
+                                if mint not in token_accounts or ui_amount > 0:
+                                    token_accounts[mint] = {
+                                        "pubkey": str(account.pubkey),
+                                        "balance": float(ui_amount),
+                                        "decimals": decimals,
+                                        "raw_amount": str(raw_amount),
+                                        "program_id": str(pid)
+                                    }
+                            except Exception as e:
+                                logger.debug(f"Failed to parse base64 account: {e}")
                                 continue
-                except:
+                except Exception as e:
+                    logger.debug(f"Base64 query failed for {str(pid)[:8]}...: {e}")
                     continue
 
+            if token_accounts:
+                logger.debug(f"✅ Found {len(token_accounts)} token accounts via base64 fallback")
+            else:
+                logger.warning(f"⚠️ No token accounts found - wallet may be empty or RPC may be lagging")
+            
             return token_accounts
 
         except Exception as e:
@@ -392,7 +491,8 @@ class WalletManager:
                 logger.info("Active Positions:")
                 for mint, data in list(token_accounts.items())[:5]:
                     if data['balance'] > 0:
-                        logger.info(f"  • {mint[:8]}... Balance: {data['balance']:,.2f} (Raw: {data['raw_amount']})")
+                        program = "SPL" if "Tokenkeg" in data.get('program_id', '') else "Token-2022"
+                        logger.info(f"  • {mint[:8]}... Balance: {data['balance']:,.2f} ({program}) Raw: {data['raw_amount']}")
             
             logger.info("=" * 50)
             
