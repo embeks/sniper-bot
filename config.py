@@ -112,10 +112,50 @@ MOMENTUM_DRAWDOWN_MIN_AGE = float(os.getenv('MOMENTUM_DRAWDOWN_MIN_AGE', '15.0')
 MOMENTUM_VELOCITY_DEATH_PERCENT = float(os.getenv('MOMENTUM_VELOCITY_DEATH_PERCENT', '50.0'))
 
 # Big win take profit threshold
-MOMENTUM_BIG_WIN_PERCENT = float(os.getenv('MOMENTUM_BIG_WIN_PERCENT', '50.0'))
+MOMENTUM_BIG_WIN_PERCENT = float(os.getenv('MOMENTUM_BIG_WIN_PERCENT', '70.0'))
 
 # Max hold time backstop (seconds)
 MOMENTUM_MAX_HOLD_SECONDS = float(os.getenv('MOMENTUM_MAX_HOLD_SECONDS', '45.0'))
+
+# ============================================
+# CONSOLIDATION PROTECTION SETTINGS (NEW!)
+# ============================================
+# Prevent selling during healthy consolidations
+# Consolidation floor - don't exit if price is above this % of peak
+CONSOLIDATION_FLOOR_PERCENT = float(os.getenv('CONSOLIDATION_FLOOR_PERCENT', '0.65'))
+
+# First pump hold period - ignore stop loss during early development
+FIRST_PUMP_HOLD_SECONDS = float(os.getenv('FIRST_PUMP_HOLD_SECONDS', '30.0'))
+
+# HOW CONSOLIDATION PROTECTION WORKS:
+#
+# BEFORE (what was breaking):
+# - Token pumps to $10K (+100%)
+# - Dips to $7K (-30% from peak)
+# - Bot sees -30% drop → PANIC SELLS
+# - Token recovers to $11K
+# - You sold the dip like a paper-handed degen
+#
+# AFTER (whale behavior):
+# - Token pumps to $10K (+100%)
+# - Dips to $7K = 70% of peak
+# - 70% > 65% floor → HEALTHY CONSOLIDATION
+# - Bot HOLDS through the dip
+# - Token pumps to $11K
+# - You catch the second leg like a whale
+#
+# TUNING GUIDE:
+# Conservative (tighter - more exits):
+#   CONSOLIDATION_FLOOR_PERCENT = 0.75  # Exit if below 75% of peak
+#   FIRST_PUMP_HOLD_SECONDS = 20.0      # Shorter hold period
+#
+# Moderate (recommended):
+#   CONSOLIDATION_FLOOR_PERCENT = 0.65  # Exit if below 65% of peak
+#   FIRST_PUMP_HOLD_SECONDS = 30.0      # Standard hold period
+#
+# Aggressive (let it ride):
+#   CONSOLIDATION_FLOOR_PERCENT = 0.55  # Exit if below 55% of peak
+#   FIRST_PUMP_HOLD_SECONDS = 40.0      # Longer hold period
 
 # ============================================
 # PROFIT PROTECTION SETTINGS (NEW!)
