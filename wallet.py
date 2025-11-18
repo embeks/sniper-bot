@@ -1,5 +1,6 @@
 """
 Wallet Management - LATENCY OPTIMIZED: Cached decimals + async wrapper
+TOKEN-2022 SUPPORT ADDED: Now scans both TOKEN_PROGRAM_ID and TOKEN_2022_PROGRAM_ID
 """
 
 import base58
@@ -155,11 +156,14 @@ class WalletManager:
             return 0
     
     def get_all_token_accounts(self) -> Dict[str, Dict]:
-        """Get all token accounts owned by this wallet"""
+        """
+        Get all token accounts owned by this wallet
+        TOKEN-2022 SUPPORT: Now scans BOTH TOKEN_PROGRAM_ID and TOKEN_2022_PROGRAM_ID
+        """
         try:
             token_accounts = {}
 
-            # BOTH PROGRAMS
+            # BOTH PROGRAMS - this is the fix!
             program_ids = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]
 
             # 1. jsonParsed fast path
