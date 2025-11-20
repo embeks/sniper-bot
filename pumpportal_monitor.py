@@ -57,28 +57,29 @@ class PumpPortalMonitor:
         # Filters - OPTIMIZED ORDER
         self.filters = {
             # CRITICAL: Age check FIRST (before expensive RPC calls)
-            'max_token_age_seconds': 2.0,  # Down from 4.0 - only super fresh tokens
+            'max_token_age_seconds': 16.0,  # Up from 2.0 - whale zone
 
             # OPTIMIZATION: Early curve prefilter
-            'min_curve_sol_prefilter': 3.0,  # Skip tokens with <3 SOL (likely duds)
+            'min_curve_sol_prefilter': 8.0,  # Down from 3.0
 
             # Raised from 0.095 to 0.5 to filter out low-effort launches
             'min_creator_sol': 0.095,
             'max_creator_sol': 5.0,
-            'min_curve_sol': 15.0,
-            'max_curve_sol': 45.0,
+            'min_curve_sol': 10.0,           # Down from 15.0 - whale zone
+            'max_curve_sol': 18.0,           # Down from 45.0 - whale zone
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
 
             # NEW: Reject bot pumps with excessive momentum
-            'max_momentum': 35.0,  # Reject parabolic bot pumps >30x
+            'max_momentum': 200.0,  # Up from 35.0 - allow whale pumps
+            'max_momentum_high_mc': 50.0,  # Stricter for >$6K MC
 
             'min_holders': 10,
             'check_concentration': False,
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
-            'min_market_cap': 4000,  
-            'max_market_cap': 35000,  
+            'min_market_cap': 2800,          # Down from 4000
+            'max_market_cap': 5300,          # Down from 35000  
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
@@ -129,32 +130,57 @@ class PumpPortalMonitor:
     
     def _event_age_seconds(self, token_data: dict) -> float:
         """
-        CRITICAL FIX: Get REAL token age from event data, not first sighting time
-        This prevents bypassing age checks on tokens that are already old
+        ✅ CRITICAL FIX: Get REAL token age from event data
+        NO FALLBACK to first-sighting time (causes 120s→0s bug)
         """
         now = time.time()
-        
-        # Prefer explicit age if provided
-        age = token_data.get('age')
-        if isinstance(age, (int, float)) and age >= 0:
-            return float(age)
-        
-        # Check common timestamp fields
-        for key in ('blockTime', 'createdAt', 'ts', 'timestamp'):
+
+        # Priority 1: Explicit age field
+        if 'age' in token_data:
+            age = token_data['age']
+            if isinstance(age, (int, float)) and age > 0:
+                logger.debug(f"📊 Age from token_data.age: {age:.1f}s")
+                return float(age)
+
+        # Priority 2: Check nested data
+        if 'data' in token_data:
+            inner = token_data['data']
+            if 'age' in inner:
+                age = inner['age']
+                if isinstance(age, (int, float)) and age > 0:
+                    logger.debug(f"📊 Age from token_data.data.age: {age:.1f}s")
+                    return float(age)
+
+        # Priority 3: Timestamp fields
+        for key in ('blockTime', 'createdAt', 'timestamp', 'ts'):
             if key in token_data:
-                ts = token_data[key]
-                # Normalize: ms to seconds if needed
-                ts = ts / 1000.0 if ts > 1e12 else ts
-                return max(0.0, now - float(ts))
-        
-        # Fallback: use first sighting time (less accurate)
-        mint = token_data.get('mint') or token_data.get('address', '')
-        if mint:
-            if mint not in self.token_first_seen:
-                self.token_first_seen[mint] = now
-            return now - self.token_first_seen[mint]
-        
-        return 0.0
+                try:
+                    ts = float(token_data[key])
+                    ts = ts / 1000.0 if ts > 1e12 else ts
+                    age = now - ts
+                    if 0 < age < 3600:
+                        logger.debug(f"📊 Age from token_data.{key}: {age:.1f}s")
+                        return age
+                except (ValueError, TypeError):
+                    continue
+
+            if 'data' in token_data and key in token_data['data']:
+                try:
+                    ts = float(token_data['data'][key])
+                    ts = ts / 1000.0 if ts > 1e12 else ts
+                    age = now - ts
+                    if 0 < age < 3600:
+                        logger.debug(f"📊 Age from token_data.data.{key}: {age:.1f}s")
+                        return age
+                except (ValueError, TypeError):
+                    continue
+
+        # NO FALLBACK - reject if no timestamp
+        logger.error(f"❌ No valid timestamp in token data - REJECTING")
+        logger.debug(f"Token data keys: {token_data.keys()}")
+        if 'data' in token_data:
+            logger.debug(f"Nested data keys: {token_data['data'].keys()}")
+        return 999.0  # Force rejection
     
     def _calculate_market_cap(self, token_data: dict) -> float:
         """
@@ -581,23 +607,27 @@ class PumpPortalMonitor:
             self._log_filter("curve_range", f"{v_sol:.2f} SOL")
             return (False, token_age)
         
-        # Momentum check
-        required_multiplier = 8 if v_sol < 35 else (5 if v_sol < 50 else 3)
-        required_sol = creator_sol * required_multiplier
-        if v_sol < required_sol:
-            self._log_filter("momentum", f"{v_sol:.2f} vs {required_sol:.2f}")
-            return (False, token_age)
-
-        # ===================================================================
-        # NEW: MOMENTUM CEILING (reject parabolic bot pumps)
-        # ===================================================================
+        # ✅ ADAPTIVE MOMENTUM: High ceiling for early tokens
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
-        max_momentum = self.filters.get('max_momentum', 25.0)
+        await self._get_sol_price()
+        market_cap = self._calculate_market_cap(token_data)
+
+        # Adaptive momentum ceiling
+        if market_cap < 6000:
+            # Early tokens ($2-6K MC): Allow high momentum (whale zone)
+            max_momentum = self.filters.get('max_momentum', 200.0)
+        else:
+            # Later tokens (>$6K MC): Strict bot pump check
+            max_momentum = self.filters.get('max_momentum_high_mc', 50.0)
 
         if momentum > max_momentum:
-            self._log_filter("bot_pump_momentum", f"{momentum:.1f}x > {max_momentum}x")
+            self._log_filter(
+                "momentum_ceiling",
+                f"{momentum:.1f}x > {max_momentum}x (MC: ${market_cap:,.0f})"
+            )
             return (False, token_age)
-        # ===================================================================
+
+        logger.info(f"✅ Momentum passed: {momentum:.1f}x (limit: {max_momentum}x for MC ${market_cap:,.0f})")
 
         # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))

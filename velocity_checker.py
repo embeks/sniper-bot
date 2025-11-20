@@ -17,17 +17,16 @@ class VelocityChecker:
     
     def __init__(
         self,
-        min_sol_per_second: float = 2.0,
+        min_sol_per_second: float = 2.0,      # Changed from 2.5
         min_unique_buyers: int = 5,
-        max_token_age_seconds: float = 6.0,
-        min_recent_1s_sol: float = 2.0,
-        min_recent_3s_sol: float = 4.0,
+        max_token_age_seconds: float = 16.0,  # Changed from 15.0
+        min_recent_1s_sol: float = 2.0,       # Changed from 2.5
+        min_recent_3s_sol: float = 4.0,       # Changed from 5.0
         max_drop_percent: float = 25.0,
-        min_snapshots: int = 2,
-        # NEW: Add maximum velocity parameters
-        max_sol_per_second: float = 6.0,
-        max_recent_1s_sol: float = 8.0,
-        max_recent_3s_sol: float = 12.0
+        min_snapshots: int = 1,               # Changed from 2 - CRITICAL
+        max_sol_per_second: float = 15.0,     # Changed from 10.0
+        max_recent_1s_sol: float = 20.0,      # Changed from 15.0
+        max_recent_3s_sol: float = 35.0       # Changed from 25.0
     ):
         """
         Args:
