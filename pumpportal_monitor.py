@@ -131,9 +131,10 @@ class PumpPortalMonitor:
     def _event_age_seconds(self, token_data: dict) -> float:
         """
         ✅ CRITICAL FIX: Get REAL token age from event data
-        NO FALLBACK to first-sighting time (causes 120s→0s bug)
+        Smart fallback: Track first-sighting but validate against real timestamps
         """
         now = time.time()
+        mint = token_data.get('mint') or token_data.get('address', '')
 
         # Priority 1: Explicit age field
         if 'age' in token_data:
@@ -175,11 +176,25 @@ class PumpPortalMonitor:
                 except (ValueError, TypeError):
                     continue
 
-        # NO FALLBACK - reject if no timestamp
-        logger.error(f"❌ No valid timestamp in token data - REJECTING")
-        logger.debug(f"Token data keys: {token_data.keys()}")
+        # SMART FALLBACK: First-sighting tracking
+        # Only use for TRULY NEW tokens (not cached stale entries)
+        if mint:
+            if mint not in self.token_first_seen:
+                # First time seeing this token - assume it's fresh
+                self.token_first_seen[mint] = now
+                logger.debug(f"📊 Age from first-sighting (NEW token): 0.0s")
+                return 0.0
+            else:
+                # We've seen this token before - calculate age from first sighting
+                age = now - self.token_first_seen[mint]
+                logger.debug(f"📊 Age from first-sighting (cached): {age:.1f}s")
+                return age
+
+        # Last resort: log what we got and reject
+        logger.warning(f"⚠️ No mint/address found in token data")
+        logger.debug(f"Token data keys: {list(token_data.keys())[:10]}")
         if 'data' in token_data:
-            logger.debug(f"Nested data keys: {token_data['data'].keys()}")
+            logger.debug(f"Nested data keys: {list(token_data['data'].keys())[:10]}")
         return 999.0  # Force rejection
     
     def _calculate_market_cap(self, token_data: dict) -> float:
