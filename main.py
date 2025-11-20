@@ -134,16 +134,16 @@ class SniperBot:
         self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)
         
         self.velocity_checker = VelocityChecker(
-            min_sol_per_second=2.5,           # Hardcoded for Mayhem
+            min_sol_per_second=2.0,              # Lowered from 2.5
             min_unique_buyers=VELOCITY_MIN_BUYERS,
-            max_token_age_seconds=15.0,  # Moderate: catches most of initial pump
-            min_recent_1s_sol=2.5,            # Hardcoded for Mayhem
-            min_recent_3s_sol=5.0,            # Hardcoded for Mayhem
+            max_token_age_seconds=16.0,          # Raised from 15.0
+            min_recent_1s_sol=2.0,               # Lowered from 2.5
+            min_recent_3s_sol=4.0,               # Lowered from 5.0
             max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
-            min_snapshots=1,                  # ✅ ALLOW FIRST DETECTION ENTRY
-            max_sol_per_second=10.0,          # Raised from 6.0 for Mayhem
-            max_recent_1s_sol=15.0,           # Raised from 8.0 for Mayhem
-            max_recent_3s_sol=25.0            # Raised from 12.0 for Mayhem
+            min_snapshots=1,                     # ✅ CRITICAL: Already 1
+            max_sol_per_second=15.0,             # Raised from 10.0
+            max_recent_1s_sol=20.0,              # Raised from 15.0
+            max_recent_3s_sol=35.0               # Raised from 25.0
         )
         
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
@@ -184,9 +184,9 @@ class SniperBot:
         
         logger.info(f"📊 STARTUP STATUS:")
         logger.info(f"  • Strategy: 🎪 MAYHEM MODE - FAST RECYCLING")
-        logger.info(f"  • Velocity gate: 2.5-10.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
-        logger.info(f"  • Velocity ceiling raised: Accepts up to 10 SOL/s organic pumps")
-        logger.info(f"  • Recent velocity: ≥2.5 SOL (1s), ≥5.0 SOL (3s)")
+        logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
+        logger.info(f"  • Velocity ceiling raised: Accepts up to 15 SOL/s organic pumps")
+        logger.info(f"  • Recent velocity: ≥2.0 SOL (1s), ≥4.0 SOL (3s)")
         logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
         logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s (max 1 ext)")
         logger.info(f"  • Trail: Starts at +70%, exits on 35pp giveback")
