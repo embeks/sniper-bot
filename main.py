@@ -887,7 +887,7 @@ class SniperBot:
                 sol_amount=BUY_AMOUNT_SOL,
                 bonding_curve_key=bonding_curve_key,
                 slippage=30,
-                urgency="high"  # ✅ Critical for Mayhem
+                urgency="buy"  # 0.001 SOL priority fee
             )
             
             bought_tokens = 0
@@ -1454,7 +1454,7 @@ class SniperBot:
                 token_amount=ui_tokens_to_sell,
                 slippage=50,
                 token_decimals=token_decimals,
-                urgency="high"
+                urgency="sell"  # 0.0015 SOL priority fee for normal sells
             )
             
             if signature and not signature.startswith("1111111"):
@@ -1602,22 +1602,22 @@ class SniperBot:
                 retry_count = position.retry_counts.get(target_name, 0)
                 if retry_count < 2:
                     position.retry_counts[target_name] = retry_count + 1
-                    logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3) with critical urgency")
-                    
+                    logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3)")
+
                     if target_name in position.pending_sells:
                         position.pending_sells.remove(target_name)
                     if target_name in position.pending_token_amounts:
                         del position.pending_token_amounts[target_name]
-                    
+
                     token_decimals = self.wallet.get_token_decimals(mint)
                     ui_tokens_to_sell = round(position.remaining_tokens * (sell_percent / 100), token_decimals)
-                    
+
                     retry_signature = await self.trader.create_sell_transaction(
                         mint=mint,
                         token_amount=ui_tokens_to_sell,
                         slippage=50,
                         token_decimals=token_decimals,
-                        urgency="critical"
+                        urgency="sell"  # 0.0015 SOL priority fee for normal sell retry
                     )
                     
                     if retry_signature and not retry_signature.startswith("1111111"):
@@ -1716,12 +1716,15 @@ class SniperBot:
 
             token_decimals = self.wallet.get_token_decimals(mint)
 
+            # Use emergency priority only for stop loss and rug trap
+            urgency = "emergency" if reason in ["stop_loss", "rug_trap"] else "sell"
+
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
                 token_amount=ui_token_balance,
                 slippage=100 if is_migrated else 50,
                 token_decimals=token_decimals,
-                urgency="critical"
+                urgency=urgency  # 0.002 SOL for emergency, 0.0015 SOL for normal
             )
 
             if not signature or signature.startswith("1111111"):

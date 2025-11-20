@@ -20,34 +20,31 @@ class PumpPortalTrader:
         self.client = client
         self.api_url = "https://pumpportal.fun/api/trade-local"
     
-    async def get_priority_fee(self, urgency: str = "normal") -> float:
+    async def get_priority_fee(self, urgency: str = "buy") -> float:
         """
-        OPTIMIZED: Reduced priority fees for better profitability
+        OPTIMIZED: Competitive priority fees for maximum profitability
 
         Fee philosophy:
-        - Buy: Moderate fee for fast entry (1-3s confirm)
-        - Sell: Higher priority for exits (1-2s confirm)
+        - Buy: Low fee for fast entry while minimizing costs (0.001 SOL = 2% on 0.05 SOL)
+        - Sell: Slightly higher for reliable exits (0.0015 SOL = 3% on 0.05 SOL)
+        - Emergency: Higher priority for critical exits only (0.002 SOL = 4% on 0.05 SOL)
 
         urgency levels:
-        - "low": 0.001 SOL (5-10s confirm, off-peak only)
-        - "normal": 0.002 SOL (standard operations)
-        - "high": 0.002 SOL (BUY - reduced by 50%)
-        - "critical": 0.003 SOL (SELL - reduced by 50%)
-        - "ultra": 0.008 SOL (emergency retry, <1s confirm)
+        - "buy": 0.0010 SOL (normal buys, 1-3s confirm)
+        - "sell": 0.0015 SOL (normal sells, 1-2s confirm)
+        - "emergency": 0.0020 SOL (stop loss/rug detection only, <1s confirm)
 
         Breakeven analysis at 0.05 SOL:
-        - Total fees: 0.002 (buy) + 0.003 (sell) = 0.005 SOL
-        - Breakeven: +10% (50% reduction from previous 0.010 SOL)
+        - Total fees: 0.001 (buy) + 0.0015 (sell) = 0.0025 SOL
+        - Breakeven: +5% (75% reduction from previous 0.010 SOL!)
         """
         urgency_fees = {
-            "low": 0.001,
-            "normal": 0.002,      # Raised from 0.0015
-            "high": 0.002,        # Reduced by 50% from 0.004
-            "critical": 0.003,    # Reduced by 50% from 0.006
-            "ultra": 0.008
+            "buy": 0.0010,        # Normal buys - reduced from 0.002
+            "sell": 0.0015,       # Normal sells - reduced from 0.003
+            "emergency": 0.0020   # Stop loss/rug only - reduced from 0.006
         }
 
-        fee = urgency_fees.get(urgency, 0.0015)
+        fee = urgency_fees.get(urgency, 0.0010)  # Default to buy fee
         logger.debug(f"Priority fee ({urgency}): {fee:.6f} SOL")
         return fee
     
@@ -57,7 +54,7 @@ class PumpPortalTrader:
         sol_amount: float,
         bonding_curve_key: str = None,
         slippage: int = 30,  # UPDATED: Tighter default (0.3%) since we validate liquidity
-        urgency: str = "high"  # Default to high priority
+        urgency: str = "buy"  # Default to buy priority (0.001 SOL)
     ) -> Optional[str]:
         """Get a buy transaction from PumpPortal API with dynamic fees"""
         try:
@@ -252,7 +249,7 @@ class PumpPortalTrader:
         bonding_curve_key: str = None,
         slippage: int = 50,
         token_decimals: int = 6,
-        urgency: str = "normal"
+        urgency: str = "sell"  # Default to sell priority (0.0015 SOL)
     ) -> Optional[str]:
         """Get a sell transaction from PumpPortal API with dynamic fees - expects UI token amounts"""
         try:
