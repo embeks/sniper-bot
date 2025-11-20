@@ -42,10 +42,13 @@ class WalletManager:
             
             self.pubkey = self.keypair.pubkey()
             self.client = Client(RPC_ENDPOINT)
-            
+
+            # Track pre-trade balance for accurate P&L calculation
+            self.last_balance_before_trade = None
+
             # Verify wallet
             self._verify_wallet()
-            
+
             logger.info(f"✅ Wallet initialized: {self.pubkey}")
             
         except Exception as e:
