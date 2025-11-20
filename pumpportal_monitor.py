@@ -66,7 +66,7 @@ class PumpPortalMonitor:
             'min_creator_sol': 0.095,
             'max_creator_sol': 5.0,
             'min_curve_sol': 18.0,           # Whale entry zone
-            'max_curve_sol': 30.0,           # Before whale exits
+            'max_curve_sol': 32.0,           # Before whale exits
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
 
@@ -79,7 +79,7 @@ class PumpPortalMonitor:
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
             'min_market_cap': 4200,          # 18 SOL @ $235
-            'max_market_cap': 8800,          # 30 SOL @ $235 (raised from 7000)  
+            'max_market_cap': 9400,          # 30 SOL @ $235 (raised from 7000)  
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
