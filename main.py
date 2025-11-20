@@ -878,7 +878,10 @@ class SniperBot:
             bonding_curve_key = None
             if 'data' in token_data and 'bondingCurveKey' in token_data['data']:
                 bonding_curve_key = token_data['data']['bondingCurveKey']
-            
+
+            # Store pre-trade balance for accurate P&L
+            self.wallet.last_balance_before_trade = self.wallet.get_sol_balance()
+
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
                 sol_amount=BUY_AMOUNT_SOL,
@@ -1769,20 +1772,43 @@ class SniperBot:
                 final_pnl_sol = trading_pnl_sol
 
             else:
-                # Transaction parsing failed - use conservative fallback
+                # Transaction parsing failed - fallback using wallet balance delta
                 logger.warning("⚠️ Transaction parsing failed after 30s")
-                logger.warning("   Using conservative estimate - check Solscan manually!")
+                logger.warning("   Falling back to wallet balance delta")
                 logger.warning(f"   Transaction: https://solscan.io/tx/{signature}")
 
-                # Conservative estimate: assume small loss equal to fees
-                estimated_fees = 0.009
-                trading_pnl_sol = -estimated_fees
-                actual_sol_received = position.amount_sol - estimated_fees
-                actual_tokens_sold = ui_token_balance
-                actual_fees_paid = estimated_fees
+                # Wait for balance to update
+                await asyncio.sleep(2)
 
+                # Get current balance and calculate delta
+                post_balance = self.wallet.get_sol_balance()
+                pre_balance = self.wallet.last_balance_before_trade or post_balance
+
+                # Calculate actual SOL received from wallet movement
+                balance_delta = post_balance - pre_balance
+                actual_sol_received = balance_delta + position.amount_sol  # Add back invested amount
+
+                # Sanity check: if delta looks wrong, use conservative estimate
+                if actual_sol_received <= 0 or actual_sol_received > position.amount_sol * 2:
+                    logger.warning(f"⚠️ Suspicious balance delta: {balance_delta:.6f} SOL")
+                    logger.warning(f"   Pre-trade: {pre_balance:.6f}, Post-trade: {post_balance:.6f}")
+                    # Assume break-even minus small loss
+                    actual_sol_received = position.amount_sol * 0.99
+
+                actual_tokens_sold = ui_token_balance
+                estimated_fees = 0.009
+                trading_pnl_sol = actual_sol_received - position.amount_sol
+                actual_fees_paid = estimated_fees
                 gross_sale_proceeds = actual_sol_received
                 final_pnl_sol = trading_pnl_sol
+
+                logger.info(f"📊 Wallet Balance Fallback:")
+                logger.info(f"   Pre-trade: {pre_balance:.6f} SOL")
+                logger.info(f"   Post-trade: {post_balance:.6f} SOL")
+                logger.info(f"   Delta: {balance_delta:+.6f} SOL")
+                logger.info(f"   Invested: {position.amount_sol:.6f} SOL")
+                logger.info(f"   Received: {actual_sol_received:.6f} SOL")
+                logger.info(f"   P&L: {trading_pnl_sol:+.6f} SOL")
 
             # Detect suspicious/failed sells (check actual sale proceeds)
             if gross_sale_proceeds > 0 and gross_sale_proceeds < (position.amount_sol * 0.1):
