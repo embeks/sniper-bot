@@ -130,19 +130,17 @@ class PumpPortalMonitor:
     
     def _event_age_seconds(self, token_data: dict) -> float:
         """
-        ✅ CRITICAL FIX: Get REAL token age from event data
-        NO FALLBACK to first-sighting time (causes 120s→0s bug)
+        ✅ FIX: PumpPortal doesn't send timestamps - estimate from SOL raised
         """
         now = time.time()
 
-        # Priority 1: Explicit age field
+        # Priority 1: Explicit age field (if available)
         if 'age' in token_data:
             age = token_data['age']
             if isinstance(age, (int, float)) and age > 0:
                 logger.debug(f"📊 Age from token_data.age: {age:.1f}s")
                 return float(age)
 
-        # Priority 2: Check nested data
         if 'data' in token_data:
             inner = token_data['data']
             if 'age' in inner:
@@ -151,7 +149,7 @@ class PumpPortalMonitor:
                     logger.debug(f"📊 Age from token_data.data.age: {age:.1f}s")
                     return float(age)
 
-        # Priority 3: Timestamp fields
+        # Priority 2: Timestamp fields (if available)
         for key in ('blockTime', 'createdAt', 'timestamp', 'ts'):
             if key in token_data:
                 try:
@@ -175,12 +173,36 @@ class PumpPortalMonitor:
                 except (ValueError, TypeError):
                     continue
 
-        # NO FALLBACK - reject if no timestamp
-        logger.error(f"❌ No valid timestamp in token data - REJECTING")
-        logger.debug(f"Token data keys: {token_data.keys()}")
-        if 'data' in token_data:
-            logger.debug(f"Nested data keys: {token_data['data'].keys()}")
-        return 999.0  # Force rejection
+        # Priority 3: FALLBACK - Estimate from SOL raised (PumpPortal has no timestamps)
+        token_data_inner = token_data.get('data', token_data)
+        v_sol = float(token_data_inner.get('vSolInBondingCurve', 0))
+
+        if v_sol > 0:
+            # Estimate: Tokens pump at ~2-4 SOL/s in first 15s
+            # Use conservative 2.5 SOL/s to avoid underestimating
+            estimated_age = v_sol / 2.5
+
+            # Clamp to reasonable range (2-60s)
+            estimated_age = max(2.0, min(estimated_age, 60.0))
+
+            logger.info(f"📊 Age estimated from SOL: {v_sol:.2f} SOL ÷ 2.5 = {estimated_age:.1f}s")
+            return estimated_age
+
+        # Priority 4: Use first-sighting time as last resort
+        mint = token_data.get('mint') or token_data_inner.get('mint', '')
+        if mint:
+            if mint not in self.token_first_seen:
+                self.token_first_seen[mint] = now
+                logger.info(f"📊 First sighting of {mint[:8]}... - starting age clock at 0s")
+                return 0.0
+
+            age_since_first = now - self.token_first_seen[mint]
+            logger.info(f"📊 Age from first sighting: {age_since_first:.1f}s")
+            return age_since_first
+
+        # No way to determine age - reject
+        logger.error(f"❌ Could not determine age - no SOL data or mint address")
+        return 999.0
     
     def _calculate_market_cap(self, token_data: dict) -> float:
         """
