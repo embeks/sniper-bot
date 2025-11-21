@@ -60,26 +60,26 @@ class PumpPortalMonitor:
             'max_token_age_seconds': 16.0,  # Up from 2.0 - whale zone
 
             # OPTIMIZATION: Early curve prefilter
-            'min_curve_sol_prefilter': 15.0,  # Early filter
+            'min_curve_sol_prefilter': 10.0,  # Early filter
 
             # Raised from 0.095 to 0.5 to filter out low-effort launches
             'min_creator_sol': 0.095,
             'max_creator_sol': 5.0,
-            'min_curve_sol': 18.0,           # Whale entry zone
-            'max_curve_sol': 32.0,           # Before whale exits
+            'min_curve_sol': 10.0,           # Whale entry zone
+            'max_curve_sol': 14.0,           # Before whale exits
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
 
             # NEW: Reject bot pumps with excessive momentum
-            'max_momentum': 200.0,  # Up from 35.0 - allow whale pumps
+            'max_momentum': 350.0,  # Up from 200.0 - allow whale pumps
             'max_momentum_high_mc': 50.0,  # Stricter for >$6K MC
 
             'min_holders': 10,
             'check_concentration': False,
             'max_top10_concentration': 85,
             'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
-            'min_market_cap': 4200,          # 18 SOL @ $235
-            'max_market_cap': 9400,          # 30 SOL @ $235 (raised from 7000)  
+            'min_market_cap': 2350,          # 10 SOL @ $235
+            'max_market_cap': 4700,          # 14 SOL @ $235 (lowered from 9400)  
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
