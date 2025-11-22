@@ -1,13 +1,14 @@
 """
 Helius Logs Monitor - Direct PumpFun program log subscription
 Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
-FIXED: Better transaction fetching with retries and verbose error logging
+FIXED: Base64 decode instruction data before parsing discriminator
 """
 
 import asyncio
 import json
 import logging
 import time
+import base64
 import websockets
 from datetime import datetime
 from typing import Optional, Dict
@@ -210,7 +211,7 @@ class HeliusLogsMonitor:
             tx_sig = SoldersSignature.from_string(signature)
             
             # Fetch transaction details with LONGER retry for very fresh transactions
-            max_retries = 3  # Increased from 2
+            max_retries = 3
             tx_response = None
             
             for attempt in range(max_retries):
@@ -227,7 +228,7 @@ class HeliusLogsMonitor:
                     else:
                         if verbose:
                             logger.info(f"   ⏳ TX not available yet (attempt {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(1.0)  # Increased from 0.5s
+                    await asyncio.sleep(1.0)
                 except Exception as e:
                     if verbose:
                         logger.info(f"   ⚠️ TX fetch error on attempt {attempt + 1}: {e}")
@@ -296,7 +297,8 @@ class HeliusLogsMonitor:
                     
                     # Get instruction discriminator (first byte)
                     try:
-                        data = bytes(instr_data)
+                        # ✅ FIX: Decode base64 string to bytes
+                        data = base64.b64decode(instr_data)
                         
                         if verbose:
                             logger.info(f"      Data length: {len(data)} bytes")
