@@ -1918,7 +1918,18 @@ class SniperBot:
         try:
             await self.initialize_telegram()
             
-            self.scanner = PumpPortalMonitor(self.on_token_found)
+            if self.scanner_type == 'helius':
+                from helius_logs_monitor import HeliusLogsMonitor
+                from solana.rpc.api import Client
+                from config import RPC_ENDPOINT
+                rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+                self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
+                logger.info("📡 Using Helius Logs Monitor (0.2-0.8s latency)")
+            else:
+                from pumpportal_monitor import PumpPortalMonitor
+                self.scanner = PumpPortalMonitor(self.on_token_found)
+                logger.info("📡 Using PumpPortal Monitor (8-12s latency)")
+
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
