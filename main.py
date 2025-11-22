@@ -123,6 +123,7 @@ class SniperBot:
         self.dex = PumpFunDEX(self.wallet)
         self.scanner = None
         self.scanner_task = None
+        self.scanner_type = os.getenv('SCANNER_TYPE', 'helius')  # 'helius' or 'pumpportal' or 'both'
         self.telegram = None
         self.telegram_polling_task = None
         self.tracker = PerformanceTracker()
@@ -183,7 +184,9 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: 🎪 MAYHEM MODE - FAST RECYCLING")
+        scanner_latency = '0.2-0.8s' if self.scanner_type == 'helius' else '8-12s'
+        logger.info(f"  • Scanner: {self.scanner_type.upper()} ({scanner_latency} latency)")
+        logger.info(f"  • Strategy: 🎯 EARLY ENTRY - 10-14 SOL WHALE ZONE")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Velocity ceiling raised: Accepts up to 15 SOL/s organic pumps")
         logger.info(f"  • Recent velocity: ≥2.0 SOL (1s), ≥4.0 SOL (3s)")
@@ -620,7 +623,22 @@ class SniperBot:
         self.consecutive_losses = 0
         
         if not self.scanner:
-            self.scanner = PumpPortalMonitor(self.on_token_found)
+            if self.scanner_type == 'helius':
+                from helius_logs_monitor import HeliusLogsMonitor
+                from solana.rpc.api import Client
+                rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+                self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
+                logger.info("📡 Using Helius Logs Monitor (0.2-0.8s latency)")
+            elif self.scanner_type == 'pumpportal':
+                from pumpportal_monitor import PumpPortalMonitor
+                self.scanner = PumpPortalMonitor(self.on_token_found)
+                logger.info("📡 Using PumpPortal Monitor (8-12s latency)")
+            else:  # both
+                logger.error("Running both scanners not yet implemented - defaulting to Helius")
+                from helius_logs_monitor import HeliusLogsMonitor
+                from solana.rpc.api import Client
+                rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+                self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
         
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
