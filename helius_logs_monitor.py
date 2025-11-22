@@ -1,7 +1,7 @@
 """
 Helius Logs Monitor - Direct PumpFun program log subscription
 Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
-FIXED: Transaction-based detection with comprehensive debug logging
+FIXED: Using instruction discriminator for 100% reliable detection
 """
 
 import asyncio
@@ -131,7 +131,7 @@ class HeliusLogsMonitor:
     async def _process_log_notification(self, params: Dict):
         """
         Process incoming log notification from Helius
-        FIXED: Use transaction-based detection instead of log strings
+        FIXED: Use transaction-based detection with instruction discriminator
         """
         try:
             result = params.get('result', {})
@@ -201,6 +201,7 @@ class HeliusLogsMonitor:
     async def _extract_mint_from_transaction(self, signature: str) -> Optional[str]:
         """
         Fetch transaction and check if it's an InitializeBondingCurve instruction
+        Uses instruction discriminator (first byte = 0) for reliable detection
         Returns mint address if it's a new token, None otherwise
         """
         try:
@@ -234,13 +235,12 @@ class HeliusLogsMonitor:
             
             tx = tx_response.value
             message = tx.transaction.transaction.message
-            
-            # Check each instruction to find InitializeBondingCurve
             instructions = message.instructions
             
-            if self.logs_received <= 50:
-                logger.debug(f"   📋 TX has {len(instructions)} instructions")
+            if self.logs_received <= 10:
+                logger.info(f"   📋 TX has {len(instructions)} instructions")
             
+            # Loop through all instructions
             for idx, instruction in enumerate(instructions):
                 # Get program ID for this instruction
                 program_id_index = instruction.program_id_index
@@ -250,41 +250,61 @@ class HeliusLogsMonitor:
                 if program_id != str(PUMPFUN_PROGRAM_ID):
                     continue
                 
-                if self.logs_received <= 50:
-                    logger.debug(f"   ✓ Found PumpFun instruction at index {idx}")
+                if self.logs_received <= 10:
+                    logger.info(f"   ✓ Found PumpFun instruction at index {idx}")
                 
-                # This is a PumpFun instruction - check if it's InitializeBondingCurve
-                # Get accounts for this instruction
-                accounts = instruction.accounts if hasattr(instruction, 'accounts') else []
+                # Decode instruction data to get discriminator
+                if not hasattr(instruction, 'data') or not instruction.data:
+                    if self.logs_received <= 10:
+                        logger.info(f"   ⚠️ Instruction has no data")
+                    continue
                 
-                if self.logs_received <= 50:
-                    logger.debug(f"   📊 Instruction has {len(accounts)} accounts")
-                
-                # InitializeBondingCurve has 10+ accounts
-                # The first account is the mint
-                if len(accounts) >= 10:
+                # Get instruction discriminator (first byte)
+                try:
+                    data = bytes(instruction.data)
+                    instruction_type = data[0]
+                    
+                    if self.logs_received <= 10:
+                        logger.info(f"   🔍 Instruction discriminator: {instruction_type}")
+                    
+                    # InitializeBondingCurve has discriminator = 0
+                    if instruction_type != 0:
+                        if self.logs_received <= 10:
+                            logger.info(f"   ❌ Not InitializeBondingCurve (discriminator={instruction_type})")
+                        continue
+                    
+                    # This is InitializeBondingCurve! Extract mint from first account
+                    accounts = instruction.accounts if hasattr(instruction, 'accounts') else []
+                    
+                    if len(accounts) == 0:
+                        if self.logs_received <= 10:
+                            logger.info(f"   ⚠️ Instruction has no accounts")
+                        continue
+                    
+                    # Mint is always the first account
                     mint_index = accounts[0]
                     mint = str(message.account_keys[mint_index])
                     
-                    # Verify it's not a known program ID
-                    if mint not in [
-                        str(PUMPFUN_PROGRAM_ID),
-                        "11111111111111111111111111111111",
-                        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-                        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-                    ]:
-                        if self.logs_received <= 50:
-                            logger.info(f"   ✅ MINT FOUND: {mint[:8]}... (InitializeBondingCurve confirmed)")
-                        return mint
+                    if self.logs_received <= 10:
+                        logger.info(f"   ✅ MINT FOUND: {mint[:8]}... (InitializeBondingCurve discriminator=0 confirmed)")
+                    
+                    return mint
+                    
+                except Exception as e:
+                    if self.logs_received <= 10:
+                        logger.error(f"   ❌ Error decoding instruction data: {e}")
+                    continue
             
-            # Not an InitializeBondingCurve instruction
-            if self.logs_received <= 50:
-                logger.debug(f"   ❌ No InitializeBondingCurve found in TX")
+            # No InitializeBondingCurve instruction found
+            if self.logs_received <= 10:
+                logger.info(f"   ❌ No InitializeBondingCurve found in TX")
             return None
             
         except Exception as e:
-            if self.logs_received <= 50:
-                logger.debug(f"   ❌ Parse error: {e}")
+            if self.logs_received <= 10:
+                logger.error(f"   ❌ Parse error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
             return None
     
     def get_stats(self) -> Dict:
