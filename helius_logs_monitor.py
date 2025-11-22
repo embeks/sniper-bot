@@ -1,7 +1,7 @@
 """
 Helius Logs Monitor - Direct PumpFun program log subscription
 Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
-FIXED: Handles both UiPartiallyDecodedInstruction and regular instructions
+FIXED: Ultra-verbose logging to diagnose why no tokens detected
 """
 
 import asyncio
@@ -52,7 +52,7 @@ class HeliusLogsMonitor:
         logger.info(f"   Strategy: ⚡ RPC LOG SUBSCRIPTION - ULTRA LOW LATENCY")
         logger.info(f"   PumpFun Program: {PUMPFUN_PROGRAM_ID}")
         logger.info(f"   Expected latency: 0.2-0.8s (vs 8-12s PumpPortal)")
-        logger.info(f"   🐛 DEBUG MODE: Logging first 50 events for diagnostics")
+        logger.info(f"   🐛 DEBUG MODE: Ultra-verbose logging for first 20 events")
         
         while self.running:
             try:
@@ -237,102 +237,129 @@ class HeliusLogsMonitor:
             message = tx.transaction.transaction.message
             instructions = message.instructions
             
-            if self.logs_received <= 10:
+            # VERBOSE: Always log for first 20 events
+            verbose = self.logs_received <= 20
+            
+            if verbose:
                 logger.info(f"   📋 TX has {len(instructions)} instructions")
+            
+            pumpfun_found = False
             
             # Loop through all instructions
             for idx, instruction in enumerate(instructions):
                 try:
                     # Handle both UiPartiallyDecodedInstruction and regular instructions
-                    # For UiPartiallyDecodedInstruction, use program_id directly
                     if hasattr(instruction, 'program_id'):
                         program_id = str(instruction.program_id)
                     elif hasattr(instruction, 'program_id_index'):
                         program_id_index = instruction.program_id_index
                         program_id = str(message.account_keys[program_id_index])
                     else:
-                        if self.logs_received <= 10:
-                            logger.debug(f"   ⚠️ Instruction {idx} has unknown format")
+                        if verbose:
+                            logger.info(f"   ⚠️ Instruction {idx} has unknown format")
                         continue
                     
                     # Check if this instruction is from PumpFun program
                     if program_id != str(PUMPFUN_PROGRAM_ID):
                         continue
                     
-                    if self.logs_received <= 10:
-                        logger.info(f"   ✓ Found PumpFun instruction at index {idx}")
+                    pumpfun_found = True
+                    
+                    if verbose:
+                        logger.info(f"   ✅ Found PumpFun instruction at index {idx}")
+                        logger.info(f"      Instruction type: {type(instruction).__name__}")
                     
                     # Get instruction data
                     if hasattr(instruction, 'data'):
                         instr_data = instruction.data
+                        if verbose:
+                            logger.info(f"      Has 'data' attribute")
                     elif hasattr(instruction, 'parsed'):
-                        # This is a parsed instruction, skip it
-                        if self.logs_received <= 10:
-                            logger.info(f"   ⚠️ Instruction is parsed, skipping")
+                        if verbose:
+                            logger.info(f"      Has 'parsed' attribute (skipping)")
                         continue
                     else:
-                        if self.logs_received <= 10:
-                            logger.info(f"   ⚠️ Instruction has no data field")
+                        if verbose:
+                            logger.info(f"      No 'data' or 'parsed' attribute")
                         continue
                     
                     if not instr_data:
-                        if self.logs_received <= 10:
-                            logger.info(f"   ⚠️ Instruction data is empty")
+                        if verbose:
+                            logger.info(f"      Data is empty/None")
                         continue
                     
                     # Get instruction discriminator (first byte)
                     try:
                         data = bytes(instr_data)
+                        
+                        if verbose:
+                            logger.info(f"      Data length: {len(data)} bytes")
+                            logger.info(f"      First 4 bytes: {data[:4].hex() if len(data) >= 4 else data.hex()}")
+                        
                         instruction_type = data[0]
                         
-                        if self.logs_received <= 10:
-                            logger.info(f"   🔍 Instruction discriminator: {instruction_type}")
+                        if verbose:
+                            logger.info(f"      🔍 Discriminator: {instruction_type}")
                         
                         # InitializeBondingCurve has discriminator = 0
                         if instruction_type != 0:
-                            if self.logs_received <= 10:
-                                logger.info(f"   ❌ Not InitializeBondingCurve (discriminator={instruction_type})")
+                            if verbose:
+                                logger.info(f"      ❌ Not InitializeBondingCurve (discriminator={instruction_type}, need 0)")
                             continue
                         
-                        # This is InitializeBondingCurve! Extract mint from first account
+                        # This is InitializeBondingCurve!
+                        if verbose:
+                            logger.info(f"      ✅ FOUND InitializeBondingCurve (discriminator=0)!")
+                        
+                        # Extract mint from first account
                         if hasattr(instruction, 'accounts'):
                             accounts = instruction.accounts
                         else:
-                            if self.logs_received <= 10:
-                                logger.info(f"   ⚠️ Instruction has no accounts attribute")
+                            if verbose:
+                                logger.info(f"      ⚠️ No accounts attribute")
                             continue
                         
                         if len(accounts) == 0:
-                            if self.logs_received <= 10:
-                                logger.info(f"   ⚠️ Instruction has no accounts")
+                            if verbose:
+                                logger.info(f"      ⚠️ accounts list is empty")
                             continue
+                        
+                        if verbose:
+                            logger.info(f"      Has {len(accounts)} accounts")
                         
                         # Mint is always the first account
                         mint_index = accounts[0]
                         mint = str(message.account_keys[mint_index])
                         
-                        if self.logs_received <= 10:
-                            logger.info(f"   ✅ MINT FOUND: {mint[:8]}... (InitializeBondingCurve discriminator=0 confirmed)")
+                        logger.info(f"   🎯 MINT EXTRACTED: {mint[:8]}... (discriminator=0 confirmed!)")
                         
                         return mint
                         
                     except Exception as e:
-                        if self.logs_received <= 10:
-                            logger.error(f"   ❌ Error decoding instruction data: {e}")
+                        if verbose:
+                            logger.error(f"      ❌ Error decoding data: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                         continue
                         
                 except Exception as e:
-                    if self.logs_received <= 10:
+                    if verbose:
                         logger.error(f"   ❌ Error processing instruction {idx}: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
                     continue
             
             # No InitializeBondingCurve instruction found
-            if self.logs_received <= 10:
-                logger.info(f"   ❌ No InitializeBondingCurve found in TX")
+            if verbose:
+                if pumpfun_found:
+                    logger.info(f"   ❌ PumpFun instruction found but not InitializeBondingCurve")
+                else:
+                    logger.info(f"   ❌ No PumpFun instruction in this TX")
+            
             return None
             
         except Exception as e:
-            if self.logs_received <= 10:
+            if self.logs_received <= 20:
                 logger.error(f"   ❌ Parse error: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
