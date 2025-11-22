@@ -1,7 +1,7 @@
 """
 Helius Logs Monitor - Direct PumpFun program log subscription
 Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
-FIXED: Base64 decode instruction data before parsing discriminator
+FIXED: Proper base64 decoding with padding handling
 """
 
 import asyncio
@@ -297,7 +297,12 @@ class HeliusLogsMonitor:
                     
                     # Get instruction discriminator (first byte)
                     try:
-                        # ✅ FIX: Decode base64 string to bytes
+                        # ✅ FIX: Add padding to base64 string if needed
+                        padding = len(instr_data) % 4
+                        if padding:
+                            instr_data += '=' * (4 - padding)
+                        
+                        # Decode base64 to bytes
                         data = base64.b64decode(instr_data)
                         
                         if verbose:
