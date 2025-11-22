@@ -1,7 +1,7 @@
 """
 Helius Logs Monitor - Direct PumpFun program log subscription
 Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
-FIXED: Ultra-verbose logging to diagnose why no tokens detected
+FIXED: Better transaction fetching with retries and verbose error logging
 """
 
 import asyncio
@@ -204,11 +204,13 @@ class HeliusLogsMonitor:
         Uses instruction discriminator (first byte = 0) for reliable detection
         Returns mint address if it's a new token, None otherwise
         """
+        verbose = self.logs_received <= 20
+        
         try:
             tx_sig = SoldersSignature.from_string(signature)
             
-            # Fetch transaction details with retry
-            max_retries = 2
+            # Fetch transaction details with LONGER retry for very fresh transactions
+            max_retries = 3  # Increased from 2
             tx_response = None
             
             for attempt in range(max_retries):
@@ -219,26 +221,30 @@ class HeliusLogsMonitor:
                         max_supported_transaction_version=0
                     )
                     if tx_response and tx_response.value:
+                        if verbose:
+                            logger.info(f"   ✅ TX fetched successfully (attempt {attempt + 1})")
                         break
-                    await asyncio.sleep(0.5)  # Wait before retry
+                    else:
+                        if verbose:
+                            logger.info(f"   ⏳ TX not available yet (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(1.0)  # Increased from 0.5s
                 except Exception as e:
+                    if verbose:
+                        logger.info(f"   ⚠️ TX fetch error on attempt {attempt + 1}: {e}")
                     if attempt == max_retries - 1:
-                        if self.logs_received <= 50:
-                            logger.debug(f"   ⚠️ TX fetch failed after {max_retries} attempts: {e}")
+                        if verbose:
+                            logger.info(f"   ❌ TX fetch failed after {max_retries} attempts")
                         return None
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.0)
             
             if not tx_response or not tx_response.value:
-                if self.logs_received <= 50:
-                    logger.debug(f"   ⚠️ TX not found: {signature[:16]}...")
+                if verbose:
+                    logger.info(f"   ❌ TX not found after {max_retries} attempts (may be too fresh)")
                 return None
             
             tx = tx_response.value
             message = tx.transaction.transaction.message
             instructions = message.instructions
-            
-            # VERBOSE: Always log for first 20 events
-            verbose = self.logs_received <= 20
             
             if verbose:
                 logger.info(f"   📋 TX has {len(instructions)} instructions")
@@ -359,8 +365,8 @@ class HeliusLogsMonitor:
             return None
             
         except Exception as e:
-            if self.logs_received <= 20:
-                logger.error(f"   ❌ Parse error: {e}")
+            if verbose:
+                logger.error(f"   ❌ Outer parse error: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
             return None
