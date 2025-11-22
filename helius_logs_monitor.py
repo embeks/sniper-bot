@@ -334,28 +334,39 @@ class HeliusLogsMonitor:
                     if verbose:
                         logger.info(f"      Data length: {len(data)} bytes")
                         logger.info(
-                            f"      First 4 bytes: "
-                            f"{data[:4].hex() if len(data) >= 4 else data.hex()}"
+                            f"      First 8 bytes: "
+                            f"{data[:8].hex() if len(data) >= 8 else data.hex()}"
                         )
 
-                    # First byte = Anchor discriminator / instruction kind
-                    instruction_type = data[0]
+                    # Anchor uses 8-byte discriminators (first 8 bytes of SHA256 hash of instruction name)
+                    if len(data) < 8:
+                        if verbose:
+                            logger.info(f"      ⚠️ Data too short for discriminator check")
+                        continue
+
+                    discriminator = data[:8].hex()
+
+                    # Known PumpFun instruction discriminators
+                    INIT_BONDING_CURVE = "0faa6149ebef0807"  # InitializeBondingCurve
+                    BUY = "66063d1201daebea"                  # Buy
+                    SELL = "33e685a4017f83ad"                 # Sell
 
                     if verbose:
-                        logger.info(f"      🔍 Discriminator: {instruction_type}")
+                        logger.info(f"      🔍 Discriminator: {discriminator}")
 
-                    # InitializeBondingCurve has discriminator = 0
-                    if instruction_type != 0:
+                    # Check if this is InitializeBondingCurve
+                    if discriminator != INIT_BONDING_CURVE:
                         if verbose:
+                            instr_name = "Buy" if discriminator == BUY else "Sell" if discriminator == SELL else "Unknown"
                             logger.info(
                                 f"      ❌ Not InitializeBondingCurve "
-                                f"(discriminator={instruction_type}, need 0)"
+                                f"(found {instr_name}: {discriminator})"
                             )
                         continue
 
-                    # 🎉 This IS InitializeBondingCurve
+                    # 🎉 This IS InitializeBondingCurve!
                     if verbose:
-                        logger.info(f"      ✅ FOUND InitializeBondingCurve (discriminator=0)!")
+                        logger.info(f"      ✅ FOUND InitializeBondingCurve (discriminator={discriminator})!")
 
                     # Extract mint from first account
                     if hasattr(instruction, "accounts"):
