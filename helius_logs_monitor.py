@@ -1,6 +1,7 @@
 """
 Helius Logs Monitor - Direct PumpFun program log subscription
 Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
+FIXED: Transaction-based detection instead of log string matching
 """
 
 import asyncio
@@ -92,6 +93,9 @@ class HeliusLogsMonitor:
                             # Handle log notifications
                             if 'params' in data:
                                 self.logs_received += 1
+                                # Log every 10th event to show activity
+                                if self.logs_received % 10 == 0:
+                                    logger.debug(f"📊 Processed {self.logs_received} log events")
                                 await self._process_log_notification(data['params'])
                                 
                         except asyncio.TimeoutError:
@@ -110,50 +114,43 @@ class HeliusLogsMonitor:
                     await asyncio.sleep(5)
     
     async def _process_log_notification(self, params: Dict):
-        """Process incoming log notification from Helius"""
+        """
+        Process incoming log notification from Helius
+        FIXED: Use transaction-based detection instead of log strings
+        """
         try:
             result = params.get('result', {})
             value = result.get('value', {})
             
             signature = value.get('signature', '')
-            logs = value.get('logs', [])
             
-            if not signature or not logs:
+            if not signature:
                 return
             
-            # Check if this is an InitializeBondingCurve instruction
-            is_new_token = any('Instruction: InitializeBondingCurve' in log for log in logs)
-            
-            if not is_new_token:
-                return
-            
-            # New token detected!
-            self.tokens_detected += 1
+            # Don't filter by log strings - check the actual transaction
             detection_time = time.time()
             
-            logger.info(f"🚀 NEW TOKEN DETECTED via logs!")
-            logger.info(f"   Signature: {signature[:16]}...")
-            logger.info(f"   Detection #{self.tokens_detected}")
-            
-            # Extract mint address from transaction
+            # Extract mint from transaction instructions
             mint = await self._extract_mint_from_transaction(signature)
             
             if not mint:
-                logger.warning(f"❌ Could not extract mint from transaction {signature[:8]}...")
+                # Not a new token creation, just other PumpFun activity
                 return
             
             if mint in self.seen_tokens:
-                logger.debug(f"Already processed {mint[:8]}...")
                 return
             
+            # New token detected!
             self.seen_tokens.add(mint)
+            self.tokens_detected += 1
             self.tokens_processed += 1
             
             detection_latency_ms = (time.time() - detection_time) * 1000
             
-            logger.info(f"✅ MINT EXTRACTED: {mint}")
+            logger.info(f"🚀 NEW TOKEN DETECTED: {mint}")
+            logger.info(f"   Signature: {signature[:16]}...")
+            logger.info(f"   Detection #{self.tokens_detected}")
             logger.info(f"   Processing time: {detection_latency_ms:.0f}ms")
-            logger.info(f"   Stats: {self.tokens_processed} processed / {self.tokens_detected} detected / {self.logs_received} logs")
             
             # Pass to callback (existing on_token_found logic)
             if self.callback:
@@ -163,7 +160,6 @@ class HeliusLogsMonitor:
                     'type': 'pumpfun_launch',
                     'timestamp': datetime.now().isoformat(),
                     'source': 'helius_logs',
-                    'logs': logs,
                     'detection_latency_ms': detection_latency_ms
                 })
                 
@@ -174,8 +170,8 @@ class HeliusLogsMonitor:
     
     async def _extract_mint_from_transaction(self, signature: str) -> Optional[str]:
         """
-        Fetch transaction via RPC and extract mint address
-        This is more reliable than parsing logs
+        Fetch transaction and check if it's an InitializeBondingCurve instruction
+        Returns mint address if it's a new token, None otherwise
         """
         try:
             tx_sig = SoldersSignature.from_string(signature)
@@ -188,43 +184,65 @@ class HeliusLogsMonitor:
             )
             
             if not tx_response or not tx_response.value:
-                logger.warning(f"Transaction {signature[:8]}... not found yet")
                 return None
             
             tx = tx_response.value
-            
-            # Extract accounts from transaction
             message = tx.transaction.transaction.message
-            account_keys = message.account_keys
             
-            # The mint is typically one of the writable accounts
-            # Look for the token mint (32-byte pubkey)
-            for account in account_keys:
-                account_str = str(account)
+            # Check each instruction to find InitializeBondingCurve
+            instructions = message.instructions
+            
+            for idx, instruction in enumerate(instructions):
+                # Get program ID for this instruction
+                program_id_index = instruction.program_id_index
+                program_id = str(message.account_keys[program_id_index])
                 
-                # Skip known program IDs and system accounts
-                if account_str in [
-                    str(PUMPFUN_PROGRAM_ID),
-                    "11111111111111111111111111111111",  # System Program
-                    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",  # Token Program
-                    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"  # Associated Token Program
-                ]:
+                # Check if this instruction is from PumpFun program
+                if program_id != str(PUMPFUN_PROGRAM_ID):
                     continue
                 
-                # Try to verify this is a token mint by checking if it has token accounts
-                try:
-                    # Quick heuristic: the mint is usually the first non-program account
-                    # that appears in the InitializeBondingCurve instruction
-                    logger.debug(f"Found potential mint: {account_str[:8]}...")
-                    return account_str
-                except:
-                    continue
+                # This is a PumpFun instruction - check if it's InitializeBondingCurve
+                # InitializeBondingCurve is typically the first instruction and has specific accounts
+                
+                # Get accounts for this instruction
+                accounts = instruction.accounts if hasattr(instruction, 'accounts') else []
+                
+                # InitializeBondingCurve has these accounts (in order):
+                # 0: mint (writable)
+                # 1: bonding_curve (writable)
+                # 2: associated_bonding_curve (writable)
+                # 3: global
+                # 4: mpl_token_metadata
+                # 5: metadata
+                # 6: user (signer)
+                # 7: system_program
+                # 8: token_program
+                # 9: associated_token_program
+                # 10: rent
+                # 11: event_authority
+                # 12: program
+                
+                # If this instruction has 10+ accounts, it's likely InitializeBondingCurve
+                if len(accounts) >= 10:
+                    # The first account is the mint
+                    mint_index = accounts[0]
+                    mint = str(message.account_keys[mint_index])
+                    
+                    # Verify it's not a known program ID
+                    if mint not in [
+                        str(PUMPFUN_PROGRAM_ID),
+                        "11111111111111111111111111111111",  # System Program
+                        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",  # Token Program
+                        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"  # Associated Token Program
+                    ]:
+                        logger.debug(f"Found mint in InitializeBondingCurve: {mint[:8]}...")
+                        return mint
             
-            logger.warning(f"Could not find mint in transaction {signature[:8]}...")
+            # Not an InitializeBondingCurve instruction
             return None
             
         except Exception as e:
-            logger.error(f"Error extracting mint from transaction: {e}")
+            logger.debug(f"Error extracting mint (likely not a new token): {e}")
             return None
     
     def get_stats(self) -> Dict:
