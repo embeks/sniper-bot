@@ -1,7 +1,7 @@
 """
 Helius Logs Monitor - Direct PumpFun program log subscription
 Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
-FIXED: Using instruction discriminator for 100% reliable detection
+FIXED: Handles both UiPartiallyDecodedInstruction and regular instructions
 """
 
 import asyncio
@@ -242,57 +242,88 @@ class HeliusLogsMonitor:
             
             # Loop through all instructions
             for idx, instruction in enumerate(instructions):
-                # Get program ID for this instruction
-                program_id_index = instruction.program_id_index
-                program_id = str(message.account_keys[program_id_index])
-                
-                # Check if this instruction is from PumpFun program
-                if program_id != str(PUMPFUN_PROGRAM_ID):
-                    continue
-                
-                if self.logs_received <= 10:
-                    logger.info(f"   ✓ Found PumpFun instruction at index {idx}")
-                
-                # Decode instruction data to get discriminator
-                if not hasattr(instruction, 'data') or not instruction.data:
-                    if self.logs_received <= 10:
-                        logger.info(f"   ⚠️ Instruction has no data")
-                    continue
-                
-                # Get instruction discriminator (first byte)
                 try:
-                    data = bytes(instruction.data)
-                    instruction_type = data[0]
-                    
-                    if self.logs_received <= 10:
-                        logger.info(f"   🔍 Instruction discriminator: {instruction_type}")
-                    
-                    # InitializeBondingCurve has discriminator = 0
-                    if instruction_type != 0:
+                    # Handle both UiPartiallyDecodedInstruction and regular instructions
+                    # For UiPartiallyDecodedInstruction, use program_id directly
+                    if hasattr(instruction, 'program_id'):
+                        program_id = str(instruction.program_id)
+                    elif hasattr(instruction, 'program_id_index'):
+                        program_id_index = instruction.program_id_index
+                        program_id = str(message.account_keys[program_id_index])
+                    else:
                         if self.logs_received <= 10:
-                            logger.info(f"   ❌ Not InitializeBondingCurve (discriminator={instruction_type})")
+                            logger.debug(f"   ⚠️ Instruction {idx} has unknown format")
                         continue
                     
-                    # This is InitializeBondingCurve! Extract mint from first account
-                    accounts = instruction.accounts if hasattr(instruction, 'accounts') else []
-                    
-                    if len(accounts) == 0:
-                        if self.logs_received <= 10:
-                            logger.info(f"   ⚠️ Instruction has no accounts")
+                    # Check if this instruction is from PumpFun program
+                    if program_id != str(PUMPFUN_PROGRAM_ID):
                         continue
                     
-                    # Mint is always the first account
-                    mint_index = accounts[0]
-                    mint = str(message.account_keys[mint_index])
-                    
                     if self.logs_received <= 10:
-                        logger.info(f"   ✅ MINT FOUND: {mint[:8]}... (InitializeBondingCurve discriminator=0 confirmed)")
+                        logger.info(f"   ✓ Found PumpFun instruction at index {idx}")
                     
-                    return mint
+                    # Get instruction data
+                    if hasattr(instruction, 'data'):
+                        instr_data = instruction.data
+                    elif hasattr(instruction, 'parsed'):
+                        # This is a parsed instruction, skip it
+                        if self.logs_received <= 10:
+                            logger.info(f"   ⚠️ Instruction is parsed, skipping")
+                        continue
+                    else:
+                        if self.logs_received <= 10:
+                            logger.info(f"   ⚠️ Instruction has no data field")
+                        continue
                     
+                    if not instr_data:
+                        if self.logs_received <= 10:
+                            logger.info(f"   ⚠️ Instruction data is empty")
+                        continue
+                    
+                    # Get instruction discriminator (first byte)
+                    try:
+                        data = bytes(instr_data)
+                        instruction_type = data[0]
+                        
+                        if self.logs_received <= 10:
+                            logger.info(f"   🔍 Instruction discriminator: {instruction_type}")
+                        
+                        # InitializeBondingCurve has discriminator = 0
+                        if instruction_type != 0:
+                            if self.logs_received <= 10:
+                                logger.info(f"   ❌ Not InitializeBondingCurve (discriminator={instruction_type})")
+                            continue
+                        
+                        # This is InitializeBondingCurve! Extract mint from first account
+                        if hasattr(instruction, 'accounts'):
+                            accounts = instruction.accounts
+                        else:
+                            if self.logs_received <= 10:
+                                logger.info(f"   ⚠️ Instruction has no accounts attribute")
+                            continue
+                        
+                        if len(accounts) == 0:
+                            if self.logs_received <= 10:
+                                logger.info(f"   ⚠️ Instruction has no accounts")
+                            continue
+                        
+                        # Mint is always the first account
+                        mint_index = accounts[0]
+                        mint = str(message.account_keys[mint_index])
+                        
+                        if self.logs_received <= 10:
+                            logger.info(f"   ✅ MINT FOUND: {mint[:8]}... (InitializeBondingCurve discriminator=0 confirmed)")
+                        
+                        return mint
+                        
+                    except Exception as e:
+                        if self.logs_received <= 10:
+                            logger.error(f"   ❌ Error decoding instruction data: {e}")
+                        continue
+                        
                 except Exception as e:
                     if self.logs_received <= 10:
-                        logger.error(f"   ❌ Error decoding instruction data: {e}")
+                        logger.error(f"   ❌ Error processing instruction {idx}: {e}")
                     continue
             
             # No InitializeBondingCurve instruction found
