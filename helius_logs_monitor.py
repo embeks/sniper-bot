@@ -205,21 +205,23 @@ class HeliusLogsMonitor:
         Uses instruction discriminator (first byte = 0) for reliable detection
         Returns mint address if it's a new token, None otherwise
         """
-        verbose = self.logs_received <= 20
-        
+        verbose = self.logs_received <= 40  # a bit more room for debug on startup
+
         try:
+            import base58  # ✅ Solana instruction data is base58-encoded
+
             tx_sig = SoldersSignature.from_string(signature)
-            
-            # Fetch transaction details with LONGER retry for very fresh transactions
+
+            # Fetch transaction details with retry for very fresh transactions
             max_retries = 3
             tx_response = None
-            
+
             for attempt in range(max_retries):
                 try:
                     tx_response = self.rpc_client.get_transaction(
                         tx_sig,
                         encoding="jsonParsed",
-                        max_supported_transaction_version=0
+                        max_supported_transaction_version=0,
                     )
                     if tx_response and tx_response.value:
                         if verbose:
@@ -237,51 +239,51 @@ class HeliusLogsMonitor:
                             logger.info(f"   ❌ TX fetch failed after {max_retries} attempts")
                         return None
                     await asyncio.sleep(1.0)
-            
+
             if not tx_response or not tx_response.value:
                 if verbose:
                     logger.info(f"   ❌ TX not found after {max_retries} attempts (may be too fresh)")
                 return None
-            
+
             tx = tx_response.value
             message = tx.transaction.transaction.message
             instructions = message.instructions
-            
+
             if verbose:
                 logger.info(f"   📋 TX has {len(instructions)} instructions")
-            
+
             pumpfun_found = False
-            
+
             # Loop through all instructions
             for idx, instruction in enumerate(instructions):
                 try:
-                    # Handle both UiPartiallyDecodedInstruction and regular instructions
-                    if hasattr(instruction, 'program_id'):
+                    # Handle both UiPartiallyDecodedInstruction and compiled instructions
+                    if hasattr(instruction, "program_id"):
                         program_id = str(instruction.program_id)
-                    elif hasattr(instruction, 'program_id_index'):
+                    elif hasattr(instruction, "program_id_index"):
                         program_id_index = instruction.program_id_index
                         program_id = str(message.account_keys[program_id_index])
                     else:
                         if verbose:
                             logger.info(f"   ⚠️ Instruction {idx} has unknown format")
                         continue
-                    
+
                     # Check if this instruction is from PumpFun program
                     if program_id != str(PUMPFUN_PROGRAM_ID):
                         continue
-                    
+
                     pumpfun_found = True
-                    
+
                     if verbose:
                         logger.info(f"   ✅ Found PumpFun instruction at index {idx}")
                         logger.info(f"      Instruction type: {type(instruction).__name__}")
-                    
+
                     # Get instruction data
-                    if hasattr(instruction, 'data'):
+                    if hasattr(instruction, "data"):
                         instr_data = instruction.data
                         if verbose:
                             logger.info(f"      Has 'data' attribute")
-                    elif hasattr(instruction, 'parsed'):
+                    elif hasattr(instruction, "parsed"):
                         if verbose:
                             logger.info(f"      Has 'parsed' attribute (skipping)")
                         continue
@@ -289,88 +291,111 @@ class HeliusLogsMonitor:
                         if verbose:
                             logger.info(f"      No 'data' or 'parsed' attribute")
                         continue
-                    
+
                     if not instr_data:
                         if verbose:
                             logger.info(f"      Data is empty/None")
                         continue
-                    
-                    # Get instruction discriminator (first byte)
-                    try:
-                        # ✅ FIX: Add padding to base64 string if needed
-                        padding = len(instr_data) % 4
-                        if padding:
-                            instr_data += '=' * (4 - padding)
-                        
-                        # Decode base64 to bytes
-                        data = base64.b64decode(instr_data)
-                        
-                        if verbose:
-                            logger.info(f"      Data length: {len(data)} bytes")
-                            logger.info(f"      First 4 bytes: {data[:4].hex() if len(data) >= 4 else data.hex()}")
-                        
-                        instruction_type = data[0]
-                        
-                        if verbose:
-                            logger.info(f"      🔍 Discriminator: {instruction_type}")
-                        
-                        # InitializeBondingCurve has discriminator = 0
-                        if instruction_type != 0:
+
+                    # 🔁 Normalise instruction.data → bytes
+                    data: Optional[bytes] = None
+
+                    if isinstance(instr_data, bytes):
+                        data = instr_data
+                    elif isinstance(instr_data, list):
+                        # Usually a list of ints 0..255
+                        try:
+                            data = bytes(instr_data)
+                        except Exception as e:
                             if verbose:
-                                logger.info(f"      ❌ Not InitializeBondingCurve (discriminator={instruction_type}, need 0)")
+                                logger.error(f"      ❌ Failed to build bytes from list data: {e}")
                             continue
-                        
-                        # This is InitializeBondingCurve!
-                        if verbose:
-                            logger.info(f"      ✅ FOUND InitializeBondingCurve (discriminator=0)!")
-                        
-                        # Extract mint from first account
-                        if hasattr(instruction, 'accounts'):
-                            accounts = instruction.accounts
-                        else:
+                    elif isinstance(instr_data, str):
+                        # ✅ Correct: Solana instruction data from RPC is base58-encoded
+                        try:
+                            data = base58.b58decode(instr_data)
+                        except Exception as e:
                             if verbose:
-                                logger.info(f"      ⚠️ No accounts attribute")
+                                logger.error(
+                                    f"      ❌ base58 decode failed: {e} "
+                                    f"(len={len(instr_data)}, data={instr_data!r})"
+                                )
                             continue
-                        
-                        if len(accounts) == 0:
-                            if verbose:
-                                logger.info(f"      ⚠️ accounts list is empty")
-                            continue
-                        
+                    else:
                         if verbose:
-                            logger.info(f"      Has {len(accounts)} accounts")
-                        
-                        # Mint is always the first account
-                        mint_index = accounts[0]
-                        mint = str(message.account_keys[mint_index])
-                        
-                        logger.info(f"   🎯 MINT EXTRACTED: {mint[:8]}... (discriminator=0 confirmed!)")
-                        
-                        return mint
-                        
-                    except Exception as e:
-                        if verbose:
-                            logger.error(f"      ❌ Error decoding data: {e}")
-                            import traceback
-                            logger.error(traceback.format_exc())
+                            logger.info(f"      ⚠️ Unsupported data type: {type(instr_data)}")
                         continue
-                        
+
+                    if not data or len(data) == 0:
+                        if verbose:
+                            logger.info(f"      ⚠️ No decoded data bytes")
+                        continue
+
+                    if verbose:
+                        logger.info(f"      Data length: {len(data)} bytes")
+                        logger.info(
+                            f"      First 4 bytes: "
+                            f"{data[:4].hex() if len(data) >= 4 else data.hex()}"
+                        )
+
+                    # First byte = Anchor discriminator / instruction kind
+                    instruction_type = data[0]
+
+                    if verbose:
+                        logger.info(f"      🔍 Discriminator: {instruction_type}")
+
+                    # InitializeBondingCurve has discriminator = 0
+                    if instruction_type != 0:
+                        if verbose:
+                            logger.info(
+                                f"      ❌ Not InitializeBondingCurve "
+                                f"(discriminator={instruction_type}, need 0)"
+                            )
+                        continue
+
+                    # 🎉 This IS InitializeBondingCurve
+                    if verbose:
+                        logger.info(f"      ✅ FOUND InitializeBondingCurve (discriminator=0)!")
+
+                    # Extract mint from first account
+                    if hasattr(instruction, "accounts"):
+                        accounts = instruction.accounts
+                    else:
+                        if verbose:
+                            logger.info(f"      ⚠️ No accounts attribute")
+                        continue
+
+                    if len(accounts) == 0:
+                        if verbose:
+                            logger.info(f"      ⚠️ accounts list is empty")
+                        continue
+
+                    if verbose:
+                        logger.info(f"      Has {len(accounts)} accounts")
+
+                    # Mint is always the first account for InitializeBondingCurve
+                    mint_index = accounts[0]
+                    mint = str(message.account_keys[mint_index])
+
+                    logger.info(f"   🎯 MINT EXTRACTED: {mint[:8]}... (discriminator=0 confirmed!)")
+                    return mint
+
                 except Exception as e:
                     if verbose:
                         logger.error(f"   ❌ Error processing instruction {idx}: {e}")
                         import traceback
                         logger.error(traceback.format_exc())
                     continue
-            
+
             # No InitializeBondingCurve instruction found
             if verbose:
                 if pumpfun_found:
                     logger.info(f"   ❌ PumpFun instruction found but not InitializeBondingCurve")
                 else:
                     logger.info(f"   ❌ No PumpFun instruction in this TX")
-            
+
             return None
-            
+
         except Exception as e:
             if verbose:
                 logger.error(f"   ❌ Outer parse error: {e}")
