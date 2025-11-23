@@ -676,7 +676,17 @@ class SniperBot:
     async def on_token_found(self, token_data: Dict):
         """Handle new token found - with liquidity and velocity validation"""
         detection_start = time.time()
-        
+
+        # ✅ ADD THIS DEBUG BLOCK HERE (RIGHT AT THE START)
+        logger.info("=" * 80)
+        logger.info("🔍 DEBUG: on_token_found() called!")
+        logger.info(f"   Token data keys: {list(token_data.keys())}")
+        logger.info(f"   Mint: {token_data.get('mint', 'MISSING')}")
+        logger.info(f"   Source: {token_data.get('source', 'MISSING')}")
+        logger.info(f"   Has 'data' key: {'data' in token_data}")
+        logger.info(f"   Running: {self.running}, Paused: {self.paused}")
+        logger.info("=" * 80)
+
         try:
             mint = token_data['mint']
             
