@@ -213,7 +213,7 @@ class HeliusLogsMonitor:
             tx_sig = SoldersSignature.from_string(signature)
 
             # Fetch transaction details with retry for very fresh transactions
-            max_retries = 3
+            max_retries = 5
             tx_response = None
 
             for attempt in range(max_retries):
@@ -230,7 +230,7 @@ class HeliusLogsMonitor:
                     else:
                         if verbose:
                             logger.info(f"   ⏳ TX not available yet (attempt {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(2.0)
                 except Exception as e:
                     if verbose:
                         logger.info(f"   ⚠️ TX fetch error on attempt {attempt + 1}: {e}")
