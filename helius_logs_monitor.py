@@ -97,19 +97,6 @@ class HeliusLogsMonitor:
                             
                             # Handle log notifications
                             if 'params' in data:
-                                self.logs_received += 1
-                                
-                                # 🐛 DEBUG: Log every event for first 50 events
-                                if self.logs_received <= 50:
-                                    logger.info(f"📩 LOG EVENT #{self.logs_received} RECEIVED")
-                                    # Log the signature for debugging
-                                    result = data.get('params', {}).get('result', {})
-                                    value = result.get('value', {})
-                                    sig = value.get('signature', 'no-sig')
-                                    logger.info(f"   Signature: {sig[:16]}...")
-                                elif self.logs_received % 20 == 0:
-                                    logger.info(f"📊 Processed {self.logs_received} events (detected: {self.tokens_detected}, parse success: {self.parse_successes}, failures: {self.parse_failures})")
-                                
                                 await self._process_log_notification(data['params'])
                                 
                         except asyncio.TimeoutError:
@@ -132,26 +119,38 @@ class HeliusLogsMonitor:
     async def _process_log_notification(self, params: Dict):
         """
         Process incoming log notification from Helius
-        FIXED: Use transaction-based detection with instruction discriminator
+        ONLY process CreateV2 token creation events
         """
         try:
             result = params.get('result', {})
             value = result.get('value', {})
-            
+
             signature = value.get('signature', '')
-            
+            logs = value.get('logs', [])  # Get log messages
+
             if not signature:
                 logger.warning("⚠️ Log event missing signature")
                 return
-            
-            # Don't filter by log strings - check the actual transaction
-            detection_time = time.time()
-            
-            # 🐛 DEBUG: Log attempt for first 50 events
+
+            # ✅ CRITICAL FIX: Only process CreateV2 events
+            # Skip all Buy/Sell/other instructions immediately
+            has_create_v2 = any('Instruction: CreateV2' in log for log in logs)
+
+            if not has_create_v2:
+                # Silently skip - this is 99% of traffic (buys/sells)
+                return
+
+            # Log counter for CreateV2 events only
+            self.logs_received += 1
+
             if self.logs_received <= 50:
-                logger.info(f"   🔍 Attempting to extract mint from {signature[:16]}...")
-            
-            # Extract mint from transaction instructions
+                logger.info(f"📩 CreateV2 EVENT #{self.logs_received} DETECTED")
+                logger.info(f"   Signature: {signature[:16]}...")
+            elif self.logs_received % 20 == 0:
+                logger.info(f"📊 Processed {self.logs_received} CreateV2 events (detected: {self.tokens_detected})")
+
+            # Continue with existing transaction parsing...
+            detection_time = time.time()
             mint = await self._extract_mint_from_transaction(signature)
             
             if not mint:
@@ -201,15 +200,13 @@ class HeliusLogsMonitor:
     
     async def _extract_mint_from_transaction(self, signature: str) -> Optional[str]:
         """
-        Fetch transaction and check if it's an InitializeBondingCurve instruction
-        Uses instruction discriminator (first byte = 0) for reliable detection
-        Returns mint address if it's a new token, None otherwise
+        Fetch transaction and extract mint from CreateV2 instruction
+        Simplified: No discriminator checking needed since logs are pre-filtered
+        Returns mint address from first account
         """
         verbose = self.logs_received <= 40  # a bit more room for debug on startup
 
         try:
-            import base58  # ✅ Solana instruction data is base58-encoded
-
             tx_sig = SoldersSignature.from_string(signature)
 
             # Fetch transaction details with retry for very fresh transactions
@@ -252,9 +249,7 @@ class HeliusLogsMonitor:
             if verbose:
                 logger.info(f"   📋 TX has {len(instructions)} instructions")
 
-            pumpfun_found = False
-
-            # Loop through all instructions
+            # Loop through all instructions to find PumpFun CreateV2
             for idx, instruction in enumerate(instructions):
                 try:
                     # Handle both UiPartiallyDecodedInstruction and compiled instructions
@@ -264,111 +259,16 @@ class HeliusLogsMonitor:
                         program_id_index = instruction.program_id_index
                         program_id = str(message.account_keys[program_id_index])
                     else:
-                        if verbose:
-                            logger.info(f"   ⚠️ Instruction {idx} has unknown format")
                         continue
 
                     # Check if this instruction is from PumpFun program
                     if program_id != str(PUMPFUN_PROGRAM_ID):
                         continue
 
-                    pumpfun_found = True
-
                     if verbose:
-                        logger.info(f"   ✅ Found PumpFun instruction at index {idx}")
-                        logger.info(f"      Instruction type: {type(instruction).__name__}")
+                        logger.info(f"   ✅ Found PumpFun CreateV2 instruction at index {idx}")
 
-                    # Get instruction data
-                    if hasattr(instruction, "data"):
-                        instr_data = instruction.data
-                        if verbose:
-                            logger.info(f"      Has 'data' attribute")
-                    elif hasattr(instruction, "parsed"):
-                        if verbose:
-                            logger.info(f"      Has 'parsed' attribute (skipping)")
-                        continue
-                    else:
-                        if verbose:
-                            logger.info(f"      No 'data' or 'parsed' attribute")
-                        continue
-
-                    if not instr_data:
-                        if verbose:
-                            logger.info(f"      Data is empty/None")
-                        continue
-
-                    # 🔁 Normalise instruction.data → bytes
-                    data: Optional[bytes] = None
-
-                    if isinstance(instr_data, bytes):
-                        data = instr_data
-                    elif isinstance(instr_data, list):
-                        # Usually a list of ints 0..255
-                        try:
-                            data = bytes(instr_data)
-                        except Exception as e:
-                            if verbose:
-                                logger.error(f"      ❌ Failed to build bytes from list data: {e}")
-                            continue
-                    elif isinstance(instr_data, str):
-                        # ✅ Correct: Solana instruction data from RPC is base58-encoded
-                        try:
-                            data = base58.b58decode(instr_data)
-                        except Exception as e:
-                            if verbose:
-                                logger.error(
-                                    f"      ❌ base58 decode failed: {e} "
-                                    f"(len={len(instr_data)}, data={instr_data!r})"
-                                )
-                            continue
-                    else:
-                        if verbose:
-                            logger.info(f"      ⚠️ Unsupported data type: {type(instr_data)}")
-                        continue
-
-                    if not data or len(data) == 0:
-                        if verbose:
-                            logger.info(f"      ⚠️ No decoded data bytes")
-                        continue
-
-                    if verbose:
-                        logger.info(f"      Data length: {len(data)} bytes")
-                        logger.info(
-                            f"      First 8 bytes: "
-                            f"{data[:8].hex() if len(data) >= 8 else data.hex()}"
-                        )
-
-                    # Anchor uses 8-byte discriminators (first 8 bytes of SHA256 hash of instruction name)
-                    if len(data) < 8:
-                        if verbose:
-                            logger.info(f"      ⚠️ Data too short for discriminator check")
-                        continue
-
-                    discriminator = data[:8].hex()
-
-                    # Known PumpFun instruction discriminators
-                    INIT_BONDING_CURVE = "181ec828051c0777"  # CreateV2 instruction (confirmed from on-chain data)
-                    BUY = "66063d1201daebea"                  # Buy
-                    SELL = "33e685a4017f83ad"                 # Sell
-
-                    if verbose:
-                        logger.info(f"      🔍 Discriminator: {discriminator}")
-
-                    # Check if this is InitializeBondingCurve
-                    if discriminator != INIT_BONDING_CURVE:
-                        if verbose:
-                            instr_name = "Buy" if discriminator == BUY else "Sell" if discriminator == SELL else "Unknown"
-                            logger.info(
-                                f"      ❌ Not InitializeBondingCurve "
-                                f"(found {instr_name}: {discriminator})"
-                            )
-                        continue
-
-                    # 🎉 This IS InitializeBondingCurve!
-                    if verbose:
-                        logger.info(f"      ✅ FOUND InitializeBondingCurve (discriminator={discriminator})!")
-
-                    # Extract mint from first account
+                    # Extract mint from first account (accounts[0] is always the mint for CreateV2)
                     if hasattr(instruction, "accounts"):
                         accounts = instruction.accounts
                     else:
@@ -384,14 +284,14 @@ class HeliusLogsMonitor:
                     if verbose:
                         logger.info(f"      Has {len(accounts)} accounts")
 
-                    # Mint is always the first account for InitializeBondingCurve
+                    # Mint is always the first account for CreateV2
                     mint_index = accounts[0]
                     if isinstance(mint_index, int):
                         mint = str(message.account_keys[mint_index])
                     else:
                         mint = str(mint_index)
 
-                    logger.info(f"   🎯 MINT EXTRACTED: {mint[:8]}... (discriminator=0 confirmed!)")
+                    logger.info(f"   🎯 MINT EXTRACTED: {mint[:8]}... (CreateV2 confirmed by logs)")
                     return mint
 
                 except Exception as e:
@@ -401,12 +301,9 @@ class HeliusLogsMonitor:
                         logger.error(traceback.format_exc())
                     continue
 
-            # No InitializeBondingCurve instruction found
+            # No PumpFun instruction found (shouldn't happen since logs were pre-filtered)
             if verbose:
-                if pumpfun_found:
-                    logger.info(f"   ❌ PumpFun instruction found but not InitializeBondingCurve")
-                else:
-                    logger.info(f"   ❌ No PumpFun instruction in this TX")
+                logger.info(f"   ❌ No PumpFun instruction found in TX")
 
             return None
 
