@@ -183,18 +183,30 @@ class HeliusLogsMonitor:
             logger.info("=" * 60)
             
             # ✅ Trigger the trading callback
+            # ✅ ADD THESE DEBUG LINES
+            logger.info(f"🔍 DEBUG: About to call callback (callback exists={self.callback is not None})")
+
             if self.callback:
-                await self.callback({
-                    'mint': mint,
-                    'signature': signature,
-                    'type': 'pumpfun_launch',
-                    'timestamp': datetime.now().isoformat(),
-                    'source': 'helius_logs',
-                    'detection_latency_ms': detection_latency_ms,
-                    'age': 0,  # Will be calculated in main.py from blockchain data
-                    'token_age': 0,
-                    'data': {}  # Empty data dict for compatibility
-                })
+                logger.info(f"🔍 DEBUG: Calling callback now for mint {mint}")
+                try:
+                    await self.callback({
+                        'mint': mint,
+                        'signature': signature,
+                        'type': 'pumpfun_launch',
+                        'timestamp': datetime.now().isoformat(),
+                        'source': 'helius_logs',
+                        'detection_latency_ms': detection_latency_ms,
+                        'age': 0,  # Will be calculated in main.py from blockchain data
+                        'token_age': 0,
+                        'data': {}  # Empty data dict for compatibility
+                    })
+                    logger.info(f"🔍 DEBUG: Callback completed successfully")
+                except Exception as e:
+                    logger.error(f"🔍 DEBUG: Callback failed with error: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            else:
+                logger.error(f"🔍 DEBUG: Callback is None - not calling!")
                 
         except Exception as e:
             logger.error(f"Error processing log notification: {e}")
