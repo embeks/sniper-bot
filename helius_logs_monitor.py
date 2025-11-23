@@ -386,7 +386,10 @@ class HeliusLogsMonitor:
 
                     # Mint is always the first account for InitializeBondingCurve
                     mint_index = accounts[0]
-                    mint = str(message.account_keys[mint_index])
+                    if isinstance(mint_index, int):
+                        mint = str(message.account_keys[mint_index])
+                    else:
+                        mint = str(mint_index)
 
                     logger.info(f"   🎯 MINT EXTRACTED: {mint[:8]}... (discriminator=0 confirmed!)")
                     return mint
