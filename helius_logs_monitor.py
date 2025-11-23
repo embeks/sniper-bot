@@ -347,7 +347,7 @@ class HeliusLogsMonitor:
                     discriminator = data[:8].hex()
 
                     # Known PumpFun instruction discriminators
-                    INIT_BONDING_CURVE = "0faa6149ebef0807"  # InitializeBondingCurve
+                    INIT_BONDING_CURVE = "1416567bc61cdb84"  # InitializeBondingCurve
                     BUY = "66063d1201daebea"                  # Buy
                     SELL = "33e685a4017f83ad"                 # Sell
 
