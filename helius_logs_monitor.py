@@ -182,7 +182,7 @@ class HeliusLogsMonitor:
             logger.info(f"   Total events processed: {self.logs_received}")
             logger.info("=" * 60)
             
-            # Pass to callback (existing on_token_found logic)
+            # ✅ Trigger the trading callback
             if self.callback:
                 await self.callback({
                     'mint': mint,
@@ -190,7 +190,10 @@ class HeliusLogsMonitor:
                     'type': 'pumpfun_launch',
                     'timestamp': datetime.now().isoformat(),
                     'source': 'helius_logs',
-                    'detection_latency_ms': detection_latency_ms
+                    'detection_latency_ms': detection_latency_ms,
+                    'age': 0,  # Will be calculated in main.py from blockchain data
+                    'token_age': 0,
+                    'data': {}  # Empty data dict for compatibility
                 })
                 
         except Exception as e:
