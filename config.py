@@ -37,8 +37,18 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '10'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
+
+# Tiered take-profit (whale strategy - let winners run)
+TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '30.0'))
+TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '40.0'))
+
+TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '60.0'))
+TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '40.0'))
+
+TIER_3_PROFIT_PERCENT = float(os.getenv('TIER_3_PROFIT', '100.0'))
+TIER_3_SELL_PERCENT = float(os.getenv('TIER_3_SELL', '20.0'))  # Final 20%
 
 # ============================================
 # VELOCITY GATE SETTINGS
@@ -59,13 +69,13 @@ VELOCITY_MAX_RECENT_1S_SOL = float(os.getenv('VELOCITY_MAX_RECENT_1S_SOL', '20.0
 VELOCITY_MAX_RECENT_3S_SOL = float(os.getenv('VELOCITY_MAX_RECENT_3S_SOL', '35.0'))    # Raised from 12.0
 
 # ============================================
-# TIMER-BASED EXIT SETTINGS
+# TIMER-BASED EXIT SETTINGS (DISABLED - using whale tiered exits)
 # ============================================
-TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '35'))     # Raised from 20
-TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '10'))  # Raised from 5
-TIMER_EXTENSION_SECONDS = int(os.getenv('TIMER_EXTENSION_SECONDS', '15'))     # Raised from 10
-TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD', '60'))
-TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))            # Raised from 1
+# TIMER_EXIT_BASE_SECONDS = int(os.getenv('TIMER_EXIT_BASE_SECONDS', '35'))
+# TIMER_EXIT_VARIANCE_SECONDS = int(os.getenv('TIMER_EXIT_VARIANCE_SECONDS', '10'))
+# TIMER_EXTENSION_SECONDS = int(os.getenv('TIMER_EXTENSION_SECONDS', '15'))
+# TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD', '60'))
+# TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '2'))
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
@@ -107,7 +117,7 @@ if tp3 and sp3:
     PARTIAL_TAKE_PROFIT[float(tp3)] = float(sp3) / 100.0
 
 SELL_DELAY_SECONDS = int(os.getenv('SELL_DELAY_SECONDS', '0'))
-MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '90'))  # Raised from 60
+MAX_POSITION_AGE_SECONDS = int(os.getenv('MAX_HOLD_TIME_SEC', '120'))  # Let winners run to 2 min
 MONITOR_CHECK_INTERVAL = float(os.getenv('MONITOR_CHECK_INTERVAL', '0.5'))
 DATA_FAILURE_TOLERANCE = int(os.getenv('DATA_FAILURE_TOLERANCE', '10'))
 

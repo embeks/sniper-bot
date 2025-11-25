@@ -39,10 +39,11 @@ class PumpPortalTrader:
         - Breakeven: +5% (75% reduction from previous 0.010 SOL!)
         """
         urgency_fees = {
-            "buy": 0.0010,        # Normal buys - reduced from 0.002
-            "sell": 0.0015,       # Normal sells - reduced from 0.003
-            "emergency": 0.0020   # Stop loss/rug only - reduced from 0.006
+            "buy": 0.0005,      # Down from 0.0010 (1% vs 2%)
+            "sell": 0.0008,     # Down from 0.0015 (1.6% vs 3%)
+            "emergency": 0.0015 # Down from 0.0020 (3% vs 4%)
         }
+        # Total fees: 0.0013 SOL = 2.6% per trade (down from 5%)
 
         fee = urgency_fees.get(urgency, 0.0010)  # Default to buy fee
         logger.debug(f"Priority fee ({urgency}): {fee:.6f} SOL")
