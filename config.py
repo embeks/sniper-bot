@@ -37,8 +37,11 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '12'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
+
+# Entry timing gate
+MIN_TOKEN_AGE_BEFORE_ENTRY = float(os.getenv('MIN_TOKEN_AGE_BEFORE_ENTRY', '4.0'))
 
 # ============================================
 # VELOCITY GATE SETTINGS
@@ -129,8 +132,8 @@ MAX_ENTRY_SLIPPAGE_PERCENT = float(os.getenv('MAX_ENTRY_SLIPPAGE_PERCENT', '40.0
 PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
-MIN_BONDING_CURVE_SOL = 10.0  # Lowered from 15.0 - whale zone
-MAX_BONDING_CURVE_SOL = 18.0  # Lowered from 45.0 - whale zone
+MIN_BONDING_CURVE_SOL = 21.0  # Raised to 21.0 - proven 5K MC sweet spot
+MAX_BONDING_CURVE_SOL = 28.0  # Raised to 28.0 - stay in 5-6.5K MC range
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30

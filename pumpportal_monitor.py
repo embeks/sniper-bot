@@ -57,33 +57,34 @@ class PumpPortalMonitor:
         # Filters - OPTIMIZED ORDER
         self.filters = {
             # CRITICAL: Age check FIRST (before expensive RPC calls)
-            'max_token_age_seconds': 16.0,  # Up from 2.0 - whale zone
+            'max_token_age_seconds': 16.0,
+            'min_token_age_seconds': 4.0,  # NEW: Don't enter during bot swarm
 
             # OPTIMIZATION: Early curve prefilter
-            'min_curve_sol_prefilter': 15.0,  # Early filter
+            'min_curve_sol_prefilter': 20.0,  # Up from 15.0
 
-            # Raised from 0.095 to 0.5 to filter out low-effort launches
+            # Entry range (proven sweet spot)
             'min_creator_sol': 0.095,
             'max_creator_sol': 5.0,
-            'min_curve_sol': 18.0,           # Whale entry zone
-            'max_curve_sol': 32.0,           # Before whale exits
+            'min_curve_sol': 21.0,           # Up from 18.0 (5K MC sweet spot)
+            'max_curve_sol': 28.0,           # Down from 32.0 (stay under 6.5K MC)
             'min_v_tokens': 500_000_000,
             'min_name_length': 3,
 
-            # NEW: Reject bot pumps with excessive momentum
-            'max_momentum': 200.0,  # Up from 35.0 - allow whale pumps
-            'max_momentum_high_mc': 50.0,  # Stricter for >$6K MC
+            # UPDATED: Momentum by MC range (quality filter)
+            'max_momentum_early': 35.0,      # NEW: <5K MC (strict)
+            'max_momentum_sweet': 70.0,      # NEW: 5-7K MC (moderate)
+            'max_momentum_late': 40.0,       # NEW: >7K MC (strict)
 
             'min_holders': 10,
             'check_concentration': False,
             'max_top10_concentration': 85,
-            'max_velocity_sol_per_sec': 1.5,  # Unused - kept for compatibility
-            'min_market_cap': 4200,          # 18 SOL @ $235
-            'max_market_cap': 9400,          # 30 SOL @ $235 (raised from 7000)  
+            'min_market_cap': 4900,          # Up from 4200
+            'max_market_cap': 7500,          # Down from 9400 (tighter range)
             'max_token_age_minutes': 8,  # Unused - kept for compatibility
             'name_blacklist': [
                 'test', 'rug', 'airdrop', 'claim', 'scam', 'fake',
-                'stealth', 'fair', 'liquidity', 'burned', 'renounced', 'safu', 
+                'stealth', 'fair', 'liquidity', 'burned', 'renounced', 'safu',
                 'dev', 'team', 'official',
                 'pepe', 'elon', 'trump', 'inu', 'doge', 'shib', 'floki',
                 'moon', 'safe', 'baby', 'mini', 'rocket', 'gem'
@@ -91,10 +92,10 @@ class PumpPortalMonitor:
             # FIXED: Match velocity_checker.py settings (3.0 SOL/s minimum)
             'min_recent_velocity_sol_per_sec': 3.0,
             'max_tokens_per_creator_24h': 3,
-            
+
             # OPTIMIZATION: First-sighting cooldown
             'first_sighting_cooldown_seconds': 0.5,
-            
+
             'filters_enabled': True
         }
         
@@ -554,6 +555,11 @@ class PumpPortalMonitor:
             self._log_filter("too_old_prefilter", f"{token_age:.1f}s > {self.filters['max_token_age_seconds']}s")
             return (False, token_age)
 
+        # CRITICAL: Don't enter during initial bot swarm (0-3s)
+        if token_age < self.filters.get('min_token_age_seconds', 4.0):
+            self._log_filter("too_young", f"{token_age:.1f}s < {self.filters['min_token_age_seconds']}s min")
+            return (False, token_age)
+
         # ===================================================================
         # OPTIMIZATION 2: CURVE PREFILTER (skip obvious duds early)
         # ===================================================================
@@ -629,27 +635,41 @@ class PumpPortalMonitor:
             self._log_filter("curve_range", f"{v_sol:.2f} SOL")
             return (False, token_age)
         
-        # ✅ ADAPTIVE MOMENTUM: High ceiling for early tokens
+        # ✅ CALIBRATED MOMENTUM: Tighter gates for quality
         momentum = v_sol / creator_sol if creator_sol > 0 else 0
         await self._get_sol_price()
         market_cap = self._calculate_market_cap(token_data)
 
-        # Adaptive momentum ceiling
-        if market_cap < 6000:
-            # Early tokens ($2-6K MC): Allow high momentum (whale zone)
-            max_momentum = self.filters.get('max_momentum', 200.0)
+        # Adaptive momentum ceiling based on entry range
+        if market_cap < 5000:
+            # Early tokens (<5K MC): STRICT - whale hasn't confirmed
+            max_momentum = self.filters.get('max_momentum_early', 35.0)
+            range_label = "early (<5K MC)"
+        elif market_cap < 7000:
+            # Sweet spot (5-7K MC): MODERATE - whale validated
+            max_momentum = self.filters.get('max_momentum_sweet', 70.0)
+            range_label = "sweet spot (5-7K MC)"
         else:
-            # Later tokens (>$6K MC): Strict bot pump check
-            max_momentum = self.filters.get('max_momentum_high_mc', 50.0)
+            # Late stage (>7K MC): STRICT - avoid topping
+            max_momentum = self.filters.get('max_momentum_late', 40.0)
+            range_label = "late (>7K MC)"
 
         if momentum > max_momentum:
             self._log_filter(
                 "momentum_ceiling",
-                f"{momentum:.1f}x > {max_momentum}x (MC: ${market_cap:,.0f})"
+                f"{momentum:.1f}x > {max_momentum}x in {range_label} (MC: ${market_cap:,.0f})"
             )
             return (False, token_age)
 
-        logger.info(f"✅ Momentum passed: {momentum:.1f}x (limit: {max_momentum}x for MC ${market_cap:,.0f})")
+        logger.info(f"✅ Momentum passed: {momentum:.1f}x (limit: {max_momentum}x for {range_label})")
+
+        # Creator quality: Low commitment + high momentum = bot manipulation
+        if creator_sol < 0.5 and momentum > 25.0:
+            self._log_filter(
+                "low_creator_high_momentum",
+                f"Creator put {creator_sol:.2f} SOL but momentum is {momentum:.1f}x (bot pump)"
+            )
+            return (False, token_age)
 
         # Virtual tokens
         v_tokens = float(token_data.get('vTokensInBondingCurve', 0))

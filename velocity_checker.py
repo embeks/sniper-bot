@@ -115,7 +115,27 @@ class VelocityChecker:
                     f"(avg: {avg_sol_per_second:.2f} SOL/s, ~{unique_buyers} buyers)"
                 )
                 return False, f"first_detection: need {self.min_snapshots} snapshots (have {snapshot_count})"
-            
+
+            # CRITICAL: Check velocity is STABLE or INCREASING (not dying)
+            if snapshot_count >= 2:
+                first_snap = self.velocity_history[mint][0]
+
+                # Calculate first velocity (from start to first snapshot)
+                first_age = self.velocity_history[mint][1]['timestamp'] - first_snap['timestamp']
+                first_velocity = (self.velocity_history[mint][1]['sol_raised'] - first_snap['sol_raised']) / max(first_age, 0.1) if first_age > 0 else avg_sol_per_second
+
+                # Current velocity (total avg)
+                current_velocity = avg_sol_per_second
+
+                # Velocity must be within 70% of initial (max 30% drop)
+                if first_velocity > 0 and current_velocity < first_velocity * 0.7:
+                    velocity_drop = (1 - current_velocity / first_velocity) * 100
+                    logger.info(
+                        f"❌ VELOCITY DYING: {current_velocity:.2f} < {first_velocity:.2f} SOL/s "
+                        f"(dropped {velocity_drop:.0f}%)"
+                    )
+                    return False, f"velocity_dying: {velocity_drop:.0f}% drop"
+
             # We have 2+ snapshots - now validate velocity
             
             # Check average thresholds (basic filter)

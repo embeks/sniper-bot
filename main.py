@@ -1261,33 +1261,11 @@ class SniperBot:
                                 await self._close_position_full(mint, reason="trailing_stop")
                                 break
                     
-                    if (age >= FAIL_FAST_CHECK_TIME and 
-                        not position.fail_fast_checked and 
-                        not position.is_closing):
-
-                        # ✅ CHATGPT FIX: Only evaluate & finalize fail-fast on [chain] tick
-                        if not position.has_chain_price or source != 'chain':
-                            logger.warning(
-                                f"🚧 FAIL-FAST from [{source}] ignored until first [chain] tick"
-                            )
-                        else:
-                            # Commit the one-time fail-fast check now that we have chain data
-                            position.fail_fast_checked = True
-
-                            # PNL branch (gated to chain)
-                            if price_change < FAIL_FAST_PNL_THRESHOLD:
-                                logger.warning(
-                                    f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s "
-                                    f"(on [chain]) - exiting immediately"
-                                )
-                                await self._close_position_full(mint, reason="fail_fast_pnl")
-                                break
-
-                            # Velocity fail-fast DISABLED - causes false exits on healthy consolidations
-                            logger.info(
-                                f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                f"P&L {price_change:+.1f}% (velocity check disabled)"
-                            )
+                    # DISABLED: Fail-fast check causes false exits on healthy consolidations
+                    # if (age >= FAIL_FAST_CHECK_TIME and
+                    #     not position.fail_fast_checked and
+                    #     not position.is_closing):
+                    #     ... fail-fast logic disabled ...
                     
                     # ✅ CHATGPT FIX #7: Only allow rug trap on chain price
                     rug_threshold = -60 if age < 3.0 else -40
@@ -1303,39 +1281,16 @@ class SniperBot:
                             break
 
                     # ============================================
-                    # NEW EXIT SIGNAL 1: Peak Drawdown (Momentum Death)
+                    # DISABLED: Peak Drawdown - too complex, conflicts with other exits
                     # ============================================
-                    if max_pnl_reached > MOMENTUM_MIN_PEAK_PERCENT and not position.is_closing:
-                        drawdown_from_peak = max_pnl_reached - price_change
-
-                        # Don't exit on early volatility - let trade develop
-                        if age >= MOMENTUM_DRAWDOWN_MIN_AGE and drawdown_from_peak >= MOMENTUM_MAX_DRAWDOWN_PP:
-                            logger.warning(
-                                f"💨 MOMENTUM DEATH: Peak {max_pnl_reached:+.1f}% → Now {price_change:+.1f}% "
-                                f"(drawdown: {drawdown_from_peak:.1f}pp, threshold: {MOMENTUM_MAX_DRAWDOWN_PP:.1f}pp, "
-                                f"age: {age:.1f}s)"
-                            )
-                            await self._close_position_full(mint, reason="momentum_death")
-                            break
+                    # if max_pnl_reached > MOMENTUM_MIN_PEAK_PERCENT and not position.is_closing:
+                    #     ... momentum death logic disabled ...
 
                     # ============================================
-                    # NEW EXIT SIGNAL 2: Velocity Death Check
+                    # DISABLED: Velocity Death Check - causes false exits on healthy consolidations
                     # ============================================
-                    if age >= 5.0 and age < 6.0 and not position.fail_fast_checked:  # Check once at 5s
-                        position.fail_fast_checked = True
-
-                        pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
-                        if pre_buy_velocity:
-                            current_velocity = current_sol_in_curve / max(age, 0.1)
-                            velocity_ratio = (current_velocity / pre_buy_velocity) * 100
-
-                            if velocity_ratio < MOMENTUM_VELOCITY_DEATH_PERCENT:
-                                logger.warning(
-                                    f"💨 VELOCITY DIED: {current_velocity:.2f} SOL/s = {velocity_ratio:.0f}% "
-                                    f"of entry ({pre_buy_velocity:.2f} SOL/s), threshold: {MOMENTUM_VELOCITY_DEATH_PERCENT:.0f}%"
-                                )
-                                await self._close_position_full(mint, reason="velocity_death")
-                                break
+                    # if age >= 5.0 and age < 6.0 and not position.fail_fast_checked:
+                    #     ... velocity death logic disabled ...
 
                     # ============================================
                     # NEW EXIT SIGNAL 3: Big Win Take Profit

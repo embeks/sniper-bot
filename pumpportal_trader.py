@@ -22,29 +22,29 @@ class PumpPortalTrader:
     
     async def get_priority_fee(self, urgency: str = "buy") -> float:
         """
-        OPTIMIZED: Competitive priority fees for maximum profitability
+        OPTIMIZED: Lower priority fees for maximum profitability
 
         Fee philosophy:
-        - Buy: Low fee for fast entry while minimizing costs (0.001 SOL = 2% on 0.05 SOL)
-        - Sell: Slightly higher for reliable exits (0.0015 SOL = 3% on 0.05 SOL)
-        - Emergency: Higher priority for critical exits only (0.002 SOL = 4% on 0.05 SOL)
+        - Buy: Low fee for fast entry while minimizing costs (0.0004 SOL = 0.8% on 0.05 SOL)
+        - Sell: Slightly higher for reliable exits (0.0006 SOL = 1.2% on 0.05 SOL)
+        - Emergency: Higher priority for critical exits only (0.001 SOL = 2% on 0.05 SOL)
 
         urgency levels:
-        - "buy": 0.0010 SOL (normal buys, 1-3s confirm)
-        - "sell": 0.0015 SOL (normal sells, 1-2s confirm)
-        - "emergency": 0.0020 SOL (stop loss/rug detection only, <1s confirm)
+        - "buy": 0.0004 SOL (normal buys)
+        - "sell": 0.0006 SOL (normal sells)
+        - "emergency": 0.001 SOL (stop loss/rug detection only)
 
         Breakeven analysis at 0.05 SOL:
-        - Total fees: 0.001 (buy) + 0.0015 (sell) = 0.0025 SOL
-        - Breakeven: +5% (75% reduction from previous 0.010 SOL!)
+        - Total fees: 0.0004 (buy) + 0.0006 (sell) = 0.001 SOL
+        - Breakeven: +2% (down from 5%!)
         """
         urgency_fees = {
-            "buy": 0.0010,        # Normal buys - reduced from 0.002
-            "sell": 0.0015,       # Normal sells - reduced from 0.003
-            "emergency": 0.0020   # Stop loss/rug only - reduced from 0.006
+            "buy": 0.0004,        # Down from 0.0010 (0.8% vs 2%)
+            "sell": 0.0006,       # Down from 0.0015 (1.2% vs 3%)
+            "emergency": 0.001    # Down from 0.0020 (2% vs 4%)
         }
 
-        fee = urgency_fees.get(urgency, 0.0010)  # Default to buy fee
+        fee = urgency_fees.get(urgency, 0.0004)  # Default to buy fee
         logger.debug(f"Priority fee ({urgency}): {fee:.6f} SOL")
         return fee
     
