@@ -1,5 +1,3 @@
-
-
 """
 Main Orchestrator - FINAL FIX: Entry price bookkeeping + Stop loss with source checking
 """
@@ -123,7 +121,6 @@ class SniperBot:
         self.dex = PumpFunDEX(self.wallet)
         self.scanner = None
         self.scanner_task = None
-        self.scanner_type = os.getenv('SCANNER_TYPE', 'helius')  # 'helius' or 'pumpportal' or 'both'
         self.telegram = None
         self.telegram_polling_task = None
         self.tracker = PerformanceTracker()
@@ -184,9 +181,7 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        scanner_latency = '0.2-0.8s' if self.scanner_type == 'helius' else '8-12s'
-        logger.info(f"  • Scanner: {self.scanner_type.upper()} ({scanner_latency} latency)")
-        logger.info(f"  • Strategy: 🎯 EARLY ENTRY - 10-14 SOL WHALE ZONE")
+        logger.info(f"  • Strategy: 🎪 MAYHEM MODE - FAST RECYCLING")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Velocity ceiling raised: Accepts up to 15 SOL/s organic pumps")
         logger.info(f"  • Recent velocity: ≥2.0 SOL (1s), ≥4.0 SOL (3s)")
@@ -623,22 +618,7 @@ class SniperBot:
         self.consecutive_losses = 0
         
         if not self.scanner:
-            if self.scanner_type == 'helius':
-                from helius_logs_monitor import HeliusLogsMonitor
-                from solana.rpc.api import Client
-                rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
-                self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
-                logger.info("📡 Using Helius Logs Monitor (0.2-0.8s latency)")
-            elif self.scanner_type == 'pumpportal':
-                from pumpportal_monitor import PumpPortalMonitor
-                self.scanner = PumpPortalMonitor(self.on_token_found)
-                logger.info("📡 Using PumpPortal Monitor (8-12s latency)")
-            else:  # both
-                logger.error("Running both scanners not yet implemented - defaulting to Helius")
-                from helius_logs_monitor import HeliusLogsMonitor
-                from solana.rpc.api import Client
-                rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
-                self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
+            self.scanner = PumpPortalMonitor(self.on_token_found)
         
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
@@ -676,17 +656,7 @@ class SniperBot:
     async def on_token_found(self, token_data: Dict):
         """Handle new token found - with liquidity and velocity validation"""
         detection_start = time.time()
-
-        # ✅ ADD THIS DEBUG BLOCK HERE (RIGHT AT THE START)
-        logger.info("=" * 80)
-        logger.info("🔍 DEBUG: on_token_found() called!")
-        logger.info(f"   Token data keys: {list(token_data.keys())}")
-        logger.info(f"   Mint: {token_data.get('mint', 'MISSING')}")
-        logger.info(f"   Source: {token_data.get('source', 'MISSING')}")
-        logger.info(f"   Has 'data' key: {'data' in token_data}")
-        logger.info(f"   Running: {self.running}, Paused: {self.paused}")
-        logger.info("=" * 80)
-
+        
         try:
             mint = token_data['mint']
             
@@ -729,27 +699,14 @@ class SniperBot:
                     )
                 return
             
-            # ✅ FIX: Skip PumpPortal-specific filters for Helius (we fetch real data from chain later)
-            source = token_data.get('source', 'pumpportal')
-
-            if source != 'helius_logs':
-                # PumpPortal provides this data - use it for early filtering
-                initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
-                name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
-
-                if initial_buy < 0.1 or initial_buy > 10:
-                    logger.debug(f"Skipping {mint[:8]}... - initial_buy {initial_buy} out of range")
-                    return
-
-                if len(name) < 3:
-                    logger.debug(f"Skipping {mint[:8]}... - name too short")
-                    return
-            else:
-                # Helius doesn't provide solAmount/name - skip these checks
-                # Real liquidity/velocity validation happens later from blockchain
-                logger.info(f"⚡ Helius source - bypassing PumpPortal filters, validating from chain")
-                initial_buy = 1.0  # Placeholder for later logging
-                name = "unknown"   # Placeholder
+            initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
+            name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
+            
+            if initial_buy < 0.1 or initial_buy > 10:
+                return
+            
+            if len(name) < 3:
+                return
 
             # Get real blockchain state (no adjustments!)
             mint = token_data['mint']
@@ -1941,18 +1898,7 @@ class SniperBot:
         try:
             await self.initialize_telegram()
             
-            if self.scanner_type == 'helius':
-                from helius_logs_monitor import HeliusLogsMonitor
-                from solana.rpc.api import Client
-                from config import RPC_ENDPOINT
-                rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
-                self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
-                logger.info("📡 Using Helius Logs Monitor (0.2-0.8s latency)")
-            else:
-                from pumpportal_monitor import PumpPortalMonitor
-                self.scanner = PumpPortalMonitor(self.on_token_found)
-                logger.info("📡 Using PumpPortal Monitor (8-12s latency)")
-
+            self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
