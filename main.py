@@ -28,7 +28,11 @@ from config import (
     # Tiered take-profit (whale strategy)
     TIER_1_PROFIT_PERCENT, TIER_1_SELL_PERCENT,
     TIER_2_PROFIT_PERCENT, TIER_2_SELL_PERCENT,
-    TIER_3_PROFIT_PERCENT, TIER_3_SELL_PERCENT
+    TIER_3_PROFIT_PERCENT, TIER_3_SELL_PERCENT,
+    # Timer exit parameters
+    TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
+    TIMER_MAX_EXTENSIONS,
+    FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD
 )
 
 from wallet import WalletManager
@@ -552,8 +556,9 @@ class SniperBot:
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s\n"
-                    f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s\n"
-                    f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%\n"
+                    f"💰 Tiers: 40%@+30%, 40%@+60%, 20%@+100%\n"
+                    f"🛑 Stop loss: -{STOP_LOSS_PERCENTAGE}%\n"
+                    f"⏱️ Max hold: {MAX_POSITION_AGE_SECONDS}s\n"
                     f"🛡️ Liquidity: {LIQUIDITY_MULTIPLIER}x\n"
                     "Type /help for commands"
                 )
@@ -1786,8 +1791,9 @@ class SniperBot:
             logger.info("✅ Bot running with WHALE TIERED EXITS STRATEGY")
             logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
             logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
-            logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
-            logger.info(f"⚠️ Fail-fast: {FAIL_FAST_CHECK_TIME}s @ {FAIL_FAST_PNL_THRESHOLD}%")
+            logger.info(f"💰 Tiers: 40%@+30%, 40%@+60%, 20%@+100%")
+            logger.info(f"🛑 Stop loss: -{STOP_LOSS_PERCENTAGE}%")
+            logger.info(f"⏱️ Max hold: {MAX_POSITION_AGE_SECONDS}s")
             logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
             
             last_stats_time = time.time()
@@ -1799,13 +1805,11 @@ class SniperBot:
                     if self.positions:
                         logger.info(f"📊 ACTIVE POSITIONS: {len(self.positions)}")
                         for mint, pos in self.positions.items():
-                            age = time.time() - pos.entry_time
-                            time_until_exit = pos.exit_time - time.time()
                             logger.info(
                                 f"  • {mint[:8]}... | P&L: {pos.pnl_percent:+.1f}% | "
                                 f"Max: {pos.max_pnl_reached:+.1f}% | "
-                                f"Exit in: {time_until_exit:.1f}s | "
-                                f"Extensions: {pos.extensions_used}/{TIMER_MAX_EXTENSIONS}"
+                                f"Age: {time.time() - pos.entry_time:.0f}s | "
+                                f"Sold: {pos.total_sold_percent:.0f}%"
                             )
                     
                     perf_stats = self.tracker.get_session_stats()
