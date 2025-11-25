@@ -100,7 +100,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - VELOCITY + TIMER + FAIL-FAST")
+        logger.info("🚀 INITIALIZING SNIPER BOT - WHALE TIERED EXITS")
         logger.info("=" * 60)
         
         self.wallet = WalletManager()
@@ -548,7 +548,7 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - VELOCITY + TIMER + FAIL-FAST\n"
+                    "🚀 Bot started - WHALE TIERED EXITS\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
                     f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s\n"
@@ -1783,7 +1783,7 @@ class SniperBot:
             self.scanner = PumpPortalMonitor(self.on_token_found)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with VELOCITY + TIMER + FAIL-FAST STRATEGY")
+            logger.info("✅ Bot running with WHALE TIERED EXITS STRATEGY")
             logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
             logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
             logger.info(f"⏱️ Timer: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s")
