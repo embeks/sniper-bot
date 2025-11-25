@@ -136,6 +136,13 @@ class HeliusLogsMonitor:
             # Skip all Buy/Sell/other instructions immediately
             has_create_v2 = any('Instruction: CreateV2' in log for log in logs)
 
+            # 🔍 DEBUG: Log the actual log messages for first 10 CreateV2 events
+            # This helps us understand the format for extracting mint directly from logs
+            if has_create_v2 and self.logs_received <= 10:
+                logger.info(f"📋 CreateV2 LOG MESSAGES:")
+                for i, log in enumerate(logs):
+                    logger.info(f"   [{i}] {log[:200]}")
+
             if not has_create_v2:
                 # Silently skip - this is 99% of traffic (buys/sells)
                 return
