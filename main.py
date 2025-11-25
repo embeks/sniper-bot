@@ -22,28 +22,14 @@ from config import (
     PARTIAL_TAKE_PROFIT, LIQUIDITY_MULTIPLIER,
     MIN_LIQUIDITY_SOL, MAX_SLIPPAGE_PERCENT,
     VELOCITY_MIN_SOL_PER_SECOND, VELOCITY_MIN_BUYERS, VELOCITY_MAX_TOKEN_AGE,
-    TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
-    TIMER_EXTENSION_SECONDS, TIMER_EXTENSION_PNL_THRESHOLD, TIMER_MAX_EXTENSIONS,
-    FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD, FAIL_FAST_VELOCITY_THRESHOLD,
     VELOCITY_MIN_RECENT_1S_SOL, VELOCITY_MIN_RECENT_3S_SOL, VELOCITY_MAX_DROP_PERCENT,
-    # NEW: Import velocity ceiling parameters
+    # Velocity ceiling parameters
     VELOCITY_MAX_SOL_PER_SECOND, VELOCITY_MAX_RECENT_1S_SOL, VELOCITY_MAX_RECENT_3S_SOL,
-    # NEW: Import momentum exit parameters
-    MOMENTUM_MAX_DRAWDOWN_PP, MOMENTUM_MIN_PEAK_PERCENT,
-    MOMENTUM_VELOCITY_DEATH_PERCENT, MOMENTUM_BIG_WIN_PERCENT,
-    MOMENTUM_MAX_HOLD_SECONDS
+    # Tiered take-profit (whale strategy)
+    TIER_1_PROFIT_PERCENT, TIER_1_SELL_PERCENT,
+    TIER_2_PROFIT_PERCENT, TIER_2_SELL_PERCENT,
+    TIER_3_PROFIT_PERCENT, TIER_3_SELL_PERCENT
 )
-
-# ✅ NEW: Import profit protection settings
-try:
-    from config import EXTREME_TP_PERCENT, TRAIL_START_PERCENT, TRAIL_GIVEBACK_PERCENT, MOMENTUM_DRAWDOWN_MIN_AGE
-except ImportError:
-    # Fallback defaults if not in config yet
-    EXTREME_TP_PERCENT = 150.0
-    TRAIL_START_PERCENT = 100.0
-    TRAIL_GIVEBACK_PERCENT = 50.0
-    MOMENTUM_DRAWDOWN_MIN_AGE = 15.0
-    logger.warning("⚠️ Profit protection settings not in config.py, using defaults")
 
 from wallet import WalletManager
 from dex import PumpFunDEX
@@ -181,22 +167,18 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: 🎪 MAYHEM MODE - FAST RECYCLING")
+        logger.info(f"  • Strategy: 🎯 WHALE EXITS - Tiered Take-Profit")
+        logger.info(f"  • Entry range: 21-28 SOL (5-6.5K MC sweet spot)")
+        logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
+        logger.info(f"  • Take profit: 40% @ +30%, 40% @ +60%, 20% @ +100%")
+        logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s (let winners run)")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
-        logger.info(f"  • Velocity ceiling raised: Accepts up to 15 SOL/s organic pumps")
-        logger.info(f"  • Recent velocity: ≥2.0 SOL (1s), ≥4.0 SOL (3s)")
-        logger.info(f"  • Max velocity drop: {VELOCITY_MAX_DROP_PERCENT}%")
-        logger.info(f"  • Timer exit: {TIMER_EXIT_BASE_SECONDS}s ±{TIMER_EXIT_VARIANCE_SECONDS}s (max 1 ext)")
-        logger.info(f"  • Trail: Starts at +70%, exits on 35pp giveback")
-        logger.info(f"  • Max hold: 60s hard cap")
-        logger.info(f"  • Fail-fast: Exit at {FAIL_FAST_CHECK_TIME}s if P&L <{FAIL_FAST_PNL_THRESHOLD}% or velocity dead")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
         logger.info(f"  • Max slippage: {MAX_SLIPPAGE_PERCENT}%")
         logger.info(f"  • Wallet: {self.wallet.pubkey}")
         logger.info(f"  • Balance: {sol_balance:.4f} SOL")
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
-        logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
         logger.info(f"  • Available trades: {actual_trades}")
         logger.info(f"  • Circuit breaker: 3 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
@@ -1077,10 +1059,12 @@ class SniperBot:
                 position.entry_time = time.time()
                 position.entry_token_price_sol = actual_entry_price  # ✅ Use ACTUAL entry price
                 position.amount_sol = actual_sol_spent
-                
-                variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
-                position.exit_time = position.entry_time + TIMER_EXIT_BASE_SECONDS + variance
-                
+
+                # Timer exit disabled - using whale tiered exits instead
+                # variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
+                # position.exit_time = position.entry_time + TIMER_EXIT_BASE_SECONDS + variance
+                position.exit_time = position.entry_time + MAX_POSITION_AGE_SECONDS  # Max hold only
+
                 if 'data' in token_data:
                     position.entry_sol_in_curve = token_data['data'].get('vSolInBondingCurve', 30)
                 
@@ -1123,31 +1107,25 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position - MOMENTUM-BASED EXITS"""
+        """Monitor position - WHALE TIERED EXITS"""
         try:
             position = self.positions.get(mint)
             if not position:
                 return
 
-            # ✅ ADD THESE NEW VARIABLES
-            max_pnl_reached = 0  # Track peak P&L for drawdown detection
-            last_sol_raised = 0  # Track SOL flow for velocity
-            last_velocity_check = time.time()
-
-            logger.info(f"📈 Starting MOMENTUM monitoring for {mint[:8]}...")
+            logger.info(f"📈 Starting WHALE monitoring for {mint[:8]}...")
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} lamports/atomic")
-            logger.info(f"   Exit Time: {position.exit_time - position.entry_time:.1f}s from now")
-            logger.info(f"   Fail-fast check: {FAIL_FAST_CHECK_TIME}s")
+            logger.info(f"   Max Hold: {MAX_POSITION_AGE_SECONDS}s")
+            logger.info(f"   Tiers: 40% @ +30%, 40% @ +60%, 20% @ +100%")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
 
             check_count = 0
             consecutive_data_failures = 0
-            
+
             while mint in self.positions and position.status == 'active':
                 check_count += 1
                 current_time = time.time()
                 age = current_time - position.entry_time
-                time_until_exit = position.exit_time - current_time
                 
                 if age > MAX_POSITION_AGE_SECONDS:
                     logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s)")
@@ -1216,9 +1194,6 @@ class SniperBot:
                     position.current_price = current_token_price_sol
                     position.max_pnl_reached = max(position.max_pnl_reached, price_change)
 
-                    # ✅ ADD: Update local tracking
-                    max_pnl_reached = max(max_pnl_reached, price_change)
-
                     consecutive_data_failures = 0
                     position.last_valid_price = current_token_price_sol
                     position.last_price_update = time.time()
@@ -1230,67 +1205,15 @@ class SniperBot:
                         logger.info(f"   P&L: {price_change:+.1f}%")
                     
                     self.velocity_checker.update_snapshot(
-                        mint, 
-                        current_sol_in_curve, 
+                        mint,
+                        current_sol_in_curve,
                         int(current_sol_in_curve / 0.4)
                     )
-                    
-                    # ✅ CHATGPT FIX: Fast Profit Protectors (run BEFORE fail-fast, stop-loss, timer)
-                    # Only trust chain ticks for profit-based exits (same as stop-loss gating)
-                    on_chain = (source == 'chain') and position.has_chain_price
-                    
-                    # 1) EXTREME TAKE-PROFIT (catches parabolic pumps)
-                    if on_chain and not position.is_closing:
-                        if price_change >= EXTREME_TP_PERCENT:
-                            logger.info(
-                                f"💰 EXTREME TAKE PROFIT on [chain]: {price_change:+.1f}% "
-                                f"(threshold: {EXTREME_TP_PERCENT}%, peak: {position.max_pnl_reached:+.1f}%)"
-                            )
-                            await self._close_position_full(mint, reason="extreme_take_profit")
-                            break
-                    
-                    # 2) TRAILING STOP (protects profits from fast rugs)
-                    if on_chain and not position.is_closing:
-                        if position.max_pnl_reached >= TRAIL_START_PERCENT:
-                            drop_from_peak = position.max_pnl_reached - price_change
-                            if drop_from_peak >= TRAIL_GIVEBACK_PERCENT:
-                                logger.warning(
-                                    f"📉 TRAILING STOP on [chain]: drop {drop_from_peak:.1f}pp "
-                                    f"from +{position.max_pnl_reached:.1f}% peak → current {price_change:+.1f}%"
-                                )
-                                await self._close_position_full(mint, reason="trailing_stop")
-                                break
-                    
-                    if (age >= FAIL_FAST_CHECK_TIME and 
-                        not position.fail_fast_checked and 
-                        not position.is_closing):
 
-                        # ✅ CHATGPT FIX: Only evaluate & finalize fail-fast on [chain] tick
-                        if not position.has_chain_price or source != 'chain':
-                            logger.warning(
-                                f"🚧 FAIL-FAST from [{source}] ignored until first [chain] tick"
-                            )
-                        else:
-                            # Commit the one-time fail-fast check now that we have chain data
-                            position.fail_fast_checked = True
-
-                            # PNL branch (gated to chain)
-                            if price_change < FAIL_FAST_PNL_THRESHOLD:
-                                logger.warning(
-                                    f"⚠️ FAIL-FAST: P&L {price_change:.1f}% < {FAIL_FAST_PNL_THRESHOLD}% at {age:.1f}s "
-                                    f"(on [chain]) - exiting immediately"
-                                )
-                                await self._close_position_full(mint, reason="fail_fast_pnl")
-                                break
-
-                            # Velocity fail-fast DISABLED - causes false exits on healthy consolidations
-                            logger.info(
-                                f"✅ FAIL-FAST CHECK PASSED at {age:.1f}s: "
-                                f"P&L {price_change:+.1f}% (velocity check disabled)"
-                            )
-                    
-                    # ✅ CHATGPT FIX #7: Only allow rug trap on chain price
-                    rug_threshold = -60 if age < 3.0 else -40
+                    # ===================================================================
+                    # EXIT RULE 1: RUG TRAP (Emergency)
+                    # ===================================================================
+                    rug_threshold = -60 if age < 5.0 else -40
                     if price_change <= rug_threshold and not position.is_closing:
                         if not position.has_chain_price or source != 'chain':
                             logger.warning(f"🚧 RUG signal from [{source}] ignored until first [chain] tick")
@@ -1302,101 +1225,9 @@ class SniperBot:
                             await self._close_position_full(mint, reason="rug_trap")
                             break
 
-                    # ============================================
-                    # NEW EXIT SIGNAL 1: Peak Drawdown (Momentum Death)
-                    # ============================================
-                    if max_pnl_reached > MOMENTUM_MIN_PEAK_PERCENT and not position.is_closing:
-                        drawdown_from_peak = max_pnl_reached - price_change
-
-                        # Don't exit on early volatility - let trade develop
-                        if age >= MOMENTUM_DRAWDOWN_MIN_AGE and drawdown_from_peak >= MOMENTUM_MAX_DRAWDOWN_PP:
-                            logger.warning(
-                                f"💨 MOMENTUM DEATH: Peak {max_pnl_reached:+.1f}% → Now {price_change:+.1f}% "
-                                f"(drawdown: {drawdown_from_peak:.1f}pp, threshold: {MOMENTUM_MAX_DRAWDOWN_PP:.1f}pp, "
-                                f"age: {age:.1f}s)"
-                            )
-                            await self._close_position_full(mint, reason="momentum_death")
-                            break
-
-                    # ============================================
-                    # NEW EXIT SIGNAL 2: Velocity Death Check
-                    # ============================================
-                    if age >= 5.0 and age < 6.0 and not position.fail_fast_checked:  # Check once at 5s
-                        position.fail_fast_checked = True
-
-                        pre_buy_velocity = self.velocity_checker.get_pre_buy_velocity(mint)
-                        if pre_buy_velocity:
-                            current_velocity = current_sol_in_curve / max(age, 0.1)
-                            velocity_ratio = (current_velocity / pre_buy_velocity) * 100
-
-                            if velocity_ratio < MOMENTUM_VELOCITY_DEATH_PERCENT:
-                                logger.warning(
-                                    f"💨 VELOCITY DIED: {current_velocity:.2f} SOL/s = {velocity_ratio:.0f}% "
-                                    f"of entry ({pre_buy_velocity:.2f} SOL/s), threshold: {MOMENTUM_VELOCITY_DEATH_PERCENT:.0f}%"
-                                )
-                                await self._close_position_full(mint, reason="velocity_death")
-                                break
-
-                    # ============================================
-                    # NEW EXIT SIGNAL 3: Big Win Take Profit
-                    # ============================================
-                    if price_change >= MOMENTUM_BIG_WIN_PERCENT and not position.is_closing:
-                        logger.info(
-                            f"💰 BIG WIN TAKE PROFIT: {price_change:+.1f}% "
-                            f"(peak: {max_pnl_reached:+.1f}%, threshold: {MOMENTUM_BIG_WIN_PERCENT:.1f}%)"
-                        )
-                        await self._close_position_full(mint, reason="big_win_tp")
-                        break
-
-                    # ============================================
-                    # NEW EXIT SIGNAL 4: Max Hold Time Backstop
-                    # ============================================
-                    if age > MOMENTUM_MAX_HOLD_SECONDS and not position.is_closing:
-                        logger.warning(
-                            f"⏰ MAX HOLD TIME: {age:.1f}s > {MOMENTUM_MAX_HOLD_SECONDS:.0f}s limit "
-                            f"(P&L: {price_change:+.1f}%, peak: {max_pnl_reached:+.1f}%)"
-                        )
-                        await self._close_position_full(mint, reason="max_hold_time")
-                        break
-
-                    # ============================================
-                    # KEEP EXISTING: Timer exit (but will rarely trigger now)
-                    # ============================================
-                    if time_until_exit <= 0 and not position.is_closing:
-                        logger.info(f"⏰ TIMER EXPIRED for {mint[:8]}... - exiting")
-                        logger.info(f"   Final P&L: {price_change:+.1f}%")
-                        logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
-                        await self._close_position_full(mint, reason="timer_exit")
-                        break
-                    
-                    if (time_until_exit <= 5 and
-                        time_until_exit > 0 and
-                        price_change > TIMER_EXTENSION_PNL_THRESHOLD and
-                        position.extensions_used < TIMER_MAX_EXTENSIONS and
-                        not position.is_closing):
-                        
-                        is_accelerating = self.velocity_checker.is_velocity_accelerating(
-                            mint, 
-                            current_sol_in_curve
-                        )
-                        
-                        if is_accelerating:
-                            position.exit_time += TIMER_EXTENSION_SECONDS
-                            position.extensions_used += 1
-                            logger.info(
-                                f"🚀 EXTENDING TIMER for {mint[:8]}... "
-                                f"(+{TIMER_EXTENSION_SECONDS}s, extension {position.extensions_used}/{TIMER_MAX_EXTENSIONS})"
-                            )
-                            logger.info(f"   P&L: {price_change:+.1f}%, velocity accelerating")
-                    
-                    if check_count % 3 == 1:
-                        logger.info(
-                            f"⏱️ {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                            f"Exit in: {time_until_exit:.1f}s | "
-                            f"Extensions: {position.extensions_used}/{TIMER_MAX_EXTENSIONS}"
-                        )
-                    
-                    # ✅ CRITICAL FIX: Stop loss now requires [chain] source like rug trap
+                    # ===================================================================
+                    # EXIT RULE 2: STOP LOSS (-10%)
+                    # ===================================================================
                     if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                         if not position.has_chain_price or source != 'chain':
                             logger.warning(f"🚧 STOP LOSS signal from [{source}] ignored until first [chain] tick")
@@ -1405,6 +1236,57 @@ class SniperBot:
                             logger.warning(f"   P&L: {price_change:.1f}% <= -{STOP_LOSS_PERCENTAGE}%")
                             await self._close_position_full(mint, reason="stop_loss")
                             break
+
+                    # ===================================================================
+                    # EXIT RULE 3: TIER 1 TAKE PROFIT (+30%)
+                    # ===================================================================
+                    if (price_change >= TIER_1_PROFIT_PERCENT and
+                        "tier1" not in position.partial_sells and
+                        not position.is_closing):
+
+                        logger.info(f"💰 TIER 1 TAKE PROFIT: {price_change:+.1f}% >= {TIER_1_PROFIT_PERCENT}%")
+                        await self._execute_partial_sell(
+                            mint,
+                            TIER_1_SELL_PERCENT,
+                            "tier1",
+                            price_change
+                        )
+
+                    # ===================================================================
+                    # EXIT RULE 4: TIER 2 TAKE PROFIT (+60%)
+                    # ===================================================================
+                    if (price_change >= TIER_2_PROFIT_PERCENT and
+                        "tier2" not in position.partial_sells and
+                        not position.is_closing):
+
+                        logger.info(f"💰 TIER 2 TAKE PROFIT: {price_change:+.1f}% >= {TIER_2_PROFIT_PERCENT}%")
+                        await self._execute_partial_sell(
+                            mint,
+                            TIER_2_SELL_PERCENT,
+                            "tier2",
+                            price_change
+                        )
+
+                    # ===================================================================
+                    # EXIT RULE 5: TIER 3 TAKE PROFIT (+100%) OR CLOSE REMAINING
+                    # ===================================================================
+                    if (price_change >= TIER_3_PROFIT_PERCENT and
+                        position.total_sold_percent >= 80 and
+                        not position.is_closing):
+
+                        logger.info(f"💰 TIER 3 TAKE PROFIT: {price_change:+.1f}% >= {TIER_3_PROFIT_PERCENT}%")
+                        logger.info(f"   Closing final {100 - position.total_sold_percent:.0f}% of position")
+                        await self._close_position_full(mint, reason="tier3_profit")
+                        break
+
+                    # Progress logging
+                    if check_count % 3 == 1:
+                        sold_pct = position.total_sold_percent
+                        logger.info(
+                            f"⏱️ {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                            f"Peak: {position.max_pnl_reached:+.1f}% | "
+                            f"Sold: {sold_pct:.0f}% | Age: {age:.0f}s"
+                        )
                 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
