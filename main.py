@@ -729,14 +729,27 @@ class SniperBot:
                     )
                 return
             
-            initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
-            name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
-            
-            if initial_buy < 0.1 or initial_buy > 10:
-                return
-            
-            if len(name) < 3:
-                return
+            # ✅ FIX: Skip PumpPortal-specific filters for Helius (we fetch real data from chain later)
+            source = token_data.get('source', 'pumpportal')
+
+            if source != 'helius_logs':
+                # PumpPortal provides this data - use it for early filtering
+                initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
+                name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
+
+                if initial_buy < 0.1 or initial_buy > 10:
+                    logger.debug(f"Skipping {mint[:8]}... - initial_buy {initial_buy} out of range")
+                    return
+
+                if len(name) < 3:
+                    logger.debug(f"Skipping {mint[:8]}... - name too short")
+                    return
+            else:
+                # Helius doesn't provide solAmount/name - skip these checks
+                # Real liquidity/velocity validation happens later from blockchain
+                logger.info(f"⚡ Helius source - bypassing PumpPortal filters, validating from chain")
+                initial_buy = 1.0  # Placeholder for later logging
+                name = "unknown"   # Placeholder
 
             # Get real blockchain state (no adjustments!)
             mint = token_data['mint']
