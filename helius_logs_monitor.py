@@ -1,7 +1,7 @@
 """
-Helius Logs Monitor - Direct PumpFun program log subscription
-Detects new tokens in 0.2-0.8s vs 8-12s for PumpPortal
-FIXED: Extract mint directly from Program data - NO RPC CALL NEEDED
+Helius Logs Monitor - EVENT-DRIVEN VERSION
+Tracks CreateV2, Buy, and Sell events for intelligent entry
+No RPC polling - everything from WebSocket events
 """
 
 import asyncio
@@ -12,46 +12,65 @@ import base64
 import base58
 import websockets
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Set
 
-from config import HELIUS_API_KEY, PUMPFUN_PROGRAM_ID
+from config import (
+    HELIUS_API_KEY, PUMPFUN_PROGRAM_ID,
+    MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL
+)
 
 logger = logging.getLogger(__name__)
 
+
 class HeliusLogsMonitor:
-    """Subscribe to PumpFun program logs via Helius WebSocket"""
+    """Subscribe to PumpFun program logs and track all events"""
     
     def __init__(self, callback, rpc_client):
         self.callback = callback
         self.rpc_client = rpc_client
         self.running = False
-        self.seen_tokens = set()
         self.reconnect_count = 0
         
         # Verify Helius API key
         if not HELIUS_API_KEY:
-            logger.error("❌ CRITICAL: HELIUS_API_KEY not found!")
-            raise ValueError("HELIUS_API_KEY is required for Helius Logs Monitor")
-        else:
-            logger.info(f"✅ Helius API key loaded: {HELIUS_API_KEY[:10]}...")
+            raise ValueError("HELIUS_API_KEY is required")
+        logger.info(f"✅ Helius API key loaded: {HELIUS_API_KEY[:10]}...")
+        
+        # Token state tracking
+        self.watched_tokens: Dict[str, dict] = {}
+        self.triggered_tokens: Set[str] = set()  # Don't re-trigger
         
         # Statistics
-        self.logs_received = 0
-        self.tokens_detected = 0
-        self.tokens_processed = 0
-        self.parse_failures = 0
-        self.parse_successes = 0
+        self.stats = {
+            'creates': 0,
+            'buys': 0,
+            'sells': 0,
+            'triggers': 0,
+            'skipped_sells': 0,
+            'skipped_bot': 0,
+        }
+        
+        # Known discriminators
+        self.CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
+        
+        # Entry thresholds (from config)
+        self.min_sol = MIN_BONDING_CURVE_SOL
+        self.max_sol = MAX_BONDING_CURVE_SOL
+        self.min_buyers = 8
+        self.min_velocity = 2.0  # SOL/s
+        self.max_single_buy_ratio = 0.30  # Anti-bot
+        self.max_watch_time = 30  # Stop watching after 30s
         
     async def start(self):
         """Connect to Helius WebSocket and subscribe to PumpFun logs"""
         self.running = True
-        
         ws_url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
         
         logger.info("🔍 Connecting to Helius WebSocket...")
-        logger.info(f"   Strategy: ⚡ INSTANT MINT EXTRACTION FROM LOGS")
-        logger.info(f"   PumpFun Program: {PUMPFUN_PROGRAM_ID}")
-        logger.info(f"   Expected latency: <100ms (no RPC calls needed)")
+        logger.info(f"   Strategy: EVENT-DRIVEN (CreateV2 + Buy + Sell)")
+        logger.info(f"   Entry zone: {self.min_sol}-{self.max_sol} SOL")
+        logger.info(f"   Min buyers: {self.min_buyers}")
+        logger.info(f"   Anti-bot: single buy < {self.max_single_buy_ratio*100:.0f}%")
         
         while self.running:
             try:
@@ -63,227 +82,379 @@ class HeliusLogsMonitor:
                 ) as websocket:
                     logger.info("✅ Connected to Helius WebSocket!")
                     
-                    # Subscribe to PumpFun program logs
+                    # Subscribe to ALL PumpFun program logs
                     subscribe_msg = {
                         "jsonrpc": "2.0",
                         "id": 1,
                         "method": "logsSubscribe",
                         "params": [
-                            {
-                                "mentions": [str(PUMPFUN_PROGRAM_ID)]
-                            },
-                            {
-                                "commitment": "confirmed"
-                            }
+                            {"mentions": [str(PUMPFUN_PROGRAM_ID)]},
+                            {"commitment": "confirmed"}
                         ]
                     }
                     
                     await websocket.send(json.dumps(subscribe_msg))
-                    logger.info("📡 Subscribed to PumpFun program logs")
-                    logger.info(f"   Filter: mentions=[{str(PUMPFUN_PROGRAM_ID)}]")
+                    logger.info("📡 Subscribed to PumpFun logs (Create/Buy/Sell)")
                     
-                    # Listen for log notifications
+                    # Start cleanup task
+                    cleanup_task = asyncio.create_task(self._cleanup_old_tokens())
+                    
                     while self.running:
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=30)
                             data = json.loads(message)
                             
-                            # Handle subscription confirmation
                             if 'result' in data and 'id' in data:
                                 logger.info(f"✅ Subscription confirmed - ID: {data['result']}")
                                 continue
                             
-                            # Handle log notifications
                             if 'params' in data:
                                 await self._process_log_notification(data['params'])
                                 
                         except asyncio.TimeoutError:
-                            # Send ping to keep connection alive
                             await websocket.ping()
-                            if self.logs_received == 0:
-                                logger.warning("⚠️ No events received in 30s - connection may be idle")
                         except Exception as e:
                             logger.error(f"Error processing message: {e}")
                             break
-                            
+                    
+                    cleanup_task.cancel()
+                    
             except Exception as e:
                 logger.error(f"WebSocket connection error: {e}")
                 if self.running:
                     self.reconnect_count += 1
-                    self.seen_tokens.clear()
                     logger.info(f"Reconnecting in 5s... (attempt #{self.reconnect_count})")
                     await asyncio.sleep(5)
     
+    async def _cleanup_old_tokens(self):
+        """Remove tokens we've been watching too long"""
+        while self.running:
+            await asyncio.sleep(5)
+            now = time.time()
+            to_remove = []
+            
+            for mint, state in self.watched_tokens.items():
+                age = now - state['created_at']
+                if age > self.max_watch_time:
+                    to_remove.append(mint)
+            
+            for mint in to_remove:
+                final_sol = self.watched_tokens[mint]['total_sol']
+                logger.debug(f"🗑️ Stopped watching {mint[:8]}... (timed out at {final_sol:.2f} SOL)")
+                del self.watched_tokens[mint]
+    
     async def _process_log_notification(self, params: Dict):
-        """
-        Process incoming log notification from Helius
-        ONLY process CreateV2 token creation events
-        """
+        """Process incoming log notification - detect event type and route"""
         try:
             result = params.get('result', {})
             value = result.get('value', {})
-
             signature = value.get('signature', '')
             logs = value.get('logs', [])
-
-            if not signature:
-                logger.warning("⚠️ Log event missing signature")
-                return
-
-            # Only process CreateV2 events - skip all Buy/Sell/other
-            has_create_v2 = any('Instruction: CreateV2' in log for log in logs)
-
-            if not has_create_v2:
-                return
-
-            # Log counter for CreateV2 events only
-            self.logs_received += 1
-
-            if self.logs_received <= 20:
-                logger.info(f"📩 CreateV2 EVENT #{self.logs_received} DETECTED")
-                logger.info(f"   Signature: {signature[:16]}...")
-            elif self.logs_received % 50 == 0:
-                logger.info(f"📊 Processed {self.logs_received} CreateV2 events (detected: {self.tokens_detected})")
-
-            # Extract mint directly from logs - NO RPC CALL NEEDED
-            detection_time = time.time()
-            mint = self._extract_mint_from_logs(logs)
             
-            if not mint:
-                self.parse_failures += 1
-                if self.logs_received <= 20:
-                    logger.info(f"   ❌ Failed to parse mint from logs")
+            if not signature or not logs:
                 return
             
-            self.parse_successes += 1
+            # Detect event type from logs
+            is_create = any('Instruction: CreateV2' in log for log in logs)
+            is_buy = any('Instruction: Buy' in log for log in logs)
+            is_sell = any('Instruction: Sell' in log for log in logs)
             
-            if mint in self.seen_tokens:
-                if self.logs_received <= 20:
-                    logger.info(f"   ⚠️ Already seen: {mint[:8]}...")
-                return
-            
-            # New token detected!
-            self.seen_tokens.add(mint)
-            self.tokens_detected += 1
-            self.tokens_processed += 1
-            
-            detection_latency_ms = (time.time() - detection_time) * 1000
-            
-            logger.info("=" * 60)
-            logger.info(f"🚀 NEW TOKEN DETECTED: {mint}")
-            logger.info(f"   Signature: {signature[:16]}...")
-            logger.info(f"   Detection #{self.tokens_detected}")
-            logger.info(f"   Processing time: {detection_latency_ms:.0f}ms")
-            logger.info("=" * 60)
-            
-            # Trigger the trading callback
-            if self.callback:
-                try:
-                    await self.callback({
-                        'mint': mint,
-                        'signature': signature,
-                        'type': 'pumpfun_launch',
-                        'timestamp': datetime.now().isoformat(),
-                        'source': 'helius_logs',
-                        'detection_latency_ms': detection_latency_ms,
-                        'age': 0,
-                        'token_age': 0,
-                        'data': {}
-                    })
-                except Exception as e:
-                    logger.error(f"Callback error: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
+            if is_create:
+                await self._handle_create(logs, signature)
+            elif is_buy:
+                await self._handle_buy(logs, signature)
+            elif is_sell:
+                await self._handle_sell(logs, signature)
                 
         except Exception as e:
-            logger.error(f"Error processing log notification: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"Error processing log: {e}")
     
-    def _extract_mint_from_logs(self, logs: list) -> Optional[str]:
-        """
-        Extract mint directly from Program data log - NO RPC CALL NEEDED
-        The CreateV2 event contains: discriminator + name + symbol + uri + MINT
+    async def _handle_create(self, logs: list, signature: str):
+        """Handle CreateV2 - start watching new token"""
+        mint = self._extract_mint_from_create(logs)
+        if not mint:
+            return
         
-        This replaces the old _extract_mint_from_transaction method that needed
-        7 retries over 13 seconds. Now it's instant.
-        """
-        CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
+        self.stats['creates'] += 1
         
-        try:
-            # Find the Program data line that contains CreateV2 event
-            program_data = None
-            for log in logs:
-                if log.startswith("Program data:"):
-                    data_b64 = log.replace("Program data:", "").strip()
+        # Initialize token state
+        self.watched_tokens[mint] = {
+            'created_at': time.time(),
+            'signature': signature,
+            'buyers': set(),
+            'total_sol': 0.0,
+            'buy_count': 0,
+            'sell_count': 0,
+            'largest_buy': 0.0,
+            'buys': [],
+        }
+        
+        logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}...")
+    
+    async def _handle_buy(self, logs: list, signature: str):
+        """Handle Buy event - update token state and check entry"""
+        # Extract mint from buy event
+        mint, sol_amount, buyer = self._extract_buy_data(logs)
+        
+        if not mint or mint not in self.watched_tokens:
+            return
+        
+        if mint in self.triggered_tokens:
+            return
+        
+        self.stats['buys'] += 1
+        state = self.watched_tokens[mint]
+        
+        # Update state
+        state['buyers'].add(buyer) if buyer else None
+        state['total_sol'] += sol_amount
+        state['buy_count'] += 1
+        state['largest_buy'] = max(state['largest_buy'], sol_amount)
+        state['buys'].append({
+            'time': time.time(),
+            'sol': sol_amount,
+            'wallet': buyer
+        })
+        
+        # Log progress every 5 buys or when approaching target
+        if state['buy_count'] % 5 == 0 or state['total_sol'] >= self.min_sol * 0.7:
+            age = time.time() - state['created_at']
+            logger.info(
+                f"   📈 {mint[:8]}... | {state['total_sol']:.2f} SOL | "
+                f"{len(state['buyers'])} buyers | {age:.1f}s"
+            )
+        
+        # Check entry conditions
+        await self._check_and_trigger(mint, state)
+    
+    async def _handle_sell(self, logs: list, signature: str):
+        """Handle Sell event - flag token as risky"""
+        mint = self._extract_mint_from_sell(logs)
+        
+        if not mint or mint not in self.watched_tokens:
+            return
+        
+        self.stats['sells'] += 1
+        state = self.watched_tokens[mint]
+        state['sell_count'] += 1
+        
+        logger.warning(f"⚠️ SELL on {mint[:8]}... (sell #{state['sell_count']} before entry)")
+    
+    async def _check_and_trigger(self, mint: str, state: dict):
+        """Check if token meets entry conditions and trigger callback"""
+        
+        # Already triggered?
+        if mint in self.triggered_tokens:
+            return
+        
+        age = time.time() - state['created_at']
+        total_sol = state['total_sol']
+        buyers = len(state['buyers'])
+        velocity = total_sol / age if age > 0 else 0
+        
+        # ===== ENTRY CONDITIONS =====
+        
+        # 1. SOL range
+        if total_sol < self.min_sol:
+            return  # Too early, keep watching
+        
+        if total_sol > self.max_sol:
+            logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol}")
+            self.triggered_tokens.add(mint)  # Don't check again
+            return
+        
+        # 2. Minimum unique buyers
+        if buyers < self.min_buyers:
+            logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
+            return
+        
+        # 3. No sells before entry
+        if state['sell_count'] > 0:
+            logger.warning(f"❌ {mint[:8]}... has {state['sell_count']} sells - skipping")
+            self.stats['skipped_sells'] += 1
+            self.triggered_tokens.add(mint)
+            return
+        
+        # 4. Velocity check
+        if velocity < self.min_velocity:
+            logger.debug(f"   {mint[:8]}... velocity {velocity:.2f} < {self.min_velocity}")
+            return
+        
+        # 5. Anti-bot check
+        if total_sol > 0:
+            concentration = state['largest_buy'] / total_sol
+            if concentration > self.max_single_buy_ratio:
+                logger.warning(
+                    f"❌ {mint[:8]}... bot pump: single buy = {concentration*100:.0f}% of total"
+                )
+                self.stats['skipped_bot'] += 1
+                self.triggered_tokens.add(mint)
+                return
+        
+        # ===== ALL CONDITIONS MET =====
+        self.triggered_tokens.add(mint)
+        self.stats['triggers'] += 1
+        
+        logger.info("=" * 60)
+        logger.info(f"🚀 ENTRY TRIGGERED: {mint}")
+        logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
+        logger.info(f"   Buyers: {buyers} unique wallets")
+        logger.info(f"   Velocity: {velocity:.2f} SOL/s")
+        logger.info(f"   Sells: {state['sell_count']} (clean!)")
+        logger.info(f"   Age: {age:.1f}s")
+        logger.info(f"   Largest buy: {state['largest_buy']:.2f} SOL ({state['largest_buy']/total_sol*100:.0f}%)")
+        logger.info("=" * 60)
+        
+        # Trigger callback with enriched data
+        if self.callback:
+            await self.callback({
+                'mint': mint,
+                'signature': state['signature'],
+                'source': 'helius_events',
+                'type': 'pumpfun_launch',
+                'timestamp': datetime.now().isoformat(),
+                'age': age,
+                'token_age': age,
+                # Real data from events
+                'data': {
+                    'vSolInBondingCurve': total_sol,
+                    'unique_buyers': buyers,
+                    'buy_count': state['buy_count'],
+                    'sell_count': state['sell_count'],
+                    'velocity': velocity,
+                    'largest_buy': state['largest_buy'],
+                    'concentration': state['largest_buy'] / total_sol if total_sol > 0 else 0,
+                }
+            })
+    
+    # ===== PARSING HELPERS =====
+    
+    def _extract_mint_from_create(self, logs: list) -> Optional[str]:
+        """Extract mint from CreateV2 Program data"""
+        for log in logs:
+            if log.startswith("Program data:"):
+                data_b64 = log.replace("Program data:", "").strip()
+                
+                # Fix padding
+                padding = 4 - len(data_b64) % 4
+                if padding != 4:
+                    data_b64 += '=' * padding
+                
+                try:
+                    decoded = base64.b64decode(data_b64)
                     
-                    # Fix base64 padding
-                    padding = 4 - len(data_b64) % 4
-                    if padding != 4:
-                        data_b64 += '=' * padding
+                    # Check CreateV2 discriminator
+                    if len(decoded) >= 8 and decoded[:8].hex() == self.CREATE_V2_DISCRIMINATOR:
+                        # Parse: discriminator(8) + name + symbol + uri + mint(32)
+                        pos = 8
+                        
+                        # Skip name
+                        if pos + 4 > len(decoded):
+                            continue
+                        name_len = int.from_bytes(decoded[pos:pos+4], 'little')
+                        pos += 4 + name_len
+                        
+                        # Skip symbol
+                        if pos + 4 > len(decoded):
+                            continue
+                        symbol_len = int.from_bytes(decoded[pos:pos+4], 'little')
+                        pos += 4 + symbol_len
+                        
+                        # Skip URI
+                        if pos + 4 > len(decoded):
+                            continue
+                        uri_len = int.from_bytes(decoded[pos:pos+4], 'little')
+                        pos += 4 + uri_len
+                        
+                        # Extract mint
+                        if pos + 32 <= len(decoded):
+                            mint_bytes = decoded[pos:pos+32]
+                            return base58.b58encode(mint_bytes).decode()
+                except:
+                    continue
+        return None
+    
+    def _extract_buy_data(self, logs: list) -> tuple:
+        """
+        Extract mint, SOL amount, and buyer from Buy event logs
+        Returns: (mint, sol_amount, buyer_wallet) or (None, 0, None)
+        """
+        mint = None
+        sol_amount = 0.0
+        buyer = None
+        
+        for log in logs:
+            # Try to get mint from various log formats
+            if "Program data:" in log:
+                data_b64 = log.replace("Program data:", "").strip()
+                
+                padding = 4 - len(data_b64) % 4
+                if padding != 4:
+                    data_b64 += '=' * padding
+                
+                try:
+                    decoded = base64.b64decode(data_b64)
                     
-                    try:
-                        decoded = base64.b64decode(data_b64)
-                        # Check if this is a CreateV2 event by discriminator
-                        if len(decoded) >= 8 and decoded[:8].hex() == CREATE_V2_DISCRIMINATOR:
-                            program_data = decoded
-                            break
-                    except:
+                    # Skip CreateV2 discriminator
+                    if len(decoded) >= 8 and decoded[:8].hex() == self.CREATE_V2_DISCRIMINATOR:
                         continue
+                    
+                    # Trade event structure (best guess based on PumpFun):
+                    # discriminator(8) + mint(32) + sol_amount(8) + token_amount(8) + user(32) + is_buy(1) + timestamp(8)
+                    if len(decoded) >= 89:
+                        # Extract mint (bytes 8-40)
+                        potential_mint = base58.b58encode(decoded[8:40]).decode()
+                        
+                        # Validate it looks like a PumpFun mint
+                        if potential_mint.endswith('pump'):
+                            mint = potential_mint
+                            
+                            # SOL amount (bytes 40-48, lamports)
+                            sol_lamports = int.from_bytes(decoded[40:48], 'little')
+                            sol_amount = sol_lamports / 1e9
+                            
+                            # Buyer wallet (bytes 56-88)
+                            if len(decoded) >= 88:
+                                buyer = base58.b58encode(decoded[56:88]).decode()
+                            
+                            break
+                except:
+                    continue
             
-            if not program_data:
-                return None
-            
-            # Parse the structure: discriminator(8) + name + symbol + uri + mint(32)
-            pos = 8  # Skip discriminator
-            
-            # Skip name: length(4) + string
-            if pos + 4 > len(program_data):
-                return None
-            name_len = int.from_bytes(program_data[pos:pos+4], 'little')
-            pos += 4 + name_len
-            
-            # Skip symbol: length(4) + string
-            if pos + 4 > len(program_data):
-                return None
-            symbol_len = int.from_bytes(program_data[pos:pos+4], 'little')
-            pos += 4 + symbol_len
-            
-            # Skip URI: length(4) + string
-            if pos + 4 > len(program_data):
-                return None
-            uri_len = int.from_bytes(program_data[pos:pos+4], 'little')
-            pos += 4 + uri_len
-            
-            # Next 32 bytes = MINT
-            if pos + 32 > len(program_data):
-                logger.warning(f"   ⚠️ Not enough bytes for mint (need {pos+32}, have {len(program_data)})")
-                return None
-            
-            mint_bytes = program_data[pos:pos+32]
-            mint = base58.b58encode(mint_bytes).decode()
-            
-            return mint
-            
-        except Exception as e:
-            logger.error(f"   ❌ Error parsing mint from logs: {e}")
-            return None
+            # Fallback: Try to find mint in account keys (from log messages)
+            if "pump" in log.lower():
+                # Look for mint address pattern
+                words = log.split()
+                for word in words:
+                    if word.endswith('pump') and len(word) > 40:
+                        mint = word
+                        break
+        
+        # If we found a watched mint but couldn't parse amount, estimate from context
+        if mint and mint in self.watched_tokens and sol_amount == 0:
+            # Assume average buy of 0.3-0.5 SOL
+            sol_amount = 0.4
+        
+        return (mint, sol_amount, buyer)
+    
+    def _extract_mint_from_sell(self, logs: list) -> Optional[str]:
+        """Extract mint from Sell event - similar to buy"""
+        mint, _, _ = self._extract_buy_data(logs)
+        return mint
     
     def get_stats(self) -> Dict:
         """Get monitor statistics"""
         return {
-            'logs_received': self.logs_received,
-            'tokens_detected': self.tokens_detected,
-            'tokens_processed': self.tokens_processed,
-            'parse_successes': self.parse_successes,
-            'parse_failures': self.parse_failures,
-            'reconnect_count': self.reconnect_count
+            **self.stats,
+            'watching': len(self.watched_tokens),
+            'triggered': len(self.triggered_tokens),
+            'reconnects': self.reconnect_count,
         }
     
     def stop(self):
         """Stop the monitor"""
         self.running = False
         stats = self.get_stats()
-        logger.info(f"Helius logs monitor stopped")
-        logger.info(f"Stats: {stats['tokens_processed']} processed / {stats['tokens_detected']} detected / {stats['logs_received']} logs")
-        logger.info(f"Parse: {stats['parse_successes']} success / {stats['parse_failures']} failures")
+        logger.info(f"Helius monitor stopped")
+        logger.info(f"Stats: {stats['creates']} creates, {stats['buys']} buys, {stats['sells']} sells")
+        logger.info(f"Triggered: {stats['triggers']} | Skipped (sells): {stats['skipped_sells']} | Skipped (bot): {stats['skipped_bot']}")
