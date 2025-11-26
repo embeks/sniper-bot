@@ -53,12 +53,13 @@ class HeliusLogsMonitor:
         # Known discriminators
         self.CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
         
-        # Entry thresholds (from config)
-        self.min_sol = MIN_BONDING_CURVE_SOL
-        self.max_sol = MAX_BONDING_CURVE_SOL
-        self.min_buyers = 8
-        self.min_velocity = 2.0  # SOL/s
-        self.max_single_buy_ratio = 0.30  # Anti-bot
+        # Entry thresholds (calibrated from real event data)
+        self.min_sol = 6.0           # Enter earlier, before sell cascade
+        self.max_sol = 12.0          # Tighter window, more upside
+        self.min_buyers = 6          # Slightly relaxed
+        self.min_velocity = 1.5      # Slightly relaxed for earlier entry
+        self.max_single_buy_ratio = 0.35  # Slightly relaxed
+        self.max_sell_count = 3      # Allow up to 3 sells (was 0)
         self.max_watch_time = 30  # Stop watching after 30s
         
     async def start(self):
@@ -69,7 +70,7 @@ class HeliusLogsMonitor:
         logger.info("🔍 Connecting to Helius WebSocket...")
         logger.info(f"   Strategy: EVENT-DRIVEN (CreateV2 + Buy + Sell)")
         logger.info(f"   Entry zone: {self.min_sol}-{self.max_sol} SOL")
-        logger.info(f"   Min buyers: {self.min_buyers}")
+        logger.info(f"   Min buyers: {self.min_buyers} | Max sells: {self.max_sell_count}")
         logger.info(f"   Anti-bot: single buy < {self.max_single_buy_ratio*100:.0f}%")
         
         while self.running:
@@ -268,9 +269,9 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
         
-        # 3. No sells before entry
-        if state['sell_count'] > 0:
-            logger.warning(f"❌ {mint[:8]}... has {state['sell_count']} sells - skipping")
+        # 3. Limit sells before entry
+        if state['sell_count'] > self.max_sell_count:
+            logger.warning(f"❌ {mint[:8]}... has {state['sell_count']} sells (max {self.max_sell_count}) - skipping")
             self.stats['skipped_sells'] += 1
             self.triggered_tokens.add(mint)
             return
