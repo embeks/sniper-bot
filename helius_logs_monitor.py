@@ -299,7 +299,7 @@ class HeliusLogsMonitor:
 
         # 5. RPC verification - event SOL tracking is unreliable
         try:
-            curve_reader = BondingCurveReader(self.rpc_client)
+            curve_reader = BondingCurveReader(self.rpc_client, PUMPFUN_PROGRAM_ID)
             curve_state = curve_reader.get_curve_state(mint, use_cache=False)
             actual_sol = curve_state.get('sol_raised', 0)
 
