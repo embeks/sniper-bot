@@ -32,7 +32,8 @@ from config import (
     # Timer exit parameters
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
     TIMER_MAX_EXTENSIONS,
-    FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD
+    FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD,
+    MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
 )
 
 from wallet import WalletManager
@@ -776,6 +777,17 @@ class SniperBot:
                 return
 
             logger.info(f"✅ Liquidity OK: {actual_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
+
+            # SOL range check - only enter whale zone
+            if actual_sol < MIN_BONDING_CURVE_SOL:
+                logger.warning(f"❌ Too early: {actual_sol:.2f} SOL < {MIN_BONDING_CURVE_SOL} min")
+                return
+
+            if actual_sol > MAX_BONDING_CURVE_SOL:
+                logger.warning(f"❌ Too late: {actual_sol:.2f} SOL > {MAX_BONDING_CURVE_SOL} max")
+                return
+
+            logger.info(f"✅ In whale zone: {actual_sol:.2f} SOL (range: {MIN_BONDING_CURVE_SOL}-{MAX_BONDING_CURVE_SOL})")
 
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
 
