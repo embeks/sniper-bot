@@ -214,9 +214,9 @@ class HeliusLogsMonitor:
         state['buy_count'] += 1
         state['largest_buy'] = max(state['largest_buy'], sol_amount)
 
-        # Track peak velocity
+        # Track peak velocity (only after 0.5s to avoid false spikes at age≈0)
         age = time.time() - state['created_at']
-        if age > 0:
+        if age >= 0.5:
             current_velocity = state['total_sol'] / age
             state['peak_velocity'] = max(state['peak_velocity'], current_velocity)
 
