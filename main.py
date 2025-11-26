@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, Optional, List
 
 from config import (
-    LOG_LEVEL, LOG_FORMAT,
+    LOG_LEVEL, LOG_FORMAT, RPC_ENDPOINT,
     BUY_AMOUNT_SOL, MAX_POSITIONS, MIN_SOL_BALANCE,
     STOP_LOSS_PERCENTAGE, TAKE_PROFIT_PERCENTAGE,
     SELL_DELAY_SECONDS, MAX_POSITION_AGE_SECONDS,
@@ -37,7 +37,7 @@ from config import (
 
 from wallet import WalletManager
 from dex import PumpFunDEX
-from pumpportal_monitor import PumpPortalMonitor
+from helius_logs_monitor import HeliusLogsMonitor
 from pumpportal_trader import PumpPortalTrader
 from performance_tracker import PerformanceTracker
 from curve_reader import BondingCurveReader
@@ -171,7 +171,8 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: 🎯 WHALE EXITS - Tiered Take-Profit")
+        logger.info(f"  • Strategy: ⚡ HELIUS INSTANT DETECTION + WHALE EXITS")
+        logger.info(f"  • Detection: <100ms via logsSubscribe (no RPC delay)")
         logger.info(f"  • Entry range: 21-28 SOL (5-6.5K MC sweet spot)")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
         logger.info(f"  • Take profit: 40% @ +30%, 40% @ +60%, 20% @ +100%")
@@ -605,7 +606,9 @@ class SniperBot:
         self.consecutive_losses = 0
         
         if not self.scanner:
-            self.scanner = PumpPortalMonitor(self.on_token_found)
+            from solana.rpc.api import Client
+            rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
         
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
@@ -686,14 +689,23 @@ class SniperBot:
                     )
                 return
             
-            initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
-            name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
-            
-            if initial_buy < 0.1 or initial_buy > 10:
-                return
-            
-            if len(name) < 3:
-                return
+            # HELIUS FIX: When using Helius logs, we get mint instantly but no metadata
+            # Skip PumpPortal-specific filters for Helius source - we'll validate via curve data
+            source = token_data.get('source', 'pumpportal')
+
+            if source == 'helius_logs':
+                # Helius gives us instant detection - fetch curve data for validation
+                logger.info(f"⚡ HELIUS DETECTION: {mint[:8]}... - fetching curve data")
+            else:
+                # PumpPortal path - use WebSocket metadata
+                initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
+                name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
+
+                if initial_buy < 0.1 or initial_buy > 10:
+                    return
+
+                if len(name) < 3:
+                    return
 
             # Get real blockchain state (no adjustments!)
             mint = token_data['mint']
@@ -1785,7 +1797,9 @@ class SniperBot:
         try:
             await self.initialize_telegram()
             
-            self.scanner = PumpPortalMonitor(self.on_token_found)
+            from solana.rpc.api import Client
+            rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
+            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot running with WHALE TIERED EXITS STRATEGY")
