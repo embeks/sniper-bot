@@ -690,15 +690,37 @@ class SniperBot:
                     )
                 return
             
-            # HELIUS FIX: When using Helius logs, we get mint instantly but no metadata
-            # Skip PumpPortal-specific filters for Helius source - we'll validate via curve data
+            # Handle different data sources
             source = token_data.get('source', 'pumpportal')
 
-            if source == 'helius_logs':
-                # Helius gives us instant detection - fetch curve data for validation
-                logger.info(f"⚡ HELIUS DETECTION: {mint[:8]}... - fetching curve data")
+            if source == 'helius_events':
+                # Event-driven data - already validated by monitor
+                event_data = token_data.get('data', {})
+
+                actual_sol = event_data.get('vSolInBondingCurve', 0)
+                unique_buyers = event_data.get('unique_buyers', 0)
+                buy_count = event_data.get('buy_count', 0)
+                sell_count = event_data.get('sell_count', 0)
+                velocity = event_data.get('velocity', 0)
+                token_age = token_data.get('age', 2.0)
+
+                logger.info(f"⚡ HELIUS EVENT-DRIVEN ENTRY: {mint[:8]}...")
+                logger.info(f"   SOL: {actual_sol:.2f} | Buyers: {unique_buyers} | Velocity: {velocity:.2f}/s")
+                logger.info(f"   Buys: {buy_count} | Sells: {sell_count} | Age: {token_age:.1f}s")
+
+                # Skip velocity checker - already validated by event monitor
+                # Skip holder check - we have real buyer count
+                # Skip SOL range check - already validated
+
+                source_type = 'helius_events'
+
+            elif source == 'helius_logs':
+                # Old path - shouldn't happen with new monitor
+                logger.warning(f"⚠️ Received helius_logs source - should be helius_events")
+                return
+
             else:
-                # PumpPortal path - use WebSocket metadata
+                # PumpPortal path (fallback)
                 initial_buy = token_data.get('data', {}).get('solAmount', 0) if 'data' in token_data else token_data.get('solAmount', 0)
                 name = token_data.get('data', {}).get('name', '') if 'data' in token_data else token_data.get('name', '')
 
@@ -708,24 +730,23 @@ class SniperBot:
                 if len(name) < 3:
                     return
 
-            # Get real blockchain state (no adjustments!)
-            mint = token_data['mint']
-            token_age = token_data.get('age', 0) or token_data.get('token_age', 0) or 2.0
+                # Get real blockchain state (no adjustments!)
+                token_age = token_data.get('age', 0) or token_data.get('token_age', 0) or 2.0
 
-            # For very young tokens, use WebSocket directly (it's actually more current)
-            if token_age < 1.0:
-                actual_sol = float(token_data.get('data', {}).get('vSolInBondingCurve', 0))
-                source_type = 'websocket_direct'
-            else:
-                # Try blockchain for older tokens
-                curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
-
-                if curve_state and curve_state.get('is_valid'):
-                    actual_sol = curve_state['sol_raised']
-                    source_type = 'blockchain'
-                else:
+                # For very young tokens, use WebSocket directly (it's actually more current)
+                if token_age < 1.0:
                     actual_sol = float(token_data.get('data', {}).get('vSolInBondingCurve', 0))
-                    source_type = 'websocket_fallback'
+                    source_type = 'websocket_direct'
+                else:
+                    # Try blockchain for older tokens
+                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                    if curve_state and curve_state.get('is_valid'):
+                        actual_sol = curve_state['sol_raised']
+                        source_type = 'blockchain'
+                    else:
+                        actual_sol = float(token_data.get('data', {}).get('vSolInBondingCurve', 0))
+                        source_type = 'websocket_fallback'
 
             # Slippage protection via curve reader (optional logging only)
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
@@ -765,29 +786,30 @@ class SniperBot:
                 'is_migrated': False
             }
 
-            # Liquidity validation
-            required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
+            # Liquidity and SOL range validation (skip for helius_events - already validated)
+            if source != 'helius_events':
+                required_sol = BUY_AMOUNT_SOL * LIQUIDITY_MULTIPLIER
 
-            if actual_sol < MIN_LIQUIDITY_SOL:
-                logger.warning(f"❌ Liquidity too low: {actual_sol:.4f} SOL < {MIN_LIQUIDITY_SOL} minimum")
-                return
+                if actual_sol < MIN_LIQUIDITY_SOL:
+                    logger.warning(f"❌ Liquidity too low: {actual_sol:.4f} SOL < {MIN_LIQUIDITY_SOL} minimum")
+                    return
 
-            if actual_sol < required_sol:
-                logger.warning(f"❌ Insufficient liquidity: {actual_sol:.4f} SOL < {required_sol:.4f} ({LIQUIDITY_MULTIPLIER}x)")
-                return
+                if actual_sol < required_sol:
+                    logger.warning(f"❌ Insufficient liquidity: {actual_sol:.4f} SOL < {required_sol:.4f} ({LIQUIDITY_MULTIPLIER}x)")
+                    return
 
-            logger.info(f"✅ Liquidity OK: {actual_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
+                logger.info(f"✅ Liquidity OK: {actual_sol:.4f} SOL (>= {LIQUIDITY_MULTIPLIER}x {BUY_AMOUNT_SOL})")
 
-            # SOL range check - only enter whale zone
-            if actual_sol < MIN_BONDING_CURVE_SOL:
-                logger.warning(f"❌ Too early: {actual_sol:.2f} SOL < {MIN_BONDING_CURVE_SOL} min")
-                return
+                # SOL range check - only enter whale zone
+                if actual_sol < MIN_BONDING_CURVE_SOL:
+                    logger.warning(f"❌ Too early: {actual_sol:.2f} SOL < {MIN_BONDING_CURVE_SOL} min")
+                    return
 
-            if actual_sol > MAX_BONDING_CURVE_SOL:
-                logger.warning(f"❌ Too late: {actual_sol:.2f} SOL > {MAX_BONDING_CURVE_SOL} max")
-                return
+                if actual_sol > MAX_BONDING_CURVE_SOL:
+                    logger.warning(f"❌ Too late: {actual_sol:.2f} SOL > {MAX_BONDING_CURVE_SOL} max")
+                    return
 
-            logger.info(f"✅ In whale zone: {actual_sol:.2f} SOL (range: {MIN_BONDING_CURVE_SOL}-{MAX_BONDING_CURVE_SOL})")
+                logger.info(f"✅ In whale zone: {actual_sol:.2f} SOL (range: {MIN_BONDING_CURVE_SOL}-{MAX_BONDING_CURVE_SOL})")
 
             estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
 
@@ -836,16 +858,18 @@ class SniperBot:
             logger.info(f"   SOL in Curve: {curve_data['sol_raised']:.4f}")
             logger.info(f"   Velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s")
 
-            velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
-                mint=mint,
-                curve_data=curve_data,
-                token_age_seconds=token_age
-            )
-            
-            if not velocity_passed:
-                logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
-                logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
-                return
+            # Velocity check (skip for helius_events - already validated by event monitor)
+            if source != 'helius_events':
+                velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
+                    mint=mint,
+                    curve_data=curve_data,
+                    token_age_seconds=token_age
+                )
+
+                if not velocity_passed:
+                    logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
+                    logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
+                    return
             
             # ✅ Store the ESTIMATED entry price from detection (for comparison later)
             raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
