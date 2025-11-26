@@ -301,6 +301,11 @@ class HeliusLogsMonitor:
         try:
             curve_reader = BondingCurveReader(self.rpc_client, PUMPFUN_PROGRAM_ID)
             curve_state = curve_reader.get_curve_state(mint, use_cache=False)
+
+            if curve_state is None:
+                logger.warning(f"   ⚠️ Curve state not found for {mint[:8]}... - token too fresh, waiting")
+                return  # Don't skip permanently, let it retry on next event
+
             actual_sol = curve_state.get('sol_raised', 0)
 
             logger.info(f"   🔍 RPC: {mint[:8]}... = {actual_sol:.2f} SOL (events: {state['total_sol']:.2f})")
