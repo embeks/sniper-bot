@@ -1146,10 +1146,25 @@ class SniperBot:
                     break
                 
                 try:
-                    # ✅ CHATGPT FIX: Prefer chain until we have first chain price
-                    prefer_chain = not position.has_chain_price
-                    curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=prefer_chain)
-                    
+                    # ✅ CRITICAL FIX: Use curve_reader (same as entry verification)
+                    # dex.py has broken RPC client that returns wrong values
+                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                    if curve_state:
+                        curve_data = {
+                            'sol_in_curve': curve_state.get('sol_raised', 0),
+                            'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0),
+                            'virtual_sol_reserves': curve_state.get('virtual_sol_reserves', 0),
+                            'virtual_token_reserves': curve_state.get('virtual_token_reserves', 0),
+                            'is_migrated': curve_state.get('complete', False),
+                            'source': 'chain',
+                            'is_valid': True
+                        }
+                        position.has_chain_price = True
+                        position.last_price_source = 'chain'
+                    else:
+                        curve_data = None
+
                     if not curve_data:
                         consecutive_data_failures += 1
                         logger.warning(f"No price data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
@@ -1164,13 +1179,7 @@ class SniperBot:
                         else:
                             await asyncio.sleep(1)
                             continue
-                    
-                    # ✅ CHATGPT FIX #6: Track price source
-                    source = curve_data.get('source', 'unknown')
-                    position.last_price_source = source
-                    if source == 'chain':
-                        position.has_chain_price = True
-                    
+
                     if curve_data.get('is_migrated'):
                         logger.warning(f"❌ Token {mint[:8]}... has migrated - exiting immediately")
                         await self._close_position_full(mint, reason="migration")
