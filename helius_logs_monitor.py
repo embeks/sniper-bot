@@ -57,9 +57,10 @@ class HeliusLogsMonitor:
         self.min_sol = 6.0           # Enter earlier, before sell cascade
         self.max_sol = 12.0          # Tighter window, more upside
         self.min_buyers = 6          # Slightly relaxed
-        self.min_velocity = 1.5      # Slightly relaxed for earlier entry
+        self.max_velocity = 5.0      # Reject bot swarms
+        self.min_velocity = 1.0      # Slightly relaxed for earlier entry
         self.max_single_buy_ratio = 0.35  # Slightly relaxed
-        self.max_sell_count = 3      # Allow up to 3 sells (was 0)
+        self.max_sell_count = 6      # Jack had 4 sells and mooned
         self.max_watch_time = 30  # Stop watching after 30s
         
     async def start(self):
@@ -188,6 +189,7 @@ class HeliusLogsMonitor:
             'sell_count': 0,
             'largest_buy': 0.0,
             'buys': [],
+            'peak_velocity': 0.0,
         }
         
         logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}...")
@@ -211,6 +213,13 @@ class HeliusLogsMonitor:
         state['total_sol'] += sol_amount
         state['buy_count'] += 1
         state['largest_buy'] = max(state['largest_buy'], sol_amount)
+
+        # Track peak velocity
+        age = time.time() - state['created_at']
+        if age > 0:
+            current_velocity = state['total_sol'] / age
+            state['peak_velocity'] = max(state['peak_velocity'], current_velocity)
+
         state['buys'].append({
             'time': time.time(),
             'sol': sol_amount,
@@ -276,12 +285,19 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
         
-        # 4. Velocity check
+        # 4. Velocity check (min)
         if velocity < self.min_velocity:
             logger.debug(f"   {mint[:8]}... velocity {velocity:.2f} < {self.min_velocity}")
             return
-        
-        # 5. Anti-bot check
+
+        # 5. Max velocity check (bot swarm detection)
+        if state['peak_velocity'] > self.max_velocity:
+            logger.warning(f"❌ {mint[:8]}... bot swarm: peak velocity {state['peak_velocity']:.1f} > {self.max_velocity} SOL/s")
+            self.stats['skipped_bot'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # 6. Anti-bot check
         if total_sol > 0:
             concentration = state['largest_buy'] / total_sol
             if concentration > self.max_single_buy_ratio:
