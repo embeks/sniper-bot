@@ -1226,7 +1226,7 @@ class SniperBot:
                     # ===================================================================
                     # EXIT RULE 1: RUG TRAP (Emergency)
                     # ===================================================================
-                    rug_threshold = -60 if age < 5.0 else -40
+                    rug_threshold = -50  # Real rugs drop 80-99%, not 40%
                     if price_change <= rug_threshold and not position.is_closing:
                         if not position.has_chain_price or source != 'chain':
                             logger.warning(f"🚧 RUG signal from [{source}] ignored until first [chain] tick")

@@ -37,7 +37,7 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '10'))
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '15'))  # PumpFun volatility is ±20%, -10% too tight
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
