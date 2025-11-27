@@ -1162,6 +1162,7 @@ class SniperBot:
                         }
                         position.has_chain_price = True
                         position.last_price_source = 'chain'
+                        source = 'chain'  # curve_reader always returns chain data
                     else:
                         curve_data = None
 
