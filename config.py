@@ -236,6 +236,37 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_FILE = None
 
 # ============================================
+# RUNNER DETECTION & PYRAMID ADDS
+# ============================================
+# Runner score thresholds
+RUNNER_SCORE_THRESHOLD = 4          # Score >= 4 triggers runner mode (max 5)
+RUNNER_CHECK_MIN_AGE = 15.0         # Seconds after entry before checking runner score
+RUNNER_CHECK_MIN_PROFIT = 15.0      # Minimum +% before checking runner score
+
+# Runner score criteria thresholds
+RUNNER_MIN_BUY_SELL_RATIO = 3.0     # buys > sells * this = +1 point
+RUNNER_MIN_VELOCITY = 1.5           # SOL/s sustained = +1 point
+RUNNER_MIN_UNIQUE_BUYERS = 7        # Unique buyers = +1 point
+RUNNER_MAX_EARLY_SELLS = 2          # Sells <= this = +1 point
+RUNNER_MAX_BONDING_PERCENT = 35.0   # Bonding < this% = +1 point
+
+# Pyramid add settings
+PYRAMID_ADD_1_PROFIT = 15.0         # Add at +15% if runner
+PYRAMID_ADD_2_PROFIT = 30.0         # Add at +30% if still runner
+PYRAMID_ADD_3_PROFIT = 50.0         # Add at +50% if still runner
+PYRAMID_ADD_AMOUNT_SOL = 0.05       # Amount per add
+PYRAMID_MAX_ADDS = 3                # Maximum number of adds
+PYRAMID_MAX_POSITION_SOL = 0.20     # Maximum total position size
+
+# Runner mode exit thresholds
+RUNNER_EXIT_SCORE_THRESHOLD = 3     # Exit if score drops below this
+RUNNER_EXIT_BONDING_PERCENT = 60.0  # Exit if bonding curve > this%
+RUNNER_EXIT_CRASH_PERCENT = 25.0    # Exit if drops this% from peak
+RUNNER_EXIT_VELOCITY_MIN = 0.5      # Exit if velocity below this
+RUNNER_EXIT_VELOCITY_DURATION = 10.0  # For this many seconds
+RUNNER_STOP_LOSS_PERCENT = 15.0     # Tighter stop loss for runners (higher avg entry)
+
+# ============================================
 # DEVELOPMENT
 # ============================================
 DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
