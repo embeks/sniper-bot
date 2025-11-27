@@ -1261,10 +1261,24 @@ class SniperBot:
                             break
 
                     # ===================================================================
+                    # CRASH DETECTION - Dump if momentum collapsed
+                    # ===================================================================
+                    crash_from_peak = position.max_pnl_reached - price_change
+                    if (crash_from_peak > 30 and  # Dropped 30%+ from peak
+                        price_change < 10 and      # And no longer solidly profitable
+                        not position.is_closing):
+
+                        logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak")
+                        logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
+                        await self._close_position_full(mint, reason="momentum_crash")
+                        break
+
+                    # ===================================================================
                     # EXIT RULE 3: TIER 1 TAKE PROFIT (+30%)
                     # ===================================================================
                     if (price_change >= TIER_1_PROFIT_PERCENT and
                         "tier1" not in position.partial_sells and
+                        "tier1" not in position.pending_sells and
                         not position.is_closing):
 
                         logger.info(f"💰 TIER 1 TAKE PROFIT: {price_change:+.1f}% >= {TIER_1_PROFIT_PERCENT}%")
@@ -1280,6 +1294,7 @@ class SniperBot:
                     # ===================================================================
                     if (price_change >= TIER_2_PROFIT_PERCENT and
                         "tier2" not in position.partial_sells and
+                        "tier2" not in position.pending_sells and
                         not position.is_closing):
 
                         logger.info(f"💰 TIER 2 TAKE PROFIT: {price_change:+.1f}% >= {TIER_2_PROFIT_PERCENT}%")
@@ -1334,7 +1349,13 @@ class SniperBot:
             position = self.positions.get(mint)
             if not position:
                 return False
-            
+
+            # Check and mark pending IMMEDIATELY
+            if target_name in position.pending_sells:
+                logger.debug(f"{target_name} already pending for {mint[:8]}, skipping duplicate")
+                return False
+            position.pending_sells.add(target_name)
+
             from decimal import Decimal, ROUND_DOWN
             token_decimals = self.wallet.get_token_decimals(mint)
             raw = Decimal(str(position.remaining_tokens)) * Decimal(str(sell_percent)) / Decimal("100")
