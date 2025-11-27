@@ -98,6 +98,11 @@ class Position:
         # ✅ DON'T calculate entry_token_price_sol here
         # It will be set properly in on_token_found() with correct units
         self.entry_token_price_sol = 0
+        
+        # ✅ FLATLINE DETECTION: Track when P&L last improved
+        self.last_pnl_change_time = time.time()
+        self.last_recorded_pnl = -999  # Start at impossible value
+        self.first_price_check_done = False
 
 class SniperBot:
     """Main sniper bot orchestrator with velocity gate, timer exits, and fail-fast"""
@@ -457,7 +462,7 @@ class SniperBot:
             # Check if we got the transaction
             if not tx:
                 wait_time = time.time() - start
-                logger.warning(f"⏱️ Transaction not found after {wait_time:.1f}s timeout")
+                logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {wait_time:.1f}s")
                 return {
                     "success": False,
                     "sol_received": 0,
@@ -1120,7 +1125,7 @@ class SniperBot:
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
     
     async def _monitor_position(self, mint: str):
-        """Monitor position - WHALE TIERED EXITS"""
+        """Monitor position - WHALE TIERED EXITS with FLATLINE DETECTION"""
         try:
             position = self.positions.get(mint)
             if not position:
@@ -1220,12 +1225,42 @@ class SniperBot:
                     consecutive_data_failures = 0
                     position.last_valid_price = current_token_price_sol
                     position.last_price_update = time.time()
-                    
-                    if check_count == 1:
+
+                    # ===================================================================
+                    # ✅ NEW: ENTRY SLIPPAGE GATE - Exit immediately if underwater at start
+                    # ===================================================================
+                    if not position.first_price_check_done:
+                        position.first_price_check_done = True
+                        position.last_pnl_change_time = time.time()
+                        position.last_recorded_pnl = price_change
+                        
                         logger.info(f"📊 First price check for {mint[:8]}...")
                         logger.info(f"   Entry: {position.entry_token_price_sol:.10f} lamports/atomic")
                         logger.info(f"   Current: {current_token_price_sol:.10f} lamports/atomic")
                         logger.info(f"   P&L: {price_change:+.1f}%")
+                        
+                        # ✅ ENTRY SLIPPAGE GATE: If we're -15% or worse on first check, exit immediately
+                        if price_change <= -15:
+                            logger.warning(f"🚨 ENTRY SLIPPAGE TOO HIGH: {price_change:.1f}% - bought at top, exiting immediately")
+                            await self._close_position_full(mint, reason="entry_slippage")
+                            break
+
+                    # ===================================================================
+                    # ✅ NEW: FLATLINE DETECTION - Exit if stuck negative for 30s
+                    # ===================================================================
+                    # Check if P&L has improved by at least 2% since last check
+                    if price_change > position.last_recorded_pnl + 2:
+                        position.last_recorded_pnl = price_change
+                        position.last_pnl_change_time = time.time()
+                    
+                    flatline_duration = time.time() - position.last_pnl_change_time
+                    
+                    # If stuck negative for 30+ seconds with no improvement, token is dead
+                    if flatline_duration > 30 and price_change < 0 and not position.is_closing:
+                        logger.warning(f"💀 FLATLINE DETECTED: {mint[:8]}... stuck at {price_change:.1f}% for {flatline_duration:.0f}s")
+                        logger.warning(f"   No price improvement - token is dead, exiting")
+                        await self._close_position_full(mint, reason="flatline")
+                        break
                     
                     self.velocity_checker.update_snapshot(
                         mint,
@@ -1564,18 +1599,39 @@ class SniperBot:
                 else:
                     logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
                     
+                    # ✅ Check if sell actually landed by checking token balance
+                    try:
+                        actual_balance = self.wallet.get_token_balance(mint)
+                        expected_after_sell = position.initial_tokens * (1 - (position.total_sold_percent + sell_percent) / 100)
+                        
+                        if actual_balance < expected_after_sell * 0.95:  # Balance is lower than expected = sell landed
+                            sold_amount = position.remaining_tokens - actual_balance
+                            if sold_amount > 0:
+                                logger.info(f"✅ {target_name} actually landed! Balance shows {sold_amount:,.0f} tokens sold")
+                                position.partial_sells[target_name] = {
+                                    'pnl': current_pnl,
+                                    'time': time.time(),
+                                    'percent_sold': sell_percent,
+                                    'status': 'landed_late'
+                                }
+                                position.total_sold_percent += sell_percent
+                                position.remaining_tokens = actual_balance
+                    except Exception as e:
+                        logger.debug(f"Balance check failed: {e}")
+                    
                     if target_name in position.pending_sells:
                         position.pending_sells.remove(target_name)
                     if target_name in position.pending_token_amounts:
                         del position.pending_token_amounts[target_name]
                     
-                    position.partial_sells[target_name] = {
-                        'pnl': current_pnl,
-                        'time': time.time(),
-                        'percent_sold': 0,
-                        'status': 'failed',
-                        'attempts': retry_count + 1
-                    }
+                    if target_name not in position.partial_sells:
+                        position.partial_sells[target_name] = {
+                            'pnl': current_pnl,
+                            'time': time.time(),
+                            'percent_sold': 0,
+                            'status': 'failed',
+                            'attempts': retry_count + 1
+                        }
                     
                     if self.telegram:
                         await self.telegram.send_message(
