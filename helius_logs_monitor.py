@@ -55,7 +55,7 @@ class HeliusLogsMonitor:
         self.CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
         
         # Entry thresholds (calibrated from real event data)
-        self.min_sol = 6.0           # Enter earlier, before sell cascade
+        self.min_sol = 5.0           # Enter earlier, before sell cascade
         self.max_sol = 12.0          # Tighter window, more upside
         self.min_buyers = 6          # Slightly relaxed
         self.max_velocity = 5.0      # Reject bot swarms
