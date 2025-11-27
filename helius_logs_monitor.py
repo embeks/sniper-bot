@@ -16,7 +16,9 @@ from typing import Optional, Dict, Set
 
 from config import (
     HELIUS_API_KEY, PUMPFUN_PROGRAM_ID,
-    MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL
+    MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
+    MIN_UNIQUE_BUYERS, MAX_SELLS_BEFORE_ENTRY,
+    MAX_SINGLE_BUY_PERCENT, MIN_VELOCITY, MAX_TOKEN_AGE_SECONDS
 )
 from curve_reader import BondingCurveReader
 
@@ -53,15 +55,15 @@ class HeliusLogsMonitor:
         
         # Known discriminators
         self.CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
-        
-        # Entry thresholds (calibrated from real event data)
-        self.min_sol = 5.0           # Enter earlier, before sell cascade
-        self.max_sol = 12.0          # Tighter window, more upside
-        self.min_buyers = 6          # Slightly relaxed
-        self.max_velocity = 5.0      # Reject bot swarms
-        self.min_velocity = 1.0      # Slightly relaxed for earlier entry
-        self.max_single_buy_ratio = 0.35  # Slightly relaxed
-        self.max_sell_count = 6      # Jack had 4 sells and mooned
+
+        # Entry thresholds from config (early entry with strict quality)
+        self.min_sol = MIN_BONDING_CURVE_SOL      # 2.0 SOL - enter early
+        self.max_sol = MAX_BONDING_CURVE_SOL      # 5.0 SOL - tight window
+        self.min_buyers = MIN_UNIQUE_BUYERS       # 5 unique buyers minimum
+        self.max_sell_count = MAX_SELLS_BEFORE_ENTRY  # 1 sell max before entry
+        self.max_single_buy_percent = MAX_SINGLE_BUY_PERCENT  # 25% anti-bot
+        self.min_velocity = MIN_VELOCITY          # 1.0 SOL/s minimum momentum
+        self.max_token_age = MAX_TOKEN_AGE_SECONDS  # 10s max age for "early"
         self.max_watch_time = 30  # Stop watching after 30s
         
     async def start(self):
@@ -70,10 +72,11 @@ class HeliusLogsMonitor:
         ws_url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
         
         logger.info("🔍 Connecting to Helius WebSocket...")
-        logger.info(f"   Strategy: EVENT-DRIVEN (CreateV2 + Buy + Sell)")
+        logger.info(f"   Strategy: EARLY ENTRY with strict quality gates")
         logger.info(f"   Entry zone: {self.min_sol}-{self.max_sol} SOL")
         logger.info(f"   Min buyers: {self.min_buyers} | Max sells: {self.max_sell_count}")
-        logger.info(f"   Anti-bot: single buy < {self.max_single_buy_ratio*100:.0f}%")
+        logger.info(f"   Anti-bot: single buy < {self.max_single_buy_percent:.0f}%")
+        logger.info(f"   Min velocity: {self.min_velocity} SOL/s | Max age: {self.max_token_age}s")
         
         while self.running:
             try:
@@ -253,62 +256,70 @@ class HeliusLogsMonitor:
     
     async def _check_and_trigger(self, mint: str, state: dict):
         """Check if token meets entry conditions and trigger callback"""
-        
+
         # Already triggered?
         if mint in self.triggered_tokens:
             return
-        
+
         age = time.time() - state['created_at']
         total_sol = state['total_sol']
         buyers = len(state['buyers'])
         velocity = total_sol / age if age > 0 else 0
-        
+        largest_buy_pct = (state['largest_buy'] / total_sol * 100) if total_sol > 0 else 0
+
         # ===== ENTRY CONDITIONS =====
-        
+
         # 1. SOL range
         if total_sol < self.min_sol:
             return  # Too early, keep watching
-        
+
         if total_sol > self.max_sol:
             logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol}")
             self.triggered_tokens.add(mint)  # Don't check again
             return
-        
+
         # 2. Minimum unique buyers
         if buyers < self.min_buyers:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
-        
-        # 3. Limit sells before entry
+
+        # 3. Limit sells before entry (strict: max 1 sell)
         if state['sell_count'] > self.max_sell_count:
-            logger.warning(f"❌ {mint[:8]}... has {state['sell_count']} sells (max {self.max_sell_count}) - skipping")
+            logger.warning(f"❌ Too many sells before entry: {state['sell_count']} (max {self.max_sell_count})")
             self.stats['skipped_sells'] += 1
             self.triggered_tokens.add(mint)
             return
-        
-        # 4. Anti-bot check (concentration)
-        if total_sol > 0:
-            concentration = state['largest_buy'] / total_sol
-            if concentration > self.max_single_buy_ratio:
-                logger.warning(
-                    f"❌ {mint[:8]}... bot pump: single buy = {concentration*100:.0f}% of total"
-                )
-                self.stats['skipped_bot'] += 1
-                self.triggered_tokens.add(mint)
-                return
+
+        # 4. Anti-bot check: single wallet dominance (max 25%)
+        if largest_buy_pct > self.max_single_buy_percent:
+            logger.warning(f"❌ Single wallet dominance: {largest_buy_pct:.1f}% (max {self.max_single_buy_percent}%)")
+            self.stats['skipped_bot'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # 5. Minimum velocity check
+        if velocity < self.min_velocity:
+            logger.debug(f"   {mint[:8]}... low velocity: {velocity:.2f} SOL/s (need {self.min_velocity})")
+            return
+
+        # 6. Token age check (must be fresh for early entry)
+        if age > self.max_token_age:
+            logger.warning(f"❌ Token too old: {age:.1f}s (max {self.max_token_age}s)")
+            self.triggered_tokens.add(mint)
+            return
 
         # ===== ALL CONDITIONS MET =====
         self.triggered_tokens.add(mint)
         self.stats['triggers'] += 1
-        
+
         logger.info("=" * 60)
-        logger.info(f"🚀 ENTRY TRIGGERED: {mint}")
+        logger.info(f"🚀 EARLY ENTRY: {mint}")
         logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
-        logger.info(f"   Buyers: {buyers} unique wallets")
+        logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
+        logger.info(f"   Sells: {state['sell_count']} (max: {self.max_sell_count})")
+        logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
         logger.info(f"   Velocity: {velocity:.2f} SOL/s")
-        logger.info(f"   Sells: {state['sell_count']} (clean!)")
         logger.info(f"   Age: {age:.1f}s")
-        logger.info(f"   Largest buy: {state['largest_buy']:.2f} SOL ({state['largest_buy']/total_sol*100:.0f}%)")
         logger.info("=" * 60)
         
         # Trigger callback with enriched data
