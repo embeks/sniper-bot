@@ -64,7 +64,7 @@ class HeliusLogsMonitor:
         self.max_single_buy_percent = MAX_SINGLE_BUY_PERCENT  # 30% anti-bot (was 25%)
         self.min_velocity = MIN_VELOCITY          # 1.0 SOL/s minimum momentum
         self.max_token_age = MAX_TOKEN_AGE_SECONDS  # 10s max age for "early"
-        self.max_watch_time = 30  # Stop watching after 30s
+        self.max_watch_time = 120  # Match max hold time
         
     async def start(self):
         """Connect to Helius WebSocket and subscribe to PumpFun logs"""
@@ -205,10 +205,10 @@ class HeliusLogsMonitor:
         
         if not mint or mint not in self.watched_tokens:
             return
-        
-        if mint in self.triggered_tokens:
-            return
-        
+
+        # Don't re-trigger, but keep updating state for runner detection
+        already_triggered = mint in self.triggered_tokens
+
         self.stats['buys'] += 1
         state = self.watched_tokens[mint]
         
@@ -238,8 +238,9 @@ class HeliusLogsMonitor:
                 f"{len(state['buyers'])} buyers | {age:.1f}s"
             )
         
-        # Check entry conditions
-        await self._check_and_trigger(mint, state)
+        # Check entry conditions (skip if already triggered)
+        if not already_triggered:
+            await self._check_and_trigger(mint, state)
     
     async def _handle_sell(self, logs: list, signature: str):
         """Handle Sell event - flag token as risky"""
