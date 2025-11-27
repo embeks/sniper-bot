@@ -39,9 +39,9 @@ class PumpPortalTrader:
         - Breakeven: +5% (75% reduction from previous 0.010 SOL!)
         """
         urgency_fees = {
-            "buy": 0.0005,      # Down from 0.0010 (1% vs 2%)
-            "sell": 0.0008,     # Down from 0.0015 (1.6% vs 3%)
-            "emergency": 0.0015 # Down from 0.0020 (3% vs 4%)
+            "buy": 0.0005,      # 1% on 0.05 SOL - fast enough for entry
+            "sell": 0.0015,     # ✅ RAISED: 3% - need to compete with Jito during congestion
+            "emergency": 0.0025 # ✅ RAISED: 5% - critical exits must land
         }
         # Total fees: 0.0013 SOL = 2.6% per trade (down from 5%)
 

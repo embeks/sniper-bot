@@ -176,7 +176,7 @@ class SniperBot:
         logger.info(f"  • Detection: <100ms via logsSubscribe (no RPC delay)")
         logger.info(f"  • Entry range: 21-28 SOL (5-6.5K MC sweet spot)")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Take profit: 40% @ +30%, 40% @ +60%, 20% @ +100%")
+        logger.info(f"  • Take profit: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}%, {TIER_3_SELL_PERCENT}% @ +{TIER_3_PROFIT_PERCENT}%")
         logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s (let winners run)")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
@@ -1129,7 +1129,7 @@ class SniperBot:
             logger.info(f"📈 Starting WHALE monitoring for {mint[:8]}...")
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} lamports/atomic")
             logger.info(f"   Max Hold: {MAX_POSITION_AGE_SECONDS}s")
-            logger.info(f"   Tiers: 40% @ +30%, 40% @ +60%, 20% @ +100%")
+            logger.info(f"   Tiers: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}%, {TIER_3_SELL_PERCENT}% @ +{TIER_3_PROFIT_PERCENT}%")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
 
             check_count = 0
@@ -1306,10 +1306,16 @@ class SniperBot:
                         )
 
                     # ===================================================================
-                    # EXIT RULE 5: TIER 3 TAKE PROFIT (+100%) OR CLOSE REMAINING
+                    # EXIT RULE 5: TIER 3 TAKE PROFIT (+60%) - Fire for final 20%
                     # ===================================================================
+                    # Track pending + sold to decide if tier3 should fire
+                    pending_percent = len(position.pending_sells) * 40  # tier1=40%, tier2=40%
+                    effective_sold = position.total_sold_percent + pending_percent
+
                     if (price_change >= TIER_3_PROFIT_PERCENT and
-                        position.total_sold_percent >= 80 and
+                        effective_sold >= 80 and  # ✅ Count pending sells too
+                        "tier3" not in position.partial_sells and
+                        "tier3" not in position.pending_sells and
                         not position.is_closing):
 
                         logger.info(f"💰 TIER 3 TAKE PROFIT: {price_change:+.1f}% >= {TIER_3_PROFIT_PERCENT}%")
@@ -1528,8 +1534,8 @@ class SniperBot:
                     position.retry_counts[target_name] = retry_count + 1
                     logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3)")
 
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
+                    # ✅ DON'T remove from pending_sells - keep it blocked to prevent monitor duplicates
+                    # Only update pending_token_amounts for accurate tracking
                     if target_name in position.pending_token_amounts:
                         del position.pending_token_amounts[target_name]
 
@@ -1609,6 +1615,12 @@ class SniperBot:
                 return
             
             position.is_closing = True
+
+            # ✅ Clear pending sells to stop background retry tasks from continuing
+            position.pending_sells.clear()
+            position.pending_token_amounts.clear()
+            logger.debug(f"Cleared pending sells for {mint[:8]} due to {reason}")
+
             position.status = 'closing'
             ui_token_balance = position.remaining_tokens
             
