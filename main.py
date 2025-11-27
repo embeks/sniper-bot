@@ -1227,23 +1227,33 @@ class SniperBot:
                     position.last_price_update = time.time()
 
                     # ===================================================================
-                    # ✅ NEW: ENTRY SLIPPAGE GATE - Exit immediately if underwater at start
+                    # ✅ NEW: ENTRY SLIPPAGE GATE - Exit only if BOTH high slippage AND dumping
                     # ===================================================================
                     if not position.first_price_check_done:
                         position.first_price_check_done = True
+                        position.entry_price_at_first_check = price_change
                         position.last_pnl_change_time = time.time()
                         position.last_recorded_pnl = price_change
-                        
+
                         logger.info(f"📊 First price check for {mint[:8]}...")
                         logger.info(f"   Entry: {position.entry_token_price_sol:.10f} lamports/atomic")
                         logger.info(f"   Current: {current_token_price_sol:.10f} lamports/atomic")
                         logger.info(f"   P&L: {price_change:+.1f}%")
-                        
-                        # ✅ ENTRY SLIPPAGE GATE: If we're -15% or worse on first check, exit immediately
-                        if price_change <= -15:
-                            logger.warning(f"🚨 ENTRY SLIPPAGE TOO HIGH: {price_change:.1f}% - bought at top, exiting immediately")
-                            await self._close_position_full(mint, reason="entry_slippage")
+
+                        # ✅ ENTRY SLIPPAGE GATE: Only panic exit if BOTH: high slippage AND token is dumping
+                        # Check if token has more sells than buys (from helius events if available)
+                        token_data = self.scanner.watched_tokens.get(mint, {}) if hasattr(self, 'scanner') and self.scanner else {}
+                        sells_count = token_data.get('sell_count', 0) if isinstance(token_data, dict) else 0
+                        buys_count = len(token_data.get('buyers', set())) if isinstance(token_data, dict) else 0
+
+                        if price_change <= -20 and sells_count > buys_count * 2:
+                            # Severe slippage AND heavy selling - likely a rug
+                            logger.warning(f"🚨 ENTRY SLIPPAGE + DUMP: {price_change:.1f}%, sells={sells_count} > buys={buys_count} - exiting")
+                            await self._close_position_full(mint, reason="entry_slippage_dump")
                             break
+                        elif price_change <= -15:
+                            # High slippage but not necessarily dumping - log but continue monitoring
+                            logger.info(f"⚠️ Entry slippage {price_change:.1f}% but continuing - watching for recovery")
 
                     # ===================================================================
                     # ✅ NEW: FLATLINE DETECTION - Exit if stuck negative for 30s
