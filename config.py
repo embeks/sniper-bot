@@ -41,13 +41,13 @@ STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '20'))  # Was 15%, w
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
-TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '30.0'))
+TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '20.0'))
 TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '40.0'))
 
-TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '60.0'))
+TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '40.0'))
 TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '40.0'))
 
-TIER_3_PROFIT_PERCENT = float(os.getenv('TIER_3_PROFIT', '100.0'))
+TIER_3_PROFIT_PERCENT = float(os.getenv('TIER_3_PROFIT', '60.0'))
 TIER_3_SELL_PERCENT = float(os.getenv('TIER_3_SELL', '20.0'))  # Final 20%
 
 # ============================================

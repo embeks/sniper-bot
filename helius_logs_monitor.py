@@ -297,36 +297,6 @@ class HeliusLogsMonitor:
                 self.triggered_tokens.add(mint)
                 return
 
-        # 5. RPC verification - event SOL tracking is unreliable
-        try:
-            curve_reader = BondingCurveReader(self.rpc_client, PUMPFUN_PROGRAM_ID)
-            curve_state = curve_reader.get_curve_state(mint, use_cache=False)
-
-            if curve_state is None:
-                logger.warning(f"   ⚠️ Curve state not found for {mint[:8]}... - token too fresh, waiting")
-                return  # Don't skip permanently, let it retry on next event
-
-            actual_sol = curve_state.get('sol_raised', 0)
-
-            logger.info(f"   🔍 RPC: {mint[:8]}... = {actual_sol:.2f} SOL (events: {state['total_sol']:.2f})")
-
-            if actual_sol < self.min_sol:
-                logger.info(f"   ⏳ {mint[:8]}... at {actual_sol:.2f} SOL - below {self.min_sol}, waiting")
-                return
-
-            if actual_sol > self.max_sol:
-                logger.warning(f"   ❌ {mint[:8]}... at {actual_sol:.2f} SOL - above {self.max_sol}, skipping")
-                self.triggered_tokens.add(mint)
-                return
-
-            # Override broken event data with real data
-            state['total_sol'] = actual_sol
-            total_sol = actual_sol
-
-        except Exception as e:
-            logger.warning(f"   ⚠️ RPC verification failed: {e} - skipping entry")
-            return
-
         # ===== ALL CONDITIONS MET =====
         self.triggered_tokens.add(mint)
         self.stats['triggers'] += 1
