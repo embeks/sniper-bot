@@ -292,7 +292,7 @@ class HeliusLogsMonitor:
 
         # 4. Anti-bot check: single wallet dominance (max 30%)
         if largest_buy_pct > self.max_single_buy_percent:
-            logger.warning(f"❌ Single wallet dominance: {largest_buy_pct:.1f}% (max {self.max_single_buy_percent}%)")
+            logger.warning(f"❌ Single wallet dominance: {largest_buy_pct:.1f}% (max 35.0%)")
             self.stats['skipped_bot'] += 1
             self.triggered_tokens.add(mint)
             return
