@@ -154,9 +154,9 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # ============================================
 # EARLY ENTRY QUALITY GATES
 # ============================================
-MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '5'))          # Minimum unique buyers before entry
-MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '1'))  # Max sells allowed before entry
-MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '25.0'))  # Anti-bot: max % from single wallet
+MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '4'))          # Minimum unique buyers before entry (was 5)
+MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))  # Max sells allowed before entry (was 1)
+MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '30.0'))  # Anti-bot: max % from single wallet (was 25)
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '1.0'))                # Min SOL/second momentum
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))  # Max age to be considered "early"
 
