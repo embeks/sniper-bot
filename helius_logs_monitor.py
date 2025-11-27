@@ -56,12 +56,12 @@ class HeliusLogsMonitor:
         # Known discriminators
         self.CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
 
-        # Entry thresholds from config (early entry with strict quality)
+        # Entry thresholds from config (early entry with relaxed quality gates)
         self.min_sol = MIN_BONDING_CURVE_SOL      # 2.0 SOL - enter early
         self.max_sol = MAX_BONDING_CURVE_SOL      # 5.0 SOL - tight window
-        self.min_buyers = MIN_UNIQUE_BUYERS       # 5 unique buyers minimum
-        self.max_sell_count = MAX_SELLS_BEFORE_ENTRY  # 1 sell max before entry
-        self.max_single_buy_percent = MAX_SINGLE_BUY_PERCENT  # 25% anti-bot
+        self.min_buyers = MIN_UNIQUE_BUYERS       # 4 unique buyers minimum (was 5)
+        self.max_sell_count = MAX_SELLS_BEFORE_ENTRY  # 3 sells max before entry (was 1)
+        self.max_single_buy_percent = MAX_SINGLE_BUY_PERCENT  # 30% anti-bot (was 25%)
         self.min_velocity = MIN_VELOCITY          # 1.0 SOL/s minimum momentum
         self.max_token_age = MAX_TOKEN_AGE_SECONDS  # 10s max age for "early"
         self.max_watch_time = 30  # Stop watching after 30s
@@ -290,7 +290,7 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # 4. Anti-bot check: single wallet dominance (max 25%)
+        # 4. Anti-bot check: single wallet dominance (max 30%)
         if largest_buy_pct > self.max_single_buy_percent:
             logger.warning(f"❌ Single wallet dominance: {largest_buy_pct:.1f}% (max {self.max_single_buy_percent}%)")
             self.stats['skipped_bot'] += 1
