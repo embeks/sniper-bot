@@ -140,8 +140,8 @@ MAX_ENTRY_SLIPPAGE_PERCENT = float(os.getenv('MAX_ENTRY_SLIPPAGE_PERCENT', '40.0
 PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
-MIN_BONDING_CURVE_SOL = 10.0  # Lowered from 15.0 - whale zone
-MAX_BONDING_CURVE_SOL = 18.0  # Lowered from 45.0 - whale zone
+MIN_BONDING_CURVE_SOL = 2.0   # Enter early: 2-5 SOL range
+MAX_BONDING_CURVE_SOL = 5.0   # Tighter window for early entry
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
@@ -150,6 +150,15 @@ MAX_PRICE_IMPACT_PERCENTAGE = 5
 
 AUTO_BUY = os.getenv('AUTO_BUY', 'true').lower() == 'true'
 PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
+
+# ============================================
+# EARLY ENTRY QUALITY GATES
+# ============================================
+MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '5'))          # Minimum unique buyers before entry
+MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '1'))  # Max sells allowed before entry
+MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '25.0'))  # Anti-bot: max % from single wallet
+MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '1.0'))                # Min SOL/second momentum
+MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))  # Max age to be considered "early"
 
 # ============================================
 # DEX CONFIGURATION
