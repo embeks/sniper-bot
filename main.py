@@ -1067,23 +1067,24 @@ class SniperBot:
                 # ✅ CRITICAL: Get entry price from CURVE (SAME SOURCE AS MONITORING)
                 # ========================================================================
                 if bought_tokens > 0:
-                    curve_entry_price = self._get_curve_price(mint, use_cache=False)
+                    # Try curve_reader up to 3 times (chain may need a moment after TX)
+                    curve_entry_price = None
+                    for attempt in range(3):
+                        curve_entry_price = self._get_curve_price(mint, use_cache=False)
+                        if curve_entry_price and curve_entry_price > 0:
+                            break
+                        if attempt < 2:
+                            logger.warning(f"⚠️ Curve read attempt {attempt+1}/3 failed, retrying in 0.5s...")
+                            await asyncio.sleep(0.5)
 
                     if curve_entry_price and curve_entry_price > 0:
                         actual_entry_price = curve_entry_price
                         logger.info(f"✅ Entry price from curve: {actual_entry_price:.10f} lamports/atomic")
                     else:
-                        # Fallback ONLY if curve read fails
-                        logger.warning(f"⚠️ Curve read failed - using fill-based price (less accurate)")
-                        token_decimals = self.wallet.get_token_decimals(mint)
-                        if isinstance(token_decimals, tuple):
-                            token_decimals = token_decimals[0]
-                        if not token_decimals or token_decimals == 0:
-                            token_decimals = 6
-                        token_atoms = int(bought_tokens * (10 ** token_decimals))
-                        lamports_spent = int(actual_sol_spent * 1e9)
-                        if token_atoms > 0:
-                            actual_entry_price = lamports_spent / token_atoms
+                        # Fallback to detection-time price (NOT broken fill-based math)
+                        logger.warning(f"⚠️ Curve read failed 3x - using detection-time price")
+                        actual_entry_price = estimated_entry_price
+                        logger.info(f"📊 Detection-time entry price: {actual_entry_price:.10f} lamports/atomic")
 
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
