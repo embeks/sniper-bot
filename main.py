@@ -1073,11 +1073,17 @@ class SniperBot:
                         actual_entry_price = curve_entry_price
                         logger.info(f"✅ Entry price from curve: {actual_entry_price:.10f} lamports/atomic")
                     else:
-                        # Curve read failed - use estimated_entry_price from detection
-                        # This is curve-based (same units as monitoring) - much better than fill calculation
-                        logger.warning(f"⚠️ Post-buy curve read failed - using pre-buy curve price as fallback")
-                        actual_entry_price = estimated_entry_price
-                        logger.info(f"   Fallback entry price: {actual_entry_price:.10f} lamports/atomic")
+                        # Fallback ONLY if curve read fails
+                        logger.warning(f"⚠️ Curve read failed - using fill-based price (less accurate)")
+                        token_decimals = self.wallet.get_token_decimals(mint)
+                        if isinstance(token_decimals, tuple):
+                            token_decimals = token_decimals[0]
+                        if not token_decimals or token_decimals == 0:
+                            token_decimals = 6
+                        token_atoms = int(bought_tokens * (10 ** token_decimals))
+                        lamports_spent = int(actual_sol_spent * 1e9)
+                        if token_atoms > 0:
+                            actual_entry_price = lamports_spent / token_atoms
 
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
