@@ -37,7 +37,7 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '20'))  # Was 15%, widened to 20% - real rugs drop 50%+ in seconds
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '15'))  # TIGHTENED: Was 20%, now 15% to prevent gap-through
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
@@ -159,6 +159,11 @@ MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))  # Max se
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '35.0'))  # Anti-bot: max % from single wallet (was 30)
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '1.0'))                # Min SOL/second momentum
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))  # Max age to be considered "early"
+
+# NEW FILTERS (21-trade baseline learnings)
+MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '8.0'))                # Max SOL/s - blocks coordinated bot pumps (DGuZTAAT was 4795!)
+MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '1.5'))  # Min age - lets sells reveal themselves
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '50.0'))  # Max % from top 2 wallets combined
 
 # ============================================
 # DEX CONFIGURATION
