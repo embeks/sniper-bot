@@ -162,7 +162,6 @@ MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))  # Max
 
 # NEW FILTERS (21-trade baseline learnings)
 MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '8.0'))                # Max SOL/s - blocks coordinated bot pumps (DGuZTAAT was 4795!)
-MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '1.5'))  # Min age - lets sells reveal themselves
 MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '50.0'))  # Max % from top 2 wallets combined
 
 # ============================================
