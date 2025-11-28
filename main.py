@@ -1891,8 +1891,67 @@ class SniperBot:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
             else:
-                logger.warning(f"❌ {target_name} sell failed for {mint[:8]}")
-                
+                logger.warning(f"❌ {target_name} RPC timeout for {mint[:8]}...")
+
+                # CRITICAL FIX: Check wallet balance BEFORE retrying
+                # The sell may have landed but RPC just didn't confirm in time
+                # This prevents duplicate sells that were killing profits!
+
+                # Wait 2s for any in-flight TX to land before checking balance
+                await asyncio.sleep(2)
+                actual_balance = self.wallet.get_token_balance(mint)
+                expected_remaining = position.remaining_tokens - tokens_sold
+
+                logger.info(f"🔍 Balance check before retry:")
+                logger.info(f"   Tokens we tried to sell: {tokens_sold:,.0f}")
+                logger.info(f"   Expected remaining if sold: {expected_remaining:,.0f}")
+                logger.info(f"   Actual wallet balance: {actual_balance:,.0f}")
+
+                # If balance already dropped, the sell actually landed - don't retry!
+                if actual_balance <= expected_remaining * 1.10:  # 10% tolerance
+                    logger.info(f"✅ {target_name} ACTUALLY LANDED despite RPC timeout!")
+                    logger.info(f"   Sell succeeded - skipping retry to prevent duplicate")
+
+                    position.remaining_tokens = actual_balance
+                    position.partial_sells[target_name] = {
+                        'pnl': current_pnl,
+                        'time': time.time(),
+                        'percent_sold': sell_percent,
+                        'status': 'landed_late_detected'
+                    }
+                    position.total_sold_percent += sell_percent
+
+                    if target_name in position.pending_sells:
+                        position.pending_sells.remove(target_name)
+                    if target_name in position.pending_token_amounts:
+                        del position.pending_token_amounts[target_name]
+                    if target_name in position.retry_counts:
+                        del position.retry_counts[target_name]
+
+                    # Try to get actual SOL received from transaction
+                    try:
+                        txd = await self._get_transaction_deltas(signature, mint)
+                        if txd["confirmed"] and txd["sol_delta"] > 0:
+                            actual_sol_received = txd["sol_delta"]
+                            base_sol_for_portion = position.amount_sol * (sell_percent / 100)
+                            actual_profit_sol = actual_sol_received - base_sol_for_portion
+                            position.realized_pnl_sol += actual_profit_sol
+                            self.total_realized_sol += actual_profit_sol
+                            logger.info(f"   SOL received: {actual_sol_received:.4f} (profit: {actual_profit_sol:+.4f})")
+                    except Exception as e:
+                        logger.debug(f"Could not get TX proceeds: {e}")
+
+                    if self.telegram:
+                        await self.telegram.send_message(
+                            f"✅ {target_name} landed (RPC was slow)\n"
+                            f"Token: {mint[:16]}...\n"
+                            f"P&L: {current_pnl:+.1f}%"
+                        )
+                    return  # Exit without retrying - sell already succeeded!
+
+                # Tokens still there - safe to retry
+                logger.info(f"   Tokens still in wallet - sell did NOT land, retrying...")
+
                 retry_count = position.retry_counts.get(target_name, 0)
                 if retry_count < 2:
                     position.retry_counts[target_name] = retry_count + 1
