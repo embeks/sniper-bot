@@ -391,6 +391,33 @@ class SniperBot:
         self._sol_price_cache["timestamp"] = now
         return float(APPROX_SOL_PRICE_USD)
 
+    def _get_curve_price(self, mint: str, use_cache: bool = False) -> Optional[float]:
+        """
+        SINGLE SOURCE OF TRUTH for token price.
+        Returns price in lamports per atomic unit from curve_reader.
+
+        This method is used for BOTH entry price AND current price to ensure
+        they are always comparable and use the same calculation method.
+        """
+        try:
+            curve_state = self.curve_reader.get_curve_state(mint, use_cache=use_cache)
+
+            if not curve_state:
+                logger.debug(f"No curve state for {mint[:8]}...")
+                return None
+
+            price = curve_state.get('price_lamports_per_atomic', 0)
+
+            if price is None or price <= 0:
+                logger.debug(f"Invalid price from curve state: {price}")
+                return None
+
+            return float(price)
+
+        except Exception as e:
+            logger.error(f"Error getting curve price for {mint[:8]}: {e}")
+            return None
+
     def _get_current_token_price(self, mint: str, curve_data: dict) -> Optional[float]:
         """
         Calculate current token price - returns lamports per atomic (same units as entry price)
@@ -1013,108 +1040,51 @@ class SniperBot:
                 if txd["confirmed"] and txd["token_delta"] > 0:
                     bought_tokens = txd["token_delta"]
                     actual_sol_spent = abs(txd["sol_delta"])
-                    
-                    # ✅ Calculate actual entry price from transaction
-                    token_decimals = self.wallet.get_token_decimals(mint)
-                    if isinstance(token_decimals, tuple):
-                        token_decimals = token_decimals[0]
-                    if not token_decimals or token_decimals == 0:
-                        token_decimals = 6
-                    
-                    token_atoms = int(bought_tokens * (10 ** token_decimals))
-                    lamports_spent = int(actual_sol_spent * 1e9)
-                    actual_entry_price = lamports_spent / token_atoms
-                    
+
                     logger.info(f"✅ Real fill from TX: {bought_tokens:,.0f} tokens for {actual_sol_spent:.6f} SOL")
-                    logger.debug(f"Actual entry price from TX: {actual_entry_price:.10f} lamports/atomic")
-                    
-                    # Verify against wallet balance
+
                     if actual_wallet_balance > 0 and abs(actual_wallet_balance - bought_tokens) > (bought_tokens * 0.1):
                         logger.warning(f"⚠️ Wallet balance mismatch! TX says {bought_tokens:,.0f} but wallet has {actual_wallet_balance:,.0f}")
-                        bought_tokens = actual_wallet_balance  # Use actual balance
-                        
-                        # Recalculate entry price with corrected token amount
-                        token_atoms = int(bought_tokens * (10 ** token_decimals))
-                        actual_entry_price = lamports_spent / token_atoms
-                        logger.info(f"✅ Corrected entry price: {actual_entry_price:.10f} lamports/atomic")
-                        
-                else:
-                    # ✅ CRITICAL FIX #1: Transaction reading failed - calculate from wallet balance
-                    if actual_wallet_balance > 0:
                         bought_tokens = actual_wallet_balance
-                        actual_sol_spent = BUY_AMOUNT_SOL
-                        logger.warning(f"⚠️ TX reading failed - using wallet balance: {bought_tokens:,.0f} tokens")
-                        
-                        # ✅ RECALCULATE entry price from actual fill
-                        token_decimals = self.wallet.get_token_decimals(mint)
-                        if isinstance(token_decimals, tuple):
-                            token_decimals = token_decimals[0]
-                        if not token_decimals or token_decimals == 0:
-                            token_decimals = 6
-                        
-                        token_atoms = int(bought_tokens * (10 ** token_decimals))
-                        lamports_spent = int(actual_sol_spent * 1e9)
-                        actual_entry_price = lamports_spent / token_atoms
-                        
-                        logger.info(f"✅ Recalculated entry price from fill: {actual_entry_price:.10f} lamports/atomic")
-                        logger.info(f"   Calculation: {actual_sol_spent:.6f} SOL ({lamports_spent:,} lamports) / {bought_tokens:,.0f} tokens ({token_atoms:,} atoms)")
-                        
-                    else:
-                        # ✅ CRITICAL FIX #2: Last resort - wait longer and check again
-                        logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
-                        await asyncio.sleep(2)
-                        bought_tokens = self.wallet.get_token_balance(mint)
-                        actual_sol_spent = BUY_AMOUNT_SOL
-                        
-                        if bought_tokens == 0:
-                            logger.error("❌ Still no tokens - position may have failed")
-                            self.pending_buys -= 1
-                            return
-                        
-                        # ✅ RECALCULATE entry price after retry
-                        token_decimals = self.wallet.get_token_decimals(mint)
-                        if isinstance(token_decimals, tuple):
-                            token_decimals = token_decimals[0]
-                        if not token_decimals or token_decimals == 0:
-                            token_decimals = 6
-                        
-                        token_atoms = int(bought_tokens * (10 ** token_decimals))
-                        lamports_spent = int(actual_sol_spent * 1e9)
-                        actual_entry_price = lamports_spent / token_atoms
-                        
-                        logger.info(f"✅ Recalculated entry price after retry: {actual_entry_price:.10f} lamports/atomic")
-                
-                # ✅ CHATGPT FIX: Log estimated vs actual price comparison
+
+                elif actual_wallet_balance > 0:
+                    bought_tokens = actual_wallet_balance
+                    actual_sol_spent = BUY_AMOUNT_SOL
+                    logger.warning(f"⚠️ TX reading failed - using wallet balance: {bought_tokens:,.0f} tokens")
+
+                else:
+                    logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
+                    await asyncio.sleep(2)
+                    bought_tokens = self.wallet.get_token_balance(mint)
+                    actual_sol_spent = BUY_AMOUNT_SOL
+
+                    if bought_tokens == 0:
+                        logger.error("❌ Still no tokens - position may have failed")
+                        self.pending_buys -= 1
+                        return
+
+                # ========================================================================
+                # ✅ CRITICAL: Get entry price from CURVE (SAME SOURCE AS MONITORING)
+                # ========================================================================
                 if bought_tokens > 0:
-                    price_diff_pct = abs(actual_entry_price - estimated_entry_price) / estimated_entry_price * 100 if estimated_entry_price > 0 else 0
+                    curve_entry_price = self._get_curve_price(mint, use_cache=False)
 
-                    logger.info(f"📊 Entry Price Verification:")
-                    logger.info(f"   Estimated (at detection): {estimated_entry_price:.10f} lamports/atom")
-                    logger.info(f"   Actual (from fill): {actual_entry_price:.10f} lamports/atom")
-                    logger.info(f"   Difference: {price_diff_pct:.1f}%")
+                    if curve_entry_price and curve_entry_price > 0:
+                        actual_entry_price = curve_entry_price
+                        logger.info(f"✅ Entry price from curve: {actual_entry_price:.10f} lamports/atomic")
+                    else:
+                        # Fallback ONLY if curve read fails
+                        logger.warning(f"⚠️ Curve read failed - using fill-based price (less accurate)")
+                        token_decimals = self.wallet.get_token_decimals(mint)
+                        if isinstance(token_decimals, tuple):
+                            token_decimals = token_decimals[0]
+                        if not token_decimals or token_decimals == 0:
+                            token_decimals = 6
+                        token_atoms = int(bought_tokens * (10 ** token_decimals))
+                        lamports_spent = int(actual_sol_spent * 1e9)
+                        if token_atoms > 0:
+                            actual_entry_price = lamports_spent / token_atoms
 
-                    if price_diff_pct > 10:
-                        logger.warning(f"⚠️ LARGE ENTRY PRICE DISCREPANCY: {price_diff_pct:.1f}%")
-                        logger.warning(f"   Price moved significantly between detection and execution")
-
-                    # 🚨 SLIPPAGE PROTECTION - Exit immediately if slippage too high
-                    from config import MAX_ENTRY_SLIPPAGE_PERCENT
-
-                    # Define variables for logging (prevent UnboundLocalError)
-                    token_data_inner = token_data.get('data', token_data) if 'data' in token_data else token_data
-                    creator_sol_amount = float(token_data_inner.get('solAmount', 1))
-                    sol_in_curve_amount = actual_sol  # Use the actual_sol from earlier
-                    momentum_value = sol_in_curve_amount / creator_sol_amount if creator_sol_amount > 0 else 0
-
-                    if price_diff_pct > MAX_ENTRY_SLIPPAGE_PERCENT:
-                        # High slippage is normal for fast-moving tokens - don't panic sell
-                        logger.warning(f"⚠️ High entry slippage: {price_diff_pct:.1f}% - price moved between detection and execution")
-                        logger.warning(f"   This is normal for fast tokens - continuing with standard exit strategy")
-                        expected_tokens = (actual_sol_spent * 1e9) / estimated_entry_price if estimated_entry_price > 0 else 0
-                        token_shortfall = ((expected_tokens - bought_tokens) / expected_tokens * 100) if expected_tokens > 0 else 0
-                        logger.warning(f"   Expected: {expected_tokens:,.0f} tokens, Received: {bought_tokens:,.0f} ({token_shortfall:.1f}% fewer)")
-                        # Let position continue with normal timer/stop-loss exit strategy
-            
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
 
@@ -1295,7 +1265,13 @@ class SniperBot:
                         price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
                     else:
                         price_change = 0
-                    
+
+                    # Sanity check: alert if first check shows impossible loss
+                    if check_count == 1 and price_change < -50:
+                        logger.error(f"🚨 SUSPICIOUS P&L on first check: {price_change:.1f}%")
+                        logger.error(f"   Entry price: {position.entry_token_price_sol:.15f}")
+                        logger.error(f"   Current price: {current_token_price_sol:.15f}")
+
                     position.pnl_percent = price_change
                     position.current_price = current_token_price_sol
                     position.max_pnl_reached = max(position.max_pnl_reached, price_change)
