@@ -20,7 +20,7 @@ from config import (
     MIN_UNIQUE_BUYERS, MAX_SELLS_BEFORE_ENTRY,
     MAX_SINGLE_BUY_PERCENT, MIN_VELOCITY, MAX_TOKEN_AGE_SECONDS,
     # NEW IMPORTS for 21-trade baseline filters
-    MAX_VELOCITY, MAX_TOP2_BUY_PERCENT
+    MAX_VELOCITY, MAX_TOP2_BUY_PERCENT, MIN_TOKEN_AGE_SECONDS
 )
 from curve_reader import BondingCurveReader
 
@@ -68,6 +68,7 @@ class HeliusLogsMonitor:
         self.max_single_buy_percent = MAX_SINGLE_BUY_PERCENT  # 35% anti-bot
         self.min_velocity = MIN_VELOCITY          # 1.0 SOL/s minimum momentum
         self.max_token_age = MAX_TOKEN_AGE_SECONDS  # 10s max age for "early"
+        self.min_token_age = MIN_TOKEN_AGE_SECONDS  # NEW: minimum age before entry
         
         # NEW: 21-trade baseline filters
         self.max_velocity = MAX_VELOCITY          # 8.0 SOL/s max - blocks bot pumps
@@ -322,6 +323,10 @@ class HeliusLogsMonitor:
             return
 
         # 6. Token age check (must be fresh for early entry)
+        if age < self.min_token_age:
+            logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
+            return
+
         if age > self.max_token_age:
             logger.warning(f"❌ Token too old: {age:.1f}s (max {self.max_token_age}s)")
             self.triggered_tokens.add(mint)
