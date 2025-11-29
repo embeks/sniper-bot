@@ -34,6 +34,10 @@ APPROX_SOL_PRICE_USD = 235.0
 
 BUY_AMOUNT_SOL = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
 PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
+
+# DYNAMIC POSITION SIZING (based on 11-trade analysis)
+POSITION_SIZE_DEFAULT = float(os.getenv('BUY_AMOUNT_SOL', '0.08'))
+POSITION_SIZE_HIGH_CONFIDENCE = 0.12  # For 0-sell tokens (50% larger)
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
@@ -41,14 +45,17 @@ STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))  # TIGHTENED:
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
-TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '20.0'))
-TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '40.0'))
+# 2-tier system based on 11-trade analysis: reduces fees, lets winners run
+TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '30.0'))  # Was 20%
+TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '50.0'))      # Was 40%
 
-TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '40.0'))
-TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '40.0'))
+TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '60.0'))  # Was 40%
+TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '50.0'))      # Was 40% - sells remainder
 
-TIER_3_PROFIT_PERCENT = float(os.getenv('TIER_3_PROFIT', '60.0'))
-TIER_3_SELL_PERCENT = float(os.getenv('TIER_3_SELL', '20.0'))  # Final 20%
+# TIER 3 DISABLED - 2-tier system reduces fees
+# Tier2 now sells remaining 50% at +60%
+# TIER_3_PROFIT_PERCENT = float(os.getenv('TIER_3_PROFIT', '60.0'))
+# TIER_3_SELL_PERCENT = float(os.getenv('TIER_3_SELL', '20.0'))  # Final 20%
 
 # ============================================
 # VELOCITY GATE SETTINGS
@@ -87,6 +94,19 @@ MOMENTUM_DRAWDOWN_MIN_AGE = float(os.getenv('MOMENTUM_DRAWDOWN_MIN_AGE', '20.0')
 MOMENTUM_VELOCITY_DEATH_PERCENT = float(os.getenv('MOMENTUM_VELOCITY_DEATH_PERCENT', '40.0'))  # Lowered from 50.0
 MOMENTUM_BIG_WIN_PERCENT = float(os.getenv('MOMENTUM_BIG_WIN_PERCENT', '80.0'))     # Raised from 50.0
 MOMENTUM_MAX_HOLD_SECONDS = float(os.getenv('MOMENTUM_MAX_HOLD_SECONDS', '45.0'))   # Raised from 15.0
+
+# ============================================
+# DYNAMIC CRASH THRESHOLDS (based on 11-trade analysis)
+# ============================================
+CRASH_THRESHOLD_DEFAULT = 25.0      # Drop from peak to trigger exit
+CRASH_THRESHOLD_RELAXED = 35.0      # When peak >= 30%, allow more room
+CRASH_RELAXED_PEAK_THRESHOLD = 30.0 # Peak P&L needed to use relaxed threshold
+
+# ============================================
+# RUNNER EXTENSION (based on 11-trade analysis)
+# ============================================
+RUNNER_EXTENDED_MAX_AGE = 180       # Extended hold for confirmed runners (was 120)
+RUNNER_EXTEND_BONDING_THRESHOLD = 12.0  # Extend if bonding curve > this %
 
 # ============================================
 # PROFIT PROTECTION SETTINGS
@@ -155,7 +175,7 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # EARLY ENTRY QUALITY GATES
 # ============================================
 MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '4'))          # Minimum unique buyers before entry (was 5)
-MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))  # Max sells allowed before entry (was 1)
+MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '2'))  # Max sells allowed before entry (was 3, reduced for rug protection)
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '50.0'))  # Anti-bot: max % from single wallet (was 30)
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '1.0'))                # Min SOL/second momentum
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))  # Max age to be considered "early"

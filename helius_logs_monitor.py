@@ -303,9 +303,16 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # 3. Limit sells before entry (strict: max 3 sells)
+        # 3. Limit sells before entry (strict: max 2 sells)
         if state['sell_count'] > self.max_sell_count:
             logger.warning(f"❌ Too many sells before entry: {state['sell_count']} (max {self.max_sell_count})")
+            self.stats['skipped_sells'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # 3b. Skip exactly 1 sell - high rug probability from 11-trade analysis
+        if state['sell_count'] == 1:
+            logger.warning(f"❌ Skipping 1-sell token (rug pattern): {mint[:8]}...")
             self.stats['skipped_sells'] += 1
             self.triggered_tokens.add(mint)
             return
@@ -382,6 +389,7 @@ class HeliusLogsMonitor:
                     'unique_buyers': buyers,
                     'buy_count': state['buy_count'],
                     'sell_count': state['sell_count'],
+                    'sell_count_at_detection': state['sell_count'],  # For dynamic position sizing
                     'velocity': velocity,
                     'largest_buy': state['largest_buy'],
                     'concentration': state['largest_buy'] / total_sol if total_sol > 0 else 0,
