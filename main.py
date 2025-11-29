@@ -28,7 +28,7 @@ from config import (
     # Tiered take-profit (whale strategy)
     TIER_1_PROFIT_PERCENT, TIER_1_SELL_PERCENT,
     TIER_2_PROFIT_PERCENT, TIER_2_SELL_PERCENT,
-    TIER_3_PROFIT_PERCENT, TIER_3_SELL_PERCENT,
+    # TIER_3 disabled - 2-tier system (11-trade analysis)
     # Timer exit parameters
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
     TIMER_MAX_EXTENSIONS,
@@ -191,7 +191,7 @@ class SniperBot:
         logger.info(f"  • Detection: <100ms via logsSubscribe (no RPC delay)")
         logger.info(f"  • Entry range: 21-28 SOL (5-6.5K MC sweet spot)")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Take profit: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}%, {TIER_3_SELL_PERCENT}% @ +{TIER_3_PROFIT_PERCENT}%")
+        logger.info(f"  • Take profit: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}% (2-tier system)")
         logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s (let winners run)")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
@@ -1017,16 +1017,27 @@ class SniperBot:
             # Store pre-trade balance for accurate P&L
             self.wallet.last_balance_before_trade = self.wallet.get_sol_balance()
 
+            # Dynamic position sizing based on sell count at detection (11-trade analysis)
+            sells_at_detection = 2  # Default
+            if 'data' in token_data:
+                sells_at_detection = token_data['data'].get('sell_count_at_detection', 2)
+
+            if sells_at_detection == 0:
+                buy_amount = 0.12  # High confidence - 50% larger position
+                logger.info(f"🎯 HIGH CONFIDENCE ENTRY: 0 sells detected, using {buy_amount} SOL")
+            else:
+                buy_amount = BUY_AMOUNT_SOL  # Standard position
+
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
-                sol_amount=BUY_AMOUNT_SOL,
+                sol_amount=buy_amount,
                 bonding_curve_key=bonding_curve_key,
                 slippage=30,
                 urgency="buy"  # 0.001 SOL priority fee
             )
             
             bought_tokens = 0
-            actual_sol_spent = BUY_AMOUNT_SOL
+            actual_sol_spent = buy_amount
             actual_entry_price = estimated_entry_price  # Will be updated if we get real data
             
             if signature:
@@ -1180,7 +1191,7 @@ class SniperBot:
             logger.info(f"📈 Starting WHALE monitoring for {mint[:8]}...")
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} lamports/atomic")
             logger.info(f"   Max Hold: {MAX_POSITION_AGE_SECONDS}s")
-            logger.info(f"   Tiers: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}%, {TIER_3_SELL_PERCENT}% @ +{TIER_3_PROFIT_PERCENT}%")
+            logger.info(f"   Tiers: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}% (2-tier system)")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
 
             check_count = 0
@@ -1191,11 +1202,29 @@ class SniperBot:
                 current_time = time.time()
                 age = current_time - position.entry_time
                 
-                if age > MAX_POSITION_AGE_SECONDS:
-                    logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s)")
+                # Dynamic max age - extend for confirmed runners (11-trade analysis)
+                effective_max_age = MAX_POSITION_AGE_SECONDS  # Default 120s
+
+                # Extend to 180s if runner mode OR high bonding progress
+                if position.is_runner_mode:
+                    effective_max_age = 180
+                    logger.debug(f"Runner mode: extended max age to 180s")
+                elif hasattr(self, 'curve_reader'):
+                    try:
+                        curve = self.curve_reader.get_curve_state(mint, use_cache=True)
+                        if curve and curve.get('sol_raised', 0) > 0:
+                            bonding_pct = (curve['sol_raised'] / 85) * 100
+                            if bonding_pct >= 12:  # >12% bonding = strong momentum
+                                effective_max_age = 180
+                                logger.debug(f"High bonding ({bonding_pct:.1f}%): extended max age to 180s")
+                    except:
+                        pass
+
+                if age > effective_max_age:
+                    logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s, limit was {effective_max_age}s)")
                     await self._close_position_full(mint, reason="max_age")
                     break
-                
+
                 try:
                     # ✅ CRITICAL FIX: Use curve_reader (same as entry verification)
                     # dex.py has broken RPC client that returns wrong values
@@ -1466,14 +1495,26 @@ class SniperBot:
                             break
 
                     # ===================================================================
-                    # CRASH DETECTION - Dump if momentum collapsed
+                    # DYNAMIC CRASH DETECTION - threshold based on peak reached
+                    # (11-trade analysis: let winners breathe more)
                     # ===================================================================
                     crash_from_peak = position.max_pnl_reached - price_change
-                    if (crash_from_peak > 30 and  # Dropped 30%+ from peak
-                        price_change < 10 and      # And no longer solidly profitable
+
+                    # Dynamic threshold: relax if we hit a big peak
+                    if position.max_pnl_reached >= 30:
+                        crash_threshold = 35  # Let winners breathe
+                    elif position.max_pnl_reached >= 20:
+                        crash_threshold = 30  # Standard
+                    elif position.max_pnl_reached >= 10:
+                        crash_threshold = 25  # Tighter
+                    else:
+                        crash_threshold = 20  # Very tight for no-momentum tokens
+
+                    if (crash_from_peak > crash_threshold and
+                        price_change < 10 and
                         not position.is_closing):
 
-                        logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak")
+                        logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak (threshold: {crash_threshold}%)")
                         logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
                         await self._close_position_full(mint, reason="momentum_crash")
                         break
@@ -1513,23 +1554,24 @@ class SniperBot:
                         )
 
                     # ===================================================================
-                    # EXIT RULE 5: TIER 3 TAKE PROFIT (+60%) - NORMAL MODE ONLY
+                    # EXIT RULE 5: TIER 3 DISABLED - 2-tier system (11-trade analysis)
+                    # Tier 2 now sells remaining 50% at +60%, reducing fees
                     # ===================================================================
-                    # Track pending + sold to decide if tier3 should fire
-                    pending_percent = len(position.pending_sells) * 40  # tier1=40%, tier2=40%
-                    effective_sold = position.total_sold_percent + pending_percent
-
-                    if (not position.is_runner_mode and
-                        price_change >= TIER_3_PROFIT_PERCENT and
-                        effective_sold >= 80 and  # ✅ Count pending sells too
-                        "tier3" not in position.partial_sells and
-                        "tier3" not in position.pending_sells and
-                        not position.is_closing):
-
-                        logger.info(f"💰 TIER 3 TAKE PROFIT: {price_change:+.1f}% >= {TIER_3_PROFIT_PERCENT}%")
-                        logger.info(f"   Closing final {100 - position.total_sold_percent:.0f}% of position")
-                        await self._close_position_full(mint, reason="tier3_profit")
-                        break
+                    # # Track pending + sold to decide if tier3 should fire
+                    # pending_percent = len(position.pending_sells) * 40  # tier1=40%, tier2=40%
+                    # effective_sold = position.total_sold_percent + pending_percent
+                    #
+                    # if (not position.is_runner_mode and
+                    #     price_change >= TIER_3_PROFIT_PERCENT and
+                    #     effective_sold >= 80 and  # ✅ Count pending sells too
+                    #     "tier3" not in position.partial_sells and
+                    #     "tier3" not in position.pending_sells and
+                    #     not position.is_closing):
+                    #
+                    #     logger.info(f"💰 TIER 3 TAKE PROFIT: {price_change:+.1f}% >= {TIER_3_PROFIT_PERCENT}%")
+                    #     logger.info(f"   Closing final {100 - position.total_sold_percent:.0f}% of position")
+                    #     await self._close_position_full(mint, reason="tier3_profit")
+                    #     break
 
                     # Progress logging
                     if check_count % 3 == 1:
