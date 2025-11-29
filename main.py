@@ -1925,146 +1925,81 @@ class SniperBot:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
             else:
-                logger.warning(f"❌ {target_name} RPC timeout for {mint[:8]}...")
+                logger.warning(f"❌ {target_name} RPC timeout for {mint[:8]}... checking TX status")
 
-                # CRITICAL FIX: Check wallet balance BEFORE retrying
-                # The sell may have landed but RPC just didn't confirm in time
-                # This prevents duplicate sells that were killing profits!
+                # CRITICAL FIX: Check if TX EXISTS on chain before retrying
+                # If signature is known to RPC (even unconfirmed), it's in mempool and will resolve
+                # Only retry if TX is completely unknown
 
-                # Wait 2s for any in-flight TX to land before checking balance
-                await asyncio.sleep(2)
-                actual_balance = self.wallet.get_token_balance(mint)
-                expected_remaining = position.remaining_tokens - tokens_sold
+                tx_exists = False
+                try:
+                    from solders.signature import Signature as SoldersSignature
+                    sig_obj = SoldersSignature.from_string(signature)
 
-                logger.info(f"🔍 Balance check before retry:")
-                logger.info(f"   Tokens we tried to sell: {tokens_sold:,.0f}")
-                logger.info(f"   Expected remaining if sold: {expected_remaining:,.0f}")
-                logger.info(f"   Actual wallet balance: {actual_balance:,.0f}")
+                    # Check signature status - this tells us if TX is known to the network
+                    status_check = self.trader.client.get_signature_statuses([sig_obj])
 
-                # If balance already dropped, the sell actually landed - don't retry!
-                if actual_balance <= expected_remaining * 1.10:  # 10% tolerance
-                    logger.info(f"✅ {target_name} ACTUALLY LANDED despite RPC timeout!")
-                    logger.info(f"   Sell succeeded - skipping retry to prevent duplicate")
+                    if status_check and status_check.value and status_check.value[0] is not None:
+                        tx_exists = True
+                        status_info = status_check.value[0]
+                        logger.info(f"✅ TX exists on chain (status: {status_info.confirmation_status})")
 
-                    position.remaining_tokens = actual_balance
-                    position.partial_sells[target_name] = {
-                        'pnl': current_pnl,
-                        'time': time.time(),
-                        'percent_sold': sell_percent,
-                        'status': 'landed_late_detected'
-                    }
-                    position.total_sold_percent += sell_percent
+                        # TX is in the system - it WILL resolve, don't retry
+                        if status_info.err:
+                            logger.error(f"❌ TX failed on-chain: {status_info.err}")
+                            # TX failed definitively - clean up
+                            if target_name in position.pending_sells:
+                                position.pending_sells.remove(target_name)
+                            if target_name in position.pending_token_amounts:
+                                del position.pending_token_amounts[target_name]
+                            position.remaining_tokens += tokens_sold
+                            logger.warning(f"📊 Restored remaining_tokens after TX failure: {position.remaining_tokens:,.0f}")
+                        else:
+                            # TX pending or confirmed - wait for it, don't retry
+                            logger.info(f"⏳ TX in mempool/confirmed - waiting for resolution, NOT retrying")
+                            # Keep in pending_sells so monitor doesn't re-trigger
+                            # Background: TX will either confirm (tokens sold) or expire (can retry next cycle)
+                        return
 
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-                    if target_name in position.retry_counts:
-                        del position.retry_counts[target_name]
+                except Exception as e:
+                    logger.warning(f"Could not check TX status: {e}")
 
-                    # Try to get actual SOL received from transaction
-                    try:
-                        txd = await self._get_transaction_deltas(signature, mint)
-                        if txd["confirmed"] and txd["sol_delta"] > 0:
-                            actual_sol_received = txd["sol_delta"]
-                            base_sol_for_portion = position.amount_sol * (sell_percent / 100)
-                            actual_profit_sol = actual_sol_received - base_sol_for_portion
-                            position.realized_pnl_sol += actual_profit_sol
-                            self.total_realized_sol += actual_profit_sol
-                            logger.info(f"   SOL received: {actual_sol_received:.4f} (profit: {actual_profit_sol:+.4f})")
-                    except Exception as e:
-                        logger.debug(f"Could not get TX proceeds: {e}")
+                if not tx_exists:
+                    # TX completely unknown to network - safe to retry
+                    logger.info(f"🔄 TX not found in network - safe to retry")
 
-                    if self.telegram:
-                        await self.telegram.send_message(
-                            f"✅ {target_name} landed (RPC was slow)\n"
-                            f"Token: {mint[:16]}...\n"
-                            f"P&L: {current_pnl:+.1f}%"
+                    retry_count = position.retry_counts.get(target_name, 0)
+                    if retry_count < 2:
+                        position.retry_counts[target_name] = retry_count + 1
+                        logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3)")
+
+                        token_decimals = self.wallet.get_token_decimals(mint)
+                        ui_tokens_to_sell = tokens_sold
+
+                        retry_signature = await self.trader.create_sell_transaction(
+                            mint=mint,
+                            token_amount=ui_tokens_to_sell,
+                            slippage=50,
+                            token_decimals=token_decimals,
+                            urgency="sell"
                         )
-                    return  # Exit without retrying - sell already succeeded!
 
-                # Tokens still there - safe to retry
-                logger.info(f"   Tokens still in wallet - sell did NOT land, retrying...")
-
-                retry_count = position.retry_counts.get(target_name, 0)
-                if retry_count < 2:
-                    position.retry_counts[target_name] = retry_count + 1
-                    logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3)")
-
-                    # ✅ DON'T remove from pending_sells - keep it blocked to prevent monitor duplicates
-                    # Only update pending_token_amounts for accurate tracking
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-
-                    # Use same token amount for retry (don't recalculate from already-decremented remaining_tokens)
-                    token_decimals = self.wallet.get_token_decimals(mint)
-                    ui_tokens_to_sell = tokens_sold  # Use original amount
-
-                    retry_signature = await self.trader.create_sell_transaction(
-                        mint=mint,
-                        token_amount=ui_tokens_to_sell,
-                        slippage=50,
-                        token_decimals=token_decimals,
-                        urgency="sell"  # 0.0015 SOL priority fee for normal sell retry
-                    )
-                    
-                    if retry_signature and not retry_signature.startswith("1111111"):
-                        position.pending_sells.add(target_name)
-                        position.pending_token_amounts[target_name] = ui_tokens_to_sell
-                        
-                        asyncio.create_task(
-                            self._confirm_sell_background(
-                                retry_signature, mint, target_name, sell_percent,
-                                ui_tokens_to_sell, current_pnl,
-                                pre_sol_balance, pre_token_balance
+                        if retry_signature and not retry_signature.startswith("1111111"):
+                            asyncio.create_task(
+                                self._confirm_sell_background(
+                                    retry_signature, mint, target_name, sell_percent,
+                                    ui_tokens_to_sell, current_pnl,
+                                    pre_sol_balance, pre_token_balance
+                                )
                             )
-                        )
-                else:
-                    logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
-                    
-                    # ✅ Check if sell actually landed by checking token balance
-                    try:
-                        actual_balance = self.wallet.get_token_balance(mint)
-                        expected_after_sell = position.initial_tokens * (1 - (position.total_sold_percent + sell_percent) / 100)
-                        
-                        if actual_balance < expected_after_sell * 0.95:  # Balance is lower than expected = sell landed
-                            sold_amount = position.remaining_tokens - actual_balance
-                            if sold_amount > 0:
-                                logger.info(f"✅ {target_name} actually landed! Balance shows {sold_amount:,.0f} tokens sold")
-                                position.partial_sells[target_name] = {
-                                    'pnl': current_pnl,
-                                    'time': time.time(),
-                                    'percent_sold': sell_percent,
-                                    'status': 'landed_late'
-                                }
-                                position.total_sold_percent += sell_percent
-                                position.remaining_tokens = actual_balance
-                    except Exception as e:
-                        logger.debug(f"Balance check failed: {e}")
-                    
-                    if target_name in position.pending_sells:
-                        position.pending_sells.remove(target_name)
-                    if target_name in position.pending_token_amounts:
-                        del position.pending_token_amounts[target_name]
-                    
-                    if target_name not in position.partial_sells:
-                        # Sell failed completely - restore tokens that were pre-decremented
+                    else:
+                        logger.error(f"❌ Max retries exceeded for {target_name} on {mint[:8]}")
+                        if target_name in position.pending_sells:
+                            position.pending_sells.remove(target_name)
+                        if target_name in position.pending_token_amounts:
+                            del position.pending_token_amounts[target_name]
                         position.remaining_tokens += tokens_sold
-                        logger.warning(f"📊 Restored remaining_tokens: {position.remaining_tokens:,.0f}")
-
-                        position.partial_sells[target_name] = {
-                            'pnl': current_pnl,
-                            'time': time.time(),
-                            'percent_sold': 0,
-                            'status': 'failed',
-                            'attempts': retry_count + 1
-                        }
-
-                    if self.telegram:
-                        await self.telegram.send_message(
-                            f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
-                            f"Max retries exceeded - manual intervention needed"
-                        )
+                        logger.warning(f"📊 Restored remaining_tokens after max retries: {position.remaining_tokens:,.0f}")
                 
         except Exception as e:
             logger.error(f"Confirmation error for {mint[:8]}: {e}")
@@ -2201,43 +2136,25 @@ class SniperBot:
                 final_pnl_sol = trading_pnl_sol
 
             else:
-                # Transaction parsing failed - fallback using wallet balance delta
+                # Transaction parsing failed - DO NOT use wallet balance delta (contamination risk)
                 logger.warning("⚠️ Transaction parsing failed after 30s")
-                logger.warning("   Falling back to wallet balance delta")
+                logger.warning("   NOT using wallet delta (contamination from other trades)")
                 logger.warning(f"   Transaction: https://solscan.io/tx/{signature}")
 
-                # Wait for balance to update
-                await asyncio.sleep(2)
-
-                # Get current balance and calculate delta
-                post_balance = self.wallet.get_sol_balance()
-                pre_balance = pre_close_balance  # Use fresh pre-sell balance
-
-                # Calculate actual SOL received from wallet movement
-                balance_delta = post_balance - pre_balance
-                actual_sol_received = balance_delta + position.amount_sol  # Add back invested amount
-
-                # Sanity check: if delta looks wrong, use conservative estimate
-                if actual_sol_received <= 0 or actual_sol_received > position.amount_sol * 2:
-                    logger.warning(f"⚠️ Suspicious balance delta: {balance_delta:.6f} SOL")
-                    logger.warning(f"   Pre-trade: {pre_balance:.6f}, Post-trade: {post_balance:.6f}")
-                    # Assume break-even minus small loss
-                    actual_sol_received = position.amount_sol * 0.99
-
+                # Mark as unknown - don't fabricate P&L numbers
+                actual_sol_received = 0
                 actual_tokens_sold = ui_token_balance
                 estimated_fees = 0.009
-                trading_pnl_sol = actual_sol_received - position.amount_sol
+                trading_pnl_sol = 0  # Unknown
                 actual_fees_paid = estimated_fees
-                gross_sale_proceeds = actual_sol_received
-                final_pnl_sol = trading_pnl_sol
+                gross_sale_proceeds = 0
+                final_pnl_sol = 0  # Unknown - don't add to totals
 
-                logger.info(f"📊 Wallet Balance Fallback:")
-                logger.info(f"   Pre-trade: {pre_balance:.6f} SOL")
-                logger.info(f"   Post-trade: {post_balance:.6f} SOL")
-                logger.info(f"   Delta: {balance_delta:+.6f} SOL")
-                logger.info(f"   Invested: {position.amount_sol:.6f} SOL")
-                logger.info(f"   Received: {actual_sol_received:.6f} SOL")
-                logger.info(f"   P&L: {trading_pnl_sol:+.6f} SOL")
+                # Flag this trade as having unknown P&L
+                position.pnl_unknown = True
+
+                logger.warning(f"📊 P&L UNKNOWN for this trade - TX parsing failed")
+                logger.warning(f"   Position will be closed but P&L not counted in session totals")
 
             # Detect suspicious/failed sells (check actual sale proceeds)
             if gross_sale_proceeds > 0 and gross_sale_proceeds < (position.amount_sol * 0.1):
@@ -2258,8 +2175,13 @@ class SniperBot:
                 self.session_loss_count += 1
             
             position.realized_pnl_sol = final_pnl_sol
-            self.total_realized_sol += final_pnl_sol
-            
+
+            # Only add to totals if P&L is known
+            if not getattr(position, 'pnl_unknown', False):
+                self.total_realized_sol += final_pnl_sol
+            else:
+                logger.warning(f"⚠️ Not adding unknown P&L to session totals")
+
             self.tracker.log_sell_executed(
                 mint=mint,
                 tokens_sold=actual_tokens_sold,
