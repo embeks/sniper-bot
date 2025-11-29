@@ -19,9 +19,8 @@ from config import (
     MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
     MIN_UNIQUE_BUYERS, MAX_SELLS_BEFORE_ENTRY,
     MAX_SINGLE_BUY_PERCENT, MIN_VELOCITY, MAX_TOKEN_AGE_SECONDS,
-    MAX_VELOCITY, MAX_TOP2_BUY_PERCENT, MIN_TOKEN_AGE_SECONDS,
-    OBSERVATION_WINDOW_SECONDS, MIN_BUYER_GROWTH_RATIO,
-    MAX_SELLS_AT_CONFIRMATION, MAX_SOL_PER_BUYER_CONFIRMED
+    # NEW IMPORTS for 21-trade baseline filters
+    MAX_VELOCITY, MAX_TOP2_BUY_PERCENT, MIN_TOKEN_AGE_SECONDS
 )
 from curve_reader import BondingCurveReader
 
@@ -73,16 +72,10 @@ class HeliusLogsMonitor:
         self.min_token_age = MIN_TOKEN_AGE_SECONDS  # NEW: minimum age before entry
         
         # NEW: 21-trade baseline filters
-        self.max_velocity = MAX_VELOCITY
-        self.max_top2_percent = MAX_TOP2_BUY_PERCENT
-
-        # OBSERVATION WINDOW params
-        self.observation_window = OBSERVATION_WINDOW_SECONDS
-        self.min_buyer_growth = MIN_BUYER_GROWTH_RATIO
-        self.max_sells_confirmed = MAX_SELLS_AT_CONFIRMATION
-        self.max_sol_per_buyer_confirmed = MAX_SOL_PER_BUYER_CONFIRMED
-
-        self.max_watch_time = 120
+        self.max_velocity = MAX_VELOCITY          # 8.0 SOL/s max - blocks bot pumps
+        self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 50% max from top 2 wallets
+        
+        self.max_watch_time = 120  # Match max hold time
         
     async def start(self):
         """Connect to Helius WebSocket and subscribe to PumpFun logs"""
@@ -213,14 +206,8 @@ class HeliusLogsMonitor:
             'sell_count': 0,
             'largest_buy': 0.0,
             'buys': [],
-            'buy_amounts': [],
+            'buy_amounts': [],  # NEW: track individual buy amounts for top-2 calc
             'peak_velocity': 0.0,
-            # OBSERVATION WINDOW tracking
-            'qualified_at': None,
-            'qualified_buyers': 0,
-            'qualified_sol': 0.0,
-            'qualified_sells': 0,
-            'observation_status': 'watching',
         }
         
         logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}...")
@@ -284,8 +271,9 @@ class HeliusLogsMonitor:
         logger.warning(f"⚠️ SELL on {mint[:8]}... (sell #{state['sell_count']} before entry)")
     
     async def _check_and_trigger(self, mint: str, state: dict):
-        """TWO-PHASE ENTRY: Initial qualification → Observation window → Confirmation"""
+        """Check if token meets entry conditions and trigger callback"""
 
+        # Already triggered?
         if mint in self.triggered_tokens:
             return
 
@@ -294,136 +282,123 @@ class HeliusLogsMonitor:
         buyers = len(state['buyers'])
         velocity = total_sol / age if age > 0 else 0
         largest_buy_pct = (state['largest_buy'] / total_sol * 100) if total_sol > 0 else 0
-
+        
+        # NEW: Calculate top-2 concentration
         buy_amounts = sorted(state['buy_amounts'], reverse=True)
         top2_sol = sum(buy_amounts[:2]) if len(buy_amounts) >= 2 else sum(buy_amounts)
         top2_pct = (top2_sol / total_sol * 100) if total_sol > 0 else 0
-        sol_per_buyer = total_sol / buyers if buyers > 0 else 999
 
-        # ===== PHASE 1: INITIAL QUALIFICATION =====
-        if state['observation_status'] == 'watching':
+        # ===== ENTRY CONDITIONS =====
 
-            if total_sol < self.min_sol:
-                return
-            if total_sol > self.max_sol:
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-            if buyers < self.min_buyers:
-                return
-            if state['sell_count'] > self.max_sell_count:
-                self.stats['skipped_sells'] += 1
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-            if largest_buy_pct > self.max_single_buy_percent:
-                self.stats['skipped_bot'] += 1
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-            if velocity < self.min_velocity:
-                return
-            if age < self.min_token_age:
-                return
-            if age > self.max_token_age:
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-            if velocity > self.max_velocity:
-                self.stats['skipped_velocity_high'] += 1
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-            if top2_pct > self.max_top2_percent:
-                self.stats['skipped_top2'] += 1
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-            if sol_per_buyer > 0.75:
-                self.stats['skipped_distribution'] = self.stats.get('skipped_distribution', 0) + 1
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
+        # 1. SOL range
+        if total_sol < self.min_sol:
+            return  # Too early, keep watching
 
-            # QUALIFIED - start observation
-            state['observation_status'] = 'qualified'
-            state['qualified_at'] = time.time()
-            state['qualified_buyers'] = buyers
-            state['qualified_sol'] = total_sol
-            state['qualified_sells'] = state['sell_count']
-
-            logger.info("=" * 60)
-            logger.info(f"🔍 QUALIFIED - OBSERVING: {mint}")
-            logger.info(f"   SOL: {total_sol:.2f} | Buyers: {buyers} | Velocity: {velocity:.2f}/s")
-            logger.info(f"   SOL/buyer: {sol_per_buyer:.2f} | Sells: {state['sell_count']}")
-            logger.info(f"   ⏳ Observing for {self.observation_window}s...")
-            logger.info("=" * 60)
+        if total_sol > self.max_sol:
+            logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol}")
+            self.triggered_tokens.add(mint)  # Don't check again
             return
 
-        # ===== PHASE 2: CONFIRMATION CHECK =====
-        if state['observation_status'] == 'qualified':
+        # 2. Minimum unique buyers
+        if buyers < self.min_buyers:
+            logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
+            return
 
-            time_since_qualified = time.time() - state['qualified_at']
-            if time_since_qualified < self.observation_window:
-                return
-
-            qualified_buyers = state['qualified_buyers']
-            buyer_growth = buyers / qualified_buyers if qualified_buyers > 0 else 0
-
-            if buyer_growth < self.min_buyer_growth:
-                logger.warning(f"❌ OBSERVATION FAILED: Buyer growth {buyer_growth:.2f}x < {self.min_buyer_growth}x")
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-
-            if state['sell_count'] > self.max_sells_confirmed:
-                logger.warning(f"❌ OBSERVATION FAILED: {state['sell_count']} sells > {self.max_sells_confirmed}")
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-
-            if sol_per_buyer > self.max_sol_per_buyer_confirmed:
-                logger.warning(f"❌ OBSERVATION FAILED: SOL/buyer {sol_per_buyer:.2f} > {self.max_sol_per_buyer_confirmed}")
-                state['observation_status'] = 'rejected'
-                self.triggered_tokens.add(mint)
-                return
-
-            # CONFIRMED - trigger entry
-            state['observation_status'] = 'confirmed'
+        # 3. Limit sells before entry (strict 0-sell filter)
+        if state['sell_count'] > self.max_sell_count:
+            logger.warning(f"❌ Not 0-sell: {state['sell_count']} sells detected (strict 0-sell filter)")
+            self.stats['skipped_sells'] += 1
             self.triggered_tokens.add(mint)
-            self.stats['triggers'] += 1
+            return
 
-            logger.info("=" * 60)
-            logger.info(f"🚀 CONFIRMED ENTRY: {mint}")
-            logger.info(f"   Observation: {time_since_qualified:.1f}s | Buyer growth: {qualified_buyers} → {buyers} ({buyer_growth:.2f}x)")
-            logger.info(f"   SOL: {state['qualified_sol']:.2f} → {total_sol:.2f} | Sells: {state['sell_count']}")
-            logger.info(f"   SOL/buyer: {sol_per_buyer:.2f} | Age: {age:.1f}s")
-            logger.info("=" * 60)
+        # 4. Anti-bot check: single wallet dominance (max 35%)
+        if largest_buy_pct > self.max_single_buy_percent:
+            logger.warning(f"❌ Single wallet dominance: {largest_buy_pct:.1f}% (max {self.max_single_buy_percent}%)")
+            self.stats['skipped_bot'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
-            if self.callback:
-                await self.callback({
-                    'mint': mint,
-                    'signature': state['signature'],
-                    'source': 'helius_events',
-                    'type': 'pumpfun_launch',
-                    'timestamp': datetime.now().isoformat(),
-                    'age': age,
-                    'token_age': age,
-                    'data': {
-                        'vSolInBondingCurve': total_sol,
-                        'unique_buyers': buyers,
-                        'buy_count': state['buy_count'],
-                        'sell_count': state['sell_count'],
-                        'sell_count_at_detection': state['sell_count'],
-                        'velocity': velocity,
-                        'largest_buy': state['largest_buy'],
-                        'concentration': state['largest_buy'] / total_sol if total_sol > 0 else 0,
-                        'top2_concentration': top2_pct,
-                        'observation_time': time_since_qualified,
-                        'buyer_growth': buyer_growth,
-                        'sol_per_buyer': sol_per_buyer,
-                    }
-                })
+        # 5. Minimum velocity check
+        if velocity < self.min_velocity:
+            logger.debug(f"   {mint[:8]}... low velocity: {velocity:.2f} SOL/s (need {self.min_velocity})")
+            return
+
+        # 6. Token age check (must be fresh for early entry)
+        if age < self.min_token_age:
+            logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
+            return
+
+        if age > self.max_token_age:
+            logger.warning(f"❌ Token too old: {age:.1f}s (max {self.max_token_age}s)")
+            self.triggered_tokens.add(mint)
+            return
+
+        # ===== NEW FILTERS (21-trade baseline learnings) =====
+
+        # 7. NEW: Maximum velocity check - blocks coordinated bot pumps
+        # DGuZTAAT had 4795 SOL/s, winners have 1-2 SOL/s
+        if velocity > self.max_velocity:
+            logger.warning(f"❌ Velocity too high (bot pump): {velocity:.1f} SOL/s (max {self.max_velocity})")
+            self.stats['skipped_velocity_high'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+
+        # 9. NEW: Top-2 concentration check - blocks coordinated entries
+        # Two wallets at 30% each = 60% concentration, should fail
+        if top2_pct > self.max_top2_percent:
+            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
+            self.stats['skipped_top2'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # 10. NEW: Buyer distribution score - blocks whale-dominated entries
+        # Winners like 'reddit' had 0.61 SOL/buyer, losers like 'COMMENTS' had 0.81 SOL/buyer
+        sol_per_buyer = total_sol / buyers if buyers > 0 else 999
+        if sol_per_buyer > 0.75:
+            logger.warning(f"❌ Poor buyer distribution: {sol_per_buyer:.2f} SOL/buyer (max 0.75)")
+            self.stats['skipped_distribution'] = self.stats.get('skipped_distribution', 0) + 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # ===== ALL CONDITIONS MET =====
+        self.triggered_tokens.add(mint)
+        self.stats['triggers'] += 1
+
+        logger.info("=" * 60)
+        logger.info(f"🚀 EARLY ENTRY: {mint}")
+        logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
+        logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
+        logger.info(f"   Sells: {state['sell_count']} (max: {self.max_sell_count})")
+        logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
+        logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
+        logger.info(f"   Velocity: {velocity:.2f} SOL/s (range: {self.min_velocity}-{self.max_velocity})")
+        logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
+        logger.info("=" * 60)
+        
+        # Trigger callback with enriched data
+        if self.callback:
+            await self.callback({
+                'mint': mint,
+                'signature': state['signature'],
+                'source': 'helius_events',
+                'type': 'pumpfun_launch',
+                'timestamp': datetime.now().isoformat(),
+                'age': age,
+                'token_age': age,
+                # Real data from events
+                'data': {
+                    'vSolInBondingCurve': total_sol,
+                    'unique_buyers': buyers,
+                    'buy_count': state['buy_count'],
+                    'sell_count': state['sell_count'],
+                    'sell_count_at_detection': state['sell_count'],  # For dynamic position sizing
+                    'velocity': velocity,
+                    'largest_buy': state['largest_buy'],
+                    'concentration': state['largest_buy'] / total_sol if total_sol > 0 else 0,
+                    'top2_concentration': top2_pct,  # NEW: include in callback
+                }
+            })
     
     # ===== PARSING HELPERS =====
     
