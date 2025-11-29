@@ -55,6 +55,7 @@ class HeliusLogsMonitor:
             'skipped_bot': 0,
             'skipped_velocity_high': 0,  # NEW: track high velocity skips
             'skipped_top2': 0,           # NEW: track top-2 concentration skips
+            'skipped_distribution': 0,   # NEW: track poor buyer distribution skips
         }
         
         # Known discriminators
@@ -303,16 +304,9 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # 3. Limit sells before entry (strict: max 2 sells)
+        # 3. Limit sells before entry (strict 0-sell filter)
         if state['sell_count'] > self.max_sell_count:
-            logger.warning(f"❌ Too many sells before entry: {state['sell_count']} (max {self.max_sell_count})")
-            self.stats['skipped_sells'] += 1
-            self.triggered_tokens.add(mint)
-            return
-
-        # 3b. Skip exactly 1 sell - high rug probability from 11-trade analysis
-        if state['sell_count'] == 1:
-            logger.warning(f"❌ Skipping 1-sell token (rug pattern): {mint[:8]}...")
+            logger.warning(f"❌ Not 0-sell: {state['sell_count']} sells detected (strict 0-sell filter)")
             self.stats['skipped_sells'] += 1
             self.triggered_tokens.add(mint)
             return
@@ -355,6 +349,15 @@ class HeliusLogsMonitor:
         if top2_pct > self.max_top2_percent:
             logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
             self.stats['skipped_top2'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # 10. NEW: Buyer distribution score - blocks whale-dominated entries
+        # Winners like 'reddit' had 0.61 SOL/buyer, losers like 'COMMENTS' had 0.81 SOL/buyer
+        sol_per_buyer = total_sol / buyers if buyers > 0 else 999
+        if sol_per_buyer > 0.75:
+            logger.warning(f"❌ Poor buyer distribution: {sol_per_buyer:.2f} SOL/buyer (max 0.75)")
+            self.stats['skipped_distribution'] = self.stats.get('skipped_distribution', 0) + 1
             self.triggered_tokens.add(mint)
             return
 
@@ -528,4 +531,4 @@ class HeliusLogsMonitor:
         logger.info(f"Helius monitor stopped")
         logger.info(f"Stats: {stats['creates']} creates, {stats['buys']} buys, {stats['sells']} sells")
         logger.info(f"Triggered: {stats['triggers']} | Skipped (sells): {stats['skipped_sells']} | Skipped (bot): {stats['skipped_bot']}")
-        logger.info(f"NEW filters - Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']}")
+        logger.info(f"NEW filters - Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (distribution): {stats.get('skipped_distribution', 0)}")
