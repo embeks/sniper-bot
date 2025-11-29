@@ -1028,6 +1028,9 @@ class SniperBot:
             else:
                 buy_amount = BUY_AMOUNT_SOL  # Standard position
 
+            # Store for accurate P&L tracking later
+            _position_buy_amount = buy_amount
+
             signature = await self.trader.create_buy_transaction(
                 mint=mint,
                 sol_amount=buy_amount,
@@ -1060,14 +1063,14 @@ class SniperBot:
 
                 elif actual_wallet_balance > 0:
                     bought_tokens = actual_wallet_balance
-                    actual_sol_spent = BUY_AMOUNT_SOL
+                    actual_sol_spent = _position_buy_amount  # Use stored value, not config
                     logger.warning(f"⚠️ TX reading failed - using wallet balance: {bought_tokens:,.0f} tokens")
 
                 else:
                     logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
                     await asyncio.sleep(2)
                     bought_tokens = self.wallet.get_token_balance(mint)
-                    actual_sol_spent = BUY_AMOUNT_SOL
+                    actual_sol_spent = _position_buy_amount  # Use stored value, not config
 
                     if bought_tokens == 0:
                         logger.error("❌ Still no tokens - position may have failed")
@@ -1126,6 +1129,7 @@ class SniperBot:
                 position.entry_time = time.time()
                 position.entry_token_price_sol = actual_entry_price  # ✅ Use ACTUAL entry price
                 position.amount_sol = actual_sol_spent
+                position.buy_amount = _position_buy_amount  # Store for accurate close P&L
 
                 # Timer exit disabled - using whale tiered exits instead
                 # variance = random.uniform(-TIMER_EXIT_VARIANCE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS)
@@ -1539,8 +1543,14 @@ class SniperBot:
                     # ===================================================================
                     # EXIT RULE 4: TIER 2 TAKE PROFIT (+40%) - NORMAL MODE ONLY
                     # ===================================================================
+                    # FIX: tier2 must wait for tier1 to be CONFIRMED (not just submitted)
+                    tier1_confirmed = "tier1" in position.partial_sells
+                    tier1_not_pending = "tier1" not in position.pending_sells
+
                     if (not position.is_runner_mode and
                         price_change >= TIER_2_PROFIT_PERCENT and
+                        tier1_confirmed and  # tier1 must be CONFIRMED first
+                        tier1_not_pending and  # and not still pending
                         "tier2" not in position.partial_sells and
                         "tier2" not in position.pending_sells and
                         not position.is_closing):
@@ -1647,6 +1657,10 @@ class SniperBot:
             )
             
             if signature and not signature.startswith("1111111"):
+                # Update remaining_tokens IMMEDIATELY to prevent race condition
+                position.remaining_tokens -= ui_tokens_to_sell
+                logger.info(f"📊 Updated remaining_tokens: {position.remaining_tokens:,.0f} (sold {ui_tokens_to_sell:,.0f})")
+
                 asyncio.create_task(
                     self._confirm_sell_background(
                         signature, mint, target_name, sell_percent,
@@ -1654,7 +1668,7 @@ class SniperBot:
                         pre_sol_balance, pre_token_balance
                     )
                 )
-                
+
                 logger.info(f"✅ {target_name} sell submitted, confirming in background...")
                 return True
             else:
@@ -1854,7 +1868,11 @@ class SniperBot:
                     actual_tokens_sold = max(0.0, balance_decrease)
                     position.remaining_tokens = max(0.0, current_token_balance)
                 else:
-                    position.remaining_tokens = max(0.0, position.remaining_tokens - actual_tokens_sold)
+                    # remaining_tokens was already decremented by tokens_sold, adjust by difference
+                    if actual_tokens_sold != tokens_sold:
+                        adjustment = actual_tokens_sold - tokens_sold
+                        position.remaining_tokens = max(0.0, position.remaining_tokens - adjustment)
+                        logger.debug(f"Adjusted remaining_tokens by {adjustment:.0f} (actual vs expected)")
                 
                 base_sol_for_portion = position.amount_sol * (sell_percent / 100)
                 actual_profit_sol = actual_sol_received - base_sol_for_portion
@@ -1978,8 +1996,9 @@ class SniperBot:
                     if target_name in position.pending_token_amounts:
                         del position.pending_token_amounts[target_name]
 
+                    # Use same token amount for retry (don't recalculate from already-decremented remaining_tokens)
                     token_decimals = self.wallet.get_token_decimals(mint)
-                    ui_tokens_to_sell = round(position.remaining_tokens * (sell_percent / 100), token_decimals)
+                    ui_tokens_to_sell = tokens_sold  # Use original amount
 
                     retry_signature = await self.trader.create_sell_transaction(
                         mint=mint,
@@ -2029,6 +2048,10 @@ class SniperBot:
                         del position.pending_token_amounts[target_name]
                     
                     if target_name not in position.partial_sells:
+                        # Sell failed completely - restore tokens that were pre-decremented
+                        position.remaining_tokens += tokens_sold
+                        logger.warning(f"📊 Restored remaining_tokens: {position.remaining_tokens:,.0f}")
+
                         position.partial_sells[target_name] = {
                             'pnl': current_pnl,
                             'time': time.time(),
@@ -2036,7 +2059,7 @@ class SniperBot:
                             'status': 'failed',
                             'attempts': retry_count + 1
                         }
-                    
+
                     if self.telegram:
                         await self.telegram.send_message(
                             f"⚠️ Failed to sell {target_name} on {mint[:16]}\n"
@@ -2051,7 +2074,11 @@ class SniperBot:
                     position.pending_sells.remove(target_name)
                 if target_name in position.pending_token_amounts:
                     del position.pending_token_amounts[target_name]
-                
+
+                # Restore tokens that were pre-decremented since sell failed
+                position.remaining_tokens += tokens_sold
+                logger.warning(f"📊 Restored remaining_tokens after error: {position.remaining_tokens:,.0f}")
+
                 position.partial_sells[target_name] = {
                     'pnl': current_pnl,
                     'time': time.time(),
@@ -2114,6 +2141,9 @@ class SniperBot:
 
             # Use emergency priority only for stop loss and rug trap
             urgency = "emergency" if reason in ["stop_loss", "rug_trap"] else "sell"
+
+            # Capture balance RIGHT BEFORE sell for accurate P&L
+            pre_close_balance = self.wallet.get_sol_balance()
 
             signature = await self.trader.create_sell_transaction(
                 mint=mint,
@@ -2181,7 +2211,7 @@ class SniperBot:
 
                 # Get current balance and calculate delta
                 post_balance = self.wallet.get_sol_balance()
-                pre_balance = self.wallet.last_balance_before_trade or post_balance
+                pre_balance = pre_close_balance  # Use fresh pre-sell balance
 
                 # Calculate actual SOL received from wallet movement
                 balance_delta = post_balance - pre_balance
