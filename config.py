@@ -184,6 +184,11 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '1.5'))  # Don'
 # NEW FILTERS (21-trade baseline learnings)
 MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '5.0'))                # Max SOL/s - blocks coordinated bot pumps
 MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '50.0'))  # Max % from top 2 wallets combined
+# OBSERVATION WINDOW (Cented whale strategy - wait for confirmation)
+OBSERVATION_WINDOW_SECONDS = float(os.getenv('OBSERVATION_WINDOW_SECONDS', '5.0'))
+MIN_BUYER_GROWTH_RATIO = float(os.getenv('MIN_BUYER_GROWTH_RATIO', '1.5'))
+MAX_SELLS_AT_CONFIRMATION = int(os.getenv('MAX_SELLS_AT_CONFIRMATION', '2'))
+MAX_SOL_PER_BUYER_CONFIRMED = float(os.getenv('MAX_SOL_PER_BUYER_CONFIRMED', '0.50'))
 
 # ============================================
 # DEX CONFIGURATION
