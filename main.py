@@ -1203,6 +1203,13 @@ class SniperBot:
 
             while mint in self.positions and position.status == 'active':
                 check_count += 1
+
+                # Early exit if position fully sold
+                if position.remaining_tokens <= 0 and not position.pending_sells:
+                    logger.info(f"✅ {mint[:8]}... fully sold (remaining=0, no pending), exiting monitor")
+                    position.status = 'completed'
+                    break
+
                 current_time = time.time()
                 age = current_time - position.entry_time
                 
@@ -1924,7 +1931,9 @@ class SniperBot:
                     'time': time.time(),
                     'percent_sold': sell_percent
                 }
-                position.total_sold_percent += sell_percent
+                # Calculate actual % of original position sold (not tier's sell_percent)
+                actual_sold_pct = (actual_tokens_sold / position.initial_tokens * 100) if position.initial_tokens > 0 else sell_percent
+                position.total_sold_percent += actual_sold_pct
                 
                 if target_name in position.pending_sells:
                     position.pending_sells.remove(target_name)
@@ -2013,6 +2022,11 @@ class SniperBot:
                                 if target_name in position.pending_sells:
                                     position.pending_sells.remove(target_name)
                                 logger.info(f"✅ {target_name} marked complete via chain confirmation (sold {sell_percent}%)")
+
+                                # Check if position is fully closed
+                                if position.remaining_tokens <= 0 or position.total_sold_percent >= 100:
+                                    logger.info(f"✅ Position fully closed via chain confirmation")
+                                    position.status = 'completed'
                         return
 
                 except Exception as e:
