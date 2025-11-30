@@ -1230,25 +1230,63 @@ class SniperBot:
                     break
 
                 try:
-                    # ✅ CRITICAL FIX: Use curve_reader (same as entry verification)
-                    # dex.py has broken RPC client that returns wrong values
-                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+                    # ✅ FIX: Use Helius WebSocket data with constant product formula
+                    # RPC is too slow/stale for fast-moving PumpFun tokens
+                    curve_data = None
+                    source = 'unknown'
 
-                    if curve_state:
-                        curve_data = {
-                            'sol_in_curve': curve_state.get('sol_raised', 0),
-                            'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0),
-                            'virtual_sol_reserves': curve_state.get('virtual_sol_reserves', 0),
-                            'virtual_token_reserves': curve_state.get('virtual_token_reserves', 0),
-                            'is_migrated': curve_state.get('complete', False),
-                            'source': 'chain',
-                            'is_valid': True
-                        }
-                        position.has_chain_price = True
-                        position.last_price_source = 'chain'
-                        source = 'chain'  # curve_reader always returns chain data
-                    else:
-                        curve_data = None
+                    # Try Helius WebSocket first - updates on every trade event
+                    if hasattr(self, 'scanner') and self.scanner and mint in self.scanner.watched_tokens:
+                        ws_state = self.scanner.watched_tokens[mint]
+                        ws_sol = ws_state.get('total_sol', 0)
+                        ws_created = ws_state.get('created_at', 0)
+                        ws_age = time.time() - ws_created if ws_created > 0 else 999
+
+                        # Use WebSocket if we have valid data and entry data to calculate k
+                        if ws_sol > 0 and ws_age < 300 and position.entry_token_price_sol > 0:
+                            # Calculate k (constant product) from entry data
+                            entry_sol = position.entry_sol_in_curve if position.entry_sol_in_curve > 0 else 3.5
+                            entry_virtual_sol = (30 + entry_sol) * 1e9  # lamports
+                            entry_virtual_tokens = entry_virtual_sol / position.entry_token_price_sol  # atomic
+                            k = entry_virtual_sol * entry_virtual_tokens
+
+                            # Calculate current price using constant product formula
+                            current_virtual_sol = (30 + ws_sol) * 1e9  # lamports
+                            current_virtual_tokens = k / current_virtual_sol  # atomic
+                            ws_price = current_virtual_sol / current_virtual_tokens  # lamports per atomic
+
+                            curve_data = {
+                                'sol_in_curve': ws_sol,
+                                'price_lamports_per_atomic': ws_price,
+                                'virtual_sol_reserves': int(current_virtual_sol),
+                                'virtual_token_reserves': int(current_virtual_tokens),
+                                'is_migrated': ws_sol >= 85,
+                                'source': 'helius_ws',
+                                'is_valid': True
+                            }
+                            position.has_chain_price = True
+                            position.last_price_source = 'helius_ws'
+                            source = 'helius_ws'
+
+                            logger.debug(f"Using Helius WS: {ws_sol:.2f} SOL, price={ws_price:.10f}")
+
+                    # Fall back to RPC only if WebSocket data unavailable
+                    if curve_data is None:
+                        curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                        if curve_state:
+                            curve_data = {
+                                'sol_in_curve': curve_state.get('sol_raised', 0),
+                                'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0),
+                                'virtual_sol_reserves': curve_state.get('virtual_sol_reserves', 0),
+                                'virtual_token_reserves': curve_state.get('virtual_token_reserves', 0),
+                                'is_migrated': curve_state.get('complete', False),
+                                'source': 'chain',
+                                'is_valid': True
+                            }
+                            position.has_chain_price = True
+                            position.last_price_source = 'chain'
+                            source = 'chain'
 
                     if not curve_data:
                         consecutive_data_failures += 1
