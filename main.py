@@ -1972,6 +1972,7 @@ class SniperBot:
                 tx_exists = False
                 try:
                     from solders.signature import Signature as SoldersSignature
+                    from solders.transaction_status import TransactionConfirmationStatus
                     sig_obj = SoldersSignature.from_string(signature)
 
                     # Check signature status - this tells us if TX is known to the network
@@ -1997,6 +1998,13 @@ class SniperBot:
                             logger.info(f"⏳ TX in mempool/confirmed - waiting for resolution, NOT retrying")
                             # Keep in pending_sells so monitor doesn't re-trigger
                             # Background: TX will either confirm (tokens sold) or expire (can retry next cycle)
+
+                            # If Finalized, mark tier1 complete so tier2 can trigger
+                            if status_info.confirmation_status == TransactionConfirmationStatus.Finalized:
+                                if target_name == "tier1":
+                                    position.tier1_sold = True
+                                    position.tokens_sold_percent = 60.0
+                                    logger.info("✅ Tier 1 marked complete via chain confirmation")
                         return
 
                 except Exception as e:
