@@ -1035,7 +1035,7 @@ class SniperBot:
                 mint=mint,
                 sol_amount=buy_amount,
                 bonding_curve_key=bonding_curve_key,
-                slippage=30,
+                slippage=3000,
                 urgency="buy"  # 0.001 SOL priority fee
             )
             
