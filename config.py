@@ -46,10 +46,10 @@ TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
 # 2-tier system based on 11-trade analysis: reduces fees, lets winners run
-TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '15.0'))  # Was 30%
+TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '20.0'))  # Was 30%
 TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '60.0'))      # Was 40%
 
-TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '30.0'))  # Was 40%
+TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '40.0'))  # Was 40%
 TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '100.0'))      # Was 40% - sells remainder
 
 # TIER 3 DISABLED - 2-tier system reduces fees
@@ -161,7 +161,7 @@ PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBE
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
 MIN_BONDING_CURVE_SOL = 3.5   # Enter after initial pump settles: 3.5-5 SOL range
-MAX_BONDING_CURVE_SOL = 4.5   # Tighter window for early entry
+MAX_BONDING_CURVE_SOL = 6.0   # Tighter window for early entry
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
