@@ -352,14 +352,14 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # 10. NEW: Buyer distribution score - blocks whale-dominated entries
-        # Winners like 'reddit' had 0.61 SOL/buyer, losers like 'COMMENTS' had 0.81 SOL/buyer
-        sol_per_buyer = total_sol / buyers if buyers > 0 else 999
-        if sol_per_buyer > 0.75:
-            logger.warning(f"❌ Poor buyer distribution: {sol_per_buyer:.2f} SOL/buyer (max 0.75)")
-            self.stats['skipped_distribution'] = self.stats.get('skipped_distribution', 0) + 1
-            self.triggered_tokens.add(mint)
-            return
+        # 10. DISABLED: Buyer distribution filter too strict for early entries
+        # Already protected by single wallet (45%) and top-2 concentration (60%) filters
+        # sol_per_buyer = total_sol / buyers if buyers > 0 else 999
+        # if sol_per_buyer > 0.75:
+        #     logger.warning(f"❌ Poor buyer distribution: {sol_per_buyer:.2f} SOL/buyer (max 0.75)")
+        #     self.stats['skipped_distribution'] = self.stats.get('skipped_distribution', 0) + 1
+        #     self.triggered_tokens.add(mint)
+        #     return
 
         # ===== ALL CONDITIONS MET =====
         self.triggered_tokens.add(mint)
