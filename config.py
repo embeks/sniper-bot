@@ -161,7 +161,7 @@ PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBE
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
 MIN_BONDING_CURVE_SOL = 3.5   # Enter after initial pump settles: 3.5-5 SOL range
-MAX_BONDING_CURVE_SOL = 6.0   # Tighter window for early entry
+MAX_BONDING_CURVE_SOL = 8.0   # Was 6
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
@@ -176,14 +176,14 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # ============================================
 MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '6'))          # Minimum unique buyers before entry
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))  # Strict 0-sell filter
-MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '35.0'))  # Anti-bot: max % from single wallet
+MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '45.0'))  # Anti-bot: max % from single wallet
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '1.0'))                # Min SOL/second momentum
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))  # Max age to be considered "early"
 MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '1.5'))  # Don't enter <1.5s tokens
 
 # NEW FILTERS (21-trade baseline learnings)
 MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '5.0'))                # Max SOL/s - blocks coordinated bot pumps
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '50.0'))  # Max % from top 2 wallets combined
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '60.0'))  # Max % from top 2 wallets combined
 
 # ============================================
 # DEX CONFIGURATION
