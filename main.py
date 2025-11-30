@@ -1999,12 +1999,20 @@ class SniperBot:
                             # Keep in pending_sells so monitor doesn't re-trigger
                             # Background: TX will either confirm (tokens sold) or expire (can retry next cycle)
 
-                            # If Finalized, mark tier1 complete so tier2 can trigger
+                            # If Finalized, mark tier complete so next tier can trigger
                             if status_info.confirmation_status == TransactionConfirmationStatus.Finalized:
-                                if target_name == "tier1":
-                                    position.tier1_sold = True
-                                    position.tokens_sold_percent = 60.0
-                                    logger.info("✅ Tier 1 marked complete via chain confirmation")
+                                # Add to partial_sells (what tier2 actually checks)
+                                position.partial_sells[target_name] = {
+                                    'pnl': current_pnl,
+                                    'time': time.time(),
+                                    'percent_sold': sell_percent,
+                                    'status': 'chain_confirmed'
+                                }
+                                position.total_sold_percent += sell_percent
+                                # Remove from pending so next tier isn't blocked
+                                if target_name in position.pending_sells:
+                                    position.pending_sells.remove(target_name)
+                                logger.info(f"✅ {target_name} marked complete via chain confirmation (sold {sell_percent}%)")
                         return
 
                 except Exception as e:
