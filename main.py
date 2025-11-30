@@ -1403,6 +1403,16 @@ class SniperBot:
                         break
 
                     # ===================================================================
+                    # EMERGENCY EXIT: Bonding curve rug detection (runs every cycle)
+                    # ===================================================================
+                    if age > 15 and not position.is_closing:
+                        curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                        if curve and curve.get('sol_raised', 100) < 2.0:  # Less than 2 SOL = rugged
+                            logger.warning(f"🚨 BONDING RUG: {mint[:8]}... only {curve['sol_raised']:.2f} SOL in curve")
+                            await self._close_position_full(mint, reason="bonding_rug")
+                            break
+
+                    # ===================================================================
                     # RUNNER DETECTION: Check if token qualifies for pyramid adds
                     # ===================================================================
                     if (not position.is_runner_mode and
