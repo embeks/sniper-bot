@@ -46,11 +46,11 @@ TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
 # 2-tier system based on 11-trade analysis: reduces fees, lets winners run
-TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '30.0'))  # Was 20%
-TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '50.0'))      # Was 40%
+TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '15.0'))  # Was 30%
+TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '60.0'))      # Was 40%
 
-TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '60.0'))  # Was 40%
-TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '50.0'))      # Was 40% - sells remainder
+TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '30.0'))  # Was 40%
+TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '100.0'))      # Was 40% - sells remainder
 
 # TIER 3 DISABLED - 2-tier system reduces fees
 # Tier2 now sells remaining 50% at +60%
@@ -88,7 +88,7 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '0'))
 # ============================================
 # MOMENTUM EXIT SETTINGS
 # ============================================
-MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '30.0'))     # Raised from 25.0
+MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '15.0'))     # Raised from 25.0
 MOMENTUM_MIN_PEAK_PERCENT = float(os.getenv('MOMENTUM_MIN_PEAK_PERCENT', '20.0'))   # Raised from 15.0
 MOMENTUM_DRAWDOWN_MIN_AGE = float(os.getenv('MOMENTUM_DRAWDOWN_MIN_AGE', '20.0'))   # Raised from 15.0
 MOMENTUM_VELOCITY_DEATH_PERCENT = float(os.getenv('MOMENTUM_VELOCITY_DEATH_PERCENT', '40.0'))  # Lowered from 50.0
