@@ -1506,26 +1506,17 @@ class SniperBot:
                             await self._close_position_full(mint, reason="runner_stop_loss")
                             break
 
-                        # ----- PYRAMID ADD CHECKS -----
-
-                        if position.add_count < PYRAMID_MAX_ADDS and position.runner_score >= RUNNER_SCORE_THRESHOLD:
-
-                            # Add 1 at +15%
-                            if (price_change >= PYRAMID_ADD_1_PROFIT and
-                                "add1" not in position.pyramid_adds):
-                                await self._execute_pyramid_add(mint, "add1", price_change)
-
-                            # Add 2 at +30%
-                            elif (price_change >= PYRAMID_ADD_2_PROFIT and
-                                  "add1" in position.pyramid_adds and
-                                  "add2" not in position.pyramid_adds):
-                                await self._execute_pyramid_add(mint, "add2", price_change)
-
-                            # Add 3 at +50%
-                            elif (price_change >= PYRAMID_ADD_3_PROFIT and
-                                  "add2" in position.pyramid_adds and
-                                  "add3" not in position.pyramid_adds):
-                                await self._execute_pyramid_add(mint, "add3", price_change)
+                        # ----- PYRAMID ADD CHECKS (DISABLED) -----
+                        # Disabled: Pyramid adds were filling at crash bottoms, not peaks
+                        # To re-enable: uncomment the block below
+                        #
+                        # if position.add_count < PYRAMID_MAX_ADDS and position.runner_score >= RUNNER_SCORE_THRESHOLD:
+                        #     if (price_change >= PYRAMID_ADD_1_PROFIT and "add1" not in position.pyramid_adds):
+                        #         await self._execute_pyramid_add(mint, "add1", price_change)
+                        #     elif (price_change >= PYRAMID_ADD_2_PROFIT and "add1" in position.pyramid_adds and "add2" not in position.pyramid_adds):
+                        #         await self._execute_pyramid_add(mint, "add2", price_change)
+                        #     elif (price_change >= PYRAMID_ADD_3_PROFIT and "add2" in position.pyramid_adds and "add3" not in position.pyramid_adds):
+                        #         await self._execute_pyramid_add(mint, "add3", price_change)
 
                         # Skip normal tier exits when in runner mode
                         await asyncio.sleep(MONITOR_CHECK_INTERVAL)
