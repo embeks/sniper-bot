@@ -2044,6 +2044,11 @@ class SniperBot:
                                 if position.remaining_tokens <= 0 or position.total_sold_percent >= 100:
                                     logger.info(f"✅ Position fully closed via chain confirmation")
                                     position.status = 'completed'
+                                elif getattr(position, 'rug_exit_pending', False) and position.remaining_tokens > 0:
+                                    # Rug was detected while this sell was pending - sell remainder now
+                                    logger.info(f"🚨 Rug exit (chain confirmed): selling remaining {position.remaining_tokens:,.0f} tokens")
+                                    position.rug_exit_pending = False  # Clear flag
+                                    asyncio.create_task(self._close_position_full(mint, reason="bonding_rug"))
                         return
 
                 except Exception as e:
