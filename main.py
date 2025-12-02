@@ -1159,13 +1159,18 @@ class SniperBot:
             # Store for accurate P&L tracking later
             _position_buy_amount = buy_amount
 
+            # Get fresh chain curve data for local TX builder (has accurate reserves)
+            chain_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+
             # Try local TX builder first (saves 200-500ms)
-            signature = await self.local_builder.create_buy_transaction(
-                mint=mint,
-                sol_amount=buy_amount,
-                curve_data=curve_data,
-                slippage_bps=3000
-            )
+            signature = None
+            if chain_curve and chain_curve.get('is_valid'):
+                signature = await self.local_builder.create_buy_transaction(
+                    mint=mint,
+                    sol_amount=buy_amount,
+                    curve_data=chain_curve,
+                    slippage_bps=3000
+                )
 
             # Fallback to PumpPortal if local build fails
             if not signature:
