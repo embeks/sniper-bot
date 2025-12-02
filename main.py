@@ -473,15 +473,29 @@ class SniperBot:
             
             sol_delta = 0.0
             account_keys = [str(key) for key in tx.transaction.transaction.message.account_keys]
-            
+
+            # For v0 transactions, include loaded addresses from ALTs
             try:
+                loaded = getattr(meta, 'loaded_addresses', None)
+                if loaded:
+                    if hasattr(loaded, 'writable'):
+                        account_keys.extend([str(addr) for addr in loaded.writable])
+                    if hasattr(loaded, 'readonly'):
+                        account_keys.extend([str(addr) for addr in loaded.readonly])
+            except Exception as e:
+                logger.debug(f"Could not parse loaded_addresses: {e}")
+
+            wallet_index = None
+            if my_pubkey_str in account_keys:
                 wallet_index = account_keys.index(my_pubkey_str)
+
+            if wallet_index is not None and wallet_index < len(meta.pre_balances):
                 pre_sol_lamports = meta.pre_balances[wallet_index]
                 post_sol_lamports = meta.post_balances[wallet_index]
                 sol_delta = (post_sol_lamports - pre_sol_lamports) / 1e9
-            except (ValueError, IndexError) as e:
-                logger.warning(f"Wallet not found in transaction accounts: {e}")
-            
+            else:
+                logger.warning(f"⚠️ Wallet not in TX accounts (v0 ALT) - SOL delta unknown")
+
             token_delta = 0.0
             pre_token_amount = 0.0
             post_token_amount = 0.0
@@ -586,19 +600,27 @@ class SniperBot:
             sol_delta = 0.0
             account_keys = [str(key) for key in tx.transaction.transaction.message.account_keys]
 
+            # For v0 transactions, include loaded addresses from ALTs
             try:
+                loaded = getattr(meta, 'loaded_addresses', None)
+                if loaded:
+                    if hasattr(loaded, 'writable'):
+                        account_keys.extend([str(addr) for addr in loaded.writable])
+                    if hasattr(loaded, 'readonly'):
+                        account_keys.extend([str(addr) for addr in loaded.readonly])
+            except Exception as e:
+                logger.debug(f"Could not parse loaded_addresses: {e}")
+
+            wallet_index = None
+            if my_pubkey_str in account_keys:
                 wallet_index = account_keys.index(my_pubkey_str)
+
+            if wallet_index is not None and wallet_index < len(meta.pre_balances):
                 pre_sol_lamports = meta.pre_balances[wallet_index]
                 post_sol_lamports = meta.post_balances[wallet_index]
                 sol_delta = (post_sol_lamports - pre_sol_lamports) / 1e9
-            except (ValueError, IndexError) as e:
-                logger.error(f"❌ Wallet not found in transaction accounts: {e}")
-                return {
-                    "success": False,
-                    "sol_received": 0,
-                    "tokens_sold": 0,
-                    "wait_time": time.time() - start
-                }
+            else:
+                logger.warning(f"⚠️ Wallet not in TX accounts (v0 ALT) - SOL delta unknown")
 
             # Extract token delta
             token_delta = 0.0
