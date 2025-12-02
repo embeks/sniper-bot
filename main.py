@@ -1658,13 +1658,13 @@ class SniperBot:
 
                     # Dynamic threshold: relax if we hit a big peak
                     if position.max_pnl_reached >= 30:
-                        crash_threshold = 35  # Let winners breathe
+                        crash_threshold = 40  # Let winners breathe
                     elif position.max_pnl_reached >= 20:
-                        crash_threshold = 30  # Standard
+                        crash_threshold = 40  # Standard
                     elif position.max_pnl_reached >= 10:
-                        crash_threshold = 25  # Tighter
+                        crash_threshold = 40  # Tighter
                     else:
-                        crash_threshold = 20  # Very tight for no-momentum tokens
+                        crash_threshold = 40  # Very tight for no-momentum tokens
 
                     if (crash_from_peak > crash_threshold and
                         price_change < 10 and
