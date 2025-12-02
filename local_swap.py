@@ -243,16 +243,18 @@ class LocalSwapBuilder:
             instructions = []
             
             if not ata_info.value:
-                # Need to create ATA first
-                from spl.token.instructions import create_associated_token_account
-                create_ata_ix = create_associated_token_account(
-                    payer=self.wallet.pubkey,
-                    owner=self.wallet.pubkey,
-                    mint=mint_pubkey,
-                    token_program_id=TOKEN_2022_PROGRAM_ID
-                )
+                # Manual ATA creation for Token-2022
+                ata_accounts = [
+                    AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
+                    AccountMeta(user_ata, is_signer=False, is_writable=True),
+                    AccountMeta(self.wallet.pubkey, is_signer=False, is_writable=False),
+                    AccountMeta(mint_pubkey, is_signer=False, is_writable=False),
+                    AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
+                    AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
+                ]
+                create_ata_ix = Instruction(ASSOCIATED_TOKEN_PROGRAM_ID, bytes(), ata_accounts)
                 instructions.append(create_ata_ix)
-                logger.info(f"   Adding create ATA instruction")
+                logger.info(f"   Adding create ATA instruction (Token-2022)")
             
             instructions.append(buy_ix)
             
