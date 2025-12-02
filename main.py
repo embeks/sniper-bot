@@ -40,6 +40,7 @@ from wallet import WalletManager
 from dex import PumpFunDEX
 from helius_logs_monitor import HeliusLogsMonitor
 from pumpportal_trader import PumpPortalTrader
+from local_swap import LocalSwapBuilder
 from performance_tracker import PerformanceTracker
 from curve_reader import BondingCurveReader
 from velocity_checker import VelocityChecker
@@ -153,7 +154,8 @@ class SniperBot:
         
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
         self.trader = PumpPortalTrader(self.wallet, client)
-        
+        self.local_builder = LocalSwapBuilder(self.wallet, client)
+
         self.positions: Dict[str, Position] = {}
         self.pending_buys = 0
         self.total_trades = 0
@@ -1157,13 +1159,24 @@ class SniperBot:
             # Store for accurate P&L tracking later
             _position_buy_amount = buy_amount
 
-            signature = await self.trader.create_buy_transaction(
+            # Try local TX builder first (saves 200-500ms)
+            signature = await self.local_builder.create_buy_transaction(
                 mint=mint,
                 sol_amount=buy_amount,
-                bonding_curve_key=bonding_curve_key,
-                slippage=3000,
-                urgency="buy"  # 0.001 SOL priority fee
+                curve_data=curve_data,
+                slippage_bps=3000
             )
+
+            # Fallback to PumpPortal if local build fails
+            if not signature:
+                logger.warning("⚠️ Local TX failed, falling back to PumpPortal...")
+                signature = await self.trader.create_buy_transaction(
+                    mint=mint,
+                    sol_amount=buy_amount,
+                    bonding_curve_key=bonding_curve_key,
+                    slippage=3000,
+                    urgency="buy"
+                )
             
             bought_tokens = 0
             actual_sol_spent = buy_amount
