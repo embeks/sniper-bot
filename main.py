@@ -605,7 +605,11 @@ class SniperBot:
                 message = tx.transaction.transaction.message
                 static_keys = message.account_keys
                 for key in static_keys:
-                    account_keys.append(str(key))
+                    # Handle ParsedAccount objects - extract pubkey attribute
+                    if hasattr(key, 'pubkey'):
+                        account_keys.append(str(key.pubkey))
+                    else:
+                        account_keys.append(str(key))
                 logger.info(f"   Static accounts: {len(static_keys)}")
             except Exception as e:
                 logger.error(f"   Failed to get static keys: {e}")
