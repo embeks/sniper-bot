@@ -18,6 +18,7 @@ from config import (
     PUMPFUN_PROGRAM_ID,
     PUMPFUN_FEE_RECIPIENT,
     TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
     SYSTEM_PROGRAM_ID,
     RENT_PROGRAM_ID,
@@ -61,9 +62,9 @@ class LocalSwapBuilder:
         )
     
     def derive_associated_token_account(self, owner: Pubkey, mint: Pubkey) -> Pubkey:
-        """Derive ATA address"""
+        """Derive ATA address for Token-2022"""
         return Pubkey.find_program_address(
-            [bytes(owner), bytes(TOKEN_PROGRAM_ID), bytes(mint)],
+            [bytes(owner), bytes(TOKEN_2022_PROGRAM_ID), bytes(mint)],
             ASSOCIATED_TOKEN_PROGRAM_ID
         )[0]
     
@@ -126,14 +127,14 @@ class LocalSwapBuilder:
             AccountMeta(user_ata, is_signer=False, is_writable=True),
             AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
             AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(RENT_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(self.event_authority, is_signer=False, is_writable=False),
             AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
         ]
-        
+
         return Instruction(PUMPFUN_PROGRAM_ID, data, accounts)
-    
+
     def build_sell_instruction(
         self,
         mint: Pubkey,
@@ -167,11 +168,11 @@ class LocalSwapBuilder:
             AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
             AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(self.event_authority, is_signer=False, is_writable=False),
             AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
         ]
-        
+
         return Instruction(PUMPFUN_PROGRAM_ID, data, accounts)
     
     async def create_buy_transaction(
@@ -247,7 +248,8 @@ class LocalSwapBuilder:
                 create_ata_ix = create_associated_token_account(
                     payer=self.wallet.pubkey,
                     owner=self.wallet.pubkey,
-                    mint=mint_pubkey
+                    mint=mint_pubkey,
+                    token_program_id=TOKEN_2022_PROGRAM_ID
                 )
                 instructions.append(create_ata_ix)
                 logger.info(f"   Adding create ATA instruction")
