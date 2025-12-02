@@ -1165,12 +1165,15 @@ class SniperBot:
             # Try local TX builder first (saves 200-500ms)
             signature = None
             if chain_curve and chain_curve.get('is_valid'):
+                logger.info(f"📊 Chain curve for local TX: sol={chain_curve.get('sol_raised', 0):.2f}, tokens={chain_curve.get('virtual_token_reserves', 0):,}")
                 signature = await self.local_builder.create_buy_transaction(
                     mint=mint,
                     sol_amount=buy_amount,
                     curve_data=chain_curve,
                     slippage_bps=3000
                 )
+            else:
+                logger.warning(f"⚠️ Chain curve unavailable for local TX: {chain_curve}")
 
             # Fallback to PumpPortal if local build fails
             if not signature:
