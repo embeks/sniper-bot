@@ -2430,7 +2430,7 @@ class SniperBot:
                     f"Realized: {final_pnl_sol:+.4f} SOL"
                 )
                 if self.consecutive_losses >= 2:
-                    msg += f"\n⚠️ Losses: {self.consecutive_losses}/3"
+                    msg += f"\n⚠️ Losses: {self.consecutive_losses}/10"
                 await self.telegram.send_message(msg)
             
             if mint in self.positions:
