@@ -202,7 +202,7 @@ class SniperBot:
         logger.info(f"  • Max positions: {MAX_POSITIONS}")
         logger.info(f"  • Buy amount: {BUY_AMOUNT_SOL} SOL")
         logger.info(f"  • Available trades: {actual_trades}")
-        logger.info(f"  • Circuit breaker: 3 consecutive losses")
+        logger.info(f"  • Circuit breaker: 10 consecutive losses")
         logger.info(f"  • Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
         logger.info("=" * 60)
 
@@ -907,8 +907,8 @@ class SniperBot:
                     self._last_balance_warning = current_time
                 return
             
-            if self.consecutive_losses >= 3:
-                logger.warning(f"🛑 Circuit breaker activated - 3 consecutive losses")
+            if self.consecutive_losses >= 10:
+                logger.warning(f"🛑 Circuit breaker activated - 10 consecutive losses")
                 self.paused = True
                 if self.telegram:
                     await self.telegram.send_message(
@@ -2469,7 +2469,7 @@ class SniperBot:
             logger.info(f"💰 Tiers: 40%@+30%, 40%@+60%, 20%@+100%")
             logger.info(f"🛑 Stop loss: -{STOP_LOSS_PERCENTAGE}%")
             logger.info(f"⏱️ Max hold: {MAX_POSITION_AGE_SECONDS}s")
-            logger.info(f"🎯 Circuit breaker: 3 consecutive losses")
+            logger.info(f"🎯 Circuit breaker: 10 consecutive losses")
             
             last_stats_time = time.time()
             
