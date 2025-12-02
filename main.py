@@ -1359,6 +1359,7 @@ class SniperBot:
 
                 if age > effective_max_age:
                     logger.warning(f"⏰ MAX AGE REACHED for {mint[:8]}... ({age:.0f}s, limit was {effective_max_age}s)")
+                    position.is_closing = False  # Ensure close can execute
                     await self._close_position_full(mint, reason="max_age")
                     break
 
@@ -1475,6 +1476,7 @@ class SniperBot:
                         elif price_change <= -15:
                             # High slippage but not necessarily dumping - log but continue monitoring
                             logger.info(f"⚠️ Entry slippage {price_change:.1f}% but continuing - watching for recovery")
+                            position.entry_slippage_grace_until = time.time() + 15  # 15 second grace period
 
                     # ===================================================================
                     # ✅ NEW: FLATLINE DETECTION - Exit if stuck negative for 30s
@@ -1636,7 +1638,10 @@ class SniperBot:
                     # ===================================================================
                     # EXIT RULE 2: STOP LOSS (-10%)
                     # ===================================================================
-                    if price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
+                    if hasattr(position, 'entry_slippage_grace_until') and time.time() < position.entry_slippage_grace_until:
+                        if check_count % 5 == 1:  # Log occasionally
+                            logger.info(f"⏳ Entry slippage grace period active, skipping stop loss for {mint[:8]}...")
+                    elif price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
                         if not position.has_chain_price or source != 'chain':
                             logger.warning(f"🚧 STOP LOSS signal from [{source}] ignored until first [chain] tick")
                         else:
@@ -2077,6 +2082,7 @@ class SniperBot:
                     # Rug was detected while this sell was pending - sell remainder now
                     logger.info(f"🚨 Rug exit: selling remaining {position.remaining_tokens:,.0f} tokens")
                     position.rug_exit_pending = False  # Clear flag
+                    position.is_closing = False  # CRITICAL: Allow _close_position_full to execute
                     asyncio.create_task(self._close_position_full(mint, reason="bonding_rug"))
             else:
                 logger.warning(f"❌ {target_name} RPC timeout for {mint[:8]}... checking TX status")
@@ -2152,6 +2158,7 @@ class SniperBot:
                                     # Rug was detected while this sell was pending - sell remainder now
                                     logger.info(f"🚨 Rug exit (chain confirmed): selling remaining {position.remaining_tokens:,.0f} tokens")
                                     position.rug_exit_pending = False  # Clear flag
+                                    position.is_closing = False  # CRITICAL: Allow _close_position_full to execute
                                     asyncio.create_task(self._close_position_full(mint, reason="bonding_rug"))
                         return
 
