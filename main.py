@@ -1672,6 +1672,15 @@ class SniperBot:
 
                         logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak (threshold: {crash_threshold}%)")
                         logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
+
+                        # DIAGNOSTIC: Compare price sources at exit
+                        fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                        fresh_dex = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+                        logger.info(f"🔍 PRICE DIAGNOSTIC at exit trigger:")
+                        logger.info(f"   Monitoring price: {current_token_price_sol:.10f}")
+                        logger.info(f"   Fresh curve_reader: {fresh_curve.get('price_lamports_per_atomic', 0) if fresh_curve else 'None':.10f}")
+                        logger.info(f"   Fresh dex.py: {fresh_dex.get('price_lamports_per_atomic', 0) if fresh_dex else 'None':.10f}")
+
                         await self._close_position_full(mint, reason="momentum_crash")
                         break
 
