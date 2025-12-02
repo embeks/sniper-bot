@@ -2128,6 +2128,20 @@ class SniperBot:
                                 # Remove from pending so next tier isn't blocked
                                 if target_name in position.pending_sells:
                                     position.pending_sells.remove(target_name)
+
+                                # TX confirmed on chain - retry parsing to capture proceeds
+                                retry_result = await self._get_transaction_proceeds_robust(
+                                    signature=signature,
+                                    mint=mint,
+                                    max_wait=15
+                                )
+                                if retry_result["success"] and retry_result["sol_received"] > 0:
+                                    tier_proceeds = retry_result["sol_received"]
+                                    position.total_sol_received = getattr(position, 'total_sol_received', 0) + tier_proceeds
+                                    logger.info(f"✅ Captured tier proceeds: +{tier_proceeds:.6f} SOL")
+                                else:
+                                    logger.warning(f"⚠️ Could not parse tier proceeds, will be missing from P&L")
+
                                 logger.info(f"✅ {target_name} marked complete via chain confirmation (sold {sell_percent}%)")
 
                                 # Check if position is fully closed
@@ -2293,25 +2307,34 @@ class SniperBot:
 
             if tx_result["success"]:
                 # Got EXACT proceeds from transaction
-                actual_sol_received = tx_result["sol_received"]
+                final_sol_received = tx_result["sol_received"]
                 actual_tokens_sold = tx_result["tokens_sold"]
 
                 logger.info(f"✅ Transaction parsing successful:")
                 logger.info(f"   Wait time: {tx_result['wait_time']:.1f}s")
-                logger.info(f"   SOL received: {actual_sol_received:+.6f} SOL")
+                logger.info(f"   SOL received: {final_sol_received:+.6f} SOL")
                 logger.info(f"   Tokens sold: {actual_tokens_sold:,.2f}")
+
+                # Include accumulated tier proceeds in total
+                accumulated_tier_proceeds = getattr(position, 'total_sol_received', 0)
+                total_sol_received = final_sol_received + accumulated_tier_proceeds
 
                 # Calculate accurate P&L
                 estimated_fees = 0.009
-                trading_pnl_sol = actual_sol_received - position.amount_sol
+                trading_pnl_sol = total_sol_received - position.amount_sol
 
                 logger.info(f"📊 P&L Calculation:")
-                logger.info(f"   SOL received: {actual_sol_received:.6f}")
+                if accumulated_tier_proceeds > 0:
+                    logger.info(f"   Tier proceeds: {accumulated_tier_proceeds:.6f} SOL")
+                    logger.info(f"   Final proceeds: {final_sol_received:.6f} SOL")
+                    logger.info(f"   Total received: {total_sol_received:.6f} SOL")
+                else:
+                    logger.info(f"   SOL received: {total_sol_received:.6f}")
                 logger.info(f"   SOL invested: {position.amount_sol:.6f}")
                 logger.info(f"   Trading P&L: {trading_pnl_sol:+.6f} SOL")
                 logger.info(f"   Estimated fees: {estimated_fees:.6f} SOL")
 
-                gross_sale_proceeds = actual_sol_received
+                gross_sale_proceeds = total_sol_received
                 actual_fees_paid = estimated_fees
                 final_pnl_sol = trading_pnl_sol
 
