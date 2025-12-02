@@ -1162,7 +1162,7 @@ class SniperBot:
             # Build synthetic curve from Helius data (0ms vs 50-100ms RPC)
             # Pump.fun constants: initial 30 SOL virtual, 1.073B virtual tokens
             helius_events = token_data.get('data', {})
-            helius_sol = helius_events.get('total_sol', 0) if helius_events else 0
+            helius_sol = helius_events.get('vSolInBondingCurve', 0) if helius_events else 0
 
             signature = None
             if helius_sol > 0:
