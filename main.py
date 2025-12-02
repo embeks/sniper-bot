@@ -1159,21 +1159,30 @@ class SniperBot:
             # Store for accurate P&L tracking later
             _position_buy_amount = buy_amount
 
-            # Get fresh chain curve data for local TX builder (has accurate reserves)
-            chain_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+            # Build synthetic curve from Helius data (0ms vs 50-100ms RPC)
+            # Pump.fun constants: initial 30 SOL virtual, 1.073B virtual tokens
+            helius_events = token_data.get('data', {})
+            helius_sol = helius_events.get('total_sol', 0) if helius_events else 0
 
-            # Try local TX builder first (saves 200-500ms)
             signature = None
-            if chain_curve and chain_curve.get('is_valid'):
-                logger.info(f"📊 Chain curve for local TX: sol={chain_curve.get('sol_raised', 0):.2f}, tokens={chain_curve.get('virtual_token_reserves', 0):,}")
+            if helius_sol > 0:
+                virtual_sol = 30 + helius_sol  # 30 SOL initial + accumulated
+                synthetic_curve = {
+                    'is_valid': True,
+                    'virtual_sol_reserves': int(virtual_sol * 1e9),
+                    'virtual_token_reserves': int(1_073_000_191 * 1e6 * (30 / virtual_sol)),
+                    'sol_raised': helius_sol,
+                }
+                logger.info(f"⚡ Synthetic curve: {helius_sol:.2f} SOL → v_sol={virtual_sol:.2f}, v_tokens={synthetic_curve['virtual_token_reserves']:,}")
+
                 signature = await self.local_builder.create_buy_transaction(
                     mint=mint,
                     sol_amount=buy_amount,
-                    curve_data=chain_curve,
+                    curve_data=synthetic_curve,
                     slippage_bps=3000
                 )
             else:
-                logger.warning(f"⚠️ Chain curve unavailable for local TX: {chain_curve}")
+                logger.warning(f"⚠️ No Helius SOL data for local TX")
 
             # Fallback to PumpPortal if local build fails
             if not signature:
@@ -1285,7 +1294,8 @@ class SniperBot:
 
                 if 'data' in token_data:
                     position.entry_sol_in_curve = token_data['data'].get('vSolInBondingCurve', 30)
-                
+                position.entry_curve_sol = helius_events.get('total_sol', 0) if helius_events else 0
+
                 self.positions[mint] = position
                 self.total_trades += 1
                 self.pending_buys -= 1
@@ -1642,19 +1652,21 @@ class SniperBot:
                     )
 
                     # ===================================================================
-                    # EXIT RULE 1: RUG TRAP (Emergency)
+                    # EXIT RULE 1: Curve-based rug detection (checks liquidity drain, not price)
                     # ===================================================================
-                    rug_threshold = -50  # Real rugs drop 80-99%, not 40%
-                    if price_change <= rug_threshold and not position.is_closing:
-                        if not position.has_chain_price or source != 'chain':
-                            logger.warning(f"🚧 RUG signal from [{source}] ignored until first [chain] tick")
-                        else:
-                            logger.warning(
-                                f"🚨 RUG TRAP TRIGGERED ({price_change:.1f}%) on [chain] "
-                                f"(age {age:.1f}s, threshold {rug_threshold}%)"
-                            )
+                    entry_curve_sol = position.entry_curve_sol if hasattr(position, 'entry_curve_sol') else 0
+                    current_curve_sol = curve_data.get('sol_in_curve', 0) if curve_data else 0
+
+                    if entry_curve_sol > 0 and current_curve_sol > 0:
+                        curve_drop_pct = ((entry_curve_sol - current_curve_sol) / entry_curve_sol) * 100
+
+                        if curve_drop_pct > 30 and not position.is_closing:  # 30% of liquidity drained = real rug
+                            logger.warning(f"🚨 RUG DETECTED: Curve dropped {curve_drop_pct:.1f}% ({entry_curve_sol:.2f} → {current_curve_sol:.2f} SOL)")
                             await self._close_position_full(mint, reason="rug_trap")
                             break
+                        elif price_change <= -50 and not position.is_closing:
+                            # Price down but liquidity intact - NOT a rug, just volatility
+                            logger.info(f"📉 Price down {price_change:.1f}% but curve stable ({current_curve_sol:.2f} SOL) - holding")
 
                     # ===================================================================
                     # EXIT RULE 2: STOP LOSS (-10%)
