@@ -529,32 +529,26 @@ class SniperBot:
         max_wait: int = 30
     ) -> dict:
         """
-        Robust transaction parsing with polling - reads EXACT SOL proceeds from blockchain
-
-        This method:
-        1. Polls RPC until transaction appears (up to max_wait seconds)
-        2. Parses the transaction to extract EXACT SOL received and tokens sold
-        3. Returns structured dict with success status and values
-
-        This eliminates contamination from overlapping trades by reading directly from the transaction.
+        Robust transaction parsing - FIXED VERSION with comprehensive debugging
         """
         try:
             from solders.signature import Signature as SoldersSignature
 
             tx_sig = SoldersSignature.from_string(signature)
             start = time.time()
+            my_pubkey_str = str(self.wallet.pubkey)
 
-            logger.debug(f"🔍 Polling for transaction {signature[:8]}...")
+            logger.info(f"🔍 TX PARSING DEBUG for {signature[:16]}...")
+            logger.info(f"   My wallet: {my_pubkey_str}")
+            logger.info(f"   Token mint: {mint[:16]}...")
 
             # Poll for transaction to appear
             tx = None
             while time.time() - start < max_wait:
                 try:
-                    # Check if transaction exists in RPC
                     status = self.trader.client.get_signature_statuses([tx_sig])
 
                     if status and status.value and status.value[0]:
-                        # Transaction found, now fetch full details
                         tx_response = self.trader.client.get_transaction(
                             tx_sig,
                             encoding="jsonParsed",
@@ -571,10 +565,9 @@ class SniperBot:
 
                 await asyncio.sleep(0.5)
 
-            # Check if we got the transaction
             if not tx:
                 wait_time = time.time() - start
-                logger.warning(f"⏱️ Timeout: TX never appeared in RPC after {wait_time:.1f}s")
+                logger.warning(f"⏱️ Timeout: TX never appeared after {wait_time:.1f}s")
                 return {
                     "success": False,
                     "sol_received": 0,
@@ -583,84 +576,190 @@ class SniperBot:
                 }
 
             # Check if transaction failed
-            if tx.transaction.meta is None or tx.transaction.meta.err is not None:
-                logger.error(f"❌ Transaction failed on-chain: {tx.transaction.meta.err if tx.transaction.meta else 'no meta'}")
-                return {
-                    "success": False,
-                    "sol_received": 0,
-                    "tokens_sold": 0,
-                    "wait_time": time.time() - start
-                }
+            if tx.transaction.meta is None:
+                logger.error(f"❌ Transaction has no meta")
+                return {"success": False, "sol_received": 0, "tokens_sold": 0, "wait_time": time.time() - start}
 
-            # Parse transaction to extract SOL and token deltas
+            if tx.transaction.meta.err is not None:
+                logger.error(f"❌ Transaction failed on-chain: {tx.transaction.meta.err}")
+                return {"success": False, "sol_received": 0, "tokens_sold": 0, "wait_time": time.time() - start}
+
             meta = tx.transaction.meta
-            my_pubkey_str = str(self.wallet.pubkey)
 
-            # Extract SOL delta
-            sol_delta = 0.0
-            account_keys = [str(key) for key in tx.transaction.transaction.message.account_keys]
+            # =========================================================================
+            # DEBUG: Log transaction structure
+            # =========================================================================
+            logger.info(f"📊 TX STRUCTURE:")
+            logger.info(f"   pre_balances: {len(meta.pre_balances)} entries")
+            logger.info(f"   post_balances: {len(meta.post_balances)} entries")
+            logger.info(f"   pre_token_balances: {len(meta.pre_token_balances or [])} entries")
+            logger.info(f"   post_token_balances: {len(meta.post_token_balances or [])} entries")
 
-            # For v0 transactions, include loaded addresses from ALTs
+            # =========================================================================
+            # METHOD 1: Build complete account list (static + loaded addresses)
+            # =========================================================================
+            account_keys = []
+
+            # Get static keys from message
+            try:
+                message = tx.transaction.transaction.message
+                static_keys = message.account_keys
+                for key in static_keys:
+                    account_keys.append(str(key))
+                logger.info(f"   Static accounts: {len(static_keys)}")
+            except Exception as e:
+                logger.error(f"   Failed to get static keys: {e}")
+
+            # Get loaded addresses (for v0 transactions with ALTs)
             try:
                 loaded = getattr(meta, 'loaded_addresses', None)
                 if loaded:
-                    if hasattr(loaded, 'writable'):
-                        account_keys.extend([str(addr) for addr in loaded.writable])
-                    if hasattr(loaded, 'readonly'):
-                        account_keys.extend([str(addr) for addr in loaded.readonly])
-            except Exception as e:
-                logger.debug(f"Could not parse loaded_addresses: {e}")
+                    writable = getattr(loaded, 'writable', []) or []
+                    readonly = getattr(loaded, 'readonly', []) or []
 
+                    for addr in writable:
+                        account_keys.append(str(addr))
+                    for addr in readonly:
+                        account_keys.append(str(addr))
+
+                    logger.info(f"   Loaded writable: {len(writable)}")
+                    logger.info(f"   Loaded readonly: {len(readonly)}")
+                else:
+                    logger.info(f"   No loaded_addresses (legacy tx or empty)")
+            except Exception as e:
+                logger.error(f"   Failed to get loaded addresses: {e}")
+
+            logger.info(f"   Total accounts: {len(account_keys)}")
+
+            # =========================================================================
+            # FIND WALLET IN ACCOUNTS
+            # =========================================================================
             wallet_index = None
+
+            # Method 1: Direct string match
             if my_pubkey_str in account_keys:
                 wallet_index = account_keys.index(my_pubkey_str)
+                logger.info(f"   ✅ Wallet found at index {wallet_index}")
+            else:
+                # Method 2: Try case-insensitive or partial match (shouldn't be needed but just in case)
+                for i, key in enumerate(account_keys):
+                    if key.lower() == my_pubkey_str.lower():
+                        wallet_index = i
+                        logger.info(f"   ✅ Wallet found (case-insensitive) at index {i}")
+                        break
+
+            if wallet_index is None:
+                logger.warning(f"   ❌ Wallet NOT found in {len(account_keys)} accounts")
+                # Log first few accounts for debugging
+                for i, key in enumerate(account_keys[:5]):
+                    logger.info(f"      Account[{i}]: {key}")
+                if len(account_keys) > 5:
+                    logger.info(f"      ... and {len(account_keys) - 5} more")
+
+            # =========================================================================
+            # EXTRACT SOL DELTA
+            # =========================================================================
+            sol_delta = 0.0
 
             if wallet_index is not None and wallet_index < len(meta.pre_balances):
-                pre_sol_lamports = meta.pre_balances[wallet_index]
-                post_sol_lamports = meta.post_balances[wallet_index]
-                sol_delta = (post_sol_lamports - pre_sol_lamports) / 1e9
+                pre_sol = meta.pre_balances[wallet_index]
+                post_sol = meta.post_balances[wallet_index]
+                sol_delta = (post_sol - pre_sol) / 1e9
+                logger.info(f"   SOL: {pre_sol/1e9:.6f} -> {post_sol/1e9:.6f} = {sol_delta:+.6f}")
             else:
-                logger.warning(f"⚠️ Wallet not in TX accounts (v0 ALT) - SOL delta unknown")
+                logger.warning(f"   ⚠️ Cannot get SOL delta from TX")
 
-            # Extract token delta
+            # =========================================================================
+            # EXTRACT TOKEN DELTA
+            # =========================================================================
             token_delta = 0.0
             pre_token_amount = 0.0
             post_token_amount = 0.0
 
+            # Log all token balances for debugging
+            logger.info(f"   Token balances for mint {mint[:8]}...:")
+
             for balance in (meta.pre_token_balances or []):
-                if balance.mint == mint and balance.owner == my_pubkey_str:
-                    ui_amount = balance.ui_token_amount.ui_amount
-                    pre_token_amount = float(ui_amount) if ui_amount is not None else 0.0
-                    break
+                bal_mint = str(balance.mint) if hasattr(balance, 'mint') else str(getattr(balance, 'mint', ''))
+                bal_owner = str(balance.owner) if hasattr(balance, 'owner') else str(getattr(balance, 'owner', ''))
+
+                if mint in bal_mint:  # Partial match for safety
+                    ui_amount = balance.ui_token_amount.ui_amount if hasattr(balance, 'ui_token_amount') else 0
+                    logger.info(f"      PRE: owner={bal_owner[:16]}... amount={ui_amount}")
+
+                    if bal_owner == my_pubkey_str or my_pubkey_str in bal_owner:
+                        pre_token_amount = float(ui_amount) if ui_amount is not None else 0.0
 
             for balance in (meta.post_token_balances or []):
-                if balance.mint == mint and balance.owner == my_pubkey_str:
-                    ui_amount = balance.ui_token_amount.ui_amount
-                    post_token_amount = float(ui_amount) if ui_amount is not None else 0.0
-                    break
+                bal_mint = str(balance.mint) if hasattr(balance, 'mint') else str(getattr(balance, 'mint', ''))
+                bal_owner = str(balance.owner) if hasattr(balance, 'owner') else str(getattr(balance, 'owner', ''))
+
+                if mint in bal_mint:
+                    ui_amount = balance.ui_token_amount.ui_amount if hasattr(balance, 'ui_token_amount') else 0
+                    logger.info(f"      POST: owner={bal_owner[:16]}... amount={ui_amount}")
+
+                    if bal_owner == my_pubkey_str or my_pubkey_str in bal_owner:
+                        post_token_amount = float(ui_amount) if ui_amount is not None else 0.0
 
             token_delta = post_token_amount - pre_token_amount
-            tokens_sold = abs(token_delta)
+            tokens_sold = abs(token_delta) if token_delta < 0 else 0
+
+            logger.info(f"   Tokens: {pre_token_amount:,.2f} -> {post_token_amount:,.2f} = {token_delta:+,.2f}")
+
+            # =========================================================================
+            # FALLBACK: Use wallet balance if TX parsing failed
+            # =========================================================================
+            if sol_delta == 0 and tokens_sold == 0:
+                logger.warning(f"⚠️ TX parsing got nothing - trying wallet balance fallback")
+
+                # Wait a moment for balance to update
+                await asyncio.sleep(1.5)
+
+                # Get current balance and compare to what we stored before the sell
+                current_balance = self.wallet.get_sol_balance()
+
+                # If we have a pre-trade balance stored, use it
+                if hasattr(self.wallet, 'last_balance_before_trade'):
+                    pre_balance = self.wallet.last_balance_before_trade
+                    sol_delta = current_balance - pre_balance
+                    logger.info(f"   Wallet fallback: {pre_balance:.6f} -> {current_balance:.6f} = {sol_delta:+.6f}")
+
+                    # Check current token balance
+                    current_tokens = self.wallet.get_token_balance(mint)
+                    logger.info(f"   Current tokens in wallet: {current_tokens:,.2f}")
+
+                    # If we have no tokens now but had tokens before, estimate tokens_sold
+                    if current_tokens == 0:
+                        # We sold everything
+                        tokens_sold = pre_token_amount if pre_token_amount > 0 else 0
+                else:
+                    logger.error(f"   No pre-trade balance stored!")
 
             wait_time = time.time() - start
 
-            # Success - log details
-            logger.info(f"✅ Transaction parsed successfully:")
-            logger.info(f"   SOL received: {sol_delta:+.6f} SOL")
-            logger.info(f"   Tokens sold: {tokens_sold:,.2f}")
-            logger.info(f"   Wait time: {wait_time:.1f}s")
+            # =========================================================================
+            # RETURN RESULTS
+            # =========================================================================
+            success = sol_delta != 0 or tokens_sold > 0
+
+            if success:
+                logger.info(f"✅ TX parsing complete:")
+                logger.info(f"   SOL delta: {sol_delta:+.6f}")
+                logger.info(f"   Tokens sold: {tokens_sold:,.2f}")
+            else:
+                logger.error(f"❌ TX parsing FAILED - no data extracted")
 
             return {
-                "success": True,
+                "success": success,
                 "sol_received": sol_delta,
                 "tokens_sold": tokens_sold,
                 "wait_time": wait_time
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in robust transaction parsing: {e}")
+            logger.error(f"❌ Exception in TX parsing: {e}")
             import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "sol_received": 0,
