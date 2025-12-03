@@ -61,7 +61,17 @@ class LocalSwapBuilder:
             [b"bonding-curve", bytes(mint)],
             PUMPFUN_PROGRAM_ID
         )
-    
+
+    def derive_creator_vault_pda(self, creator: Pubkey, mint: Pubkey) -> Pubkey:
+        """
+        Derive Creator Vault PDA - REQUIRED for PumpFun buy transactions
+        Seeds: ["creator-vault", creator_pubkey, mint_pubkey]
+        """
+        return Pubkey.find_program_address(
+            [b"creator-vault", bytes(creator), bytes(mint)],
+            PUMPFUN_PROGRAM_ID
+        )[0]
+
     def derive_associated_token_account(self, owner: Pubkey, mint: Pubkey) -> Pubkey:
         """Derive ATA address for Token-2022"""
         return Pubkey.find_program_address(
@@ -101,23 +111,25 @@ class LocalSwapBuilder:
         bonding_curve: Pubkey,
         associated_bonding_curve: Pubkey,
         user_ata: Pubkey,
+        creator_vault: Pubkey,  # NEW: Required parameter
         token_amount: int,
         max_sol_cost: int
     ) -> Instruction:
         """
         Build Pump.fun buy instruction
-        
+
         Args:
             mint: Token mint address
             bonding_curve: Bonding curve PDA
             associated_bonding_curve: Bonding curve's token account
             user_ata: User's associated token account
+            creator_vault: Creator Vault PDA (derived from creator + mint)
             token_amount: Minimum tokens to receive (atomic units)
             max_sol_cost: Maximum SOL to spend (lamports)
         """
         # Instruction data: discriminator + token_amount (u64) + max_sol_cost (u64)
         data = BUY_DISCRIMINATOR + struct.pack('<Q', token_amount) + struct.pack('<Q', max_sol_cost)
-        
+
         # Account order matters!
         accounts = [
             AccountMeta(self.global_pda, is_signer=False, is_writable=False),
@@ -129,7 +141,7 @@ class LocalSwapBuilder:
             AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
             AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(RENT_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(creator_vault, is_signer=False, is_writable=False),  # Creator Vault PDA
             AccountMeta(self.event_authority, is_signer=False, is_writable=False),
             AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
         ]
@@ -181,30 +193,39 @@ class LocalSwapBuilder:
         mint: str,
         sol_amount: float,
         curve_data: dict,
-        slippage_bps: int = 3000  # 30% default (matching your current setting)
+        slippage_bps: int = 3000,  # 30% default (matching your current setting)
+        creator: str = None  # NEW: Creator pubkey for vault derivation
     ) -> Optional[str]:
         """
         Build and send a buy transaction locally
-        
+
         Args:
             mint: Token mint address
             sol_amount: SOL to spend
             curve_data: Bonding curve data with virtual_sol_reserves and virtual_token_reserves
             slippage_bps: Slippage in basis points (3000 = 30%)
-            
+            creator: Creator pubkey for vault PDA derivation
+
         Returns:
             Transaction signature or None on failure
         """
         try:
             start = time.time()
-            
+
+            # Validate creator is provided
+            if not creator:
+                logger.error(f"❌ Creator pubkey required for local TX - falling back to PumpPortal")
+                return None
+
             mint_pubkey = Pubkey.from_string(mint)
+            creator_pubkey = Pubkey.from_string(creator)
             
             # Derive PDAs
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
             associated_bonding_curve = self.derive_associated_token_account(bonding_curve, mint_pubkey)
             user_ata = self.derive_associated_token_account(self.wallet.pubkey, mint_pubkey)
-            
+            creator_vault = self.derive_creator_vault_pda(creator_pubkey, mint_pubkey)
+
             # Get reserves from curve_data
             virtual_sol = curve_data.get('virtual_sol_reserves', 0)
             virtual_tokens = curve_data.get('virtual_token_reserves', 0)
@@ -224,17 +245,20 @@ class LocalSwapBuilder:
             max_sol_cost = int(sol_lamports * (10000 + slippage_bps) / 10000)
             
             logger.info(f"⚡ Building LOCAL buy TX for {mint[:8]}...")
+            logger.info(f"   Creator: {creator[:16]}...")
+            logger.info(f"   Creator Vault: {str(creator_vault)[:16]}...")
             logger.info(f"   SOL in: {sol_amount} ({sol_lamports:,} lamports)")
             logger.info(f"   Expected tokens: {tokens_out:,}")
             logger.info(f"   Min tokens ({slippage_bps/100:.0f}% slip): {min_tokens:,}")
             logger.info(f"   Max SOL cost: {max_sol_cost:,} lamports")
-            
+
             # Build instruction
             buy_ix = self.build_buy_instruction(
                 mint_pubkey,
                 bonding_curve,
                 associated_bonding_curve,
                 user_ata,
+                creator_vault,  # NEW: Pass creator vault
                 min_tokens,
                 max_sol_cost
             )

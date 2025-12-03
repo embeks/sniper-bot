@@ -12,7 +12,7 @@ import base64
 import base58
 import websockets
 from datetime import datetime
-from typing import Optional, Dict, Set
+from typing import Optional, Dict, Set, Tuple
 
 from config import (
     HELIUS_API_KEY, PUMPFUN_PROGRAM_ID,
@@ -190,16 +190,17 @@ class HeliusLogsMonitor:
     
     async def _handle_create(self, logs: list, signature: str):
         """Handle CreateV2 - start watching new token"""
-        mint = self._extract_mint_from_create(logs)
+        mint, creator = self._extract_mint_and_creator_from_create(logs)
         if not mint:
             return
-        
+
         self.stats['creates'] += 1
-        
-        # Initialize token state
+
+        # Initialize token state with creator
         self.watched_tokens[mint] = {
             'created_at': time.time(),
             'signature': signature,
+            'creator': creator,  # Store creator for local TX building
             'buyers': set(),
             'total_sol': 0.0,
             'buy_count': 0,
@@ -209,8 +210,11 @@ class HeliusLogsMonitor:
             'buy_amounts': [],  # NEW: track individual buy amounts for top-2 calc
             'peak_velocity': 0.0,
         }
-        
-        logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}...")
+
+        if creator:
+            logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (creator: {creator[:8]}...)")
+        else:
+            logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (no creator extracted)")
     
     async def _handle_buy(self, logs: list, signature: str):
         """Handle Buy event - update token state and check entry"""
@@ -397,55 +401,89 @@ class HeliusLogsMonitor:
                     'largest_buy': state['largest_buy'],
                     'concentration': state['largest_buy'] / total_sol if total_sol > 0 else 0,
                     'top2_concentration': top2_pct,  # NEW: include in callback
+                    'creator': state.get('creator'),  # Pass creator for local TX
                 }
             })
     
     # ===== PARSING HELPERS =====
     
-    def _extract_mint_from_create(self, logs: list) -> Optional[str]:
-        """Extract mint from CreateV2 Program data"""
+    def _extract_mint_and_creator_from_create(self, logs: list) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Extract mint AND creator from CreateV2 Program data
+
+        CreateV2 structure:
+        - discriminator (8 bytes)
+        - name (4 bytes length + string)
+        - symbol (4 bytes length + string)
+        - uri (4 bytes length + string)
+        - mint (32 bytes pubkey)
+        - creator (32 bytes pubkey)  ← We need this!
+
+        Returns: (mint, creator) or (None, None)
+        """
         for log in logs:
             if log.startswith("Program data:"):
                 data_b64 = log.replace("Program data:", "").strip()
-                
+
                 # Fix padding
                 padding = 4 - len(data_b64) % 4
                 if padding != 4:
                     data_b64 += '=' * padding
-                
+
                 try:
                     decoded = base64.b64decode(data_b64)
-                    
+
                     # Check CreateV2 discriminator
                     if len(decoded) >= 8 and decoded[:8].hex() == self.CREATE_V2_DISCRIMINATOR:
-                        # Parse: discriminator(8) + name + symbol + uri + mint(32)
+                        # Parse: discriminator(8) + name + symbol + uri + mint(32) + creator(32)
                         pos = 8
-                        
+
                         # Skip name
                         if pos + 4 > len(decoded):
                             continue
                         name_len = int.from_bytes(decoded[pos:pos+4], 'little')
                         pos += 4 + name_len
-                        
+
                         # Skip symbol
                         if pos + 4 > len(decoded):
                             continue
                         symbol_len = int.from_bytes(decoded[pos:pos+4], 'little')
                         pos += 4 + symbol_len
-                        
+
                         # Skip URI
                         if pos + 4 > len(decoded):
                             continue
                         uri_len = int.from_bytes(decoded[pos:pos+4], 'little')
                         pos += 4 + uri_len
-                        
-                        # Extract mint
+
+                        # Extract mint (32 bytes)
+                        if pos + 32 > len(decoded):
+                            continue
+                        mint_bytes = decoded[pos:pos+32]
+                        mint = base58.b58encode(mint_bytes).decode()
+                        pos += 32
+
+                        # Extract creator (next 32 bytes)
+                        creator = None
                         if pos + 32 <= len(decoded):
-                            mint_bytes = decoded[pos:pos+32]
-                            return base58.b58encode(mint_bytes).decode()
-                except:
+                            creator_bytes = decoded[pos:pos+32]
+                            creator = base58.b58encode(creator_bytes).decode()
+                            logger.debug(f"✅ Extracted creator: {creator[:16]}...")
+                        else:
+                            logger.warning(f"⚠️ Could not extract creator from CreateV2 (data too short)")
+
+                        return mint, creator
+
+                except Exception as e:
+                    logger.debug(f"CreateV2 parse error: {e}")
                     continue
-        return None
+
+        return None, None
+
+    def _extract_mint_from_create(self, logs: list) -> Optional[str]:
+        """Legacy wrapper - returns just mint for backward compatibility"""
+        mint, _ = self._extract_mint_and_creator_from_create(logs)
+        return mint
     
     def _extract_buy_data(self, logs: list) -> tuple:
         """

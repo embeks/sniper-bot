@@ -1164,9 +1164,10 @@ class SniperBot:
             # Pump.fun constants: initial 30 SOL virtual, 1.073B virtual tokens
             helius_events = token_data.get('data', {})
             helius_sol = helius_events.get('vSolInBondingCurve', 0) if helius_events else 0
+            creator = helius_events.get('creator') if helius_events else None  # Extract creator
 
             signature = None
-            if helius_sol > 0:
+            if helius_sol > 0 and creator:  # Require creator for local TX
                 virtual_sol = 30 + helius_sol  # 30 SOL initial + accumulated
                 synthetic_curve = {
                     'is_valid': True,
@@ -1175,13 +1176,17 @@ class SniperBot:
                     'sol_raised': helius_sol,
                 }
                 logger.info(f"⚡ Synthetic curve: {helius_sol:.2f} SOL → v_sol={virtual_sol:.2f}, v_tokens={synthetic_curve['virtual_token_reserves']:,}")
+                logger.info(f"   Creator: {creator[:16]}... (for local TX)")
 
                 signature = await self.local_builder.create_buy_transaction(
                     mint=mint,
                     sol_amount=buy_amount,
                     curve_data=synthetic_curve,
-                    slippage_bps=3000
+                    slippage_bps=3000,
+                    creator=creator  # Pass creator for vault PDA derivation
                 )
+            elif helius_sol > 0:
+                logger.warning(f"⚠️ No creator in Helius data - falling back to PumpPortal")
             else:
                 logger.warning(f"⚠️ No Helius SOL data for local TX")
 
