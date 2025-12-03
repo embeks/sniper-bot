@@ -1239,11 +1239,8 @@ class SniperBot:
                         self.pending_buys -= 1
                         return
 
-                # ========================================================================
-                # ✅ CRITICAL FIX: Use CURVE SPOT price for P&L (not fill price)
-                # ========================================================================
                 if bought_tokens > 0 and actual_sol_spent > 0:
-                    # Calculate fill price for logging only
+                    # Log fill analysis for debugging
                     lamports_spent = actual_sol_spent * 1e9
                     token_atoms = bought_tokens * 1e6
                     fill_price = lamports_spent / token_atoms
@@ -1253,20 +1250,12 @@ class SniperBot:
                     logger.info(f"   Tokens: {bought_tokens:,.0f}")
                     logger.info(f"   Fill price: {fill_price:.10f} lamports/atomic")
 
-                    # ✅ FIX: Use CURVE SPOT price for P&L tracking (not fill price)
-                    await asyncio.sleep(0.3)
-                    post_buy_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                    if post_buy_curve and post_buy_curve.get('price_lamports_per_atomic', 0) > 0:
-                        actual_entry_price = post_buy_curve['price_lamports_per_atomic']
-                        entry_slippage = ((fill_price / actual_entry_price) - 1) * 100
-                        logger.info(f"✅ Entry price from CURVE SPOT: {actual_entry_price:.10f}")
-                        logger.info(f"   Slippage paid: {entry_slippage:+.1f}% (cost, not loss)")
-                    else:
-                        actual_entry_price = fill_price
-                        logger.warning(f"⚠️ Curve read failed, using fill price")
+                    # ✅ FIX: Don't set entry price here - will calibrate on first curve read
+                    actual_entry_price = 0  # Marker for "needs calibration"
+                    logger.info(f"   Entry price: will calibrate on first curve read")
                 else:
-                    logger.error(f"❌ No fill data - using detection-time price")
-                    actual_entry_price = estimated_entry_price
+                    logger.error(f"❌ No fill data")
+                    actual_entry_price = 0
 
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
@@ -1497,9 +1486,18 @@ class SniperBot:
                     # ===================================================================
                     # ✅ NEW: ENTRY SLIPPAGE GATE - Exit only if BOTH high slippage AND dumping
                     # ===================================================================
+                    # ✅ FIX: Calibrate entry price on first successful curve read
                     if not position.first_price_check_done:
                         position.first_price_check_done = True
-                        position.entry_price_at_first_check = price_change
+
+                        # If entry price not set (was 0), calibrate to current curve price
+                        if position.entry_token_price_sol == 0 or position.entry_token_price_sol > current_token_price_sol * 3:
+                            position.entry_token_price_sol = current_token_price_sol
+                            logger.info(f"✅ Entry price CALIBRATED from curve: {current_token_price_sol:.10f}")
+                            # Recalculate P&L with calibrated entry
+                            price_change = 0  # Start at 0% after calibration
+                            position.pnl_percent = 0
+
                         position.last_pnl_change_time = time.time()
                         position.last_recorded_pnl = price_change
 
@@ -1507,22 +1505,6 @@ class SniperBot:
                         logger.info(f"   Entry: {position.entry_token_price_sol:.10f} lamports/atomic")
                         logger.info(f"   Current: {current_token_price_sol:.10f} lamports/atomic")
                         logger.info(f"   P&L: {price_change:+.1f}%")
-
-                        # ✅ ENTRY SLIPPAGE GATE: Only panic exit if BOTH: high slippage AND token is dumping
-                        # Check if token has more sells than buys (from helius events if available)
-                        token_data = self.scanner.watched_tokens.get(mint, {}) if hasattr(self, 'scanner') and self.scanner else {}
-                        sells_count = token_data.get('sell_count', 0) if isinstance(token_data, dict) else 0
-                        buys_count = len(token_data.get('buyers', set())) if isinstance(token_data, dict) else 0
-
-                        if price_change <= -20 and sells_count > buys_count * 2:
-                            # Severe slippage AND heavy selling - likely a rug
-                            logger.warning(f"🚨 ENTRY SLIPPAGE + DUMP: {price_change:.1f}%, sells={sells_count} > buys={buys_count} - exiting")
-                            await self._close_position_full(mint, reason="entry_slippage_dump")
-                            break
-                        elif price_change <= -15:
-                            # High slippage but not necessarily dumping - log but continue monitoring
-                            logger.info(f"⚠️ Entry slippage {price_change:.1f}% but continuing - watching for recovery")
-                            position.entry_slippage_grace_until = time.time() + 15  # 15 second grace period
 
                     # ===================================================================
                     # ✅ NEW: FLATLINE DETECTION - Exit if stuck negative for 30s
