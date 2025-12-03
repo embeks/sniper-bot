@@ -463,7 +463,10 @@ class HeliusLogsMonitor:
                         mint = base58.b58encode(mint_bytes).decode()
                         pos += 32
 
-                        # Extract creator (next 32 bytes)
+                        # Skip bonding_curve PDA (32 bytes)
+                        pos += 32
+
+                        # Extract creator (next 32 bytes after bonding curve)
                         creator = None
                         if pos + 32 <= len(decoded):
                             creator_bytes = decoded[pos:pos+32]
