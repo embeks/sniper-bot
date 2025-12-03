@@ -27,6 +27,9 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# Fee Program (for feeConfig PDA)
+FEE_PROGRAM_ID = Pubkey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
+
 # Pump.fun instruction discriminators (first 8 bytes of sha256("global:buy") etc)
 BUY_DISCRIMINATOR = bytes([0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea])
 SELL_DISCRIMINATOR = bytes([0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad])
@@ -50,10 +53,24 @@ class LocalSwapBuilder:
             [b"__event_authority"],
             PUMPFUN_PROGRAM_ID
         )[0]
-        
+
+        # Global Volume Accumulator PDA
+        self.global_volume_accumulator = Pubkey.find_program_address(
+            [b"global_volume_accumulator"],
+            PUMPFUN_PROGRAM_ID
+        )[0]
+
+        # Fee Config PDA (owned by Fee Program, seeds include Pump program ID)
+        self.fee_config = Pubkey.find_program_address(
+            [b"fee_config", bytes(PUMPFUN_PROGRAM_ID)],
+            FEE_PROGRAM_ID
+        )[0]
+
         logger.info(f"LocalSwapBuilder initialized")
         logger.info(f"  Global PDA: {self.global_pda}")
         logger.info(f"  Event Authority: {self.event_authority}")
+        logger.info(f"  Global Volume Accumulator: {self.global_volume_accumulator}")
+        logger.info(f"  Fee Config: {self.fee_config}")
     
     def derive_bonding_curve_pda(self, mint: Pubkey) -> Tuple[Pubkey, int]:
         """Derive bonding curve PDA for a token"""
@@ -62,13 +79,20 @@ class LocalSwapBuilder:
             PUMPFUN_PROGRAM_ID
         )
 
-    def derive_creator_vault_pda(self, creator: Pubkey, mint: Pubkey) -> Pubkey:
+    def derive_creator_vault_pda(self, creator: Pubkey) -> Pubkey:
         """
         Derive Creator Vault PDA - REQUIRED for PumpFun buy transactions
-        Seeds: ["creator-vault", creator_pubkey, mint_pubkey]
+        Seeds: ["creator-vault", creator_pubkey]  # NO MINT!
         """
         return Pubkey.find_program_address(
-            [b"creator-vault", bytes(creator), bytes(mint)],
+            [b"creator-vault", bytes(creator)],
+            PUMPFUN_PROGRAM_ID
+        )[0]
+
+    def derive_user_volume_accumulator(self, user: Pubkey) -> Pubkey:
+        """Derive User Volume Accumulator PDA"""
+        return Pubkey.find_program_address(
+            [b"user_volume_accumulator", bytes(user)],
             PUMPFUN_PROGRAM_ID
         )[0]
 
@@ -111,42 +135,35 @@ class LocalSwapBuilder:
         bonding_curve: Pubkey,
         associated_bonding_curve: Pubkey,
         user_ata: Pubkey,
-        creator: Pubkey,        # Creator wallet pubkey
-        creator_vault: Pubkey,  # Creator Vault PDA
+        creator_vault: Pubkey,
+        user_volume_accumulator: Pubkey,
         token_amount: int,
         max_sol_cost: int
     ) -> Instruction:
         """
-        Build Pump.fun buy instruction
-
-        Args:
-            mint: Token mint address
-            bonding_curve: Bonding curve PDA
-            associated_bonding_curve: Bonding curve's token account
-            user_ata: User's associated token account
-            creator: Creator wallet pubkey
-            creator_vault: Creator Vault PDA (derived from creator + mint)
-            token_amount: Minimum tokens to receive (atomic units)
-            max_sol_cost: Maximum SOL to spend (lamports)
+        Build Pump.fun buy instruction (15 accounts per current IDL)
         """
-        # Instruction data: discriminator + token_amount (u64) + max_sol_cost (u64)
-        data = BUY_DISCRIMINATOR + struct.pack('<Q', token_amount) + struct.pack('<Q', max_sol_cost)
+        # Instruction data: discriminator + amount (u64) + max_sol_cost (u64) + track_volume (u8: 0=None, 1=False, 2=True)
+        data = BUY_DISCRIMINATOR + struct.pack('<Q', token_amount) + struct.pack('<Q', max_sol_cost) + bytes([0])  # 0 = None/don't track
 
-        # Account order matters! (13 accounts total)
+        # Account order per IDL (15 accounts total)
         accounts = [
-            AccountMeta(self.global_pda, is_signer=False, is_writable=False),        # 0 Global
-            AccountMeta(PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),   # 1 Fee
-            AccountMeta(mint, is_signer=False, is_writable=False),                   # 2 Mint
-            AccountMeta(bonding_curve, is_signer=False, is_writable=True),           # 3 Bonding curve
-            AccountMeta(associated_bonding_curve, is_signer=False, is_writable=True),# 4 Curve vault
-            AccountMeta(user_ata, is_signer=False, is_writable=True),                # 5 User ATA
-            AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),       # 6 User wallet
-            AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),      # 7 System Program
-            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),  # 8 Token-2022
-            AccountMeta(creator, is_signer=False, is_writable=False),                # 9 Creator wallet
-            AccountMeta(creator_vault, is_signer=False, is_writable=False),          # 10 Creator vault PDA
-            AccountMeta(self.event_authority, is_signer=False, is_writable=False),   # 11 Event Authority
-            AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),     # 12 Pump.fun program
+            AccountMeta(self.global_pda, is_signer=False, is_writable=False),             # 0 Global
+            AccountMeta(PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),        # 1 Fee Recipient
+            AccountMeta(mint, is_signer=False, is_writable=False),                        # 2 Mint
+            AccountMeta(bonding_curve, is_signer=False, is_writable=True),                # 3 Bonding Curve
+            AccountMeta(associated_bonding_curve, is_signer=False, is_writable=True),     # 4 Associated Bonding Curve
+            AccountMeta(user_ata, is_signer=False, is_writable=True),                     # 5 Associated User (ATA)
+            AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),            # 6 User
+            AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),           # 7 System Program
+            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),       # 8 Token Program
+            AccountMeta(creator_vault, is_signer=False, is_writable=True),                # 9 Creator Vault PDA
+            AccountMeta(self.event_authority, is_signer=False, is_writable=False),        # 10 Event Authority
+            AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),          # 11 Program
+            AccountMeta(self.global_volume_accumulator, is_signer=False, is_writable=True), # 12 Global Volume Accumulator
+            AccountMeta(user_volume_accumulator, is_signer=False, is_writable=True),      # 13 User Volume Accumulator
+            AccountMeta(self.fee_config, is_signer=False, is_writable=False),             # 14 Fee Config
+            AccountMeta(FEE_PROGRAM_ID, is_signer=False, is_writable=False),              # 15 Fee Program
         ]
 
         return Instruction(PUMPFUN_PROGRAM_ID, data, accounts)
@@ -227,7 +244,8 @@ class LocalSwapBuilder:
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
             associated_bonding_curve = self.derive_associated_token_account(bonding_curve, mint_pubkey)
             user_ata = self.derive_associated_token_account(self.wallet.pubkey, mint_pubkey)
-            creator_vault = self.derive_creator_vault_pda(creator_pubkey, mint_pubkey)
+            creator_vault = self.derive_creator_vault_pda(creator_pubkey)
+            user_volume_accumulator = self.derive_user_volume_accumulator(self.wallet.pubkey)
 
             # Get reserves from curve_data
             virtual_sol = curve_data.get('virtual_sol_reserves', 0)
@@ -250,6 +268,7 @@ class LocalSwapBuilder:
             logger.info(f"⚡ Building LOCAL buy TX for {mint[:8]}...")
             logger.info(f"   Creator: {creator[:16]}...")
             logger.info(f"   Creator Vault: {str(creator_vault)[:16]}...")
+            logger.info(f"   User Volume Accumulator: {str(user_volume_accumulator)[:16]}...")
             logger.info(f"   SOL in: {sol_amount} ({sol_lamports:,} lamports)")
             logger.info(f"   Expected tokens: {tokens_out:,}")
             logger.info(f"   Min tokens ({slippage_bps/100:.0f}% slip): {min_tokens:,}")
@@ -261,8 +280,8 @@ class LocalSwapBuilder:
                 bonding_curve,
                 associated_bonding_curve,
                 user_ata,
-                creator_pubkey,   # Creator wallet
-                creator_vault,    # Creator vault PDA
+                creator_vault,
+                user_volume_accumulator,
                 min_tokens,
                 max_sol_cost
             )
