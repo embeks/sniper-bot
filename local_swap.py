@@ -111,7 +111,8 @@ class LocalSwapBuilder:
         bonding_curve: Pubkey,
         associated_bonding_curve: Pubkey,
         user_ata: Pubkey,
-        creator_vault: Pubkey,  # NEW: Required parameter
+        creator: Pubkey,        # Creator wallet pubkey
+        creator_vault: Pubkey,  # Creator Vault PDA
         token_amount: int,
         max_sol_cost: int
     ) -> Instruction:
@@ -123,6 +124,7 @@ class LocalSwapBuilder:
             bonding_curve: Bonding curve PDA
             associated_bonding_curve: Bonding curve's token account
             user_ata: User's associated token account
+            creator: Creator wallet pubkey
             creator_vault: Creator Vault PDA (derived from creator + mint)
             token_amount: Minimum tokens to receive (atomic units)
             max_sol_cost: Maximum SOL to spend (lamports)
@@ -130,20 +132,21 @@ class LocalSwapBuilder:
         # Instruction data: discriminator + token_amount (u64) + max_sol_cost (u64)
         data = BUY_DISCRIMINATOR + struct.pack('<Q', token_amount) + struct.pack('<Q', max_sol_cost)
 
-        # Account order matters!
+        # Account order matters! (13 accounts total)
         accounts = [
-            AccountMeta(self.global_pda, is_signer=False, is_writable=False),
-            AccountMeta(PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),
-            AccountMeta(mint, is_signer=False, is_writable=False),
-            AccountMeta(bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(associated_bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(user_ata, is_signer=False, is_writable=True),
-            AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
-            AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(creator_vault, is_signer=False, is_writable=False),  # Creator Vault PDA
-            AccountMeta(self.event_authority, is_signer=False, is_writable=False),
-            AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(self.global_pda, is_signer=False, is_writable=False),        # 0 Global
+            AccountMeta(PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),   # 1 Fee
+            AccountMeta(mint, is_signer=False, is_writable=False),                   # 2 Mint
+            AccountMeta(bonding_curve, is_signer=False, is_writable=True),           # 3 Bonding curve
+            AccountMeta(associated_bonding_curve, is_signer=False, is_writable=True),# 4 Curve vault
+            AccountMeta(user_ata, is_signer=False, is_writable=True),                # 5 User ATA
+            AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),       # 6 User wallet
+            AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),      # 7 System Program
+            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),  # 8 Token-2022
+            AccountMeta(creator, is_signer=False, is_writable=False),                # 9 Creator wallet
+            AccountMeta(creator_vault, is_signer=False, is_writable=False),          # 10 Creator vault PDA
+            AccountMeta(self.event_authority, is_signer=False, is_writable=False),   # 11 Event Authority
+            AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),     # 12 Pump.fun program
         ]
 
         return Instruction(PUMPFUN_PROGRAM_ID, data, accounts)
@@ -258,7 +261,8 @@ class LocalSwapBuilder:
                 bonding_curve,
                 associated_bonding_curve,
                 user_ata,
-                creator_vault,  # NEW: Pass creator vault
+                creator_pubkey,   # Creator wallet
+                creator_vault,    # Creator vault PDA
                 min_tokens,
                 max_sol_cost
             )
