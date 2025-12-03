@@ -1240,23 +1240,32 @@ class SniperBot:
                         return
 
                 # ========================================================================
-                # ✅ CRITICAL FIX: Calculate entry price from ACTUAL FILL DATA
+                # ✅ CRITICAL FIX: Use CURVE SPOT price for P&L (not fill price)
                 # ========================================================================
                 if bought_tokens > 0 and actual_sol_spent > 0:
+                    # Calculate fill price for logging only
                     lamports_spent = actual_sol_spent * 1e9
-                    token_atoms = bought_tokens * 1e6  # PumpFun uses 6 decimals
-                    actual_entry_price = lamports_spent / token_atoms
+                    token_atoms = bought_tokens * 1e6
+                    fill_price = lamports_spent / token_atoms
 
-                    logger.info(f"✅ Entry price from FILL DATA:")
-                    logger.info(f"   SOL spent: {actual_sol_spent:.6f} ({lamports_spent:,.0f} lamports)")
-                    logger.info(f"   Tokens: {bought_tokens:,.0f} ({token_atoms:,.0f} atomic)")
-                    logger.info(f"   Fill price: {actual_entry_price:.10f} lamports/atomic")
+                    logger.info(f"📊 Fill analysis:")
+                    logger.info(f"   SOL spent: {actual_sol_spent:.6f}")
+                    logger.info(f"   Tokens: {bought_tokens:,.0f}")
+                    logger.info(f"   Fill price: {fill_price:.10f} lamports/atomic")
 
-                    if estimated_entry_price > 0:
-                        entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
-                        logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
+                    # ✅ FIX: Use CURVE SPOT price for P&L tracking (not fill price)
+                    await asyncio.sleep(0.3)
+                    post_buy_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                    if post_buy_curve and post_buy_curve.get('price_lamports_per_atomic', 0) > 0:
+                        actual_entry_price = post_buy_curve['price_lamports_per_atomic']
+                        entry_slippage = ((fill_price / actual_entry_price) - 1) * 100
+                        logger.info(f"✅ Entry price from CURVE SPOT: {actual_entry_price:.10f}")
+                        logger.info(f"   Slippage paid: {entry_slippage:+.1f}% (cost, not loss)")
+                    else:
+                        actual_entry_price = fill_price
+                        logger.warning(f"⚠️ Curve read failed, using fill price")
                 else:
-                    logger.error(f"❌ No fill data - using detection-time price (INACCURATE)")
+                    logger.error(f"❌ No fill data - using detection-time price")
                     actual_entry_price = estimated_entry_price
 
             if signature and bought_tokens > 0:
