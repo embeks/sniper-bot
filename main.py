@@ -1684,35 +1684,39 @@ class SniperBot:
                     # DYNAMIC CRASH DETECTION - threshold based on peak reached
                     # (11-trade analysis: let winners breathe more)
                     # ===================================================================
-                    crash_from_peak = position.max_pnl_reached - price_change
-
-                    # Dynamic threshold: relax if we hit a big peak
-                    if position.max_pnl_reached >= 30:
-                        crash_threshold = 40  # Let winners breathe
-                    elif position.max_pnl_reached >= 20:
-                        crash_threshold = 40  # Standard
-                    elif position.max_pnl_reached >= 10:
-                        crash_threshold = 40  # Tighter
+                    # Skip crash detection while tier sells are pending (avoid panic-selling during profit taking)
+                    if position.pending_sells:
+                        logger.debug(f"Skipping crash check - pending sells: {position.pending_sells}")
                     else:
-                        crash_threshold = 40  # Very tight for no-momentum tokens
+                        crash_from_peak = position.max_pnl_reached - price_change
 
-                    if (crash_from_peak > crash_threshold and
-                        price_change < 10 and
-                        not position.is_closing):
+                        # Dynamic threshold: relax if we hit a big peak
+                        if position.max_pnl_reached >= 30:
+                            crash_threshold = 40  # Let winners breathe
+                        elif position.max_pnl_reached >= 20:
+                            crash_threshold = 40  # Standard
+                        elif position.max_pnl_reached >= 10:
+                            crash_threshold = 40  # Tighter
+                        else:
+                            crash_threshold = 40  # Very tight for no-momentum tokens
 
-                        logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak (threshold: {crash_threshold}%)")
-                        logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
+                        if (crash_from_peak > crash_threshold and
+                            price_change < 10 and
+                            not position.is_closing):
 
-                        # DIAGNOSTIC: Compare price sources at exit
-                        fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                        fresh_dex = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
-                        logger.info(f"🔍 PRICE DIAGNOSTIC at exit trigger:")
-                        logger.info(f"   Monitoring price: {current_token_price_sol:.10f}")
-                        logger.info(f"   Fresh curve_reader: {fresh_curve.get('price_lamports_per_atomic', 0) if fresh_curve else 'None':.10f}")
-                        logger.info(f"   Fresh dex.py: {fresh_dex.get('price_lamports_per_atomic', 0) if fresh_dex else 'None':.10f}")
+                            logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak (threshold: {crash_threshold}%)")
+                            logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
 
-                        await self._close_position_full(mint, reason="momentum_crash")
-                        break
+                            # DIAGNOSTIC: Compare price sources at exit
+                            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                            fresh_dex = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+                            logger.info(f"🔍 PRICE DIAGNOSTIC at exit trigger:")
+                            logger.info(f"   Monitoring price: {current_token_price_sol:.10f}")
+                            logger.info(f"   Fresh curve_reader: {fresh_curve.get('price_lamports_per_atomic', 0) if fresh_curve else 'None':.10f}")
+                            logger.info(f"   Fresh dex.py: {fresh_dex.get('price_lamports_per_atomic', 0) if fresh_dex else 'None':.10f}")
+
+                            await self._close_position_full(mint, reason="momentum_crash")
+                            break
 
                     # ===================================================================
                     # EXIT RULE 3: TIER 1 TAKE PROFIT (+20%) - NORMAL MODE ONLY
