@@ -115,6 +115,17 @@ TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD',
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '0'))
 
 # ============================================
+# FLATLINE DETECTION
+# ============================================
+FLATLINE_TIMEOUT_SECONDS = 15  # Was 30, now faster exit for dead tokens
+
+# ============================================
+# RUG DETECTION - Curve Drain
+# ============================================
+RUG_CURVE_DROP_PERCENT = 20  # Exit if curve drops 20%+ from recent peak
+RUG_CURVE_WINDOW_SECONDS = 6  # Within this time window
+
+# ============================================
 # MOMENTUM EXIT SETTINGS
 # ============================================
 MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '15.0'))     # Raised from 25.0
