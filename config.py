@@ -49,7 +49,7 @@ TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '20.0'))  # Was 30%
 TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '60.0'))      # Was 40%
 
-TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '40.0'))  # Was 40%
+TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '30.0'))  # Was 40%, lowered to capture +25-35% peaks
 TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '100.0'))      # Was 40% - sells remainder
 
 # TIER 3 DISABLED - 2-tier system reduces fees

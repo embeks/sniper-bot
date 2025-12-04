@@ -1152,9 +1152,11 @@ class SniperBot:
 
             if sells_at_detection == 0:
                 buy_amount = 0.12  # High confidence - 50% larger position
-                logger.info(f"🎯 HIGH CONFIDENCE ENTRY: 0 sells detected, using {buy_amount} SOL")
+                slippage_bps = 5000  # 50% slippage - 0-sell tokens move fast
+                logger.info(f"🎯 HIGH CONFIDENCE ENTRY: 0 sells detected, using {buy_amount} SOL, {slippage_bps/100:.0f}% slippage")
             else:
                 buy_amount = BUY_AMOUNT_SOL  # Standard position
+                slippage_bps = 3000  # 30% slippage - standard
 
             # Store for accurate P&L tracking later
             _position_buy_amount = buy_amount
@@ -1181,7 +1183,7 @@ class SniperBot:
                     mint=mint,
                     sol_amount=buy_amount,
                     curve_data=synthetic_curve,
-                    slippage_bps=3000,
+                    slippage_bps=slippage_bps,
                     creator=creator  # Pass creator for vault PDA derivation
                 )
             elif helius_sol > 0:
@@ -1196,7 +1198,7 @@ class SniperBot:
                     mint=mint,
                     sol_amount=buy_amount,
                     bonding_curve_key=bonding_curve_key,
-                    slippage=3000,
+                    slippage=slippage_bps,
                     urgency="buy"
                 )
             
