@@ -275,6 +275,9 @@ class LocalSwapBuilder:
             logger.info(f"   Max SOL cost: {max_sol_cost:,} lamports")
 
             # Build instruction
+            # NOTE: Pass tokens_out (expected), not min_tokens
+            # max_sol_cost already provides slippage protection
+            # Passing min_tokens caused underspend (buying fewer tokens = less SOL spent)
             buy_ix = self.build_buy_instruction(
                 mint_pubkey,
                 bonding_curve,
@@ -282,7 +285,7 @@ class LocalSwapBuilder:
                 user_ata,
                 creator_vault,
                 user_volume_accumulator,
-                min_tokens,
+                tokens_out,  # FIXED: Use expected tokens, not min
                 max_sol_cost
             )
             
