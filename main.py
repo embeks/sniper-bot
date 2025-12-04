@@ -80,7 +80,6 @@ class Position:
         self.total_sold_percent = 0
         self.realized_pnl_sol = 0
         self.is_closing = False
-        self.rug_exit_pending = False  # Flag for selling remainder after pending sells complete
         self.retry_counts = {}
         self.last_valid_price = 0
         self.last_price_update = time.time()
@@ -1531,17 +1530,16 @@ class SniperBot:
                         if curve and curve.get('sol_raised', 100) < 2.0:  # Less than 2 SOL = rugged
                             logger.warning(f"🚨 BONDING RUG: {mint[:8]}... only {curve['sol_raised']:.2f} SOL in curve")
 
-                            # ✅ FIX: If tier sells are pending, don't submit another sell
-                            # Mark as closing and let pending sells complete, then sell remainder
+                            # ✅ FIX: On rug, sell EVERYTHING immediately - don't wait for pending sells
+                            # _close_position_full gets actual wallet balance, so it handles whether
+                            # tier1 landed or not. One transaction, one fee, fastest exit.
                             if position.pending_sells:
-                                logger.warning(f"   Pending sells: {position.pending_sells} - marking for rug exit after completion")
-                                position.is_closing = True
-                                position.rug_exit_pending = True  # New flag to trigger remainder sell
-                                # Don't break - keep monitoring until pending clears
-                                continue
-                            else:
-                                await self._close_position_full(mint, reason="bonding_rug")
-                                break
+                                logger.warning(f"   Pending sells: {position.pending_sells} - IGNORING, selling full balance NOW")
+                                position.pending_sells.clear()
+                                position.pending_token_amounts.clear()
+
+                            await self._close_position_full(mint, reason="bonding_rug")
+                            break
 
                     # ===================================================================
                     # RUNNER DETECTION: Check if token qualifies for pyramid adds
@@ -2121,12 +2119,6 @@ class SniperBot:
                 if position.total_sold_percent >= 100 or position.remaining_tokens <= 0:
                     logger.info(f"✅ Position fully closed")
                     position.status = 'completed'
-                elif getattr(position, 'rug_exit_pending', False) and position.remaining_tokens > 0:
-                    # Rug was detected while this sell was pending - sell remainder now
-                    logger.info(f"🚨 Rug exit: selling remaining {position.remaining_tokens:,.0f} tokens")
-                    position.rug_exit_pending = False  # Clear flag
-                    position.is_closing = False  # CRITICAL: Allow _close_position_full to execute
-                    asyncio.create_task(self._close_position_full(mint, reason="bonding_rug"))
             else:
                 logger.warning(f"❌ {target_name} RPC timeout for {mint[:8]}... checking TX status")
 
@@ -2197,12 +2189,6 @@ class SniperBot:
                                 if position.remaining_tokens <= 0 or position.total_sold_percent >= 100:
                                     logger.info(f"✅ Position fully closed via chain confirmation")
                                     position.status = 'completed'
-                                elif getattr(position, 'rug_exit_pending', False) and position.remaining_tokens > 0:
-                                    # Rug was detected while this sell was pending - sell remainder now
-                                    logger.info(f"🚨 Rug exit (chain confirmed): selling remaining {position.remaining_tokens:,.0f} tokens")
-                                    position.rug_exit_pending = False  # Clear flag
-                                    position.is_closing = False  # CRITICAL: Allow _close_position_full to execute
-                                    asyncio.create_task(self._close_position_full(mint, reason="bonding_rug"))
                         return
 
                 except Exception as e:
