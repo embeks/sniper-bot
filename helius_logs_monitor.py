@@ -210,6 +210,7 @@ class HeliusLogsMonitor:
             'buys': [],
             'buy_amounts': [],  # NEW: track individual buy amounts for top-2 calc
             'peak_velocity': 0.0,
+            'vSolInBondingCurve': 0.0,  # Actual curve SOL for rug detection
         }
 
         if creator:
@@ -237,6 +238,7 @@ class HeliusLogsMonitor:
         state['buy_count'] += 1
         state['largest_buy'] = max(state['largest_buy'], sol_amount)
         state['buy_amounts'].append(sol_amount)  # NEW: track for top-2 calc
+        state['vSolInBondingCurve'] += sol_amount  # Track actual curve SOL for rug detection
 
         # Track peak velocity (only after 0.5s to avoid false spikes at age≈0)
         age = time.time() - state['created_at']
@@ -272,7 +274,11 @@ class HeliusLogsMonitor:
         self.stats['sells'] += 1
         state = self.watched_tokens[mint]
         state['sell_count'] += 1
-        
+
+        # Estimate sell amount (we don't parse it, so estimate ~0.3 SOL avg)
+        estimated_sell_sol = 0.3
+        state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated_sell_sol)
+
         logger.warning(f"⚠️ SELL on {mint[:8]}... (sell #{state['sell_count']} before entry)")
     
     async def _check_and_trigger(self, mint: str, state: dict):
