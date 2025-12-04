@@ -10,6 +10,7 @@ import logging
 import time
 import base64
 import base58
+import statistics
 import websockets
 from datetime import datetime
 from typing import Optional, Dict, Set, Tuple
@@ -56,6 +57,10 @@ class HeliusLogsMonitor:
             'skipped_velocity_high': 0,  # NEW: track high velocity skips
             'skipped_top2': 0,           # NEW: track top-2 concentration skips
             'skipped_distribution': 0,   # NEW: track poor buyer distribution skips
+            'skipped_bundled': 0,        # NEW: track bundled launch skips
+            'skipped_whale_first': 0,    # NEW: track whale first buy skips
+            'skipped_variance': 0,       # NEW: track volume bot skips
+            'skipped_fast_dump': 0,      # NEW: track fast dump skips
         }
         
         # Known discriminators
@@ -169,26 +174,30 @@ class HeliusLogsMonitor:
             value = result.get('value', {})
             signature = value.get('signature', '')
             logs = value.get('logs', [])
-            
+
+            # Extract slot from WebSocket event context
+            context = result.get('context', {})
+            slot = context.get('slot')
+
             if not signature or not logs:
                 return
-            
+
             # Detect event type from logs
             is_create = any('Instruction: CreateV2' in log for log in logs)
             is_buy = any('Instruction: Buy' in log for log in logs)
             is_sell = any('Instruction: Sell' in log for log in logs)
-            
+
             if is_create:
-                await self._handle_create(logs, signature)
+                await self._handle_create(logs, signature, slot)
             elif is_buy:
-                await self._handle_buy(logs, signature)
+                await self._handle_buy(logs, signature, slot)
             elif is_sell:
-                await self._handle_sell(logs, signature)
+                await self._handle_sell(logs, signature, slot)
                 
         except Exception as e:
             logger.error(f"Error processing log: {e}")
     
-    async def _handle_create(self, logs: list, signature: str):
+    async def _handle_create(self, logs: list, signature: str, slot: int = None):
         """Handle CreateV2 - start watching new token"""
         mint, creator = self._extract_mint_and_creator_from_create(logs)
         if not mint:
@@ -209,6 +218,12 @@ class HeliusLogsMonitor:
             'buys': [],
             'buy_amounts': [],  # NEW: track individual buy amounts for top-2 calc
             'peak_velocity': 0.0,
+            # Quality filter tracking fields
+            'buy_slots': [],           # Track which slot each buy occurred in
+            'buy_timestamps': [],      # Track when each buy occurred
+            'first_buy_amount': None,  # Track first buyer's size
+            'creation_slot': slot,     # Track which slot token was created in
+            'first_sell_timestamp': None,  # Track when first sell happened
         }
 
         if creator:
@@ -216,11 +231,11 @@ class HeliusLogsMonitor:
         else:
             logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (no creator extracted)")
     
-    async def _handle_buy(self, logs: list, signature: str):
+    async def _handle_buy(self, logs: list, signature: str, slot: int = None):
         """Handle Buy event - update token state and check entry"""
         # Extract mint from buy event
         mint, sol_amount, buyer = self._extract_buy_data(logs)
-        
+
         if not mint or mint not in self.watched_tokens:
             return
 
@@ -229,13 +244,24 @@ class HeliusLogsMonitor:
 
         self.stats['buys'] += 1
         state = self.watched_tokens[mint]
-        
+
         # Update state
         state['buyers'].add(buyer) if buyer else None
         state['total_sol'] += sol_amount
         state['buy_count'] += 1
         state['largest_buy'] = max(state['largest_buy'], sol_amount)
         state['buy_amounts'].append(sol_amount)  # NEW: track for top-2 calc
+
+        # Track slot for bundled buy detection
+        if slot:
+            state['buy_slots'].append(slot)
+
+        # Track buy timestamp
+        state['buy_timestamps'].append(time.time())
+
+        # Track first buy amount for whale detection
+        if state['first_buy_amount'] is None:
+            state['first_buy_amount'] = sol_amount
 
         # Track peak velocity (only after 0.5s to avoid false spikes at age≈0)
         age = time.time() - state['created_at']
@@ -261,17 +287,21 @@ class HeliusLogsMonitor:
         if not already_triggered:
             await self._check_and_trigger(mint, state)
     
-    async def _handle_sell(self, logs: list, signature: str):
+    async def _handle_sell(self, logs: list, signature: str, slot: int = None):
         """Handle Sell event - flag token as risky"""
         mint = self._extract_mint_from_sell(logs)
-        
+
         if not mint or mint not in self.watched_tokens:
             return
-        
+
         self.stats['sells'] += 1
         state = self.watched_tokens[mint]
         state['sell_count'] += 1
-        
+
+        # Track first sell timestamp for fast dump detection
+        if state['first_sell_timestamp'] is None:
+            state['first_sell_timestamp'] = time.time()
+
         logger.warning(f"⚠️ SELL on {mint[:8]}... (sell #{state['sell_count']} before entry)")
     
     async def _check_and_trigger(self, mint: str, state: dict):
@@ -355,6 +385,55 @@ class HeliusLogsMonitor:
             self.stats['skipped_top2'] += 1
             self.triggered_tokens.add(mint)
             return
+
+        # ===== NEW QUALITY FILTERS =====
+
+        # FILTER 1: Same-block bundled buy detection
+        # If 3+ buys happened in the same slot as creation, it's a bundled insider launch
+        creation_slot = state.get('creation_slot')
+        buy_slots = state.get('buy_slots', [])
+        if creation_slot and buy_slots:
+            same_slot_buys = [s for s in buy_slots if s == creation_slot]
+            if len(same_slot_buys) >= 3:
+                logger.warning(f"⚠️ BUNDLED LAUNCH: {len(same_slot_buys)} buys in creation slot - SKIP {mint[:8]}")
+                self.stats['skipped_bundled'] += 1
+                self.triggered_tokens.add(mint)
+                return
+
+        # FILTER 2: First buyer whale detection
+        # If first buyer dropped >2 SOL, likely dev/insider bundling
+        first_buy = state.get('first_buy_amount')
+        if first_buy and first_buy > 2.0:
+            logger.warning(f"⚠️ WHALE FIRST BUY: {first_buy:.2f} SOL - likely insider - SKIP {mint[:8]}")
+            self.stats['skipped_whale_first'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # FILTER 3: Buy size variance (detect volume bots)
+        # If all buys are nearly identical amounts, it's bot activity
+        buy_amounts_list = state.get('buy_amounts', [])
+        if len(buy_amounts_list) >= 5:
+            buy_std = statistics.stdev(buy_amounts_list)
+            if buy_std < 0.03:  # All buys within 0.03 SOL of each other = bot
+                logger.warning(f"⚠️ VOLUME BOT: Buy variance {buy_std:.4f} too low - SKIP {mint[:8]}")
+                self.stats['skipped_variance'] += 1
+                self.triggered_tokens.add(mint)
+                return
+
+        # FILTER 4: Time-to-first-sell check
+        # If first sell happened within 10s of first buy, someone's already dumping
+        buy_timestamps = state.get('buy_timestamps', [])
+        first_sell_ts = state.get('first_sell_timestamp')
+        if buy_timestamps and first_sell_ts:
+            first_buy_ts = buy_timestamps[0]
+            time_to_first_sell = first_sell_ts - first_buy_ts
+            if time_to_first_sell < 10:
+                logger.warning(f"⚠️ FAST DUMP: First sell {time_to_first_sell:.1f}s after first buy - SKIP {mint[:8]}")
+                self.stats['skipped_fast_dump'] += 1
+                self.triggered_tokens.add(mint)
+                return
+
+        # ===== END NEW QUALITY FILTERS =====
 
         # 10. DISABLED: Buyer distribution filter too strict for early entries
         # Already protected by single wallet (45%) and top-2 concentration (60%) filters
@@ -572,4 +651,5 @@ class HeliusLogsMonitor:
         logger.info(f"Helius monitor stopped")
         logger.info(f"Stats: {stats['creates']} creates, {stats['buys']} buys, {stats['sells']} sells")
         logger.info(f"Triggered: {stats['triggers']} | Skipped (sells): {stats['skipped_sells']} | Skipped (bot): {stats['skipped_bot']}")
-        logger.info(f"NEW filters - Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (distribution): {stats.get('skipped_distribution', 0)}")
+        logger.info(f"Baseline filters - Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (distribution): {stats.get('skipped_distribution', 0)}")
+        logger.info(f"Quality filters - Bundled: {stats['skipped_bundled']} | Whale 1st: {stats['skipped_whale_first']} | Variance: {stats['skipped_variance']} | Fast dump: {stats['skipped_fast_dump']}")
