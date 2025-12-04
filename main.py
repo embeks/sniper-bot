@@ -1736,14 +1736,14 @@ class SniperBot:
                     # ===================================================================
                     # EXIT RULE 4: TIER 2 TAKE PROFIT (+40%) - NORMAL MODE ONLY
                     # ===================================================================
-                    # FIX: tier2 must wait for tier1 to be CONFIRMED (not just submitted)
-                    tier1_confirmed = "tier1" in position.partial_sells
-                    tier1_not_pending = "tier1" not in position.pending_sells
+                    # ✅ FIX: tier2 can trigger if tier1 is SUBMITTED (pending OR confirmed)
+                    # remaining_tokens is already reduced when tier1 submits, so tier2 sells correct amount
+                    # This prevents missing profits when tier1 takes 20-30s to confirm
+                    tier1_submitted = "tier1" in position.partial_sells or "tier1" in position.pending_sells
 
                     if (not position.is_runner_mode and
                         price_change >= TIER_2_PROFIT_PERCENT and
-                        tier1_confirmed and  # tier1 must be CONFIRMED first
-                        tier1_not_pending and  # and not still pending
+                        tier1_submitted and  # tier1 must be SUBMITTED (pending or confirmed)
                         "tier2" not in position.partial_sells and
                         "tier2" not in position.pending_sells and
                         not position.is_closing):
