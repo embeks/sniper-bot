@@ -268,6 +268,8 @@ class HeliusLogsMonitor:
         if age >= 0.5:
             current_velocity = state['total_sol'] / age
             state['peak_velocity'] = max(state['peak_velocity'], current_velocity)
+            if hasattr(self, 'velocity_checker') and self.velocity_checker:
+                self.velocity_checker.record_velocity(mint, current_velocity)
 
         state['buys'].append({
             'time': time.time(),
@@ -430,6 +432,14 @@ class HeliusLogsMonitor:
             if time_to_first_sell < 10:
                 logger.warning(f"⚠️ FAST DUMP: First sell {time_to_first_sell:.1f}s after first buy - SKIP {mint[:8]}")
                 self.stats['skipped_fast_dump'] += 1
+                self.triggered_tokens.add(mint)
+                return
+
+        # FILTER 5: Velocity trend (dying pump detection)
+        if hasattr(self, 'velocity_checker') and self.velocity_checker:
+            velocity_trend = self.velocity_checker.get_velocity_trend(mint)
+            if velocity_trend == 'decaying':
+                logger.warning(f"⚠️ DYING PUMP: Velocity decaying - SKIP {mint[:8]}")
                 self.triggered_tokens.add(mint)
                 return
 
