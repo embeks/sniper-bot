@@ -1,3 +1,4 @@
+
 """
 Velocity Checker - FINAL: Two-snapshot rule to prevent buying tops
 Only allows entries after confirming velocity is STILL pumping
@@ -59,9 +60,6 @@ class VelocityChecker:
 
         # Track pre-buy velocity for fail-fast comparison
         self.pre_buy_velocity: Dict[str, float] = {}
-
-        # Track velocity trend for dying pump detection
-        self.velocity_trend_history: Dict[str, list] = {}
     
     def check_velocity(
         self, 
@@ -435,84 +433,3 @@ class VelocityChecker:
             del self.velocity_history[mint]
         if mint in self.pre_buy_velocity:
             del self.pre_buy_velocity[mint]
-        if mint in self.velocity_trend_history:
-            del self.velocity_trend_history[mint]
-
-    # ===== NEW: Velocity Trend Tracking =====
-
-    def record_velocity(self, mint: str, velocity: float):
-        """
-        Record a velocity snapshot for trend analysis.
-        Call this periodically during monitoring.
-
-        Args:
-            mint: Token mint address
-            velocity: Current SOL/s velocity
-        """
-        if not hasattr(self, 'velocity_trend_history'):
-            self.velocity_trend_history = {}
-
-        if mint not in self.velocity_trend_history:
-            self.velocity_trend_history[mint] = []
-
-        self.velocity_trend_history[mint].append((time.time(), velocity))
-
-        # Keep only last 5 readings
-        self.velocity_trend_history[mint] = self.velocity_trend_history[mint][-5:]
-
-    def get_velocity_trend(self, mint: str) -> str:
-        """
-        Analyze velocity trend for a token.
-
-        Returns:
-            'accelerating' - velocity increasing >20%
-            'stable' - velocity within ±20%
-            'decaying' - velocity decreasing >30%
-            'unknown' - not enough data
-        """
-        if not hasattr(self, 'velocity_trend_history'):
-            self.velocity_trend_history = {}
-
-        history = self.velocity_trend_history.get(mint, [])
-        if len(history) < 2:
-            return 'unknown'
-
-        recent = history[-1][1]
-        previous = history[-2][1]
-
-        if previous <= 0:
-            return 'unknown'
-
-        if recent > previous * 1.2:
-            return 'accelerating'
-        elif recent < previous * 0.7:
-            return 'decaying'
-        return 'stable'
-
-    def get_velocity_trend_details(self, mint: str) -> dict:
-        """
-        Get detailed velocity trend information.
-
-        Returns:
-            dict with 'trend', 'change_percent', 'readings' count
-        """
-        if not hasattr(self, 'velocity_trend_history'):
-            self.velocity_trend_history = {}
-
-        history = self.velocity_trend_history.get(mint, [])
-        if len(history) < 2:
-            return {
-                'trend': 'unknown',
-                'change_percent': 0.0,
-                'readings': len(history)
-            }
-
-        recent = history[-1][1]
-        previous = history[-2][1]
-        change_percent = ((recent - previous) / previous * 100) if previous > 0 else 0.0
-
-        return {
-            'trend': self.get_velocity_trend(mint),
-            'change_percent': change_percent,
-            'readings': len(history)
-        }
