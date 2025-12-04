@@ -29,6 +29,34 @@ BACKUP_RPC_ENDPOINTS = [
 ]
 
 # ============================================
+# JITO BUNDLE CONFIGURATION
+# ============================================
+JITO_ENABLED = os.getenv('JITO_ENABLED', 'true').lower() == 'true'
+JITO_TIP_AMOUNT_SOL = float(os.getenv('JITO_TIP_SOL', '0.005'))  # Default 0.005 SOL
+JITO_TIP_AGGRESSIVE_SOL = float(os.getenv('JITO_TIP_AGGRESSIVE_SOL', '0.01'))  # For 0-sell tokens
+
+# Jito Block Engine endpoints (rotate randomly to reduce contention)
+JITO_ENDPOINTS = [
+    "https://mainnet.block-engine.jito.wtf/api/v1/transactions",
+    "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions",
+    "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/transactions",
+    "https://ny.mainnet.block-engine.jito.wtf/api/v1/transactions",
+    "https://tokyo.mainnet.block-engine.jito.wtf/api/v1/transactions",
+]
+
+# Jito tip accounts (pick one randomly per TX to reduce contention)
+JITO_TIP_ACCOUNTS = [
+    "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+    "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+    "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+    "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+    "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+    "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+    "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+    "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+]
+
+# ============================================
 # TRADING PARAMETERS
 # ============================================
 APPROX_SOL_PRICE_USD = 235.0

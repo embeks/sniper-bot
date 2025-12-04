@@ -7,6 +7,9 @@ Saves 200-500ms per trade by building transactions locally
 import struct
 import logging
 import time
+import random
+import aiohttp
+import asyncio
 from typing import Optional, Tuple
 from solders.pubkey import Pubkey
 from solders.instruction import Instruction, AccountMeta
@@ -71,7 +74,66 @@ class LocalSwapBuilder:
         logger.info(f"  Event Authority: {self.event_authority}")
         logger.info(f"  Global Volume Accumulator: {self.global_volume_accumulator}")
         logger.info(f"  Fee Config: {self.fee_config}")
-    
+
+    def _build_jito_tip_instruction(self, tip_lamports: int) -> Instruction:
+        """Build a SOL transfer instruction to a random Jito tip account"""
+        from config import JITO_TIP_ACCOUNTS
+
+        tip_account = Pubkey.from_string(random.choice(JITO_TIP_ACCOUNTS))
+
+        # System program transfer instruction (discriminator = 2 for Transfer)
+        data = bytes([2, 0, 0, 0]) + struct.pack('<Q', tip_lamports)
+
+        accounts = [
+            AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
+            AccountMeta(tip_account, is_signer=False, is_writable=True),
+        ]
+
+        return Instruction(SYSTEM_PROGRAM_ID, data, accounts)
+
+    async def _send_via_jito(self, signed_tx_bytes: bytes) -> Optional[str]:
+        """Send transaction via Jito block engine for priority inclusion"""
+        from config import JITO_ENDPOINTS
+        import base64
+
+        tx_base64 = base64.b64encode(signed_tx_bytes).decode('utf-8')
+        endpoint = random.choice(JITO_ENDPOINTS)
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [tx_base64, {"encoding": "base64"}]
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    endpoint,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
+                    result = await response.json()
+
+                    if "result" in result:
+                        sig = result["result"]
+                        logger.info(f"🚀 Jito accepted: {sig[:16]}...")
+                        return sig
+                    elif "error" in result:
+                        logger.warning(f"⚠️ Jito rejected: {result['error'].get('message', result['error'])}")
+                        return None
+                    else:
+                        logger.warning(f"⚠️ Unexpected Jito response: {result}")
+                        return None
+
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ Jito timeout")
+            return None
+        except Exception as e:
+            logger.warning(f"⚠️ Jito error: {e}")
+            return None
+
     def derive_bonding_curve_pda(self, mint: Pubkey) -> Tuple[Pubkey, int]:
         """Derive bonding curve PDA for a token"""
         return Pubkey.find_program_address(
@@ -312,33 +374,54 @@ class LocalSwapBuilder:
             # Get recent blockhash
             blockhash_resp = self.client.get_latest_blockhash()
             recent_blockhash = blockhash_resp.value.blockhash
-            
+
+            # Add Jito tip instruction if enabled
+            from config import JITO_ENABLED, JITO_TIP_AMOUNT_SOL, JITO_TIP_AGGRESSIVE_SOL
+
+            jito_tip_sol = 0
+            if JITO_ENABLED:
+                # Use aggressive tip for high-conviction entries (0-sell tokens use 50% slippage)
+                jito_tip_sol = JITO_TIP_AGGRESSIVE_SOL if slippage_bps >= 5000 else JITO_TIP_AMOUNT_SOL
+                tip_lamports = int(jito_tip_sol * 1e9)
+                tip_ix = self._build_jito_tip_instruction(tip_lamports)
+                instructions.append(tip_ix)  # Tip MUST be last instruction
+                logger.info(f"   💰 Jito tip: {jito_tip_sol} SOL")
+
             # Build and sign transaction
             message = Message.new_with_blockhash(
                 instructions,
                 self.wallet.pubkey,
                 recent_blockhash
             )
-            
+
             tx = Transaction.new_unsigned(message)
             tx.sign([self.wallet.keypair], recent_blockhash)
-            
+
             build_time = (time.time() - start) * 1000
             logger.info(f"   ⚡ TX built in {build_time:.1f}ms (vs 200-500ms PumpPortal)")
-            
-            # Send transaction
-            opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-            
-            response = self.client.send_raw_transaction(bytes(tx), opts)
-            sig = str(response.value)
-            
-            if sig.startswith("1111111"):
-                logger.error("Transaction failed - invalid signature")
-                return None
-            
+
+            # Send transaction - Jito only for buys (no fallback, opportunity is stale)
+            from config import JITO_ENABLED
+
+            sig = None
+            if JITO_ENABLED:
+                sig = await self._send_via_jito(bytes(tx))
+                if not sig:
+                    logger.warning(f"⚠️ Jito failed - skipping buy (stale opportunity)")
+                    return None
+            else:
+                # Regular RPC if Jito disabled
+                opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
+                response = self.client.send_raw_transaction(bytes(tx), opts)
+                sig = str(response.value)
+
+                if sig.startswith("1111111"):
+                    logger.error("Transaction failed - invalid signature")
+                    return None
+
             total_time = (time.time() - start) * 1000
             logger.info(f"✅ LOCAL buy TX sent in {total_time:.1f}ms: {sig}")
-            
+
             return sig
             
         except Exception as e:
@@ -413,33 +496,58 @@ class LocalSwapBuilder:
             # Get recent blockhash
             blockhash_resp = self.client.get_latest_blockhash()
             recent_blockhash = blockhash_resp.value.blockhash
-            
+
+            # Build instruction list with optional Jito tip
+            from config import JITO_ENABLED, JITO_TIP_AMOUNT_SOL
+
+            sell_instructions = [sell_ix]
+
+            jito_tip_sol = 0
+            if JITO_ENABLED:
+                jito_tip_sol = JITO_TIP_AMOUNT_SOL
+                tip_lamports = int(jito_tip_sol * 1e9)
+                tip_ix = self._build_jito_tip_instruction(tip_lamports)
+                sell_instructions.append(tip_ix)  # Tip MUST be last instruction
+                logger.info(f"   💰 Jito tip: {jito_tip_sol} SOL")
+
             # Build and sign transaction
             message = Message.new_with_blockhash(
-                [sell_ix],
+                sell_instructions,
                 self.wallet.pubkey,
                 recent_blockhash
             )
-            
+
             tx = Transaction.new_unsigned(message)
             tx.sign([self.wallet.keypair], recent_blockhash)
-            
+
             build_time = (time.time() - start) * 1000
             logger.info(f"   ⚡ TX built in {build_time:.1f}ms")
-            
-            # Send transaction
+
+            # Send transaction - Jito first, fallback to RPC (MUST exit position)
+            from config import JITO_ENABLED
+
+            sig = None
+            if JITO_ENABLED:
+                sig = await self._send_via_jito(bytes(tx))
+                if sig:
+                    total_time = (time.time() - start) * 1000
+                    logger.info(f"✅ LOCAL sell TX via Jito in {total_time:.1f}ms: {sig}")
+                    return sig
+                else:
+                    logger.warning(f"⚠️ Jito failed for sell - falling back to RPC")
+
+            # Fallback to regular RPC (must exit position)
             opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-            
             response = self.client.send_raw_transaction(bytes(tx), opts)
             sig = str(response.value)
-            
+
             if sig.startswith("1111111"):
                 logger.error("Transaction failed - invalid signature")
                 return None
-            
+
             total_time = (time.time() - start) * 1000
             logger.info(f"✅ LOCAL sell TX sent in {total_time:.1f}ms: {sig}")
-            
+
             return sig
             
         except Exception as e:
