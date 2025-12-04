@@ -1244,22 +1244,21 @@ class SniperBot:
                         return
 
                 if bought_tokens > 0 and actual_sol_spent > 0:
-                    # Log fill analysis for debugging
                     lamports_spent = actual_sol_spent * 1e9
-                    token_atoms = bought_tokens * 1e6
-                    fill_price = lamports_spent / token_atoms
+                    token_atoms = bought_tokens * 1e6  # PumpFun uses 6 decimals
+                    actual_entry_price = lamports_spent / token_atoms
 
-                    logger.info(f"📊 Fill analysis:")
-                    logger.info(f"   SOL spent: {actual_sol_spent:.6f}")
-                    logger.info(f"   Tokens: {bought_tokens:,.0f}")
-                    logger.info(f"   Fill price: {fill_price:.10f} lamports/atomic")
+                    logger.info(f"✅ Entry price from FILL DATA:")
+                    logger.info(f"   SOL spent: {actual_sol_spent:.6f} ({lamports_spent:,.0f} lamports)")
+                    logger.info(f"   Tokens: {bought_tokens:,.0f} ({token_atoms:,.0f} atomic)")
+                    logger.info(f"   Fill price: {actual_entry_price:.10f} lamports/atomic")
 
-                    # ✅ FIX: Don't set entry price here - will calibrate on first curve read
-                    actual_entry_price = 0  # Marker for "needs calibration"
-                    logger.info(f"   Entry price: will calibrate on first curve read")
+                    if estimated_entry_price > 0:
+                        entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
+                        logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
                 else:
-                    logger.error(f"❌ No fill data")
-                    actual_entry_price = 0
+                    logger.error(f"❌ No fill data - using detection-time price (INACCURATE)")
+                    actual_entry_price = estimated_entry_price
 
             if signature and bought_tokens > 0:
                 execution_time_ms = (time.time() - execution_start) * 1000
@@ -1538,17 +1537,15 @@ class SniperBot:
                     # ===================================================================
                     # ✅ NEW: ENTRY SLIPPAGE GATE - Exit only if BOTH high slippage AND dumping
                     # ===================================================================
-                    # ✅ FIX: Calibrate entry price on first successful curve read
                     if not position.first_price_check_done:
                         position.first_price_check_done = True
 
-                        # If entry price not set (was 0), calibrate to current curve price
-                        if position.entry_token_price_sol == 0 or position.entry_token_price_sol > current_token_price_sol * 3:
+                        # Entry price should already be set from fill data
+                        # Only use current price as fallback if fill data was missing
+                        if position.entry_token_price_sol == 0:
+                            logger.error(f"⚠️ Entry price missing - using current as fallback (INACCURATE)")
                             position.entry_token_price_sol = current_token_price_sol
-                            logger.info(f"✅ Entry price CALIBRATED from curve: {current_token_price_sol:.10f}")
-                            # Recalculate P&L with calibrated entry
-                            price_change = 0  # Start at 0% after calibration
-                            position.pnl_percent = 0
+                        # DO NOT reset price_change to 0 - show real slippage from entry
 
                         position.last_pnl_change_time = time.time()
                         position.last_recorded_pnl = price_change
