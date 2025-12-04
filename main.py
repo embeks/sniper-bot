@@ -1154,7 +1154,7 @@ class SniperBot:
                 sells_at_detection = token_data['data'].get('sell_count_at_detection', 2)
 
             if sells_at_detection == 0:
-                buy_amount = 0.12  # High confidence - 50% larger position
+                buy_amount = 0.08  # High confidence - 50% larger position
                 slippage_bps = 5000  # 50% slippage - 0-sell tokens move fast
                 logger.info(f"🎯 HIGH CONFIDENCE ENTRY: 0 sells detected, using {buy_amount} SOL, {slippage_bps/100:.0f}% slippage")
             else:
