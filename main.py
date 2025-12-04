@@ -116,6 +116,9 @@ class Position:
         self.last_runner_check = 0
         self.low_velocity_start = None  # Track when velocity dropped
 
+        # RUG DETECTION - Curve drain history
+        self.curve_history = []  # List of (timestamp, curve_sol) tuples
+
 class SniperBot:
     """Main sniper bot orchestrator with velocity gate, timer exits, and fail-fast"""
     
@@ -1338,7 +1341,38 @@ class SniperBot:
             import traceback
             logger.error(traceback.format_exc())
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
-    
+
+    def _check_curve_drain(self, position, current_curve_sol: float) -> bool:
+        """Detect rug by fast curve drain. Returns True if rug detected."""
+        from config import RUG_CURVE_DROP_PERCENT, RUG_CURVE_WINDOW_SECONDS
+
+        now = time.time()
+        history = position.curve_history
+
+        # Add current reading
+        history.append((now, current_curve_sol))
+
+        # Keep only last N seconds
+        cutoff = now - RUG_CURVE_WINDOW_SECONDS
+        history = [(t, sol) for t, sol in history if t > cutoff]
+        position.curve_history = history
+
+        if len(history) < 2:
+            return False
+
+        # Get peak curve SOL in window
+        peak_sol = max(sol for _, sol in history)
+
+        # Check for drain
+        if peak_sol > 0:
+            drop_pct = ((peak_sol - current_curve_sol) / peak_sol) * 100
+            if drop_pct >= RUG_CURVE_DROP_PERCENT:
+                logger.warning(f"🚨 RUG DETECTED: Curve drained {drop_pct:.1f}% in {RUG_CURVE_WINDOW_SECONDS}s")
+                logger.warning(f"   Peak: {peak_sol:.2f} SOL → Current: {current_curve_sol:.2f} SOL")
+                return True
+
+        return False
+
     async def _monitor_position(self, mint: str):
         """Monitor position - WHALE TIERED EXITS with FLATLINE DETECTION"""
         try:
@@ -1347,7 +1381,7 @@ class SniperBot:
                 PYRAMID_ADD_1_PROFIT, PYRAMID_ADD_2_PROFIT, PYRAMID_ADD_3_PROFIT,
                 PYRAMID_MAX_ADDS, RUNNER_EXIT_SCORE_THRESHOLD, RUNNER_EXIT_BONDING_PERCENT,
                 RUNNER_EXIT_CRASH_PERCENT, RUNNER_EXIT_VELOCITY_MIN, RUNNER_EXIT_VELOCITY_DURATION,
-                RUNNER_STOP_LOSS_PERCENT
+                RUNNER_STOP_LOSS_PERCENT, FLATLINE_TIMEOUT_SECONDS
             )
 
             position = self.positions.get(mint)
@@ -1450,7 +1484,15 @@ class SniperBot:
                         continue
                     
                     current_sol_in_curve = curve_data.get('sol_in_curve', 0)
-                    
+
+                    # ===================================================================
+                    # FAST RUG EXIT: Check for curve drain (20% drop in 6s window)
+                    # ===================================================================
+                    if current_sol_in_curve > 0 and not position.is_closing:
+                        if self._check_curve_drain(position, current_sol_in_curve):
+                            await self._close_position_full(mint, reason="rug_drain")
+                            break
+
                     current_token_price_sol = self._get_current_token_price(mint, curve_data)
                     
                     if current_token_price_sol is None:
@@ -1516,9 +1558,9 @@ class SniperBot:
                         position.last_pnl_change_time = time.time()
                     
                     flatline_duration = time.time() - position.last_pnl_change_time
-                    
-                    # If stuck negative for 30+ seconds with no improvement, token is dead
-                    if flatline_duration > 30 and price_change < 0 and not position.is_closing:
+
+                    # If stuck negative for N seconds with no improvement, token is dead
+                    if flatline_duration > FLATLINE_TIMEOUT_SECONDS and price_change < 0 and not position.is_closing:
                         logger.warning(f"💀 FLATLINE DETECTED: {mint[:8]}... stuck at {price_change:.1f}% for {flatline_duration:.0f}s")
                         logger.warning(f"   No price improvement - token is dead, exiting")
                         await self._close_position_full(mint, reason="flatline")
