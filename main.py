@@ -997,8 +997,9 @@ class SniperBot:
 
             # Calculate price data from current SOL
             actual_tokens_atomic = int(ws_tokens * (10 ** token_decimals))
-            actual_sol_lamports = int(actual_sol * 1e9)
-            price_lamports_per_atomic = (actual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
+            virtual_sol = 30 + actual_sol  # Include 30 SOL virtual reserves
+            virtual_sol_lamports = int(virtual_sol * 1e9)
+            price_lamports_per_atomic = (virtual_sol_lamports / actual_tokens_atomic) if actual_tokens_atomic > 0 else 0
 
             # ✅ CORRECT: Calculate market cap from token price
             v_sol_human = actual_sol
