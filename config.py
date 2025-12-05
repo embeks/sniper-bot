@@ -218,7 +218,7 @@ MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '2'))   # Stric
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '45.0'))  # Anti-bot: max % from single wallet
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '0.8'))   # More lenient early
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '8.0'))
-MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.5'))   # Enter faster
+MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Enter faster
 
 # NEW FILTERS (21-trade baseline learnings)
 MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '3.0'))                # Max SOL/s - blocks coordinated bot pumps
