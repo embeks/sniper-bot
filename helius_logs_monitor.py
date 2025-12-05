@@ -289,7 +289,7 @@ class HeliusLogsMonitor:
             return
 
         age = time.time() - state['created_at']
-        total_sol = state['total_sol']
+        total_sol = state['vSolInBondingCurve']
         buyers = len(state['buyers'])
         velocity = total_sol / age if age > 0 else 0
         largest_buy_pct = (state['largest_buy'] / total_sol * 100) if total_sol > 0 else 0
@@ -399,7 +399,7 @@ class HeliusLogsMonitor:
                 'token_age': age,
                 # Real data from events
                 'data': {
-                    'vSolInBondingCurve': total_sol,
+                    'vSolInBondingCurve': state['vSolInBondingCurve'],
                     'unique_buyers': buyers,
                     'buy_count': state['buy_count'],
                     'sell_count': state['sell_count'],
