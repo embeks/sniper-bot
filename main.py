@@ -2310,12 +2310,67 @@ class SniperBot:
             position.status = 'closing'
             ui_token_balance = position.remaining_tokens
             
-            if ui_token_balance <= 0:
-                logger.warning(f"No tokens remaining for {mint[:8]}...")
+            if ui_token_balance <= 1:
+                # Tiers already sold everything - skip the sell TX entirely
+                logger.info(f"✅ Already fully exited via tiers for {mint[:8]}...")
+
+                # Calculate final P&L from tier proceeds
+                accumulated_tier_proceeds = getattr(position, 'total_sol_received', 0)
+                hold_time = time.time() - position.entry_time
+                estimated_fees = 0.006  # ~2 tier sells worth of fees
+                final_pnl_sol = accumulated_tier_proceeds - position.amount_sol
+
+                logger.info(f"📊 Final P&L from tiers:")
+                logger.info(f"   Tier proceeds: {accumulated_tier_proceeds:.6f} SOL")
+                logger.info(f"   Invested: {position.amount_sol:.6f} SOL")
+                logger.info(f"   Trading P&L: {final_pnl_sol:+.6f} SOL")
+
+                # Update stats
+                if final_pnl_sol > 0:
+                    self.profitable_trades += 1
+                    self.consecutive_losses = 0
+                else:
+                    self.consecutive_losses += 1
+                    self.session_loss_count += 1
+
+                position.realized_pnl_sol = final_pnl_sol
+                self.total_realized_sol += final_pnl_sol
                 position.status = 'closed'
+
+                # Log to tracker
+                self.tracker.log_sell_executed(
+                    mint=mint,
+                    tokens_sold=0,
+                    signature="tiers_complete",
+                    sol_received=accumulated_tier_proceeds,
+                    pnl_sol=final_pnl_sol,
+                    fees_paid=estimated_fees,
+                    pnl_percent=position.pnl_percent,
+                    hold_time_seconds=hold_time,
+                    reason=f"{reason}_tiers_complete",
+                    max_pnl_reached=position.max_pnl_reached,
+                    exit_price=position.current_price,
+                    mc_at_exit=getattr(position, 'current_market_cap', 0)
+                )
+
+                # Send telegram notification
+                if self.telegram:
+                    emoji = "💰" if final_pnl_sol > 0 else "🔴"
+                    msg = (
+                        f"{emoji} POSITION CLOSED (tiers complete)\n"
+                        f"Token: {mint[:16]}\n"
+                        f"Reason: {reason}\n"
+                        f"Hold: {hold_time:.1f}s\n"
+                        f"P&L: {position.pnl_percent:+.1f}%\n"
+                        f"Realized: {final_pnl_sol:+.4f} SOL"
+                    )
+                    await self.telegram.send_message(msg)
+
+                # Cleanup position tracking
                 if mint in self.positions:
                     del self.positions[mint]
                     self.velocity_checker.clear_history(mint)
+                    logger.info(f"Active: {len(self.positions)}/{MAX_POSITIONS}")
                 return
             
             hold_time = time.time() - position.entry_time
