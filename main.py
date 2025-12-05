@@ -999,7 +999,7 @@ class SniperBot:
             # ✅ CORRECT: Calculate market cap from token price
             v_sol_human = actual_sol
             v_tokens_human = ws_tokens
-            sol_price_usd = await self._get_sol_price_async()
+            sol_price_usd = 235.0  # Hardcoded - only for logging MC, doesn't affect trades
 
             if v_tokens_human > 0:
                 price_per_token_sol = v_sol_human / v_tokens_human
@@ -1083,7 +1083,7 @@ class SniperBot:
             logger.info(f"📊 Expected velocity: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s")
 
             # Recalculate MC from final blockchain curve data
-            sol_price_usd = await self._get_sol_price_async()
+            sol_price_usd = 235.0  # Hardcoded - only for logging MC, doesn't affect trades
             entry_market_cap = self._calculate_mc_from_curve(curve_data, sol_price_usd)
 
             logger.info(f"📊 FINAL ENTRY CONDITIONS:")
@@ -1858,7 +1858,7 @@ class SniperBot:
             position.pending_sells.add(target_name)
 
             from decimal import Decimal, ROUND_DOWN
-            token_decimals = self.wallet.get_token_decimals(mint)
+            token_decimals = 6  # PumpFun always 6 decimals
             raw = Decimal(str(position.remaining_tokens)) * Decimal(str(sell_percent)) / Decimal("100")
             units = (raw * (Decimal(10) ** token_decimals)).quantize(Decimal("1"), rounding=ROUND_DOWN)
             ui_tokens_to_sell = float(units / (Decimal(10) ** token_decimals))
@@ -1966,9 +1966,7 @@ class SniperBot:
                     actual_sol_spent = abs(txd["sol_delta"]) if txd["sol_delta"] != 0 else add_amount
 
                     # Calculate add price
-                    token_decimals = self.wallet.get_token_decimals(mint)
-                    if isinstance(token_decimals, tuple):
-                        token_decimals = token_decimals[0]
+                    token_decimals = 6  # PumpFun always 6 decimals
                     token_atoms = int(tokens_received * (10 ** token_decimals))
                     lamports_spent = int(actual_sol_spent * 1e9)
                     add_price = lamports_spent / token_atoms if token_atoms > 0 else 0
@@ -2236,7 +2234,7 @@ class SniperBot:
                         position.retry_counts[target_name] = retry_count + 1
                         logger.info(f"Retrying {target_name} (attempt {retry_count + 2}/3)")
 
-                        token_decimals = self.wallet.get_token_decimals(mint)
+                        token_decimals = 6  # PumpFun always 6 decimals
                         ui_tokens_to_sell = tokens_sold
 
                         retry_signature = await self.trader.create_sell_transaction(
@@ -2325,17 +2323,22 @@ class SniperBot:
             logger.info(f"   P&L: {position.pnl_percent:+.1f}%")
             logger.info(f"   Max P&L reached: {position.max_pnl_reached:+.1f}%")
 
-            actual_balance = self.wallet.get_token_balance(mint)
-            if actual_balance > 0:
-                ui_token_balance = actual_balance
-                logger.info(f"💰 Selling actual balance: {actual_balance:,.2f} tokens")
+            # Use remaining_tokens tracker (updated when tier sells submit)
+            # This prevents double-selling when rug detected during tier confirmation
+            ui_token_balance = position.remaining_tokens
+
+            # Sanity check against wallet
+            actual_wallet = self.wallet.get_token_balance(mint)
+            if actual_wallet > 0 and actual_wallet < ui_token_balance:
+                ui_token_balance = actual_wallet
+                logger.info(f"💰 Wallet balance lower than tracker: {actual_wallet:,.2f} (tier confirmed)")
             else:
-                logger.warning(f"No tokens in wallet - using position balance: {ui_token_balance:,.2f}")
-            
+                logger.info(f"💰 Selling from tracker: {ui_token_balance:,.2f} tokens")
+
             curve_data = self.dex.get_bonding_curve_data(mint)
             is_migrated = curve_data is None or curve_data.get('is_migrated', False)
 
-            token_decimals = self.wallet.get_token_decimals(mint)
+            token_decimals = 6  # PumpFun always 6 decimals
 
             # Use emergency priority only for stop loss and rug trap
             urgency = "emergency" if reason in ["stop_loss", "rug_trap"] else "sell"

@@ -63,10 +63,10 @@ class HeliusLogsMonitor:
         self.CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
 
         # Entry thresholds from config (early entry with relaxed quality gates)
-        self.min_sol = MIN_BONDING_CURVE_SOL      # 2.0 SOL - enter early
-        self.max_sol = MAX_BONDING_CURVE_SOL      # 5.0 SOL - tight window
-        self.min_buyers = MIN_UNIQUE_BUYERS       # 4 unique buyers minimum (was 5)
-        self.max_sell_count = MAX_SELLS_BEFORE_ENTRY  # 3 sells max before entry (was 1)
+        self.min_sol = MIN_BONDING_CURVE_SOL      # 2.0 SOL - enter at ~3K MC
+        self.max_sol = MAX_BONDING_CURVE_SOL      # 6.0 SOL - tight window
+        self.min_buyers = MIN_UNIQUE_BUYERS       # 4 unique buyers
+        self.max_sell_count = MAX_SELLS_BEFORE_ENTRY  # 2 sells max (strict)
         self.max_single_buy_percent = MAX_SINGLE_BUY_PERCENT  # 35% anti-bot
         self.min_velocity = MIN_VELOCITY          # 1.0 SOL/s minimum momentum
         self.max_token_age = MAX_TOKEN_AGE_SECONDS  # 10s max age for "early"
@@ -76,7 +76,7 @@ class HeliusLogsMonitor:
         self.max_velocity = MAX_VELOCITY          # 8.0 SOL/s max - blocks bot pumps
         self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 50% max from top 2 wallets
         
-        self.max_watch_time = 120  # Match max hold time
+        self.max_watch_time = 60  # Stop watching sooner
         
     async def start(self):
         """Connect to Helius WebSocket and subscribe to PumpFun logs"""
