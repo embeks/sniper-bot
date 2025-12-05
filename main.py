@@ -1148,18 +1148,10 @@ class SniperBot:
             # Store pre-trade balance for accurate P&L
             self.wallet.last_balance_before_trade = self.wallet.get_sol_balance()
 
-            # Dynamic position sizing based on sell count at detection (11-trade analysis)
-            sells_at_detection = 2  # Default
-            if 'data' in token_data:
-                sells_at_detection = token_data['data'].get('sell_count_at_detection', 2)
-
-            if sells_at_detection == 0:
-                buy_amount = 0.08  # High confidence - 50% larger position
-                slippage_bps = 5000  # 50% slippage - 0-sell tokens move fast
-                logger.info(f"🎯 HIGH CONFIDENCE ENTRY: 0 sells detected, using {buy_amount} SOL, {slippage_bps/100:.0f}% slippage")
-            else:
-                buy_amount = BUY_AMOUNT_SOL  # Standard position
-                slippage_bps = 3000  # 30% slippage - standard
+            # Fixed position sizing - no confidence scaling
+            buy_amount = BUY_AMOUNT_SOL  # Always 0.05 SOL
+            slippage_bps = 3000  # 30% slippage
+            logger.info(f"📊 Standard entry: {buy_amount} SOL, {slippage_bps/100:.0f}% slippage")
 
             # Store for accurate P&L tracking later
             _position_buy_amount = buy_amount
