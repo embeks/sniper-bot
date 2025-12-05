@@ -2126,7 +2126,13 @@ class SniperBot:
                 position.sell_signatures.append(signature)
                 position.realized_pnl_sol += actual_profit_sol
                 self.total_realized_sol += actual_profit_sol
-                
+
+                # ✅ FIX: Track raw SOL received for accurate P&L on early close
+                position.total_sol_received = getattr(position, 'total_sol_received', 0) + actual_sol_received
+                if not hasattr(position, 'parsed_signatures'):
+                    position.parsed_signatures = set()
+                position.parsed_signatures.add(signature)
+
                 position.partial_sells[target_name] = {
                     'pnl': current_pnl,
                     'time': time.time(),
@@ -2238,10 +2244,12 @@ class SniperBot:
 
                                 logger.info(f"✅ {target_name} marked complete via chain confirmation (sold {sell_percent}%)")
 
-                                # Check if position is fully closed
-                                if position.remaining_tokens <= 0 or position.total_sold_percent >= 100:
+                                # Check if position is fully closed (but not if other tiers pending!)
+                                if (position.remaining_tokens <= 0 or position.total_sold_percent >= 100) and not position.pending_sells:
                                     logger.info(f"✅ Position fully closed via chain confirmation")
                                     position.status = 'completed'
+                                elif position.pending_sells:
+                                    logger.info(f"⏳ Other tiers still pending: {position.pending_sells} - not closing yet")
                         return
 
                 except Exception as e:
