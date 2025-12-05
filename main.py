@@ -982,9 +982,13 @@ class SniperBot:
                         source_type = 'websocket_fallback'
 
             # Slippage protection via curve reader (optional logging only)
-            estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
-            if estimated_slippage:
-                logger.info(f"📊 Curve-based slippage estimate: {estimated_slippage:.2f}%")
+            # Skip for helius_events - we already have accurate data, save RPC call
+            if source != 'helius_events':
+                estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
+                if estimated_slippage:
+                    logger.info(f"📊 Curve-based slippage estimate: {estimated_slippage:.2f}%")
+            else:
+                estimated_slippage = None
 
             # Get token data
             token_data_ws = token_data.get('data', token_data) if 'data' in token_data else token_data
@@ -1043,8 +1047,6 @@ class SniperBot:
                     return
 
                 logger.info(f"✅ In whale zone: {actual_sol:.2f} SOL (range: {MIN_BONDING_CURVE_SOL}-{MAX_BONDING_CURVE_SOL})")
-
-            estimated_slippage = self.curve_reader.estimate_slippage(mint, BUY_AMOUNT_SOL)
 
             logger.info(f"⚡ Using {source_type} data: {actual_sol:.4f} SOL, price={price_lamports_per_atomic:.10f} lamports/atom")
             logger.debug(f"✅ Curve data built from blockchain (accurate)")
