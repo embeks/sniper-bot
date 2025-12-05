@@ -1559,6 +1559,25 @@ class SniperBot:
                         break
 
                     # ===================================================================
+                    # STALLED MOMENTUM EXIT - Catch tokens stuck at low positive (never hit tier 1)
+                    # ===================================================================
+                    tier1_sold = "tier1" in position.partial_sells or "tier1" in position.pending_sells
+                    dropped_from_peak = position.max_pnl_reached - price_change
+
+                    if (age >= 30 and
+                        not tier1_sold and
+                        not position.is_closing and
+                        (dropped_from_peak >= 4 or flatline_duration >= 20)):
+
+                        logger.warning(f"🐌 STALLED MOMENTUM: {mint[:8]}... age {age:.0f}s, no tier1, peak was +{position.max_pnl_reached:.1f}%")
+                        if dropped_from_peak >= 4:
+                            logger.warning(f"   Dropped {dropped_from_peak:.1f}% from peak")
+                        else:
+                            logger.warning(f"   Flat for {flatline_duration:.0f}s at {price_change:+.1f}%")
+                        await self._close_position_full(mint, reason="stalled_momentum")
+                        break
+
+                    # ===================================================================
                     # EMERGENCY EXIT: Bonding curve rug detection (runs every cycle)
                     # ===================================================================
                     if age > 15 and not position.is_closing:
