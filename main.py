@@ -1909,6 +1909,11 @@ class SniperBot:
                 position.remaining_tokens -= ui_tokens_to_sell
                 logger.info(f"📊 Updated remaining_tokens: {position.remaining_tokens:,.0f} (sold {ui_tokens_to_sell:,.0f})")
 
+                # ✅ FIX: Store pending signature for P&L recovery on early close
+                if not hasattr(position, 'pending_tier_signatures'):
+                    position.pending_tier_signatures = {}
+                position.pending_tier_signatures[target_name] = signature
+
                 asyncio.create_task(
                     self._confirm_sell_background(
                         signature, mint, target_name, sell_percent,
@@ -2485,6 +2490,21 @@ class SniperBot:
                 logger.info(f"   Wait time: {tx_result['wait_time']:.1f}s")
                 logger.info(f"   SOL received: {final_sol_received:+.6f} SOL")
                 logger.info(f"   Tokens sold: {actual_tokens_sold:,.2f}")
+
+                # ✅ FIX: Parse pending tier TXs before calculating P&L
+                pending_sigs = getattr(position, 'pending_tier_signatures', {})
+                parsed_sigs = getattr(position, 'parsed_signatures', set())
+
+                for tier_name, sig in list(pending_sigs.items()):
+                    if sig not in parsed_sigs:
+                        logger.info(f"⏳ Parsing pending {tier_name} TX: {sig[:16]}...")
+                        result = await self._get_transaction_proceeds_robust(sig, mint, max_wait=15)
+                        if result["success"] and result["sol_received"] > 0:
+                            position.total_sol_received = getattr(position, 'total_sol_received', 0) + result["sol_received"]
+                            logger.info(f"   ✅ Captured {tier_name} proceeds: +{result['sol_received']:.6f} SOL")
+                            if not hasattr(position, 'parsed_signatures'):
+                                position.parsed_signatures = set()
+                            position.parsed_signatures.add(sig)
 
                 # Include accumulated tier proceeds in total
                 accumulated_tier_proceeds = getattr(position, 'total_sol_received', 0)
