@@ -66,7 +66,6 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 
 # DYNAMIC POSITION SIZING (based on 11-trade analysis)
 POSITION_SIZE_DEFAULT = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
-POSITION_SIZE_HIGH_CONFIDENCE = 0.8  # For 0-sell tokens (50% larger)
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
