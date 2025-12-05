@@ -1333,7 +1333,7 @@ class SniperBot:
 
     def _check_curve_drain(self, position, current_curve_sol: float) -> bool:
         """Detect rug by fast curve drain. Returns True if rug detected."""
-        from config import RUG_CURVE_DROP_PERCENT, RUG_CURVE_WINDOW_SECONDS
+        from config import RUG_CURVE_DROP_PERCENT, RUG_CURVE_WINDOW_SECONDS, RUG_HELIUS_SELL_THRESHOLD
 
         now = time.time()
         history = position.curve_history
@@ -1388,6 +1388,17 @@ class SniperBot:
 
             while mint in self.positions and position.status == 'active':
                 check_count += 1
+
+                # ===================================================================
+                # REAL-TIME RUG CHECK: Helius sees sells 13s before RPC catches up
+                # ===================================================================
+                if self.scanner and not position.is_closing:
+                    state = self.scanner.watched_tokens.get(mint, {})
+                    sell_count = state.get('sell_count', 0)
+                    if sell_count >= RUG_HELIUS_SELL_THRESHOLD:
+                        logger.warning(f"🚨 HELIUS RUG DETECTED: {sell_count} sells - full exit NOW")
+                        await self._close_position_full(mint, reason="helius_rug")
+                        break
 
                 # Early exit if position fully sold
                 if position.remaining_tokens <= 0 and not position.pending_sells:

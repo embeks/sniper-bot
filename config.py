@@ -123,6 +123,7 @@ FLATLINE_TIMEOUT_SECONDS = 15  # Was 30, now faster exit for dead tokens
 # ============================================
 RUG_CURVE_DROP_PERCENT = 30  # Exit if curve drops 30%+ from recent peak (was 20%, caused false triggers)
 RUG_CURVE_WINDOW_SECONDS = 6  # Within this time window
+RUG_HELIUS_SELL_THRESHOLD = 10  # Helius sell count to trigger instant rug exit
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
