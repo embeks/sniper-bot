@@ -1389,6 +1389,17 @@ class SniperBot:
             while mint in self.positions and position.status == 'active':
                 check_count += 1
 
+                # ===================================================================
+                # REAL-TIME RUG CHECK: Helius sees sells 13s before RPC catches up
+                # ===================================================================
+                if self.scanner and not position.is_closing:
+                    state = self.scanner.watched_tokens.get(mint, {})
+                    sell_count = state.get('sell_count', 0)
+                    if sell_count >= 10:
+                        logger.warning(f"🚨 HELIUS RUG DETECTED: {sell_count} sells - full exit NOW")
+                        await self._close_position_full(mint, reason="helius_rug")
+                        break
+
                 # Early exit if position fully sold
                 if position.remaining_tokens <= 0 and not position.pending_sells:
                     logger.info(f"✅ {mint[:8]}... fully sold (remaining=0, no pending), exiting monitor")
