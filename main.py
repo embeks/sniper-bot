@@ -1164,35 +1164,36 @@ class SniperBot:
             # Store for accurate P&L tracking later
             _position_buy_amount = buy_amount
 
-            # Build synthetic curve from Helius data (0ms vs 50-100ms RPC)
-            # Pump.fun constants: initial 30 SOL virtual, 1.073B virtual tokens
+            # Fetch REAL curve state for accurate fills (adds ~50ms but prevents bad fills)
             helius_events = token_data.get('data', {})
             helius_sol = helius_events.get('vSolInBondingCurve', 0) if helius_events else 0
-            creator = helius_events.get('creator') if helius_events else None  # Extract creator
+            creator = helius_events.get('creator') if helius_events else None
 
             signature = None
-            if helius_sol > 0 and creator:  # Require creator for local TX
-                virtual_sol = 30 + helius_sol  # 30 SOL initial + accumulated
-                synthetic_curve = {
-                    'is_valid': True,
-                    'virtual_sol_reserves': int(virtual_sol * 1e9),
-                    'virtual_token_reserves': int(1_073_000_191 * 1e6 * (30 / virtual_sol)),
-                    'sol_raised': helius_sol,
-                }
-                logger.info(f"⚡ Synthetic curve: {helius_sol:.2f} SOL → v_sol={virtual_sol:.2f}, v_tokens={synthetic_curve['virtual_token_reserves']:,}")
-                logger.info(f"   Creator: {creator[:16]}... (for local TX)")
+            if creator:
+                # Get REAL curve state from blockchain - not synthetic from Helius volume
+                real_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
 
-                signature = await self.local_builder.create_buy_transaction(
-                    mint=mint,
-                    sol_amount=buy_amount,
-                    curve_data=synthetic_curve,
-                    slippage_bps=slippage_bps,
-                    creator=creator  # Pass creator for vault PDA derivation
-                )
-            elif helius_sol > 0:
-                logger.warning(f"⚠️ No creator in Helius data - falling back to PumpPortal")
+                if real_curve and real_curve.get('is_valid'):
+                    # Log discrepancy between Helius cumulative and real curve
+                    real_sol = real_curve.get('sol_raised', 0)
+                    if abs(helius_sol - real_sol) > 0.5:
+                        logger.warning(f"⚠️ Curve discrepancy: Helius={helius_sol:.2f} vs Chain={real_sol:.2f} SOL")
+
+                    logger.info(f"⚡ Using REAL curve for local TX: {real_sol:.2f} SOL")
+                    logger.info(f"   Creator: {creator[:16]}...")
+
+                    signature = await self.local_builder.create_buy_transaction(
+                        mint=mint,
+                        sol_amount=buy_amount,
+                        curve_data=real_curve,
+                        slippage_bps=slippage_bps,
+                        creator=creator
+                    )
+                else:
+                    logger.warning(f"⚠️ Could not fetch real curve - falling back to PumpPortal")
             else:
-                logger.warning(f"⚠️ No Helius SOL data for local TX")
+                logger.warning(f"⚠️ No creator in Helius data - falling back to PumpPortal")
 
             # Fallback to PumpPortal if local build fails
             if not signature:
