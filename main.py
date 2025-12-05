@@ -1732,7 +1732,7 @@ class SniperBot:
                         elif position.max_pnl_reached >= 10:
                             crash_threshold = 25  # Tighter
                         else:
-                            crash_threshold = 20  # Very tight for no-momentum tokens
+                            crash_threshold = 25  # Was 20 - give entry volatility room
 
                         if (crash_from_peak > crash_threshold and
                             price_change < 10 and
