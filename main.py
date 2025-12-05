@@ -2330,8 +2330,22 @@ class SniperBot:
             ui_token_balance = position.remaining_tokens
             
             if ui_token_balance <= 1:
-                # Tiers already sold everything - skip the sell TX entirely
+                # Tiers already sold everything - but need to parse pending TXs first
                 logger.info(f"✅ Already fully exited via tiers for {mint[:8]}...")
+
+                # Parse any pending tier TXs to capture their proceeds
+                if position.sell_signatures:
+                    parsed_sigs = getattr(position, 'parsed_signatures', set())
+                    for sig in position.sell_signatures:
+                        if sig not in parsed_sigs:
+                            logger.info(f"⏳ Parsing tier TX: {sig[:16]}...")
+                            result = await self._get_transaction_proceeds_robust(sig, mint, max_wait=15)
+                            if result["success"] and result["sol_received"] > 0:
+                                position.total_sol_received = getattr(position, 'total_sol_received', 0) + result["sol_received"]
+                                logger.info(f"   ✅ Captured: +{result['sol_received']:.6f} SOL")
+                                if not hasattr(position, 'parsed_signatures'):
+                                    position.parsed_signatures = set()
+                                position.parsed_signatures.add(sig)
 
                 # Calculate final P&L from tier proceeds
                 accumulated_tier_proceeds = getattr(position, 'total_sol_received', 0)
