@@ -201,7 +201,7 @@ PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBE
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
 MIN_BONDING_CURVE_SOL = 3.5   # Enter after initial pump settles: 3.5-5 SOL range
-MAX_BONDING_CURVE_SOL = 8.5   # Was 6
+MAX_BONDING_CURVE_SOL = 9   # Was 6
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
