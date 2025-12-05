@@ -1482,14 +1482,10 @@ class SniperBot:
                     # ===================================================================
                     # FAST RUG EXIT: Check for curve drain (20% drop in 6s window)
                     # ===================================================================
-                    # Use Helius WebSocket data for rug detection (curve_reader returns stale/wrong values)
+                    # ✅ FIX: Use chain data ONLY - Helius vSolInBondingCurve is estimated
+                    # (sells subtract hardcoded 0.3 SOL, causing massive undercount on heavy selling)
+                    # current_sol_in_curve comes from curve_reader.get_curve_state() = actual chain state
                     curve_sol_for_drain = current_sol_in_curve
-
-                    if hasattr(self, 'scanner') and self.scanner:
-                        helius_state = self.scanner.watched_tokens.get(mint, {})
-                        helius_curve_sol = helius_state.get('vSolInBondingCurve', 0)
-                        if helius_curve_sol > 0:
-                            curve_sol_for_drain = helius_curve_sol
 
                     if curve_sol_for_drain > 0 and not position.is_closing:
                         if self._check_curve_drain(position, curve_sol_for_drain):
