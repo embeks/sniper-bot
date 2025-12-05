@@ -69,11 +69,33 @@ class LocalSwapBuilder:
             FEE_PROGRAM_ID
         )[0]
 
+        # Blockhash caching - refresh every 2s in background
+        self._cached_blockhash = None
+        self._blockhash_lock = asyncio.Lock()
+        self._blockhash_task = None
+
         logger.info(f"LocalSwapBuilder initialized")
         logger.info(f"  Global PDA: {self.global_pda}")
         logger.info(f"  Event Authority: {self.event_authority}")
         logger.info(f"  Global Volume Accumulator: {self.global_volume_accumulator}")
         logger.info(f"  Fee Config: {self.fee_config}")
+
+    async def start_blockhash_cache(self):
+        """Start background task to refresh blockhash every 2 seconds"""
+        if self._blockhash_task is None:
+            self._blockhash_task = asyncio.create_task(self._refresh_blockhash_loop())
+            logger.info("🔄 Blockhash cache started (refreshes every 2s)")
+
+    async def _refresh_blockhash_loop(self):
+        """Background loop to refresh blockhash every 2 seconds"""
+        while True:
+            try:
+                blockhash_resp = self.client.get_latest_blockhash()
+                async with self._blockhash_lock:
+                    self._cached_blockhash = blockhash_resp.value.blockhash
+            except Exception as e:
+                logger.warning(f"⚠️ Blockhash refresh failed: {e}")
+            await asyncio.sleep(2)
 
     def _build_jito_tip_instruction(self, tip_lamports: int) -> Instruction:
         """Build a SOL transfer instruction to a random Jito tip account"""
@@ -351,29 +373,27 @@ class LocalSwapBuilder:
                 max_sol_cost
             )
             
-            # Check if ATA exists, if not add create instruction
-            ata_info = self.client.get_account_info(user_ata)
-            instructions = []
-            
-            if not ata_info.value:
-                # Manual ATA creation for Token-2022
-                ata_accounts = [
-                    AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
-                    AccountMeta(user_ata, is_signer=False, is_writable=True),
-                    AccountMeta(self.wallet.pubkey, is_signer=False, is_writable=False),
-                    AccountMeta(mint_pubkey, is_signer=False, is_writable=False),
-                    AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
-                    AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
-                ]
-                create_ata_ix = Instruction(ASSOCIATED_TOKEN_PROGRAM_ID, bytes(), ata_accounts)
-                instructions.append(create_ata_ix)
-                logger.info(f"   Adding create ATA instruction (Token-2022)")
-            
-            instructions.append(buy_ix)
-            
-            # Get recent blockhash
-            blockhash_resp = self.client.get_latest_blockhash()
-            recent_blockhash = blockhash_resp.value.blockhash
+            # For new PumpFun tokens, ATA never exists - always add create instruction
+            # This saves ~100-150ms RPC call per TX
+            ata_accounts = [
+                AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
+                AccountMeta(user_ata, is_signer=False, is_writable=True),
+                AccountMeta(self.wallet.pubkey, is_signer=False, is_writable=False),
+                AccountMeta(mint_pubkey, is_signer=False, is_writable=False),
+                AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
+                AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
+            ]
+            create_ata_ix = Instruction(ASSOCIATED_TOKEN_PROGRAM_ID, bytes(), ata_accounts)
+            instructions = [create_ata_ix, buy_ix]
+
+            # Use cached blockhash (refreshed every 2s in background)
+            # Falls back to RPC call if cache not started yet
+            if self._cached_blockhash:
+                recent_blockhash = self._cached_blockhash
+            else:
+                blockhash_resp = self.client.get_latest_blockhash()
+                recent_blockhash = blockhash_resp.value.blockhash
+                logger.warning("⚠️ Blockhash cache not started, using RPC fallback")
 
             # Add Jito tip instruction if enabled
             from config import JITO_ENABLED, JITO_TIP_AMOUNT_SOL, JITO_TIP_AGGRESSIVE_SOL

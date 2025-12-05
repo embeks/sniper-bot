@@ -2524,7 +2524,10 @@ class SniperBot:
         
         try:
             await self.initialize_telegram()
-            
+
+            # Start blockhash cache for faster TX builds (~200-300ms savings per TX)
+            await self.local_builder.start_blockhash_cache()
+
             from solana.rpc.api import Client
             rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
             self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
