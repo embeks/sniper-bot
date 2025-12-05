@@ -1016,7 +1016,7 @@ class SniperBot:
             curve_data = {
                 'sol_raised': actual_sol,
                 'sol_in_curve': actual_sol,
-                'virtual_sol_reserves': actual_sol_lamports,
+                'virtual_sol_reserves': virtual_sol_lamports,
                 'virtual_token_reserves': actual_tokens_atomic,
                 'price_lamports_per_atomic': price_lamports_per_atomic,
                 'source': source_type,
