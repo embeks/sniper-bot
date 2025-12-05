@@ -346,16 +346,7 @@ class HeliusLogsMonitor:
 
         # ===== NEW FILTERS (21-trade baseline learnings) =====
 
-        # 7. NEW: Maximum velocity check - blocks coordinated bot pumps
-        # DGuZTAAT had 4795 SOL/s, winners have 1-2 SOL/s
-        if velocity > self.max_velocity:
-            logger.warning(f"❌ Velocity too high (bot pump): {velocity:.1f} SOL/s (max {self.max_velocity})")
-            self.stats['skipped_velocity_high'] += 1
-            self.triggered_tokens.add(mint)
-            return
-
-
-        # 9. NEW: Top-2 concentration check - blocks coordinated entries
+        # 7. NEW: Top-2 concentration check - blocks coordinated entries
         # Two wallets at 30% each = 60% concentration, should fail
         if top2_pct > self.max_top2_percent:
             logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
@@ -383,7 +374,7 @@ class HeliusLogsMonitor:
         logger.info(f"   Sells: {state['sell_count']} (max: {self.max_sell_count})")
         logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
         logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
-        logger.info(f"   Velocity: {velocity:.2f} SOL/s (range: {self.min_velocity}-{self.max_velocity})")
+        logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
         logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
         logger.info("=" * 60)
         
