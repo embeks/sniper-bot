@@ -70,13 +70,13 @@ POSITION_SIZE_HIGH_CONFIDENCE = 0.8  # For 0-sell tokens (50% larger)
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '25'))  # TIGHTENED: Was 20%, now 15% to prevent gap-through
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '35'))  # TIGHTENED: Was 20%, now 15% to prevent gap-through
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
 # 2-tier system based on 11-trade analysis: reduces fees, lets winners run
-TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '20.0'))  # Was 30%
-TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '60.0'))      # Was 40%
+TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '15.0'))  # Was 30%
+TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '75.0'))      # Was 40%
 
 TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '30.0'))  # Was 40%, lowered to capture +25-35% peaks
 TIER_2_SELL_PERCENT = float(os.getenv('TIER_2_SELL', '100.0'))      # Was 40% - sells remainder
@@ -222,7 +222,7 @@ MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))  # Max
 MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '1.5'))  # Don't enter <1.5s tokens
 
 # NEW FILTERS (21-trade baseline learnings)
-MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '5.0'))                # Max SOL/s - blocks coordinated bot pumps
+MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '3.0'))                # Max SOL/s - blocks coordinated bot pumps
 MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '60.0'))  # Max % from top 2 wallets combined
 
 # ============================================
