@@ -200,7 +200,7 @@ PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBE
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
 MIN_BONDING_CURVE_SOL = 3.0   # Enter at ~3K MC instead of ~5K
-MAX_BONDING_CURVE_SOL = 8.0   # Tighter window
+MAX_BONDING_CURVE_SOL = 10.0   # Tighter window
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
