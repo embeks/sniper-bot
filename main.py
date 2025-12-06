@@ -1501,7 +1501,7 @@ class SniperBot:
             logger.info(f"📈 Starting WHALE monitoring for {mint[:8]}...")
             logger.info(f"   Entry Price: {position.entry_token_price_sol:.10f} lamports/atomic")
             logger.info(f"   Max Hold: {MAX_POSITION_AGE_SECONDS}s")
-            logger.info(f"   Tiers: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}% (2-tier system)")
+            logger.info(f"   Exit: ORDER FLOW (sell burst / buyer death / velocity death)")
             logger.info(f"   Your Tokens: {position.remaining_tokens:,.0f}")
 
             check_count = 0
@@ -1512,12 +1512,20 @@ class SniperBot:
 
                 # ===================================================================
                 # REAL-TIME RUG CHECK: Helius sees sells 13s before RPC catches up
+                # FIXED: Use ratio-based detection, not flat count
                 # ===================================================================
                 if self.scanner and not position.is_closing:
                     state = self.scanner.watched_tokens.get(mint, {})
                     sell_count = state.get('sell_count', 0)
-                    if sell_count >= 10:
-                        logger.warning(f"🚨 HELIUS RUG DETECTED: {sell_count} sells - full exit NOW")
+                    buy_count = state.get('buy_count', 0)
+
+                    # Ratio-based rug detection:
+                    # - 10+ sells AND sell ratio > 30% = coordinated dump
+                    # - Allows healthy runners (19 sells / 116 buys = 16% = fine)
+                    sell_ratio = sell_count / buy_count if buy_count > 0 else 1.0
+
+                    if sell_count >= 10 and sell_ratio > 0.30:
+                        logger.warning(f"🚨 HELIUS RUG DETECTED: {sell_count} sells / {buy_count} buys ({sell_ratio:.0%} ratio) - full exit NOW")
                         await self._close_position_full(mint, reason="helius_rug")
                         break
 
