@@ -377,9 +377,10 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # 3. Limit sells before entry (strict 0-sell filter)
-        if state['sell_count'] > self.max_sell_count:
-            logger.warning(f"❌ Not 0-sell: {state['sell_count']} sells detected (strict 0-sell filter)")
+        # 3. Sell ratio check - allow some churn but not dumps
+        sell_ratio = state['sell_count'] / buyers if buyers > 0 else 1.0
+        if sell_ratio > 0.30:
+            logger.warning(f"❌ Sell ratio too high: {sell_ratio:.0%} ({state['sell_count']}/{buyers})")
             self.stats['skipped_sells'] += 1
             self.triggered_tokens.add(mint)
             return
