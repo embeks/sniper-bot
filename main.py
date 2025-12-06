@@ -35,6 +35,15 @@ from config import (
     TIMER_MAX_EXTENSIONS,
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD,
     MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
+    # Order flow exit settings
+    ORDERFLOW_MIN_AGE_SECONDS, ORDERFLOW_MIN_PNL_PERCENT, ORDERFLOW_MIN_BUYS_AFTER_ENTRY,
+    ORDERFLOW_SELL_BURST_COUNT, ORDERFLOW_SELL_BURST_WINDOW,
+    ORDERFLOW_BUYER_DEATH_SECONDS, ORDERFLOW_SELL_RATIO_THRESHOLD,
+    ORDERFLOW_VELOCITY_DEATH_PERCENT,
+    ORDERFLOW_HIGH_PNL_THRESHOLD, ORDERFLOW_HIGH_PNL_SELLS, ORDERFLOW_HIGH_PNL_STALL,
+    ORDERFLOW_MEGA_PNL_THRESHOLD,
+    ORDERFLOW_UNDERWATER_SELLS, ORDERFLOW_UNDERWATER_WINDOW,
+    ORDERFLOW_DEEP_LOSS_THRESHOLD, ORDERFLOW_DEEP_LOSS_SELLS,
 )
 
 from wallet import WalletManager
@@ -197,7 +206,8 @@ class SniperBot:
         logger.info(f"  • Detection: <100ms via logsSubscribe (no RPC delay)")
         logger.info(f"  • Entry range: 21-28 SOL (5-6.5K MC sweet spot)")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Take profit: {TIER_1_SELL_PERCENT}% @ +{TIER_1_PROFIT_PERCENT}%, {TIER_2_SELL_PERCENT}% @ +{TIER_2_PROFIT_PERCENT}% (2-tier system)")
+        logger.info(f"  • Take profit: ORDER FLOW EXIT (signal-based, not fixed %)")
+        logger.info(f"  • Exit signals: {ORDERFLOW_SELL_BURST_COUNT} sells in {ORDERFLOW_SELL_BURST_WINDOW}s, {ORDERFLOW_BUYER_DEATH_SECONDS}s buyer death")
         logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s (let winners run)")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
@@ -312,6 +322,117 @@ class SniperBot:
         except Exception as e:
             logger.error(f"Error calculating runner score: {e}")
             return 0
+
+    def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
+        """
+        Smart exit based on real-time order flow from Helius.
+        Returns (should_exit: bool, reason: str)
+
+        This sees transactions 5-13s before chart updates.
+        Exit signals:
+        - Sell burst: 3+ sells in 5s (coordinated dump)
+        - Buyer death: No new buy for 8s (momentum dead)
+        - Sell ratio: Sells >= 20% of buys (tide turning)
+        - Velocity death: Current < 25% of peak (party over)
+        """
+        # Must have scanner
+        if not self.scanner:
+            return False, ""
+
+        state = self.scanner.watched_tokens.get(mint, {})
+        if not state:
+            return False, ""
+
+        now = time.time()
+        age = now - position.entry_time
+
+        # === MINIMUM CONDITIONS ===
+        # Don't exit too early - give token time to show its hand
+        if age < ORDERFLOW_MIN_AGE_SECONDS:
+            return False, ""
+
+        # Extract metrics from Helius state
+        buy_count = state.get('buy_count', 0)
+        sell_count = state.get('sell_count', 0)
+        sell_timestamps = state.get('sell_timestamps', [])
+        buy_timestamps = state.get('buy_timestamps', [])
+        last_buy_time = state.get('last_buy_time', position.entry_time)
+        peak_velocity = state.get('peak_velocity', 0)
+
+        # Calculate time-windowed metrics
+        sells_last_5s = len([t for t in sell_timestamps if now - t < ORDERFLOW_SELL_BURST_WINDOW])
+        sells_last_10s = len([t for t in sell_timestamps if now - t < ORDERFLOW_UNDERWATER_WINDOW])
+        buys_last_5s = len([t for t in buy_timestamps if now - t < 5])
+        time_since_last_buy = now - last_buy_time
+
+        # Current velocity
+        total_sol = state.get('total_sol', 0)
+        current_velocity = total_sol / age if age > 0 else 0
+
+        # Track buyer count for stall detection
+        if not hasattr(position, 'last_buyer_count'):
+            position.last_buyer_count = len(state.get('buyers', set()))
+            position.last_buyer_time = now
+            position.entry_buy_count = buy_count
+
+        unique_buyers = len(state.get('buyers', set()))
+        buys_since_entry = buy_count - position.entry_buy_count
+
+        # === MEGA PROFIT PROTECTION (+50%+) ===
+        # At huge gains, exit on ANY sell
+        if pnl_percent >= ORDERFLOW_MEGA_PNL_THRESHOLD:
+            if sell_count >= 1:
+                return True, f"mega_profit_{pnl_percent:.0f}pct_sell_appeared"
+
+        # === HIGH PROFIT PROTECTION (+30%+) ===
+        if pnl_percent >= ORDERFLOW_HIGH_PNL_THRESHOLD:
+            # Exit on light sell pressure or stall
+            if sells_last_10s >= ORDERFLOW_HIGH_PNL_SELLS:
+                return True, f"profit_protect_{pnl_percent:.0f}pct_{sells_last_10s}sells"
+            if time_since_last_buy >= ORDERFLOW_HIGH_PNL_STALL:
+                return True, f"profit_protect_{pnl_percent:.0f}pct_stalled_{time_since_last_buy:.0f}s"
+
+        # === PROFIT ZONE EXITS (+8%+) ===
+        if pnl_percent >= ORDERFLOW_MIN_PNL_PERCENT:
+            # Need minimum buys to confirm momentum existed
+            if buys_since_entry < ORDERFLOW_MIN_BUYS_AFTER_ENTRY:
+                return False, ""  # Not enough data yet
+
+            # 1. SELL BURST: Coordinated dump incoming
+            if sells_last_5s >= ORDERFLOW_SELL_BURST_COUNT:
+                return True, f"sell_burst_{sells_last_5s}_in_5s"
+
+            # 2. BUYER DEATH: Momentum completely dead
+            if time_since_last_buy >= ORDERFLOW_BUYER_DEATH_SECONDS:
+                return True, f"buyer_death_{time_since_last_buy:.0f}s_no_buys"
+
+            # 3. SELL RATIO: Tide turning against you
+            if buy_count > 0 and sell_count >= buy_count * ORDERFLOW_SELL_RATIO_THRESHOLD:
+                return True, f"sell_ratio_{sell_count}sells_vs_{buy_count}buys"
+
+            # 4. VELOCITY DEATH: Party's over
+            if peak_velocity > 0:
+                velocity_ratio = (current_velocity / peak_velocity) * 100
+                if velocity_ratio < ORDERFLOW_VELOCITY_DEATH_PERCENT:
+                    return True, f"velocity_death_{velocity_ratio:.0f}pct_of_peak"
+
+        # === LOSS PREVENTION (cut faster when underwater) ===
+        if pnl_percent < 0:
+            # Heavy selling while underwater
+            if sells_last_10s >= ORDERFLOW_UNDERWATER_SELLS:
+                return True, f"underwater_{sells_last_10s}sells_in_10s"
+
+        # Deep loss with moderate selling
+        if pnl_percent < ORDERFLOW_DEEP_LOSS_THRESHOLD:
+            if sells_last_10s >= ORDERFLOW_DEEP_LOSS_SELLS:
+                return True, f"deep_loss_{pnl_percent:.0f}pct_{sells_last_10s}sells"
+
+        # Update buyer tracking
+        if unique_buyers > position.last_buyer_count:
+            position.last_buyer_count = unique_buyers
+            position.last_buyer_time = now
+
+        return False, ""
 
     async def _fetch_sol_price_birdeye(self) -> float:
         """
@@ -1783,44 +1904,27 @@ class SniperBot:
                             break
 
                     # ===================================================================
-                    # EXIT RULE 3: TIER 1 TAKE PROFIT (+20%) - NORMAL MODE ONLY
+                    # ORDER FLOW EXIT - Replaces tier system
+                    # Uses real-time Helius TX data, 5-13s advantage over charts
                     # ===================================================================
-                    if (not position.is_runner_mode and
-                        price_change >= TIER_1_PROFIT_PERCENT and
-                        "tier1" not in position.partial_sells and
-                        "tier1" not in position.pending_sells and
-                        not position.is_closing):
+                    if not position.is_runner_mode and not position.is_closing:
+                        should_exit, exit_reason = self._check_orderflow_exit(mint, position, price_change)
 
-                        logger.info(f"💰 TIER 1 TAKE PROFIT: {price_change:+.1f}% >= {TIER_1_PROFIT_PERCENT}%")
-                        await self._execute_partial_sell(
-                            mint,
-                            TIER_1_SELL_PERCENT,
-                            "tier1",
-                            price_change
-                        )
+                        if should_exit:
+                            # Log order flow state for analysis
+                            state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+                            sell_timestamps = state.get('sell_timestamps', [])
+                            recent_sells = len([t for t in sell_timestamps if time.time() - t < 5])
 
-                    # ===================================================================
-                    # EXIT RULE 4: TIER 2 TAKE PROFIT (+40%) - NORMAL MODE ONLY
-                    # ===================================================================
-                    # ✅ FIX: tier2 can trigger if tier1 is SUBMITTED (pending OR confirmed)
-                    # remaining_tokens is already reduced when tier1 submits, so tier2 sells correct amount
-                    # This prevents missing profits when tier1 takes 20-30s to confirm
-                    tier1_submitted = "tier1" in position.partial_sells or "tier1" in position.pending_sells
+                            logger.info(f"📊 ORDER FLOW EXIT: {mint[:8]}...")
+                            logger.info(f"   Signal: {exit_reason}")
+                            logger.info(f"   P&L at exit: {price_change:+.1f}%")
+                            logger.info(f"   Peak P&L was: {position.max_pnl_reached:+.1f}%")
+                            logger.info(f"   Age: {age:.1f}s")
+                            logger.info(f"   Buys: {state.get('buy_count', 0)} | Sells: {state.get('sell_count', 0)} | Recent sells (5s): {recent_sells}")
 
-                    if (not position.is_runner_mode and
-                        price_change >= TIER_2_PROFIT_PERCENT and
-                        tier1_submitted and  # tier1 must be SUBMITTED (pending or confirmed)
-                        "tier2" not in position.partial_sells and
-                        "tier2" not in position.pending_sells and
-                        not position.is_closing):
-
-                        logger.info(f"💰 TIER 2 TAKE PROFIT: {price_change:+.1f}% >= {TIER_2_PROFIT_PERCENT}%")
-                        await self._execute_partial_sell(
-                            mint,
-                            TIER_2_SELL_PERCENT,
-                            "tier2",
-                            price_change
-                        )
+                            await self._close_position_full(mint, reason=f"orderflow_{exit_reason}")
+                            break
 
                     # ===================================================================
                     # EXIT RULE 5: TIER 3 DISABLED - 2-tier system (11-trade analysis)

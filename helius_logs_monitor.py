@@ -201,16 +201,20 @@ class HeliusLogsMonitor:
         self.watched_tokens[mint] = {
             'created_at': time.time(),
             'signature': signature,
-            'creator': creator,  # Store creator for local TX building
+            'creator': creator,
             'buyers': set(),
             'total_sol': 0.0,
             'buy_count': 0,
             'sell_count': 0,
             'largest_buy': 0.0,
             'buys': [],
-            'buy_amounts': [],  # NEW: track individual buy amounts for top-2 calc
+            'buy_amounts': [],
             'peak_velocity': 0.0,
-            'vSolInBondingCurve': 0.0,  # Actual curve SOL for rug detection
+            'vSolInBondingCurve': 0.0,
+            # Order flow exit tracking
+            'sell_timestamps': [],
+            'buy_timestamps': [],
+            'last_buy_time': time.time(),
         }
 
         if creator:
@@ -237,11 +241,18 @@ class HeliusLogsMonitor:
         state['total_sol'] += sol_amount
         state['buy_count'] += 1
         state['largest_buy'] = max(state['largest_buy'], sol_amount)
-        state['buy_amounts'].append(sol_amount)  # NEW: track for top-2 calc
-        state['vSolInBondingCurve'] += sol_amount  # Track actual curve SOL for rug detection
+        state['buy_amounts'].append(sol_amount)
+        state['vSolInBondingCurve'] += sol_amount
+
+        # Track buy timing for order flow exits
+        now = time.time()
+        state['last_buy_time'] = now
+        state['buy_timestamps'].append(now)
+        # Keep only last 30 seconds of timestamps
+        state['buy_timestamps'] = [t for t in state['buy_timestamps'] if now - t < 30]
 
         # Track peak velocity (only after 0.5s to avoid false spikes at age≈0)
-        age = time.time() - state['created_at']
+        age = now - state['created_at']
         if age >= 0.5:
             current_velocity = state['total_sol'] / age
             state['peak_velocity'] = max(state['peak_velocity'], current_velocity)
@@ -265,21 +276,29 @@ class HeliusLogsMonitor:
             await self._check_and_trigger(mint, state)
     
     async def _handle_sell(self, logs: list, signature: str):
-        """Handle Sell event - flag token as risky"""
+        """Handle Sell event - track for order flow exits"""
         mint = self._extract_mint_from_sell(logs)
-        
+
         if not mint or mint not in self.watched_tokens:
             return
-        
+
         self.stats['sells'] += 1
         state = self.watched_tokens[mint]
         state['sell_count'] += 1
 
-        # Estimate sell amount (we don't parse it, so estimate ~0.3 SOL avg)
+        # Track sell timing for order flow exits
+        now = time.time()
+        state['sell_timestamps'].append(now)
+        # Keep only last 30 seconds
+        state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
+
+        # Estimate SOL removed from curve
         estimated_sell_sol = 0.3
         state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated_sell_sol)
 
-        logger.warning(f"⚠️ SELL on {mint[:8]}... (sell #{state['sell_count']} before entry)")
+        # Log with order flow detail
+        recent_sells = len([t for t in state['sell_timestamps'] if now - t < 5])
+        logger.warning(f"⚠️ SELL #{state['sell_count']} on {mint[:8]}... ({recent_sells} in last 5s)")
     
     async def _check_and_trigger(self, mint: str, state: dict):
         """Check if token meets entry conditions and trigger callback"""
