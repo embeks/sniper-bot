@@ -331,6 +331,35 @@ RUNNER_EXIT_VELOCITY_DURATION = 10.0  # For this many seconds
 RUNNER_STOP_LOSS_PERCENT = 15.0     # Tighter stop loss for runners (higher avg entry)
 
 # ============================================
+# ORDER FLOW EXIT SETTINGS
+# ============================================
+# Minimum conditions before order flow exits activate
+ORDERFLOW_MIN_AGE_SECONDS = float(os.getenv('ORDERFLOW_MIN_AGE_SECONDS', '8.0'))
+ORDERFLOW_MIN_PNL_PERCENT = float(os.getenv('ORDERFLOW_MIN_PNL_PERCENT', '8.0'))
+ORDERFLOW_MIN_BUYS_AFTER_ENTRY = int(os.getenv('ORDERFLOW_MIN_BUYS_AFTER_ENTRY', '5'))
+
+# Exit signals
+ORDERFLOW_SELL_BURST_COUNT = int(os.getenv('ORDERFLOW_SELL_BURST_COUNT', '3'))
+ORDERFLOW_SELL_BURST_WINDOW = float(os.getenv('ORDERFLOW_SELL_BURST_WINDOW', '5.0'))
+ORDERFLOW_BUYER_DEATH_SECONDS = float(os.getenv('ORDERFLOW_BUYER_DEATH_SECONDS', '8.0'))
+ORDERFLOW_SELL_RATIO_THRESHOLD = float(os.getenv('ORDERFLOW_SELL_RATIO_THRESHOLD', '0.20'))
+ORDERFLOW_VELOCITY_DEATH_PERCENT = float(os.getenv('ORDERFLOW_VELOCITY_DEATH_PERCENT', '25.0'))
+
+# Profit protection (tighter exits at high P&L)
+ORDERFLOW_HIGH_PNL_THRESHOLD = float(os.getenv('ORDERFLOW_HIGH_PNL_THRESHOLD', '30.0'))
+ORDERFLOW_HIGH_PNL_SELLS = int(os.getenv('ORDERFLOW_HIGH_PNL_SELLS', '2'))
+ORDERFLOW_HIGH_PNL_STALL = float(os.getenv('ORDERFLOW_HIGH_PNL_STALL', '5.0'))
+
+# Mega profit protection
+ORDERFLOW_MEGA_PNL_THRESHOLD = float(os.getenv('ORDERFLOW_MEGA_PNL_THRESHOLD', '50.0'))
+
+# Loss prevention (faster exit when underwater)
+ORDERFLOW_UNDERWATER_SELLS = int(os.getenv('ORDERFLOW_UNDERWATER_SELLS', '5'))
+ORDERFLOW_UNDERWATER_WINDOW = float(os.getenv('ORDERFLOW_UNDERWATER_WINDOW', '10.0'))
+ORDERFLOW_DEEP_LOSS_THRESHOLD = float(os.getenv('ORDERFLOW_DEEP_LOSS_THRESHOLD', '-10.0'))
+ORDERFLOW_DEEP_LOSS_SELLS = int(os.getenv('ORDERFLOW_DEEP_LOSS_SELLS', '3'))
+
+# ============================================
 # DEVELOPMENT
 # ============================================
 DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
