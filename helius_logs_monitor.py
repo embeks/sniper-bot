@@ -367,23 +367,24 @@ class HeliusLogsMonitor:
         if total_sol < self.min_sol:
             return  # Too early, keep watching
 
-        if total_sol > self.max_sol:
-            logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol}")
-            self.triggered_tokens.add(mint)  # Don't check again
-            return
+        # DISABLED: Overshoot ceiling - redundant with velocity ceiling, blocking runners
+        # if total_sol > self.max_sol:
+        #     logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol}")
+        #     self.triggered_tokens.add(mint)  # Don't check again
+        #     return
 
         # 2. Minimum unique buyers
         if buyers < self.min_buyers:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # 3. Sell ratio check - allow some churn but not dumps
-        sell_ratio = state['sell_count'] / buyers if buyers > 0 else 1.0
-        if sell_ratio > 0.35:
-            logger.warning(f"❌ Sell ratio too high: {sell_ratio:.0%} ({state['sell_count']}/{buyers})")
-            self.stats['skipped_sells'] += 1
-            self.triggered_tokens.add(mint)
-            return
+        # DISABLED: Sell ratio filter - too noisy at low buyer counts, blocking legitimate runners
+        # sell_ratio = state['sell_count'] / buyers if buyers > 0 else 1.0
+        # if sell_ratio > 0.35:
+        #     logger.warning(f"❌ Sell ratio too high: {sell_ratio:.0%} ({state['sell_count']}/{buyers})")
+        #     self.stats['skipped_sells'] += 1
+        #     self.triggered_tokens.add(mint)
+        #     return
 
         # 4. Anti-bot check: single wallet dominance (max 35%)
         if largest_buy_pct > self.max_single_buy_percent:
