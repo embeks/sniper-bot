@@ -216,6 +216,8 @@ class HeliusLogsMonitor:
             'sell_timestamps': [],
             'buy_timestamps': [],
             'last_buy_time': time.time(),
+            # Curve momentum tracking for rug detection
+            'curve_history': [],  # List of (timestamp, vSolInBondingCurve) tuples
         }
 
         if creator:
@@ -244,6 +246,12 @@ class HeliusLogsMonitor:
         state['largest_buy'] = max(state['largest_buy'], sol_amount)
         state['buy_amounts'].append(sol_amount)
         state['vSolInBondingCurve'] += sol_amount
+
+        # Track curve momentum for rug detection gate
+        now_curve = time.time()
+        state['curve_history'].append((now_curve, state['vSolInBondingCurve']))
+        # Keep only last 15 seconds of curve history
+        state['curve_history'] = [(t, v) for t, v in state['curve_history'] if now_curve - t < 15]
 
         # Track dev (creator) buys - red flag for dumps
         if buyer and buyer == state.get('creator'):
@@ -302,6 +310,11 @@ class HeliusLogsMonitor:
         # Estimate SOL removed from curve
         estimated_sell_sol = 0.3
         state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated_sell_sol)
+
+        # Track curve momentum for rug detection gate
+        state['curve_history'].append((now, state['vSolInBondingCurve']))
+        # Keep only last 15 seconds of curve history
+        state['curve_history'] = [(t, v) for t, v in state['curve_history'] if now - t < 15]
 
         # Log with order flow detail
         recent_sells = len([t for t in state['sell_timestamps'] if now - t < 5])

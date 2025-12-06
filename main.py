@@ -1540,9 +1540,27 @@ class SniperBot:
                     sell_ratio = sell_count / buy_count if buy_count > 0 else 1.0
 
                     if sell_count >= 10 and sell_ratio > 0.30:
-                        logger.warning(f"🚨 HELIUS RUG DETECTED: {sell_count} sells / {buy_count} buys ({sell_ratio:.0%} ratio) - full exit NOW")
-                        await self._close_position_full(mint, reason="helius_rug")
-                        break
+                        # Curve momentum gate: If curve is still rising strongly, skip rug trigger
+                        # This catches profit-taking during a pump vs actual rug
+                        curve_history = state.get('curve_history', [])
+                        current_curve = state.get('vSolInBondingCurve', 0)
+                        curve_delta = 0.0
+
+                        if len(curve_history) >= 2:
+                            now = time.time()
+                            # Find curve value from ~5 seconds ago
+                            old_entries = [(t, v) for t, v in curve_history if now - t >= 5]
+                            if old_entries:
+                                _, old_curve = old_entries[0]  # Oldest entry >= 5s ago
+                                curve_delta = current_curve - old_curve
+
+                        # If curve rising > 1.0 SOL despite sells, this is profit-taking not rug
+                        if curve_delta > 1.0:
+                            logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL despite {sell_ratio:.0%} sell ratio - holding")
+                        else:
+                            logger.warning(f"🚨 HELIUS RUG DETECTED: {sell_count} sells / {buy_count} buys ({sell_ratio:.0%} ratio), curve delta {curve_delta:+.1f} SOL - full exit NOW")
+                            await self._close_position_full(mint, reason="helius_rug")
+                            break
 
                 # Early exit if position fully sold
                 if position.remaining_tokens <= 0 and not position.pending_sells:

@@ -222,7 +222,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 
 # NEW FILTERS (21-trade baseline learnings)
 MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '3.0'))                # Max SOL/s - blocks coordinated bot pumps
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '75.0'))  # Max % from top 2 wallets combined
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '68.0'))  # Max % from top 2 wallets combined
 
 # ============================================
 # DEX CONFIGURATION
