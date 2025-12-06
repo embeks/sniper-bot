@@ -379,7 +379,7 @@ class HeliusLogsMonitor:
 
         # 3. Sell ratio check - allow some churn but not dumps
         sell_ratio = state['sell_count'] / buyers if buyers > 0 else 1.0
-        if sell_ratio > 0.30:
+        if sell_ratio > 0.35:
             logger.warning(f"❌ Sell ratio too high: {sell_ratio:.0%} ({state['sell_count']}/{buyers})")
             self.stats['skipped_sells'] += 1
             self.triggered_tokens.add(mint)
