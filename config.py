@@ -32,7 +32,7 @@ BACKUP_RPC_ENDPOINTS = [
 # JITO BUNDLE CONFIGURATION
 # ============================================
 JITO_ENABLED = os.getenv('JITO_ENABLED', 'true').lower() == 'true'
-JITO_TIP_AMOUNT_SOL = float(os.getenv('JITO_TIP_SOL', '0.003'))  # Default 0.003 SOL - increased for better tx landing
+JITO_TIP_AMOUNT_SOL = float(os.getenv('JITO_TIP_SOL', '0.005'))  # Default 0.005 SOL - increased for better tx landing
 JITO_TIP_AGGRESSIVE_SOL = float(os.getenv('JITO_TIP_AGGRESSIVE_SOL', '0.01'))  # For 0-sell tokens
 
 # Jito Block Engine endpoints (rotate randomly to reduce contention)
@@ -216,7 +216,7 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '4'))   # Fire earlier
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '1'))   # Stricter
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '65.0'))  # Anti-bot: max % from single wallet
-MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '0.8'))   # More lenient early
+MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '2.0'))   # Filter weak entries (was 0.8)
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '8.0'))
 MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Enter faster
 
