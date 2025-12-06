@@ -1596,28 +1596,56 @@ class SniperBot:
                     break
 
                 try:
-                    # ✅ CRITICAL FIX: Always use curve_reader for accurate chain state
-                    # The Helius WS 'total_sol' is CUMULATIVE VOLUME, not actual curve state!
-                    # Using cumulative volume caused premature tier triggers (showed +20% when only +2%)
+                    # ✅ CRITICAL FIX: Use Helius real-time curve data, fall back to chain
+                    # Chain reads return stale data (2-13s behind), causing false rug_drain/momentum_crash
+                    # Helius tracks vSolInBondingCurve in real-time via WebSocket
                     curve_data = None
                     source = 'unknown'
 
-                    # Always use chain data for accurate price - curve_reader gets real state
-                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+                    # Try Helius first (real-time, <100ms)
+                    helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+                    helius_curve_sol = helius_state.get('vSolInBondingCurve', 0)
 
-                    if curve_state:
+                    if helius_curve_sol > 0:
+                        # Derive price from Helius curve (same formula as curve_reader)
+                        TOTAL_TOKEN_SUPPLY = 1_073_000_191_000_000  # atomic units
+                        virtual_sol = 30 + helius_curve_sol
+                        virtual_sol_lamports = int(virtual_sol * 1e9)
+                        virtual_tokens = int(TOTAL_TOKEN_SUPPLY * (30 / virtual_sol))
+                        helius_price = virtual_sol_lamports / virtual_tokens if virtual_tokens > 0 else 0
+
                         curve_data = {
-                            'sol_in_curve': curve_state.get('sol_raised', 0),
-                            'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0),
-                            'virtual_sol_reserves': curve_state.get('virtual_sol_reserves', 0),
-                            'virtual_token_reserves': curve_state.get('virtual_token_reserves', 0),
-                            'is_migrated': curve_state.get('complete', False),
-                            'source': 'chain',
+                            'sol_in_curve': helius_curve_sol,
+                            'price_lamports_per_atomic': helius_price,
+                            'virtual_sol_reserves': virtual_sol_lamports,
+                            'virtual_token_reserves': virtual_tokens,
+                            'is_migrated': False,
+                            'source': 'helius',
                             'is_valid': True
                         }
                         position.has_chain_price = True
-                        position.last_price_source = 'chain'
-                        source = 'chain'
+                        position.last_price_source = 'helius'
+                        source = 'helius'
+                        logger.debug(f"Using Helius curve: {helius_curve_sol:.2f} SOL, price={helius_price:.10f}")
+
+                    # Fall back to chain if Helius has no data
+                    if not curve_data:
+                        curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                        if curve_state:
+                            curve_data = {
+                                'sol_in_curve': curve_state.get('sol_raised', 0),
+                                'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0),
+                                'virtual_sol_reserves': curve_state.get('virtual_sol_reserves', 0),
+                                'virtual_token_reserves': curve_state.get('virtual_token_reserves', 0),
+                                'is_migrated': curve_state.get('complete', False),
+                                'source': 'chain',
+                                'is_valid': True
+                            }
+                            position.has_chain_price = True
+                            position.last_price_source = 'chain'
+                            source = 'chain'
+                            logger.debug(f"Helius had no data, using chain: {curve_state.get('sol_raised', 0):.2f} SOL")
 
                     if not curve_data:
                         consecutive_data_failures += 1
@@ -1650,10 +1678,9 @@ class SniperBot:
                     # ===================================================================
                     # FAST RUG EXIT: Check for curve drain (20% drop in 6s window)
                     # ===================================================================
-                    # ✅ FIX: Use chain data ONLY - Helius vSolInBondingCurve is estimated
-                    # (sells subtract hardcoded 0.3 SOL, causing massive undercount on heavy selling)
-                    # current_sol_in_curve comes from curve_reader.get_curve_state() = actual chain state
-                    curve_sol_for_drain = current_sol_in_curve
+                    # ✅ FIX: Use Helius real-time curve data (chain reads are 2-13s stale)
+                    # Helius tracks buys/sells via WebSocket - much more accurate than RPC
+                    curve_sol_for_drain = helius_curve_sol if helius_curve_sol > 0 else current_sol_in_curve
 
                     if curve_sol_for_drain > 0 and not position.is_closing:
                         if self._check_curve_drain(position, curve_sol_for_drain):
