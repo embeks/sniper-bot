@@ -396,6 +396,13 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... low velocity: {velocity:.2f} SOL/s (need {self.min_velocity})")
             return
 
+        # 5b. Maximum velocity check - blocks coordinated bot pumps
+        if velocity > self.max_velocity:
+            logger.warning(f"❌ Bot pump detected: {velocity:.1f} SOL/s (max {self.max_velocity})")
+            self.stats['skipped_velocity_high'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
         # 6. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
             logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
@@ -444,7 +451,7 @@ class HeliusLogsMonitor:
         logger.info(f"   Sells: {state['sell_count']} (max: {self.max_sell_count})")
         logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
         logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
-        logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
+        logger.info(f"   Velocity: {velocity:.2f} SOL/s (range: {self.min_velocity}-{self.max_velocity})")
         logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
         logger.info("=" * 60)
         
