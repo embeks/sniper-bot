@@ -417,7 +417,22 @@ class SniperBot:
                     return True, f"velocity_death_{velocity_ratio:.0f}pct_of_peak"
 
         # === LOSS PREVENTION (cut faster when underwater) ===
-        if pnl_percent < 0:
+        # FIXED: Use curve-based P&L in first 15s (DEX price is stale/wrong)
+        effective_pnl = pnl_percent  # Default to passed-in P&L
+
+        if age < 15:
+            # Calculate curve-based P&L from Helius data
+            entry_curve_sol = getattr(position, 'entry_curve_sol', 0)
+            current_curve_sol = state.get('vSolInBondingCurve', 0)
+
+            if entry_curve_sol > 0 and current_curve_sol > 0:
+                curve_pnl = ((current_curve_sol - entry_curve_sol) / entry_curve_sol) * 100
+                effective_pnl = curve_pnl
+                # Log discrepancy if significant
+                if abs(curve_pnl - pnl_percent) > 20:
+                    logger.debug(f"Curve P&L: {curve_pnl:+.1f}% vs DEX: {pnl_percent:+.1f}%")
+
+        if effective_pnl < 0:
             # Heavy selling while underwater
             if sells_last_10s >= ORDERFLOW_UNDERWATER_SELLS:
                 return True, f"underwater_{sells_last_10s}sells_in_10s"

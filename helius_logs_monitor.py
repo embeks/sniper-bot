@@ -57,6 +57,7 @@ class HeliusLogsMonitor:
             'skipped_velocity_high': 0,  # NEW: track high velocity skips
             'skipped_top2': 0,           # NEW: track top-2 concentration skips
             'skipped_distribution': 0,   # NEW: track poor buyer distribution skips
+            'skipped_dev': 0,            # NEW: track dev buy skips
         }
         
         # Known discriminators
@@ -244,6 +245,12 @@ class HeliusLogsMonitor:
         state['buy_amounts'].append(sol_amount)
         state['vSolInBondingCurve'] += sol_amount
 
+        # Track dev (creator) buys - red flag for dumps
+        if buyer and buyer == state.get('creator'):
+            state['dev_buys'] = state.get('dev_buys', 0) + 1
+            state['dev_sol'] = state.get('dev_sol', 0) + sol_amount
+            logger.warning(f"⚠️ DEV BUY #{state['dev_buys']} on {mint[:8]}... ({sol_amount:.2f} SOL)")
+
         # Track buy timing for order flow exits
         now = time.time()
         state['last_buy_time'] = now
@@ -370,6 +377,14 @@ class HeliusLogsMonitor:
         if top2_pct > self.max_top2_percent:
             logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
             self.stats['skipped_top2'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
+        # 8. NEW: Dev buy filter - creator buying tokens = guaranteed dump
+        dev_buys = state.get('dev_buys', 0)
+        if dev_buys > 0:
+            logger.warning(f"❌ Dev bought tokens: {dev_buys} buys ({state.get('dev_sol', 0):.2f} SOL)")
+            self.stats['skipped_dev'] = self.stats.get('skipped_dev', 0) + 1
             self.triggered_tokens.add(mint)
             return
 
@@ -589,4 +604,4 @@ class HeliusLogsMonitor:
         logger.info(f"Helius monitor stopped")
         logger.info(f"Stats: {stats['creates']} creates, {stats['buys']} buys, {stats['sells']} sells")
         logger.info(f"Triggered: {stats['triggers']} | Skipped (sells): {stats['skipped_sells']} | Skipped (bot): {stats['skipped_bot']}")
-        logger.info(f"NEW filters - Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (distribution): {stats.get('skipped_distribution', 0)}")
+        logger.info(f"NEW filters - Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (dev): {stats.get('skipped_dev', 0)} | Skipped (distribution): {stats.get('skipped_distribution', 0)}")
