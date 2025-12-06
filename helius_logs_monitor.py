@@ -27,6 +27,11 @@ from curve_reader import BondingCurveReader
 
 logger = logging.getLogger(__name__)
 
+# Known scam creators - instant reject
+BLACKLISTED_CREATORS = {
+    '7swXP7W6hV4HePr2cLJHm6cL4vfpEq4DLPQh8N4c9dPc',  # Serial rugger (Gerry, Downgrade)
+}
+
 
 class HeliusLogsMonitor:
     """Subscribe to PumpFun program logs and track all events"""
@@ -45,7 +50,11 @@ class HeliusLogsMonitor:
         # Token state tracking
         self.watched_tokens: Dict[str, dict] = {}
         self.triggered_tokens: Set[str] = set()  # Don't re-trigger
-        
+
+        # Track creator launches - skip serial scammers
+        self.creator_launches: Dict[str, int] = {}  # creator -> launch count
+        self.max_creator_launches = 2  # Skip if creator launched 3+ tokens in session
+
         # Statistics
         self.stats = {
             'creates': 0,
@@ -58,6 +67,7 @@ class HeliusLogsMonitor:
             'skipped_top2': 0,           # NEW: track top-2 concentration skips
             'skipped_distribution': 0,   # NEW: track poor buyer distribution skips
             'skipped_dev': 0,            # NEW: track dev buy skips
+            'skipped_serial_creator': 0,
         }
         
         # Known discriminators
@@ -195,6 +205,19 @@ class HeliusLogsMonitor:
         mint, creator = self._extract_mint_and_creator_from_create(logs)
         if not mint:
             return
+
+        # Reject blacklisted creators immediately
+        if creator and creator in BLACKLISTED_CREATORS:
+            logger.warning(f"🚫 BLACKLISTED CREATOR: {creator[:12]}... - skipping {mint[:12]}...")
+            return
+
+        # Track and filter serial creators (scammers launch many tokens)
+        if creator:
+            self.creator_launches[creator] = self.creator_launches.get(creator, 0) + 1
+            if self.creator_launches[creator] > self.max_creator_launches:
+                logger.warning(f"🚫 SERIAL CREATOR: {creator[:12]}... launched {self.creator_launches[creator]} tokens - skipping")
+                self.stats['skipped_serial_creator'] += 1
+                return
 
         self.stats['creates'] += 1
 
