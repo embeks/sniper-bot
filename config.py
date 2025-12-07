@@ -217,14 +217,14 @@ MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '6'))   # Fire earlier
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '0'))   # Stricter
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '55.0'))  # Anti-bot: max % from single wallet
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '2.0'))   # Filter weak entries (was 0.8)
-MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '8.0'))
+MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))
 MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Enter faster
 
 # NEW FILTERS (21-trade baseline learnings)
 # MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '15.0'))  # Redundant - using buyer velocity instead
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '2.5'))
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
-MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '2.0'))
+MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
 MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '50.0'))  # Max % from top 2 wallets combined
 
 # ============================================
