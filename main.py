@@ -1555,11 +1555,17 @@ class SniperBot:
                                 curve_delta = current_curve - old_curve
 
                         # If curve rising > 1.0 SOL despite sells, this is profit-taking not rug
-                        if curve_delta > 1.0:
+                        # Also detect DECLINING deltas - momentum death even if still positive
+                        delta_drop = getattr(position, 'last_curve_delta', 0) - curve_delta
+                        position.last_curve_delta = curve_delta
+
+                        if curve_delta > 1.0 and delta_drop < 2.0:
                             logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL despite {sell_ratio:.0%} sell ratio - holding")
                         else:
-                            logger.warning(f"🚨 HELIUS RUG DETECTED: {sell_count} sells / {buy_count} buys ({sell_ratio:.0%} ratio), curve delta {curve_delta:+.1f} SOL - full exit NOW")
-                            await self._close_position_full(mint, reason="helius_rug")
+                            reason = f"delta_death_{delta_drop:.1f}" if delta_drop >= 2.0 else "curve_stall"
+                            logger.warning(f"🚨 MOMENTUM DEATH: delta dropped {delta_drop:.1f} SOL, current delta {curve_delta:+.1f}")
+                            logger.warning(f"🚨 RUG EXIT ({reason}): {sell_count} sells / {buy_count} buys ({sell_ratio:.0%} ratio) - full exit NOW")
+                            await self._close_position_full(mint, reason=f"helius_rug_{reason}")
                             break
 
                 # Early exit if position fully sold
