@@ -91,7 +91,7 @@ class HeliusLogsMonitor:
         self.max_buyers_per_second = MAX_BUYERS_PER_SECOND  # Coordination detection
         self.max_sells_at_entry = MAX_SELLS_AT_ENTRY  # Max sells allowed at entry
         self.min_buy_sell_ratio = MIN_BUY_SELL_RATIO  # Min buy:sell ratio
-        self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 50% max from top 2 wallets
+        self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 65% max from top 2 wallets
         
         self.max_watch_time = 60  # Stop watching sooner
 
@@ -469,14 +469,13 @@ class HeliusLogsMonitor:
 
         # ===== NEW FILTERS (21-trade baseline learnings) =====
 
-        # 7. NEW: Top-2 concentration check - blocks coordinated entries
+        # 7. Top-2 concentration check - blocks coordinated entries
         # Two wallets at 30% each = 60% concentration, should fail
-        # DISABLED: Contradicts single wallet filter, blocking organic distribution
-        # if top2_pct > self.max_top2_percent:
-        #     logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
-        #     self.stats['skipped_top2'] += 1
-        #     self.triggered_tokens.add(mint)
-        #     return
+        if top2_pct > self.max_top2_percent:
+            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
+            self.stats['skipped_top2'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
         # 8. NEW: Dev buy filter - creator buying tokens = guaranteed dump
         dev_buys = state.get('dev_buys', 0)
