@@ -21,7 +21,9 @@ from config import (
     MIN_UNIQUE_BUYERS, MAX_SELLS_BEFORE_ENTRY,
     MAX_SINGLE_BUY_PERCENT, MIN_VELOCITY, MAX_TOKEN_AGE_SECONDS,
     # NEW IMPORTS for 21-trade baseline filters
-    MAX_VELOCITY, MAX_TOP2_BUY_PERCENT, MIN_TOKEN_AGE_SECONDS
+    MAX_TOP2_BUY_PERCENT, MIN_TOKEN_AGE_SECONDS,
+    # NEW: Buyer velocity and sell ratio filters
+    MAX_BUYERS_PER_SECOND, MAX_SELLS_AT_ENTRY, MIN_BUY_SELL_RATIO
 )
 from curve_reader import BondingCurveReader
 
@@ -84,7 +86,10 @@ class HeliusLogsMonitor:
         self.min_token_age = MIN_TOKEN_AGE_SECONDS  # NEW: minimum age before entry
         
         # NEW: 21-trade baseline filters
-        self.max_velocity = MAX_VELOCITY          # 8.0 SOL/s max - blocks bot pumps
+        # self.max_velocity = MAX_VELOCITY  # Redundant - using buyer velocity instead
+        self.max_buyers_per_second = MAX_BUYERS_PER_SECOND  # Coordination detection
+        self.max_sells_at_entry = MAX_SELLS_AT_ENTRY  # Max sells allowed at entry
+        self.min_buy_sell_ratio = MIN_BUY_SELL_RATIO  # Min buy:sell ratio
         self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 50% max from top 2 wallets
         
         self.max_watch_time = 60  # Stop watching sooner
@@ -97,9 +102,9 @@ class HeliusLogsMonitor:
         logger.info("🔍 Connecting to Helius WebSocket...")
         logger.info(f"   Strategy: EARLY ENTRY with strict quality gates")
         logger.info(f"   Entry zone: {self.min_sol}-{self.max_sol} SOL")
-        logger.info(f"   Min buyers: {self.min_buyers} | Max sells: {self.max_sell_count}")
+        logger.info(f"   Min buyers: {self.min_buyers} | Max sells: {self.max_sells_at_entry} (ratio {self.min_buy_sell_ratio}:1)")
         logger.info(f"   Anti-bot: single buy < {self.max_single_buy_percent:.0f}%")
-        logger.info(f"   Min velocity: {self.min_velocity} SOL/s | Max velocity: {self.max_velocity} SOL/s")
+        logger.info(f"   Min velocity: {self.min_velocity} SOL/s | Max buyers/s: {self.max_buyers_per_second}")
         logger.info(f"   Max token age: {self.max_token_age}s")
         logger.info(f"   Max top-2 concentration: {self.max_top2_percent}%")
         
@@ -378,13 +383,19 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # DISABLED: Sell ratio filter - too noisy at low buyer counts, blocking legitimate runners
-        # sell_ratio = state['sell_count'] / buyers if buyers > 0 else 1.0
-        # if sell_ratio > 0.35:
-        #     logger.warning(f"❌ Sell ratio too high: {sell_ratio:.0%} ({state['sell_count']}/{buyers})")
-        #     self.stats['skipped_sells'] += 1
-        #     self.triggered_tokens.add(mint)
-        #     return
+        # 3. Check sells with ratio (allow up to 2 sells if buy:sell ratio >= 4:1)
+        sell_count = state['sell_count']
+        buy_count = state['buy_count']
+        if sell_count > self.max_sells_at_entry:
+            logger.warning(f"❌ Too many sells: {sell_count} (max {self.max_sells_at_entry})")
+            self.stats['skipped_sells'] += 1
+            self.triggered_tokens.add(mint)
+            return
+        if sell_count > 0 and (buy_count / sell_count) < self.min_buy_sell_ratio:
+            logger.warning(f"❌ Buy:sell ratio too low: {buy_count}:{sell_count} (min {self.min_buy_sell_ratio}:1)")
+            self.stats['skipped_sells'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
         # 4. Anti-bot check: single wallet dominance (max 35%)
         if largest_buy_pct > self.max_single_buy_percent:
@@ -398,9 +409,18 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... low velocity: {velocity:.2f} SOL/s (need {self.min_velocity})")
             return
 
-        # 5b. Maximum velocity check - blocks coordinated bot pumps
-        if velocity > self.max_velocity:
-            logger.warning(f"❌ Bot pump detected: {velocity:.1f} SOL/s (max {self.max_velocity})")
+        # 5b. DISABLED: Maximum SOL velocity check - redundant with buyer velocity
+        # if velocity > self.max_velocity:
+        #     logger.warning(f"❌ Bot pump detected: {velocity:.1f} SOL/s (max {self.max_velocity})")
+        #     self.stats['skipped_velocity_high'] += 1
+        #     self.triggered_tokens.add(mint)
+        #     return
+
+        # 5c. Check buyer velocity (coordination detection)
+        token_age = age
+        buyer_velocity = buy_count / max(token_age, 0.1)
+        if buyer_velocity > self.max_buyers_per_second:
+            logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
             self.stats['skipped_velocity_high'] += 1
             self.triggered_tokens.add(mint)
             return
@@ -450,10 +470,11 @@ class HeliusLogsMonitor:
         logger.info(f"🚀 EARLY ENTRY: {mint}")
         logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
         logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
-        logger.info(f"   Sells: {state['sell_count']} (max: {self.max_sell_count})")
+        logger.info(f"   Sells: {sell_count} (max: {self.max_sells_at_entry}, ratio: {buy_count}:{sell_count})")
         logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
         logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
-        logger.info(f"   Velocity: {velocity:.2f} SOL/s (range: {self.min_velocity}-{self.max_velocity})")
+        logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
+        logger.info(f"   Buyer velocity: {buyer_velocity:.1f}/s (max: {self.max_buyers_per_second})")
         logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
         logger.info("=" * 60)
         
