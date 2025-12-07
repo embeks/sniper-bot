@@ -1559,10 +1559,10 @@ class SniperBot:
                         delta_drop = getattr(position, 'last_curve_delta', 0) - curve_delta
                         position.last_curve_delta = curve_delta
 
-                        if curve_delta > 1.0 and delta_drop < 2.0:
+                        if curve_delta > 1.0 and delta_drop < 1.5:
                             logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL despite {sell_ratio:.0%} sell ratio - holding")
                         else:
-                            reason = f"delta_death_{delta_drop:.1f}" if delta_drop >= 2.0 else "curve_stall"
+                            reason = f"delta_death_{delta_drop:.1f}" if delta_drop >= 1.5 else "curve_stall"
                             logger.warning(f"🚨 MOMENTUM DEATH: delta dropped {delta_drop:.1f} SOL, current delta {curve_delta:+.1f}")
                             logger.warning(f"🚨 RUG EXIT ({reason}): {sell_count} sells / {buy_count} buys ({sell_ratio:.0%} ratio) - full exit NOW")
                             await self._close_position_full(mint, reason=f"helius_rug_{reason}")
