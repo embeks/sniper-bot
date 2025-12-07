@@ -1526,46 +1526,36 @@ class SniperBot:
                 check_count += 1
 
                 # ===================================================================
-                # REAL-TIME RUG CHECK: Helius sees sells 13s before RPC catches up
-                # FIXED: Use ratio-based detection, not flat count
+                # REAL-TIME RUG CHECK: Uses FRESH chain data, not WebSocket estimates
                 # ===================================================================
                 if self.scanner and not position.is_closing:
                     state = self.scanner.watched_tokens.get(mint, {})
                     sell_count = state.get('sell_count', 0)
                     buy_count = state.get('buy_count', 0)
-
-                    # Ratio-based rug detection:
-                    # - 10+ sells AND sell ratio > 30% = coordinated dump
-                    # - Allows healthy runners (19 sells / 116 buys = 16% = fine)
                     sell_ratio = sell_count / buy_count if buy_count > 0 else 1.0
 
-                    if sell_count >= 10 and sell_ratio > 0.30:
-                        # Curve momentum gate: If curve is still rising strongly, skip rug trigger
-                        # This catches profit-taking during a pump vs actual rug
-                        curve_history = state.get('curve_history', [])
-                        current_curve = state.get('vSolInBondingCurve', 0)
-                        curve_delta = 0.0
+                    if sell_count >= 8 and sell_ratio > 0.25:
+                        # FIX: Get FRESH chain data - WebSocket vSolInBondingCurve is WRONG
+                        fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                        current_curve = fresh_curve.get('sol_raised', 0) if fresh_curve else 0
+                        entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
 
-                        if len(curve_history) >= 2:
-                            now = time.time()
-                            # Find curve value from ~5 seconds ago
-                            old_entries = [(t, v) for t, v in curve_history if now - t >= 5]
-                            if old_entries:
-                                _, old_curve = old_entries[0]  # Oldest entry >= 5s ago
-                                curve_delta = current_curve - old_curve
+                        if entry_curve > 0 and current_curve > 0:
+                            curve_delta = current_curve - entry_curve
+                            delta_drop = getattr(position, 'last_curve_delta', 0) - curve_delta
+                            position.last_curve_delta = curve_delta
 
-                        # If curve rising > 1.0 SOL despite sells, this is profit-taking not rug
-                        # Also detect DECLINING deltas - momentum death even if still positive
-                        delta_drop = getattr(position, 'last_curve_delta', 0) - curve_delta
-                        position.last_curve_delta = curve_delta
-
-                        if curve_delta > 1.0 and delta_drop < 1.5:
-                            logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL despite {sell_ratio:.0%} sell ratio - holding")
-                        else:
-                            reason = f"delta_death_{delta_drop:.1f}" if delta_drop >= 1.5 else "curve_stall"
-                            logger.warning(f"🚨 MOMENTUM DEATH: delta dropped {delta_drop:.1f} SOL, current delta {curve_delta:+.1f}")
-                            logger.warning(f"🚨 RUG EXIT ({reason}): {sell_count} sells / {buy_count} buys ({sell_ratio:.0%} ratio) - full exit NOW")
-                            await self._close_position_full(mint, reason=f"helius_rug_{reason}")
+                            if curve_delta > 1.0 and delta_drop < 1.5:
+                                logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL (chain) despite {sell_ratio:.0%} sell ratio - holding")
+                            else:
+                                reason = f"delta_death_{delta_drop:.1f}" if delta_drop >= 1.5 else "curve_drain"
+                                logger.warning(f"🚨 RUG EXIT: curve {current_curve:.2f} SOL (entry {entry_curve:.2f}), delta {curve_delta:+.1f}")
+                                logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
+                                await self._close_position_full(mint, reason=f"helius_rug_{reason}")
+                                break
+                        elif current_curve < 2.0 and sell_count >= 8:
+                            logger.warning(f"🚨 CURVE EMPTY: {current_curve:.2f} SOL with {sell_count} sells")
+                            await self._close_position_full(mint, reason="curve_empty")
                             break
 
                 # Early exit if position fully sold
@@ -1612,7 +1602,7 @@ class SniperBot:
                     helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
                     helius_curve_sol = helius_state.get('vSolInBondingCurve', 0)
 
-                    if helius_curve_sol > 0:
+                    if False:  # DISABLED: Helius vSolInBondingCurve is wrong
                         # Derive price from Helius curve (same formula as curve_reader)
                         TOTAL_TOKEN_SUPPLY = 1_073_000_191_000_000  # atomic units
                         virtual_sol = 30 + helius_curve_sol
@@ -2708,6 +2698,40 @@ class SniperBot:
             logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
 
             tx_result = await self._get_transaction_proceeds_robust(signature, mint, max_wait=30)
+
+            # FIX: Retry sell if TX failed (error 3005 = slippage exceeded)
+            if not tx_result["success"]:
+                logger.warning("⚠️ First sell failed, retrying...")
+                await asyncio.sleep(0.5)
+                retry_balance = self.wallet.get_token_balance(mint)
+
+                if retry_balance > 1:
+                    logger.info(f"🔄 {retry_balance:,.0f} tokens still in wallet, retry with 90% slippage")
+                    retry_curve = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+
+                    if retry_curve and retry_curve.get('is_valid') and retry_curve.get('sol_in_curve', 0) > 0.1:
+                        retry_sig = await self.local_builder.create_sell_transaction(
+                            mint=mint,
+                            token_amount_ui=retry_balance,
+                            curve_data=retry_curve,
+                            slippage_bps=9000,
+                            token_decimals=6
+                        )
+                        if retry_sig:
+                            logger.info(f"🔄 Retry TX: {retry_sig[:16]}...")
+                            signature = retry_sig
+                            tx_result = await self._get_transaction_proceeds_robust(signature, mint, max_wait=30)
+                        else:
+                            logger.warning("⚠️ Local retry failed, trying PumpPortal with 95% slippage")
+                            retry_sig = await self.trader.create_sell_transaction(
+                                mint=mint, token_amount=retry_balance, slippage=95,
+                                token_decimals=6, urgency="emergency"
+                            )
+                            if retry_sig:
+                                signature = retry_sig
+                                tx_result = await self._get_transaction_proceeds_robust(signature, mint, max_wait=30)
+                    else:
+                        logger.warning(f"⚠️ Curve dead, cannot retry")
 
             if tx_result["success"]:
                 # Got EXACT proceeds from transaction
