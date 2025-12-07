@@ -214,7 +214,7 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # EARLY ENTRY QUALITY GATES
 # ============================================
 MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '6'))   # Fire earlier
-MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '0'))   # Stricter
+MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))   # Allow some sells, rely on sell burst detection
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '55.0'))  # Anti-bot: max % from single wallet
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '2.0'))   # Filter weak entries (was 0.8)
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))
@@ -226,6 +226,15 @@ MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '4.0'))
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
 MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '65.0'))  # Max % from top 2 wallets combined
+
+# SELL BURST DETECTION (timing-based, not count-based)
+SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '2'))        # Number of sells that indicates dump
+SELL_BURST_WINDOW = float(os.getenv('SELL_BURST_WINDOW', '3.0'))  # Time window in seconds
+
+# CURVE MOMENTUM GATE (ensure pump is still active)
+CURVE_MOMENTUM_WINDOW_RECENT = float(os.getenv('CURVE_MOMENTUM_WINDOW_RECENT', '2.0'))  # Recent window (seconds)
+CURVE_MOMENTUM_WINDOW_OLDER = float(os.getenv('CURVE_MOMENTUM_WINDOW_OLDER', '5.0'))    # Older window (seconds)
+CURVE_MOMENTUM_MIN_GROWTH = float(os.getenv('CURVE_MOMENTUM_MIN_GROWTH', '1.02'))       # Min 2% growth required
 
 # ============================================
 # DEX CONFIGURATION

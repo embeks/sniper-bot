@@ -23,7 +23,10 @@ from config import (
     # NEW IMPORTS for 21-trade baseline filters
     MAX_TOP2_BUY_PERCENT, MIN_TOKEN_AGE_SECONDS,
     # NEW: Buyer velocity and sell ratio filters
-    MAX_BUYERS_PER_SECOND, MAX_SELLS_AT_ENTRY, MIN_BUY_SELL_RATIO
+    MAX_BUYERS_PER_SECOND, MAX_SELLS_AT_ENTRY, MIN_BUY_SELL_RATIO,
+    # NEW: Sell burst and curve momentum gates
+    SELL_BURST_COUNT, SELL_BURST_WINDOW,
+    CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH
 )
 from curve_reader import BondingCurveReader
 from solders.pubkey import Pubkey
@@ -66,11 +69,13 @@ class HeliusLogsMonitor:
             'triggers': 0,
             'skipped_sells': 0,
             'skipped_bot': 0,
-            'skipped_velocity_high': 0,  # NEW: track high velocity skips
-            'skipped_top2': 0,           # NEW: track top-2 concentration skips
-            'skipped_distribution': 0,   # NEW: track poor buyer distribution skips
-            'skipped_dev': 0,            # NEW: track dev buy skips
+            'skipped_velocity_high': 0,
+            'skipped_top2': 0,
+            'skipped_distribution': 0,
+            'skipped_dev': 0,
             'skipped_serial_creator': 0,
+            'skipped_sell_burst': 0,      # NEW: sell burst detection
+            'skipped_curve_stalled': 0,   # NEW: curve momentum gate
         }
         
         # Known discriminators
@@ -92,7 +97,16 @@ class HeliusLogsMonitor:
         self.max_sells_at_entry = MAX_SELLS_AT_ENTRY  # Max sells allowed at entry
         self.min_buy_sell_ratio = MIN_BUY_SELL_RATIO  # Min buy:sell ratio
         self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 65% max from top 2 wallets
-        
+
+        # NEW: Sell burst detection (timing-based)
+        self.sell_burst_count = SELL_BURST_COUNT
+        self.sell_burst_window = SELL_BURST_WINDOW
+
+        # NEW: Curve momentum gate
+        self.curve_momentum_window_recent = CURVE_MOMENTUM_WINDOW_RECENT
+        self.curve_momentum_window_older = CURVE_MOMENTUM_WINDOW_OLDER
+        self.curve_momentum_min_growth = CURVE_MOMENTUM_MIN_GROWTH
+
         self.max_watch_time = 60  # Stop watching sooner
 
     async def _check_dev_holdings(self, mint: str, creator: str) -> float:
@@ -412,6 +426,18 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
+        # 2b. SELL BURST GATE - Detect coordinated dumps in progress
+        # This is timing-based (2 sells in 3s = dump) not count-based (any sells = bad)
+        now = time.time()
+        sell_timestamps = state.get('sell_timestamps', [])
+        recent_sells_burst = len([t for t in sell_timestamps if now - t < self.sell_burst_window])
+
+        if recent_sells_burst >= self.sell_burst_count:
+            logger.warning(f"❌ SELL BURST: {recent_sells_burst} sells in {self.sell_burst_window}s - dump in progress")
+            self.stats['skipped_sell_burst'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
         # 3. Check sells with ratio (allow up to 2 sells if buy:sell ratio >= 4:1)
         sell_count = state['sell_count']
         buy_count = state['buy_count']
@@ -457,6 +483,31 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
+        # 5d. CURVE MOMENTUM GATE - Ensure pump is still active, not stalled
+        # A token can pass all filters but be dead (pump happened 5s ago, now flat)
+        curve_history = state.get('curve_history', [])
+
+        if len(curve_history) >= 3:  # Need enough history to compare
+            # Get curve values from recent window (last 2s) and older window (2-5s ago)
+            recent_curve = [v for t, v in curve_history if now - t < self.curve_momentum_window_recent]
+            older_curve = [v for t, v in curve_history
+                          if self.curve_momentum_window_recent <= now - t < self.curve_momentum_window_older]
+
+            if recent_curve and older_curve:
+                recent_max = max(recent_curve)
+                older_max = max(older_curve)
+
+                # Curve must be growing by at least min_growth (default 2%)
+                if older_max > 0 and recent_max < older_max * self.curve_momentum_min_growth:
+                    growth_pct = ((recent_max / older_max) - 1) * 100
+                    logger.warning(f"❌ CURVE STALLED: {older_max:.2f} → {recent_max:.2f} SOL ({growth_pct:+.1f}% < +2% required)")
+                    self.stats['skipped_curve_stalled'] += 1
+                    self.triggered_tokens.add(mint)
+                    return
+                else:
+                    growth_pct = ((recent_max / older_max) - 1) * 100 if older_max > 0 else 0
+                    logger.debug(f"   Curve momentum OK: {older_max:.2f} → {recent_max:.2f} SOL ({growth_pct:+.1f}%)")
+
         # 6. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
             logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
@@ -485,15 +536,7 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # 9. NEW: Dev holdings filter - creator retained tokens from launch = will dump
-        creator = state.get('creator')
-        if creator:
-            dev_holdings = await self._check_dev_holdings(mint, creator)
-            if dev_holdings > 0:
-                logger.warning(f"❌ Dev holds tokens: {dev_holdings:,.0f} tokens")
-                self.stats['skipped_dev'] = self.stats.get('skipped_dev', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+        # 9. REMOVED: Dev holdings RPC check - adds latency, kept WebSocket-based dev buy detection above
 
         # 10. DISABLED: Buyer distribution filter too strict for early entries
         # Already protected by single wallet (45%) and top-2 concentration (60%) filters
@@ -512,11 +555,12 @@ class HeliusLogsMonitor:
         logger.info(f"🚀 EARLY ENTRY: {mint}")
         logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
         logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
-        logger.info(f"   Sells: {sell_count} (max: {self.max_sells_at_entry}, ratio: {buy_count}:{sell_count})")
+        logger.info(f"   Sells: {sell_count} (recent burst: {recent_sells_burst} in {self.sell_burst_window}s)")
         logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
         logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
         logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
         logger.info(f"   Buyer velocity: {buyer_velocity:.1f}/s (max: {self.max_buyers_per_second})")
+        logger.info(f"   Curve momentum: ✅ Growing")
         logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
         logger.info("=" * 60)
         
@@ -712,4 +756,5 @@ class HeliusLogsMonitor:
         logger.info(f"Helius monitor stopped")
         logger.info(f"Stats: {stats['creates']} creates, {stats['buys']} buys, {stats['sells']} sells")
         logger.info(f"Triggered: {stats['triggers']} | Skipped (sells): {stats['skipped_sells']} | Skipped (bot): {stats['skipped_bot']}")
-        logger.info(f"NEW filters - Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (dev): {stats.get('skipped_dev', 0)} | Skipped (distribution): {stats.get('skipped_distribution', 0)}")
+        logger.info(f"Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (dev): {stats.get('skipped_dev', 0)}")
+        logger.info(f"Skipped (sell burst): {stats.get('skipped_sell_burst', 0)} | Skipped (curve stalled): {stats.get('skipped_curve_stalled', 0)}")
