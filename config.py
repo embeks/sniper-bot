@@ -223,7 +223,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 # NEW FILTERS (21-trade baseline learnings)
 # MAX_VELOCITY = float(os.getenv('MAX_VELOCITY', '15.0'))  # Redundant - using buyer velocity instead
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '2.5'))
-MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '3'))
+MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '2.0'))
 MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '50.0'))  # Max % from top 2 wallets combined
 
