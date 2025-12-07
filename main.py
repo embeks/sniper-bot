@@ -1535,26 +1535,30 @@ class SniperBot:
                     sell_ratio = sell_count / buy_count if buy_count > 0 else 1.0
 
                     if sell_count >= 8 and sell_ratio > 0.25:
-                        # FIX: Get FRESH chain data - WebSocket vSolInBondingCurve is WRONG
-                        fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                        current_curve = fresh_curve.get('sol_raised', 0) if fresh_curve else 0
+                        # Use Helius WebSocket data - no RPC call, no failure mode
+                        current_curve = state.get('vSolInBondingCurve', 0)
                         entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
 
-                        if entry_curve > 0 and current_curve > 0:
+                        # Sanity check: if we have many buys but 0 curve, data is stale - skip check
+                        if current_curve == 0 and buy_count > 5:
+                            logger.warning(f"⚠️ Helius shows 0 SOL but {buy_count} buys - stale data, skipping rug check")
+                            # Don't break - continue monitoring
+                        elif entry_curve > 0 and current_curve > 0:
                             curve_delta = current_curve - entry_curve
                             delta_drop = getattr(position, 'last_curve_delta', 0) - curve_delta
                             position.last_curve_delta = curve_delta
 
                             if curve_delta > 1.0 and delta_drop < 1.5:
-                                logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL (chain) despite {sell_ratio:.0%} sell ratio - holding")
+                                logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL (Helius) despite {sell_ratio:.0%} sell ratio - holding")
                             else:
                                 reason = f"delta_death_{delta_drop:.1f}" if delta_drop >= 1.5 else "curve_drain"
                                 logger.warning(f"🚨 RUG EXIT: curve {current_curve:.2f} SOL (entry {entry_curve:.2f}), delta {curve_delta:+.1f}")
                                 logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
                                 await self._close_position_full(mint, reason=f"helius_rug_{reason}")
                                 break
-                        elif current_curve < 2.0 and sell_count >= 8:
-                            logger.warning(f"🚨 CURVE EMPTY: {current_curve:.2f} SOL with {sell_count} sells")
+                        elif current_curve < 2.0 and buy_count < 5:
+                            # Only exit if BOTH curve is low AND we don't have significant buy activity
+                            logger.warning(f"🚨 CURVE EMPTY: {current_curve:.2f} SOL with {sell_count} sells, only {buy_count} buys")
                             await self._close_position_full(mint, reason="curve_empty")
                             break
 
