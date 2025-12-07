@@ -378,9 +378,11 @@ class HeliusLogsMonitor:
         # Keep only last 30 seconds
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
-        # Estimate SOL removed from curve
-        estimated_sell_sol = 0.3
-        state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated_sell_sol)
+        # Better estimate: percentage-based instead of fixed 0.3 SOL
+        # This prevents false "curve empty" triggers on tokens with many sells
+        if state['vSolInBondingCurve'] > 0:
+            estimated_sell_sol = state['vSolInBondingCurve'] * 0.02  # ~2% per sell
+            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated_sell_sol)
 
         # Track curve momentum for rug detection gate
         state['curve_history'].append((now, state['vSolInBondingCurve']))
