@@ -427,16 +427,22 @@ class HeliusLogsMonitor:
             return
 
         # 2b. SELL BURST GATE - Detect coordinated dumps in progress
-        # This is timing-based (2 sells in 3s = dump) not count-based (any sells = bad)
+        # Only block if sells aren't being absorbed by buys (ratio check)
         now = time.time()
         sell_timestamps = state.get('sell_timestamps', [])
+        buy_timestamps = state.get('buy_timestamps', [])
         recent_sells_burst = len([t for t in sell_timestamps if now - t < self.sell_burst_window])
+        recent_buys_burst = len([t for t in buy_timestamps if now - t < self.sell_burst_window])
 
         if recent_sells_burst >= self.sell_burst_count:
-            logger.warning(f"❌ SELL BURST: {recent_sells_burst} sells in {self.sell_burst_window}s - dump in progress")
-            self.stats['skipped_sell_burst'] += 1
-            self.triggered_tokens.add(mint)
-            return
+            # Only block if buys aren't overwhelming sells (need 2:1 buy:sell ratio minimum)
+            if recent_buys_burst < recent_sells_burst * 2:
+                logger.warning(f"❌ SELL BURST: {recent_sells_burst} sells vs {recent_buys_burst} buys in {self.sell_burst_window}s - dump in progress")
+                self.stats['skipped_sell_burst'] += 1
+                self.triggered_tokens.add(mint)
+                return
+            else:
+                logger.debug(f"   Sells absorbed: {recent_sells_burst} sells but {recent_buys_burst} buys in {self.sell_burst_window}s")
 
         # 3. Check sells with ratio (allow up to 2 sells if buy:sell ratio >= 4:1)
         sell_count = state['sell_count']
@@ -484,29 +490,32 @@ class HeliusLogsMonitor:
             return
 
         # 5d. CURVE MOMENTUM GATE - Ensure pump is still active, not stalled
-        # A token can pass all filters but be dead (pump happened 5s ago, now flat)
+        # Compare latest curve value to value from 3s ago (not max of windows - that hides dips)
         curve_history = state.get('curve_history', [])
 
-        if len(curve_history) >= 3:  # Need enough history to compare
-            # Get curve values from recent window (last 2s) and older window (2-5s ago)
-            recent_curve = [v for t, v in curve_history if now - t < self.curve_momentum_window_recent]
-            older_curve = [v for t, v in curve_history
-                          if self.curve_momentum_window_recent <= now - t < self.curve_momentum_window_older]
+        if len(curve_history) >= 2:
+            # Get latest value and value from ~3 seconds ago
+            latest_val = curve_history[-1][1]  # Most recent (timestamp, value)
 
-            if recent_curve and older_curve:
-                recent_max = max(recent_curve)
-                older_max = max(older_curve)
+            # Find value closest to 3 seconds ago
+            target_age = 3.0
+            older_entries = [(t, v) for t, v in curve_history if now - t >= target_age - 0.5]
 
-                # Curve must be growing by at least min_growth (default 2%)
-                if older_max > 0 and recent_max < older_max * self.curve_momentum_min_growth:
-                    growth_pct = ((recent_max / older_max) - 1) * 100
-                    logger.warning(f"❌ CURVE STALLED: {older_max:.2f} → {recent_max:.2f} SOL ({growth_pct:+.1f}% < +2% required)")
+            if older_entries:
+                older_val = older_entries[-1][1]  # Most recent entry that's ~3s old
+
+                # Allow 2% dip tolerance (curve at 0.98x or better is fine)
+                min_acceptable = older_val * 0.98
+
+                if latest_val < min_acceptable:
+                    growth_pct = ((latest_val / older_val) - 1) * 100
+                    logger.warning(f"❌ CURVE STALLED: {older_val:.2f} → {latest_val:.2f} SOL ({growth_pct:+.1f}%)")
                     self.stats['skipped_curve_stalled'] += 1
                     self.triggered_tokens.add(mint)
                     return
                 else:
-                    growth_pct = ((recent_max / older_max) - 1) * 100 if older_max > 0 else 0
-                    logger.debug(f"   Curve momentum OK: {older_max:.2f} → {recent_max:.2f} SOL ({growth_pct:+.1f}%)")
+                    growth_pct = ((latest_val / older_val) - 1) * 100 if older_val > 0 else 0
+                    logger.debug(f"   Curve momentum OK: {older_val:.2f} → {latest_val:.2f} SOL ({growth_pct:+.1f}%)")
 
         # 6. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
@@ -555,7 +564,7 @@ class HeliusLogsMonitor:
         logger.info(f"🚀 EARLY ENTRY: {mint}")
         logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
         logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
-        logger.info(f"   Sells: {sell_count} (recent burst: {recent_sells_burst} in {self.sell_burst_window}s)")
+        logger.info(f"   Sells: {sell_count} (burst window: {recent_buys_burst} buys vs {recent_sells_burst} sells in {self.sell_burst_window}s)")
         logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
         logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
         logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
