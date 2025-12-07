@@ -2085,13 +2085,28 @@ class SniperBot:
             pre_sol_balance = self.wallet.get_sol_balance()
             pre_token_balance = self.wallet.get_token_balance(mint)
             
-            signature = await self.trader.create_sell_transaction(
-                mint=mint,
-                token_amount=ui_tokens_to_sell,
-                slippage=50,
-                token_decimals=token_decimals,
-                urgency="sell"  # 0.0015 SOL priority fee for normal sells
-            )
+            # Get curve data for local sell
+            curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+
+            if curve_data and curve_data.get('is_valid'):
+                # Use local TX (fast)
+                signature = await self.local_builder.create_sell_transaction(
+                    mint=mint,
+                    token_amount_ui=ui_tokens_to_sell,
+                    curve_data=curve_data,
+                    slippage_bps=5000,  # 50%
+                    token_decimals=token_decimals
+                )
+            else:
+                # Fallback to PumpPortal
+                logger.warning(f"⚠️ No curve data for local sell, using PumpPortal")
+                signature = await self.trader.create_sell_transaction(
+                    mint=mint,
+                    token_amount=ui_tokens_to_sell,
+                    slippage=50,
+                    token_decimals=token_decimals,
+                    urgency="sell"
+                )
             
             if signature and not signature.startswith("1111111"):
                 # Update remaining_tokens IMMEDIATELY to prevent race condition
@@ -2461,13 +2476,24 @@ class SniperBot:
                         token_decimals = 6  # PumpFun always 6 decimals
                         ui_tokens_to_sell = tokens_sold
 
-                        retry_signature = await self.trader.create_sell_transaction(
-                            mint=mint,
-                            token_amount=ui_tokens_to_sell,
-                            slippage=50,
-                            token_decimals=token_decimals,
-                            urgency="sell"
-                        )
+                        # Get fresh curve data for retry
+                        retry_curve = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+                        if retry_curve and retry_curve.get('is_valid'):
+                            retry_signature = await self.local_builder.create_sell_transaction(
+                                mint=mint,
+                                token_amount_ui=ui_tokens_to_sell,
+                                curve_data=retry_curve,
+                                slippage_bps=5000,
+                                token_decimals=token_decimals
+                            )
+                        else:
+                            retry_signature = await self.trader.create_sell_transaction(
+                                mint=mint,
+                                token_amount=ui_tokens_to_sell,
+                                slippage=50,
+                                token_decimals=token_decimals,
+                                urgency="sell"
+                            )
 
                         if retry_signature and not retry_signature.startswith("1111111"):
                             asyncio.create_task(
@@ -2639,13 +2665,26 @@ class SniperBot:
             # Capture balance RIGHT BEFORE sell for accurate P&L
             pre_close_balance = self.wallet.get_sol_balance()
 
-            signature = await self.trader.create_sell_transaction(
-                mint=mint,
-                token_amount=ui_token_balance,
-                slippage=100 if is_migrated else 50,
-                token_decimals=token_decimals,
-                urgency=urgency  # 0.002 SOL for emergency, 0.0015 SOL for normal
-            )
+            # Try local TX first (faster)
+            if curve_data and curve_data.get('is_valid') and not is_migrated:
+                slippage_bps = 5000  # 50%
+                signature = await self.local_builder.create_sell_transaction(
+                    mint=mint,
+                    token_amount_ui=ui_token_balance,
+                    curve_data=curve_data,
+                    slippage_bps=slippage_bps,
+                    token_decimals=token_decimals
+                )
+            else:
+                # Fallback to PumpPortal (migrated tokens or no curve data)
+                logger.warning(f"⚠️ Using PumpPortal for sell (migrated={is_migrated})")
+                signature = await self.trader.create_sell_transaction(
+                    mint=mint,
+                    token_amount=ui_token_balance,
+                    slippage=100 if is_migrated else 50,
+                    token_decimals=token_decimals,
+                    urgency=urgency
+                )
 
             if not signature or signature.startswith("1111111"):
                 logger.error(f"❌ Close transaction failed")

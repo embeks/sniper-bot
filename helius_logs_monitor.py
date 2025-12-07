@@ -26,6 +26,7 @@ from config import (
     MAX_BUYERS_PER_SECOND, MAX_SELLS_AT_ENTRY, MIN_BUY_SELL_RATIO
 )
 from curve_reader import BondingCurveReader
+from solders.pubkey import Pubkey
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,34 @@ class HeliusLogsMonitor:
         self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 50% max from top 2 wallets
         
         self.max_watch_time = 60  # Stop watching sooner
+
+    async def _check_dev_holdings(self, mint: str, creator: str) -> float:
+        """Check if creator holds tokens. Returns token balance (0 if none)."""
+        try:
+            from solders.pubkey import Pubkey
+            from config import TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+
+            mint_pubkey = Pubkey.from_string(mint)
+            creator_pubkey = Pubkey.from_string(creator)
+
+            # Derive creator's ATA for this token
+            creator_ata = Pubkey.find_program_address(
+                [bytes(creator_pubkey), bytes(TOKEN_2022_PROGRAM_ID), bytes(mint_pubkey)],
+                ASSOCIATED_TOKEN_PROGRAM_ID
+            )[0]
+
+            # Check balance via RPC
+            response = self.rpc_client.get_token_account_balance(creator_ata)
+
+            if response and response.value:
+                ui_amount = response.value.ui_amount
+                return float(ui_amount) if ui_amount else 0.0
+            return 0.0
+
+        except Exception as e:
+            # Account doesn't exist = no holdings
+            logger.debug(f"Dev holdings check: {e}")
+            return 0.0
         
     async def start(self):
         """Connect to Helius WebSocket and subscribe to PumpFun logs"""
@@ -456,6 +485,16 @@ class HeliusLogsMonitor:
             self.stats['skipped_dev'] = self.stats.get('skipped_dev', 0) + 1
             self.triggered_tokens.add(mint)
             return
+
+        # 9. NEW: Dev holdings filter - creator retained tokens from launch = will dump
+        creator = state.get('creator')
+        if creator:
+            dev_holdings = await self._check_dev_holdings(mint, creator)
+            if dev_holdings > 0:
+                logger.warning(f"❌ Dev holds tokens: {dev_holdings:,.0f} tokens")
+                self.stats['skipped_dev'] = self.stats.get('skipped_dev', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
 
         # 10. DISABLED: Buyer distribution filter too strict for early entries
         # Already protected by single wallet (45%) and top-2 concentration (60%) filters
