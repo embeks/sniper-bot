@@ -386,16 +386,19 @@ class HeliusLogsMonitor:
         # 3. Check sells with ratio (allow up to 2 sells if buy:sell ratio >= 4:1)
         sell_count = state['sell_count']
         buy_count = state['buy_count']
-        if sell_count > self.max_sells_at_entry:
-            logger.warning(f"❌ Too many sells: {sell_count} (max {self.max_sells_at_entry})")
-            self.stats['skipped_sells'] += 1
-            self.triggered_tokens.add(mint)
-            return
-        if sell_count > 0 and (buy_count / sell_count) < self.min_buy_sell_ratio:
-            logger.warning(f"❌ Buy:sell ratio too low: {buy_count}:{sell_count} (min {self.min_buy_sell_ratio}:1)")
-            self.stats['skipped_sells'] += 1
-            self.triggered_tokens.add(mint)
-            return
+        # DISABLED: Testing if redundant - order flow handles dump detection
+        # if sell_count > self.max_sells_at_entry:
+        #     logger.warning(f"❌ Too many sells: {sell_count} (max {self.max_sells_at_entry})")
+        #     self.stats['skipped_sells'] += 1
+        #     self.triggered_tokens.add(mint)
+        #     return
+
+        # DISABLED: Redundant with sell count, blocking organic runners
+        # if sell_count > 0 and (buy_count / sell_count) < self.min_buy_sell_ratio:
+        #     logger.warning(f"❌ Buy:sell ratio too low: {buy_count}:{sell_count} (min {self.min_buy_sell_ratio}:1)")
+        #     self.stats['skipped_sells'] += 1
+        #     self.triggered_tokens.add(mint)
+        #     return
 
         # 4. Anti-bot check: single wallet dominance (max 35%)
         if largest_buy_pct > self.max_single_buy_percent:
@@ -439,11 +442,12 @@ class HeliusLogsMonitor:
 
         # 7. NEW: Top-2 concentration check - blocks coordinated entries
         # Two wallets at 30% each = 60% concentration, should fail
-        if top2_pct > self.max_top2_percent:
-            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
-            self.stats['skipped_top2'] += 1
-            self.triggered_tokens.add(mint)
-            return
+        # DISABLED: Contradicts single wallet filter, blocking organic distribution
+        # if top2_pct > self.max_top2_percent:
+        #     logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
+        #     self.stats['skipped_top2'] += 1
+        #     self.triggered_tokens.add(mint)
+        #     return
 
         # 8. NEW: Dev buy filter - creator buying tokens = guaranteed dump
         dev_buys = state.get('dev_buys', 0)
