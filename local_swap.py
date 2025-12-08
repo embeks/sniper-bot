@@ -297,33 +297,23 @@ class LocalSwapBuilder:
         mint: str,
         sol_amount: float,
         curve_data: dict,
-        slippage_bps: int = 3000,  # 30% default (matching your current setting)
-        creator: str = None  # NEW: Creator pubkey for vault derivation
+        slippage_bps: int = 3000,
+        creator: str = None
     ) -> Optional[str]:
         """
         Build and send a buy transaction locally
-
-        Args:
-            mint: Token mint address
-            sol_amount: SOL to spend
-            curve_data: Bonding curve data with virtual_sol_reserves and virtual_token_reserves
-            slippage_bps: Slippage in basis points (3000 = 30%)
-            creator: Creator pubkey for vault PDA derivation
-
-        Returns:
-            Transaction signature or None on failure
+        Tries Jito first, immediate RPC fallback if Jito fails
         """
         try:
             start = time.time()
 
-            # Validate creator is provided
             if not creator:
-                logger.error(f"❌ Creator pubkey required for local TX - falling back to PumpPortal")
+                logger.error(f"❌ Creator pubkey required for local TX")
                 return None
 
             mint_pubkey = Pubkey.from_string(mint)
             creator_pubkey = Pubkey.from_string(creator)
-            
+
             # Derive PDAs
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
             associated_bonding_curve = self.derive_associated_token_account(bonding_curve, mint_pubkey)
@@ -334,34 +324,23 @@ class LocalSwapBuilder:
             # Get reserves from curve_data
             virtual_sol = curve_data.get('virtual_sol_reserves', 0)
             virtual_tokens = curve_data.get('virtual_token_reserves', 0)
-            
+
             if virtual_sol == 0 or virtual_tokens == 0:
                 logger.error(f"Invalid curve data: sol={virtual_sol}, tokens={virtual_tokens}")
                 return None
-            
+
             # Calculate tokens out
             sol_lamports = int(sol_amount * 1e9)
             tokens_out = self.calculate_tokens_out(sol_lamports, virtual_sol, virtual_tokens)
-            
-            # Apply slippage to get minimum tokens (we're buying, so we want at least this many)
-            min_tokens = int(tokens_out * (10000 - slippage_bps) / 10000)
-            
-            # Max SOL cost with slippage
             max_sol_cost = int(sol_lamports * (10000 + slippage_bps) / 10000)
-            
+
             logger.info(f"⚡ Building LOCAL buy TX for {mint[:8]}...")
             logger.info(f"   Creator: {creator[:16]}...")
-            logger.info(f"   Creator Vault: {str(creator_vault)[:16]}...")
-            logger.info(f"   User Volume Accumulator: {str(user_volume_accumulator)[:16]}...")
             logger.info(f"   SOL in: {sol_amount} ({sol_lamports:,} lamports)")
             logger.info(f"   Expected tokens: {tokens_out:,}")
-            logger.info(f"   Min tokens ({slippage_bps/100:.0f}% slip): {min_tokens:,}")
             logger.info(f"   Max SOL cost: {max_sol_cost:,} lamports")
 
-            # Build instruction
-            # NOTE: Pass tokens_out (expected), not min_tokens
-            # max_sol_cost already provides slippage protection
-            # Passing min_tokens caused underspend (buying fewer tokens = less SOL spent)
+            # Build buy instruction
             buy_ix = self.build_buy_instruction(
                 mint_pubkey,
                 bonding_curve,
@@ -369,12 +348,11 @@ class LocalSwapBuilder:
                 user_ata,
                 creator_vault,
                 user_volume_accumulator,
-                tokens_out,  # FIXED: Use expected tokens, not min
+                tokens_out,
                 max_sol_cost
             )
-            
-            # For new PumpFun tokens, ATA never exists - always add create instruction
-            # This saves ~100-150ms RPC call per TX
+
+            # Create ATA instruction (always needed for new tokens)
             ata_accounts = [
                 AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
                 AccountMeta(user_ata, is_signer=False, is_writable=True),
@@ -384,66 +362,79 @@ class LocalSwapBuilder:
                 AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
             ]
             create_ata_ix = Instruction(ASSOCIATED_TOKEN_PROGRAM_ID, bytes(), ata_accounts)
-            instructions = [create_ata_ix, buy_ix]
 
-            # Use cached blockhash (refreshed every 2s in background)
-            # Falls back to RPC call if cache not started yet
+            # Get blockhash
             if self._cached_blockhash:
                 recent_blockhash = self._cached_blockhash
             else:
                 blockhash_resp = self.client.get_latest_blockhash()
                 recent_blockhash = blockhash_resp.value.blockhash
-                logger.warning("⚠️ Blockhash cache not started, using RPC fallback")
 
-            # Add Jito tip instruction if enabled
+            # ===== ATTEMPT 1: JITO =====
             from config import JITO_ENABLED, JITO_TIP_AMOUNT_SOL, JITO_TIP_AGGRESSIVE_SOL
-
-            jito_tip_sol = 0
-            if JITO_ENABLED:
-                # Use aggressive tip for high-conviction entries (0-sell tokens use 50% slippage)
-                jito_tip_sol = JITO_TIP_AGGRESSIVE_SOL if slippage_bps >= 5000 else JITO_TIP_AMOUNT_SOL
-                tip_lamports = int(jito_tip_sol * 1e9)
-                tip_ix = self._build_jito_tip_instruction(tip_lamports)
-                instructions.append(tip_ix)  # Tip MUST be last instruction
-                logger.info(f"   💰 Jito tip: {jito_tip_sol} SOL")
-
-            # Build and sign transaction
-            message = Message.new_with_blockhash(
-                instructions,
-                self.wallet.pubkey,
-                recent_blockhash
-            )
-
-            tx = Transaction.new_unsigned(message)
-            tx.sign([self.wallet.keypair], recent_blockhash)
-
-            build_time = (time.time() - start) * 1000
-            logger.info(f"   ⚡ TX built in {build_time:.1f}ms (vs 200-500ms PumpPortal)")
-
-            # Send transaction - Jito only for buys (no fallback, opportunity is stale)
-            from config import JITO_ENABLED
 
             sig = None
             if JITO_ENABLED:
-                sig = await self._send_via_jito(bytes(tx))
-                if not sig:
-                    logger.warning(f"⚠️ Jito failed - skipping buy (stale opportunity)")
-                    return None
-            else:
-                # Regular RPC if Jito disabled
-                opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
-                response = self.client.send_raw_transaction(bytes(tx), opts)
-                sig = str(response.value)
+                jito_tip_sol = JITO_TIP_AGGRESSIVE_SOL if slippage_bps >= 5000 else JITO_TIP_AMOUNT_SOL
+                tip_lamports = int(jito_tip_sol * 1e9)
+                tip_ix = self._build_jito_tip_instruction(tip_lamports)
 
-                if sig.startswith("1111111"):
-                    logger.error("Transaction failed - invalid signature")
-                    return None
+                jito_instructions = [create_ata_ix, buy_ix, tip_ix]
+
+                message = Message.new_with_blockhash(
+                    jito_instructions,
+                    self.wallet.pubkey,
+                    recent_blockhash
+                )
+                tx = Transaction.new_unsigned(message)
+                tx.sign([self.wallet.keypair], recent_blockhash)
+
+                logger.info(f"   💰 Trying Jito first (tip: {jito_tip_sol} SOL)...")
+                sig = await self._send_via_jito(bytes(tx))
+
+                if sig:
+                    total_time = (time.time() - start) * 1000
+                    logger.info(f"✅ LOCAL buy TX via Jito in {total_time:.1f}ms: {sig}")
+                    return sig
+                else:
+                    logger.warning(f"⚠️ Jito failed - immediate RPC fallback")
+
+            # ===== ATTEMPT 2: RPC + PRIORITY FEE =====
+            from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+
+            # 0.002 SOL priority fee
+            compute_limit_ix = set_compute_unit_limit(200_000)
+            compute_price_ix = set_compute_unit_price(10_000_000)
+
+            rpc_instructions = [compute_limit_ix, compute_price_ix, create_ata_ix, buy_ix]
+
+            # Get fresh blockhash for RPC attempt
+            blockhash_resp = self.client.get_latest_blockhash()
+            recent_blockhash = blockhash_resp.value.blockhash
+
+            message = Message.new_with_blockhash(
+                rpc_instructions,
+                self.wallet.pubkey,
+                recent_blockhash
+            )
+            tx = Transaction.new_unsigned(message)
+            tx.sign([self.wallet.keypair], recent_blockhash)
+
+            logger.info(f"   💰 RPC fallback with 0.002 SOL priority fee...")
+
+            opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
+            response = self.client.send_raw_transaction(bytes(tx), opts)
+            sig = str(response.value)
+
+            if sig.startswith("1111111"):
+                logger.error("Transaction failed - invalid signature")
+                return None
 
             total_time = (time.time() - start) * 1000
-            logger.info(f"✅ LOCAL buy TX sent in {total_time:.1f}ms: {sig}")
+            logger.info(f"✅ LOCAL buy TX via RPC in {total_time:.1f}ms: {sig}")
 
             return sig
-            
+
         except Exception as e:
             logger.error(f"Failed to create local buy transaction: {e}")
             import traceback
