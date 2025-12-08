@@ -225,7 +225,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '6.0'))  # Organic FOMO can spike to 5-6/s
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '65.0'))  # Max % from top 2 wallets combined
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '40.0'))  # Max % from top 2 wallets combined
 
 # SELL BURST DETECTION (timing-based, not count-based)
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump
