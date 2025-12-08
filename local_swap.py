@@ -454,56 +454,67 @@ class LocalSwapBuilder:
         self,
         mint: str,
         token_amount_ui: float,
-        curve_data: dict,
-        slippage_bps: int = 5000,  # 50% default for sells
+        curve_data: dict,  # Keep param for compatibility but we'll verify against chain
+        slippage_bps: int = 5000,
         token_decimals: int = 6
     ) -> Optional[str]:
         """
         Build and send a sell transaction locally
-        
+
         Args:
-            mint: Token mint address  
+            mint: Token mint address
             token_amount_ui: Tokens to sell (UI/human-readable amount)
-            curve_data: Bonding curve data
+            curve_data: Bonding curve data (used for comparison, chain is source of truth)
             slippage_bps: Slippage in basis points
             token_decimals: Token decimals (default 6 for PumpFun)
-            
+
         Returns:
             Transaction signature or None on failure
         """
         try:
             start = time.time()
-            
+
             mint_pubkey = Pubkey.from_string(mint)
-            
-            # Convert UI amount to atomic
             token_amount = int(token_amount_ui * (10 ** token_decimals))
-            
+
             # Derive PDAs
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
             associated_bonding_curve = self.derive_associated_token_account(bonding_curve, mint_pubkey)
             user_ata = self.derive_associated_token_account(self.wallet.pubkey, mint_pubkey)
-            
-            # Get reserves
-            virtual_sol = curve_data.get('virtual_sol_reserves', 0)
-            virtual_tokens = curve_data.get('virtual_token_reserves', 0)
-            
-            if virtual_sol == 0 or virtual_tokens == 0:
-                logger.error(f"Invalid curve data for sell: sol={virtual_sol}, tokens={virtual_tokens}")
+
+            # CRITICAL: Query ACTUAL chain state, not Helius estimate
+            # Helius WebSocket can be 4x wrong during fast dumps (tracks events, lags reality)
+            curve_account = self.client.get_account_info(bonding_curve)
+            if not curve_account.value:
+                logger.error(f"❌ Could not fetch bonding curve from chain")
                 return None
-            
-            # Calculate SOL out
-            sol_out = self.calculate_sol_out(token_amount, virtual_sol, virtual_tokens)
-            
-            # Apply slippage for minimum SOL output
+
+            # Parse bonding curve data (offset 8 for discriminator)
+            curve_bytes = bytes(curve_account.value.data)
+            virtual_token_reserves = struct.unpack('<Q', curve_bytes[8:16])[0]
+            virtual_sol_reserves = struct.unpack('<Q', curve_bytes[16:24])[0]
+
+            # Log comparison if Helius data was passed
+            helius_sol = curve_data.get('virtual_sol_reserves', 0)
+            if helius_sol > 0:
+                diff_pct = abs(virtual_sol_reserves - helius_sol) / helius_sol * 100 if helius_sol else 0
+                logger.info(f"   📊 Helius: {helius_sol/1e9:.2f} SOL, Chain: {virtual_sol_reserves/1e9:.2f} SOL ({diff_pct:.1f}% diff)")
+
+            if virtual_sol_reserves == 0 or virtual_token_reserves == 0:
+                logger.error(f"Invalid curve data: sol={virtual_sol_reserves}, tokens={virtual_token_reserves}")
+                return None
+
+            # Calculate SOL out using ACTUAL chain state
+            sol_out = self.calculate_sol_out(token_amount, virtual_sol_reserves, virtual_token_reserves)
             min_sol_output = int(sol_out * (10000 - slippage_bps) / 10000)
-            
+
             logger.info(f"⚡ Building LOCAL sell TX for {mint[:8]}...")
             logger.info(f"   Tokens: {token_amount_ui:,.2f} ({token_amount:,} atomic)")
+            logger.info(f"   Chain curve: {virtual_sol_reserves/1e9:.4f} SOL")
             logger.info(f"   Expected SOL: {sol_out / 1e9:.6f}")
             logger.info(f"   Min SOL ({slippage_bps/100:.0f}% slip): {min_sol_output / 1e9:.6f}")
-            
-            # Build instruction
+
+            # Build sell instruction
             sell_ix = self.build_sell_instruction(
                 mint_pubkey,
                 bonding_curve,
@@ -512,28 +523,34 @@ class LocalSwapBuilder:
                 token_amount,
                 min_sol_output
             )
-            
-            # Get recent blockhash
+
+            # Add priority fee for fast inclusion (sells are time-critical)
+            from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+
+            # 200k CU limit, 10M microlamports/CU ≈ 0.002 SOL priority fee
+            compute_limit_ix = set_compute_unit_limit(200_000)
+            compute_price_ix = set_compute_unit_price(10_000_000)
+
+            sell_instructions = [compute_limit_ix, compute_price_ix, sell_ix]
+            logger.info(f"   💰 Priority fee: ~0.002 SOL for fast inclusion")
+
+            # Get fresh blockhash
             blockhash_resp = self.client.get_latest_blockhash()
             recent_blockhash = blockhash_resp.value.blockhash
 
-            sell_instructions = [sell_ix]
-
-            # Build and sign transaction
+            # Build and sign
             message = Message.new_with_blockhash(
                 sell_instructions,
                 self.wallet.pubkey,
                 recent_blockhash
             )
-
             tx = Transaction.new_unsigned(message)
             tx.sign([self.wallet.keypair], recent_blockhash)
 
             build_time = (time.time() - start) * 1000
             logger.info(f"   ⚡ TX built in {build_time:.1f}ms")
 
-            # CRITICAL: Do NOT use Jito for sells - bundles take 10-15s to land
-            # Regular RPC lands in 1-2s, essential for fast-moving memecoins
+            # Send via RPC with priority fee (not Jito - bundles take 10-15s)
             opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
             response = self.client.send_raw_transaction(bytes(tx), opts)
             sig = str(response.value)
@@ -546,7 +563,7 @@ class LocalSwapBuilder:
             logger.info(f"✅ LOCAL sell TX via RPC in {total_time:.1f}ms: {sig}")
 
             return sig
-            
+
         except Exception as e:
             logger.error(f"Failed to create local sell transaction: {e}")
             import traceback
