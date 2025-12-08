@@ -324,6 +324,9 @@ class HeliusLogsMonitor:
         # Keep only last 15 seconds of curve history
         state['curve_history'] = [(t, v) for t, v in state['curve_history'] if now_curve - t < 15]
 
+        # Track peak curve value from birth
+        state['peak_curve_sol'] = max(state.get('peak_curve_sol', 0), state['vSolInBondingCurve'])
+
         # Track dev (creator) buys - red flag for dumps
         if buyer and buyer == state.get('creator'):
             state['dev_buys'] = state.get('dev_buys', 0) + 1
@@ -490,33 +493,14 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # 5d. CURVE MOMENTUM GATE - Ensure pump is still active, not stalled
-        # Compare latest curve value to value from 3s ago (not max of windows - that hides dips)
-        curve_history = state.get('curve_history', [])
-
-        if len(curve_history) >= 2:
-            # Get latest value and value from ~3 seconds ago
-            latest_val = curve_history[-1][1]  # Most recent (timestamp, value)
-
-            # Find value closest to 3 seconds ago
-            target_age = 3.0
-            older_entries = [(t, v) for t, v in curve_history if now - t >= target_age - 0.5]
-
-            if older_entries:
-                older_val = older_entries[-1][1]  # Most recent entry that's ~3s old
-
-                # Allow 2% dip tolerance (curve at 0.98x or better is fine)
-                min_acceptable = older_val * 0.98
-
-                if latest_val < min_acceptable:
-                    growth_pct = ((latest_val / older_val) - 1) * 100
-                    logger.warning(f"❌ CURVE STALLED: {older_val:.2f} → {latest_val:.2f} SOL ({growth_pct:+.1f}%)")
-                    self.stats['skipped_curve_stalled'] += 1
-                    self.triggered_tokens.add(mint)
-                    return
-                else:
-                    growth_pct = ((latest_val / older_val) - 1) * 100 if older_val > 0 else 0
-                    logger.debug(f"   Curve momentum OK: {older_val:.2f} → {latest_val:.2f} SOL ({growth_pct:+.1f}%)")
+        # 5d. PEAK CURVE GATE - Reject if already declining from peak
+        peak = state.get('peak_curve_sol', total_sol)
+        if total_sol < peak * 0.95:
+            drop_pct = ((peak - total_sol) / peak) * 100
+            logger.warning(f"❌ DECLINING FROM PEAK: {peak:.2f} → {total_sol:.2f} SOL (-{drop_pct:.1f}%)")
+            self.stats['skipped_curve_stalled'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
         # 6. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
