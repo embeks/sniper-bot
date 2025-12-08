@@ -1289,7 +1289,7 @@ class SniperBot:
 
             # Fixed position sizing - no confidence scaling
             buy_amount = BUY_AMOUNT_SOL  # Always 0.05 SOL
-            slippage_bps = 3000  # 30% slippage
+            slippage_bps = 5000  # 50% slippage
             logger.info(f"📊 Standard entry: {buy_amount} SOL, {slippage_bps/100:.0f}% slippage")
 
             # Store for accurate P&L tracking later
