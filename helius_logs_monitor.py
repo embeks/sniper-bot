@@ -374,6 +374,17 @@ class HeliusLogsMonitor:
 
         self.stats['sells'] += 1
         state = self.watched_tokens[mint]
+
+        # FIRST-SELL RUG CHECK: >60% drain = dev rug
+        current_curve = state['vSolInBondingCurve']
+        if current_curve > 0 and sol_amount > 0:
+            sell_ratio = sol_amount / current_curve
+            if sell_ratio > 0.60:
+                logger.warning(f"🚨 DEV RUG: Sell drained {sell_ratio:.0%} of curve ({sol_amount:.2f}/{current_curve:.2f} SOL)")
+                self.stats['skipped_dev_rug'] = self.stats.get('skipped_dev_rug', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
+
         state['sell_count'] += 1
 
         # Track sell timing for order flow exits
@@ -487,11 +498,12 @@ class HeliusLogsMonitor:
         # 5c. Check buyer velocity (coordination detection)
         token_age = age
         buyer_velocity = buy_count / max(token_age, 0.1)
-        if buyer_velocity > self.max_buyers_per_second:
-            logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
-            self.stats['skipped_velocity_high'] += 1
-            self.triggered_tokens.add(mint)
-            return
+        # DISABLED: Buyer velocity filter - too aggressive, blocking organic runners
+        # if buyer_velocity > self.max_buyers_per_second:
+        #     logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
+        #     self.stats['skipped_velocity_high'] += 1
+        #     self.triggered_tokens.add(mint)
+        #     return
 
         # 5d. PEAK CURVE GATE - Reject if already declining from peak
         peak = state.get('peak_curve_sol', total_sol)
