@@ -2625,7 +2625,33 @@ class SniperBot:
             else:
                 logger.info(f"💰 Selling from tracker: {ui_token_balance:,.2f} tokens")
 
-            curve_data = self.dex.get_bonding_curve_data(mint)
+            # Use Helius real-time curve data for sell (chain RPC is 2-13s stale)
+            helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+            helius_curve_sol = helius_state.get('vSolInBondingCurve', 0)
+
+            if helius_curve_sol > 0:
+                # Build curve_data from Helius (real-time, not stale RPC)
+                virtual_sol = 30 + helius_curve_sol
+                virtual_sol_lamports = int(virtual_sol * 1e9)
+                # Constant product: k = 30 * 1_073_000_191 * 1e6
+                INITIAL_K = 30 * 1_073_000_191 * 1e6
+                virtual_tokens_atomic = int(INITIAL_K / virtual_sol_lamports)
+
+                curve_data = {
+                    'virtual_sol_reserves': virtual_sol_lamports,
+                    'virtual_token_reserves': virtual_tokens_atomic,
+                    'sol_in_curve': helius_curve_sol,
+                    'is_valid': True,
+                    'is_migrated': False,
+                    'source': 'helius'
+                }
+                logger.info(f"⚡ Sell using Helius curve: {helius_curve_sol:.2f} SOL (real-time)")
+            else:
+                # Fallback to chain RPC only if Helius unavailable
+                curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+                if curve_data:
+                    logger.warning(f"⚠️ Sell using chain RPC (Helius unavailable): {curve_data.get('sol_in_curve', 0):.2f} SOL")
+
             is_migrated = curve_data is None or curve_data.get('is_migrated', False)
 
             token_decimals = 6  # PumpFun always 6 decimals
@@ -2638,7 +2664,7 @@ class SniperBot:
 
             # Try local TX first (faster)
             if curve_data and curve_data.get('is_valid') and not is_migrated:
-                slippage_bps = 5000  # 50%
+                slippage_bps = 8000  # 80% - fast-moving memecoins need more room
                 signature = await self.local_builder.create_sell_transaction(
                     mint=mint,
                     token_amount_ui=ui_token_balance,
@@ -2695,7 +2721,7 @@ class SniperBot:
                             mint=mint,
                             token_amount_ui=retry_balance,
                             curve_data=retry_curve,
-                            slippage_bps=9000,
+                            slippage_bps=9500,  # 95% emergency exit
                             token_decimals=6
                         )
                         if retry_sig:
