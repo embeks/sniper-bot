@@ -434,23 +434,16 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # 2b. SELL BURST GATE - Detect coordinated dumps in progress
-        # Only block if sells aren't being absorbed by buys (ratio check)
+        # 2b. SELL BURST GATE - 3+ sells in window = dump in progress, skip
         now = time.time()
         sell_timestamps = state.get('sell_timestamps', [])
-        buy_timestamps = state.get('buy_timestamps', [])
         recent_sells_burst = len([t for t in sell_timestamps if now - t < self.sell_burst_window])
-        recent_buys_burst = len([t for t in buy_timestamps if now - t < self.sell_burst_window])
 
         if recent_sells_burst >= self.sell_burst_count:
-            # Only block if buys aren't overwhelming sells (need 2:1 buy:sell ratio minimum)
-            if recent_buys_burst < recent_sells_burst * 1.5:
-                logger.warning(f"❌ SELL BURST: {recent_sells_burst} sells vs {recent_buys_burst} buys in {self.sell_burst_window}s - dump in progress")
-                self.stats['skipped_sell_burst'] += 1
-                self.triggered_tokens.add(mint)
-                return
-            else:
-                logger.debug(f"   Sells absorbed: {recent_sells_burst} sells but {recent_buys_burst} buys in {self.sell_burst_window}s")
+            logger.warning(f"❌ SELL BURST: {recent_sells_burst} sells in {self.sell_burst_window}s - dump in progress")
+            self.stats['skipped_sell_burst'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
         # 3. Check sells with ratio (allow up to 2 sells if buy:sell ratio >= 4:1)
         sell_count = state['sell_count']
