@@ -1603,46 +1603,54 @@ class SniperBot:
 
                 try:
                     # ===================================================================
-                    # P&L CALCULATION - ALWAYS use chain data, never Helius estimates
-                    # Helius vSolInBondingCurve is unreliable (uses 2% sell estimate)
-                    # Entry price: from actual fill data (lamports/atomic)
-                    # Current price: from curve_reader (actual chain state)
+                    # P&L CALCULATION - Use Helius WebSocket (real-time) with RPC fallback
+                    # Helius sees transactions 5-13s before RPC updates
                     # ===================================================================
-                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+                    price_change = None
+                    source = None
+                    current_curve_sol = 0
 
-                    if curve_state and curve_state.get('price_lamports_per_atomic', 0) > 0:
-                        current_token_price_sol = curve_state['price_lamports_per_atomic']
-                        current_curve_sol = curve_state.get('sol_raised', 0)
+                    # PRIMARY: Use Helius real-time data (now accurate with real sell amounts)
+                    helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+                    helius_curve_sol = helius_state.get('vSolInBondingCurve', 0)
+                    entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
 
-                        # Calculate P&L from ACTUAL prices (both in lamports/atomic)
-                        if position.entry_token_price_sol > 0:
-                            price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
-                            source = 'chain_price'
-                        else:
-                            # Fallback to curve delta if no entry price (shouldn't happen)
-                            entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
-                            if entry_curve_sol > 0 and current_curve_sol > 0:
+                    if helius_curve_sol > 0 and entry_curve_sol > 0:
+                        # Calculate P&L from curve delta (AMM math)
+                        VIRTUAL_RESERVES = 30
+                        virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
+                        virtual_current = helius_curve_sol + VIRTUAL_RESERVES
+                        price_change = (((virtual_current / virtual_entry) ** 2) - 1) * 100
+                        current_curve_sol = helius_curve_sol
+                        source = 'helius_realtime'
+
+                        logger.debug(f"Helius P&L: entry={entry_curve_sol:.2f} current={helius_curve_sol:.2f} change={price_change:+.1f}%")
+
+                    # FALLBACK: Use RPC if Helius unavailable
+                    if price_change is None:
+                        curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                        if curve_state and curve_state.get('price_lamports_per_atomic', 0) > 0:
+                            current_token_price_sol = curve_state['price_lamports_per_atomic']
+                            current_curve_sol = curve_state.get('sol_raised', 0)
+
+                            if position.entry_token_price_sol > 0:
+                                price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
+                                source = 'rpc_price'
+                            elif entry_curve_sol > 0 and current_curve_sol > 0:
                                 VIRTUAL_RESERVES = 30
                                 virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
                                 virtual_current = current_curve_sol + VIRTUAL_RESERVES
                                 price_change = (((virtual_current / virtual_entry) ** 2) - 1) * 100
-                                source = 'chain_curve'
-                            else:
-                                consecutive_data_failures += 1
-                                logger.warning(f"No entry price for {mint[:8]}... using curve fallback failed")
-                                await asyncio.sleep(1)
-                                continue
+                                source = 'rpc_curve'
+                        else:
+                            consecutive_data_failures += 1
+                            logger.warning(f"No data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                            await asyncio.sleep(1)
+                            continue
 
-                        curve_data = {
-                            'sol_in_curve': current_curve_sol,
-                            'price_lamports_per_atomic': current_token_price_sol,
-                            'is_migrated': curve_state.get('complete', False),
-                            'is_valid': True,
-                            'source': source
-                        }
-                    else:
+                    if price_change is None:
                         consecutive_data_failures += 1
-                        logger.warning(f"No chain data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
                         await asyncio.sleep(1)
                         continue
 
@@ -1650,8 +1658,19 @@ class SniperBot:
                     position.pnl_percent = price_change
                     position.max_pnl_reached = max(position.max_pnl_reached, price_change)
                     position.last_price_source = source
-                    position.has_chain_price = True
                     consecutive_data_failures = 0
+
+                    # Build curve_data for downstream use
+                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=True) if source.startswith('helius') else curve_state
+                    curve_data = {
+                        'sol_in_curve': current_curve_sol,
+                        'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0) if curve_state else 0,
+                        'is_migrated': curve_state.get('complete', False) if curve_state else False,
+                        'is_valid': True,
+                        'source': source
+                    }
+
+                    position.has_chain_price = True
                     position.last_price_update = time.time()
                     current_sol_in_curve = current_curve_sol
                     current_token_price_sol = position.entry_token_price_sol * (1 + price_change/100) if position.entry_token_price_sol > 0 else 0

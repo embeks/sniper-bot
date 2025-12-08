@@ -363,7 +363,8 @@ class HeliusLogsMonitor:
     
     async def _handle_sell(self, logs: list, signature: str):
         """Handle Sell event - track for order flow exits"""
-        mint = self._extract_mint_from_sell(logs)
+        # USE THE REAL AMOUNT (already being parsed!)
+        mint, sol_amount, seller = self._extract_buy_data(logs)
 
         if not mint or mint not in self.watched_tokens:
             return
@@ -378,11 +379,13 @@ class HeliusLogsMonitor:
         # Keep only last 30 seconds
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
-        # Better estimate: percentage-based instead of fixed 0.3 SOL
-        # This prevents false "curve empty" triggers on tokens with many sells
-        if state['vSolInBondingCurve'] > 0:
-            estimated_sell_sol = state['vSolInBondingCurve'] * 0.02  # ~2% per sell
-            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated_sell_sol)
+        # USE REAL AMOUNT instead of 2% garbage
+        if sol_amount > 0:
+            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - sol_amount)
+        else:
+            # Fallback only if parsing failed - use conservative 5%
+            estimated = state['vSolInBondingCurve'] * 0.05
+            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated)
 
         # Track curve momentum for rug detection gate
         state['curve_history'].append((now, state['vSolInBondingCurve']))
@@ -391,7 +394,10 @@ class HeliusLogsMonitor:
 
         # Log with order flow detail
         recent_sells = len([t for t in state['sell_timestamps'] if now - t < 5])
-        logger.warning(f"⚠️ SELL #{state['sell_count']} on {mint[:8]}... ({recent_sells} in last 5s)")
+        if sol_amount > 0:
+            logger.warning(f"⚠️ SELL #{state['sell_count']} on {mint[:8]}... -{sol_amount:.4f} SOL ({recent_sells} in last 5s)")
+        else:
+            logger.warning(f"⚠️ SELL #{state['sell_count']} on {mint[:8]}... (parse failed) ({recent_sells} in last 5s)")
     
     async def _check_and_trigger(self, mint: str, state: dict):
         """Check if token meets entry conditions and trigger callback"""
