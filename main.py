@@ -2633,8 +2633,8 @@ class SniperBot:
                 # Build curve_data from Helius (real-time, not stale RPC)
                 virtual_sol = 30 + helius_curve_sol
                 virtual_sol_lamports = int(virtual_sol * 1e9)
-                # Constant product: k = 30 * 1_073_000_191 * 1e6
-                INITIAL_K = 30 * 1_073_000_191 * 1e6
+                # Constant product: k = (30 * 1e9) * (1_073_000_191 * 1e6) = 30 * 1_073_000_191 * 1e15
+                INITIAL_K = 30 * 1_073_000_191 * 1e15
                 virtual_tokens_atomic = int(INITIAL_K / virtual_sol_lamports)
 
                 curve_data = {
