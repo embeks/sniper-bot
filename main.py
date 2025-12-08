@@ -2634,7 +2634,7 @@ class SniperBot:
                 virtual_sol = 30 + helius_curve_sol
                 virtual_sol_lamports = int(virtual_sol * 1e9)
                 # Constant product: k = 30 * 1_073_000_191 * 1e6
-                INITIAL_K = 30 * 1_073_000_191 * 1e6
+                INITIAL_K = 30 * 1_073_000_191 * 1e15
                 virtual_tokens_atomic = int(INITIAL_K / virtual_sol_lamports)
 
                 curve_data = {
