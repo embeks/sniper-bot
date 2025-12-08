@@ -193,6 +193,9 @@ MAX_SLIPPAGE_PERCENT = float(os.getenv('MAX_SLIPPAGE_PERCENT', '2.5'))
 # ============================================
 MAX_ENTRY_SLIPPAGE_PERCENT = float(os.getenv('MAX_ENTRY_SLIPPAGE_PERCENT', '40.0'))
 
+# Early entry slippage (competing with other bots on fast tokens)
+EARLY_ENTRY_SLIPPAGE_BPS = int(os.getenv('EARLY_ENTRY_SLIPPAGE_BPS', '10000'))  # 100% base
+
 # ============================================
 # PUMPFUN CONFIG
 # ============================================
@@ -215,7 +218,7 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # ============================================
 MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '6'))   # Fire earlier
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))   # Allow some sells, rely on sell burst detection
-MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '30.0'))  # Anti-bot: max % from single wallet
+MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '35.0'))  # Anti-bot: max % from single wallet (loosened from 30% to catch more runners)
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '2.0'))   # Filter weak entries (was 0.8)
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))
 MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Enter faster
