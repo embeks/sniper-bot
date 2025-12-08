@@ -297,8 +297,9 @@ class LocalSwapBuilder:
         mint: str,
         sol_amount: float,
         curve_data: dict,
-        slippage_bps: int = 3000,
-        creator: str = None
+        slippage_bps: int = 5000,
+        creator: str = None,
+        velocity: float = 0.0
     ) -> Optional[str]:
         """
         Build and send a buy transaction locally
@@ -310,6 +311,23 @@ class LocalSwapBuilder:
             if not creator:
                 logger.error(f"❌ Creator pubkey required for local TX")
                 return None
+
+            # Dynamic slippage based on velocity
+            # Faster tokens = more competition = need higher slippage
+            if velocity > 0:
+                if velocity >= 15.0:
+                    # Hyper-fast: 200% slippage (3x max cost)
+                    slippage_bps = max(slippage_bps, 20000)
+                    logger.info(f"   🚀 Hyper velocity ({velocity:.1f}/s) → 200% slippage")
+                elif velocity >= 8.0:
+                    # Fast: 150% slippage (2.5x max cost)
+                    slippage_bps = max(slippage_bps, 15000)
+                    logger.info(f"   ⚡ Fast velocity ({velocity:.1f}/s) → 150% slippage")
+                elif velocity >= 4.0:
+                    # Medium: 100% slippage (2x max cost)
+                    slippage_bps = max(slippage_bps, 10000)
+                    logger.info(f"   📈 Medium velocity ({velocity:.1f}/s) → 100% slippage")
+                # else: use passed slippage_bps (default 50%)
 
             mint_pubkey = Pubkey.from_string(mint)
             creator_pubkey = Pubkey.from_string(creator)
@@ -331,14 +349,25 @@ class LocalSwapBuilder:
 
             # Calculate tokens out
             sol_lamports = int(sol_amount * 1e9)
-            tokens_out = self.calculate_tokens_out(sol_lamports, virtual_sol, virtual_tokens)
+            tokens_out_raw = self.calculate_tokens_out(sol_lamports, virtual_sol, virtual_tokens)
+
+            # Dynamic slippage: reduce expected tokens to account for price movement
+            # With 150% slippage (slippage_bps=15000), we expect 40% of calculated tokens
+            # This means we're saying "I'll accept getting in at a higher price"
+            token_slippage_factor = 10000 / (10000 + slippage_bps)
+            tokens_out = int(tokens_out_raw * token_slippage_factor)
+
+            # Max SOL cost: the absolute ceiling we'll pay
+            # For fast tokens, allow up to 3x input to compete with other bots
+            # We only PAY what tokens actually cost - this is just the ceiling
             max_sol_cost = int(sol_lamports * (10000 + slippage_bps) / 10000)
 
             logger.info(f"⚡ Building LOCAL buy TX for {mint[:8]}...")
             logger.info(f"   Creator: {creator[:16]}...")
             logger.info(f"   SOL in: {sol_amount} ({sol_lamports:,} lamports)")
-            logger.info(f"   Expected tokens: {tokens_out:,}")
-            logger.info(f"   Max SOL cost: {max_sol_cost:,} lamports")
+            logger.info(f"   Raw tokens: {tokens_out_raw:,}")
+            logger.info(f"   Adjusted tokens (slippage): {tokens_out:,} ({token_slippage_factor:.1%})")
+            logger.info(f"   Max SOL cost: {max_sol_cost:,} lamports ({max_sol_cost/1e9:.4f} SOL)")
 
             # Build buy instruction
             buy_ix = self.build_buy_instruction(

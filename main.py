@@ -1312,12 +1312,16 @@ class SniperBot:
                 }
                 logger.info(f"⚡ Local TX with Helius curve: {helius_sol:.2f} SOL")
 
+                # Get velocity from helius_events for dynamic slippage
+                velocity = helius_events.get('velocity', 0.0) if helius_events else 0.0
+
                 signature = await self.local_builder.create_buy_transaction(
                     mint=mint,
                     sol_amount=buy_amount,
                     curve_data=curve_data,
-                    slippage_bps=slippage_bps,
-                    creator=creator
+                    slippage_bps=slippage_bps,  # Base slippage, will be increased dynamically
+                    creator=creator,
+                    velocity=velocity
                 )
 
             # Fallback to PumpPortal if local build fails
