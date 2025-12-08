@@ -1548,14 +1548,20 @@ class SniperBot:
                             delta_drop = getattr(position, 'last_curve_delta', 0) - curve_delta
                             position.last_curve_delta = curve_delta
 
-                            if curve_delta > 1.0 and delta_drop < 1.5:
-                                logger.info(f"⚡ Curve rising +{curve_delta:.1f} SOL (Helius) despite {sell_ratio:.0%} sell ratio - holding")
-                            else:
-                                reason = f"delta_death_{delta_drop:.1f}" if delta_drop >= 1.5 else "curve_drain"
-                                logger.warning(f"🚨 RUG EXIT: curve {current_curve:.2f} SOL (entry {entry_curve:.2f}), delta {curve_delta:+.1f}")
+                            if curve_delta >= 0:
+                                # Curve at or above entry = NOT a rug
+                                # High sell ratio + stable/rising curve = healthy profit-taking
+                                # Let orderflow signals handle exit timing during actual dump
+                                logger.info(f"⚡ Curve stable/rising {curve_delta:+.1f} SOL despite {sell_ratio:.0%} sell ratio - orderflow will handle exit")
+                            elif curve_delta < -1.5 or delta_drop >= 2.0:
+                                # Curve BELOW entry by significant amount OR dropping fast = real rug
+                                logger.warning(f"🚨 RUG EXIT: curve drained {curve_delta:.1f} SOL from entry")
                                 logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
-                                await self._close_position_full(mint, reason=f"helius_rug_{reason}")
+                                await self._close_position_full(mint, reason="helius_rug_curve_drain")
                                 break
+                            else:
+                                # Minor dip below entry - hold through volatility
+                                logger.warning(f"⚠️ Curve dipped {curve_delta:.1f} SOL but holding (minor volatility)")
                         elif current_curve < 2.0 and buy_count < 5:
                             # Only exit if BOTH curve is low AND we don't have significant buy activity
                             logger.warning(f"🚨 CURVE EMPTY: {current_curve:.2f} SOL with {sell_count} sells, only {buy_count} buys")
