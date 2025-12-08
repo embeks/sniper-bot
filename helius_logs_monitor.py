@@ -438,7 +438,7 @@ class HeliusLogsMonitor:
 
         if recent_sells_burst >= self.sell_burst_count:
             # Only block if buys aren't overwhelming sells (need 2:1 buy:sell ratio minimum)
-            if recent_buys_burst < recent_sells_burst * 2:
+            if recent_buys_burst < recent_sells_burst * 1.5:
                 logger.warning(f"❌ SELL BURST: {recent_sells_burst} sells vs {recent_buys_burst} buys in {self.sell_burst_window}s - dump in progress")
                 self.stats['skipped_sell_burst'] += 1
                 self.triggered_tokens.add(mint)
