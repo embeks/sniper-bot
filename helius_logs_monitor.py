@@ -549,7 +549,7 @@ class HeliusLogsMonitor:
         logger.info(f"🚀 EARLY ENTRY: {mint}")
         logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
         logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
-        logger.info(f"   Sells: {sell_count} (burst window: {recent_buys_burst} buys vs {recent_sells_burst} sells in {self.sell_burst_window}s)")
+        logger.info(f"   Sells: {sell_count} (recent: {recent_sells_burst} in {self.sell_burst_window}s)")
         logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
         logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
         logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
