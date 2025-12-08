@@ -1603,62 +1603,48 @@ class SniperBot:
 
                 try:
                     # ===================================================================
-                    # P&L CALCULATION - Helius real-time + correct bonding curve math
-                    # PumpFun uses constant product AMM: price ∝ virtual_sol²
+                    # P&L CALCULATION - ALWAYS use chain data, never Helius estimates
+                    # Helius vSolInBondingCurve is unreliable (uses 2% sell estimate)
+                    # Entry price: from actual fill data (lamports/atomic)
+                    # Current price: from curve_reader (actual chain state)
                     # ===================================================================
-                    helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
-                    current_curve_sol = helius_state.get('vSolInBondingCurve', 0)
-                    entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
 
-                    if current_curve_sol > 0 and entry_curve_sol > 0:
-                        # Correct formula: price ∝ (virtual_sol)² where virtual = real + 30
-                        VIRTUAL_RESERVES = 30
-                        virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
-                        virtual_current = current_curve_sol + VIRTUAL_RESERVES
-                        price_change = (((virtual_current / virtual_entry) ** 2) - 1) * 100
-                        source = 'helius'
+                    if curve_state and curve_state.get('price_lamports_per_atomic', 0) > 0:
+                        current_token_price_sol = curve_state['price_lamports_per_atomic']
+                        current_curve_sol = curve_state.get('sol_raised', 0)
 
-                        curve_data = {
-                            'sol_in_curve': current_curve_sol,
-                            'is_migrated': False,
-                            'is_valid': True,
-                            'source': 'helius'
-                        }
-                    else:
-                        # Fallback to chain RPC only if Helius has no data
-                        curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
-
-                        if curve_state and curve_state.get('sol_raised', 0) > 0:
-                            current_curve_sol = curve_state['sol_raised']
-
-                            if entry_curve_sol > 0:
+                        # Calculate P&L from ACTUAL prices (both in lamports/atomic)
+                        if position.entry_token_price_sol > 0:
+                            price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
+                            source = 'chain_price'
+                        else:
+                            # Fallback to curve delta if no entry price (shouldn't happen)
+                            entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+                            if entry_curve_sol > 0 and current_curve_sol > 0:
                                 VIRTUAL_RESERVES = 30
                                 virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
                                 virtual_current = current_curve_sol + VIRTUAL_RESERVES
                                 price_change = (((virtual_current / virtual_entry) ** 2) - 1) * 100
+                                source = 'chain_curve'
                             else:
-                                # Legacy fallback using price ratio
-                                current_token_price_sol = curve_state.get('price_lamports_per_atomic', 0)
-                                if position.entry_token_price_sol > 0 and current_token_price_sol > 0:
-                                    price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
-                                else:
-                                    consecutive_data_failures += 1
-                                    await asyncio.sleep(1)
-                                    continue
+                                consecutive_data_failures += 1
+                                logger.warning(f"No entry price for {mint[:8]}... using curve fallback failed")
+                                await asyncio.sleep(1)
+                                continue
 
-                            curve_data = {
-                                'sol_in_curve': current_curve_sol,
-                                'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0),
-                                'is_migrated': curve_state.get('complete', False),
-                                'is_valid': True,
-                                'source': 'chain'
-                            }
-                            source = 'chain'
-                        else:
-                            consecutive_data_failures += 1
-                            logger.warning(f"No price data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
-                            await asyncio.sleep(1)
-                            continue
+                        curve_data = {
+                            'sol_in_curve': current_curve_sol,
+                            'price_lamports_per_atomic': current_token_price_sol,
+                            'is_migrated': curve_state.get('complete', False),
+                            'is_valid': True,
+                            'source': source
+                        }
+                    else:
+                        consecutive_data_failures += 1
+                        logger.warning(f"No chain data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
+                        await asyncio.sleep(1)
+                        continue
 
                     # Update position state
                     position.pnl_percent = price_change
