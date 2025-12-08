@@ -1453,7 +1453,15 @@ class SniperBot:
                     logger.info("🔎 Seeded post-buy price from [chain]")
                 else:
                     logger.info("🔎 Could not seed chain price; monitor will require chain before SL/rug")
-                
+
+                # ✅ FIX: Capture entry baseline AFTER buy lands (not at detection)
+                if self.scanner:
+                    helius_state = self.scanner.watched_tokens.get(mint, {})
+                    fresh_curve = helius_state.get('vSolInBondingCurve', 0)
+                    if fresh_curve > 0:
+                        position.entry_sol_in_curve = fresh_curve
+                        logger.info(f"📊 Entry baseline updated: {fresh_curve:.2f} SOL (post-buy)")
+
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
             else:
