@@ -517,18 +517,7 @@ class LocalSwapBuilder:
             blockhash_resp = self.client.get_latest_blockhash()
             recent_blockhash = blockhash_resp.value.blockhash
 
-            # Build instruction list with optional Jito tip
-            from config import JITO_ENABLED, JITO_TIP_AMOUNT_SOL
-
             sell_instructions = [sell_ix]
-
-            jito_tip_sol = 0
-            if JITO_ENABLED:
-                jito_tip_sol = JITO_TIP_AMOUNT_SOL
-                tip_lamports = int(jito_tip_sol * 1e9)
-                tip_ix = self._build_jito_tip_instruction(tip_lamports)
-                sell_instructions.append(tip_ix)  # Tip MUST be last instruction
-                logger.info(f"   💰 Jito tip: {jito_tip_sol} SOL")
 
             # Build and sign transaction
             message = Message.new_with_blockhash(
@@ -543,20 +532,8 @@ class LocalSwapBuilder:
             build_time = (time.time() - start) * 1000
             logger.info(f"   ⚡ TX built in {build_time:.1f}ms")
 
-            # Send transaction - Jito first, fallback to RPC (MUST exit position)
-            from config import JITO_ENABLED
-
-            sig = None
-            if JITO_ENABLED:
-                sig = await self._send_via_jito(bytes(tx))
-                if sig:
-                    total_time = (time.time() - start) * 1000
-                    logger.info(f"✅ LOCAL sell TX via Jito in {total_time:.1f}ms: {sig}")
-                    return sig
-                else:
-                    logger.warning(f"⚠️ Jito failed for sell - falling back to RPC")
-
-            # Fallback to regular RPC (must exit position)
+            # CRITICAL: Do NOT use Jito for sells - bundles take 10-15s to land
+            # Regular RPC lands in 1-2s, essential for fast-moving memecoins
             opts = TxOpts(skip_preflight=True, preflight_commitment="processed")
             response = self.client.send_raw_transaction(bytes(tx), opts)
             sig = str(response.value)
@@ -566,7 +543,7 @@ class LocalSwapBuilder:
                 return None
 
             total_time = (time.time() - start) * 1000
-            logger.info(f"✅ LOCAL sell TX sent in {total_time:.1f}ms: {sig}")
+            logger.info(f"✅ LOCAL sell TX via RPC in {total_time:.1f}ms: {sig}")
 
             return sig
             
