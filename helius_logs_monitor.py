@@ -379,7 +379,10 @@ class HeliusLogsMonitor:
         current_curve = state['vSolInBondingCurve']
         if current_curve > 0 and sol_amount > 0:
             sell_ratio = sol_amount / current_curve
-            if sell_ratio > 0.60:
+            if sell_ratio > 1.0:
+                # Stale curve data - mathematically impossible, skip rug check
+                logger.warning(f"⚠️ Stale curve data: {sell_ratio:.0%} drain impossible, skipping")
+            elif sell_ratio > 0.60:
                 logger.warning(f"🚨 DEV RUG: Sell drained {sell_ratio:.0%} of curve ({sol_amount:.2f}/{current_curve:.2f} SOL)")
                 self.stats['skipped_dev_rug'] = self.stats.get('skipped_dev_rug', 0) + 1
                 self.triggered_tokens.add(mint)
