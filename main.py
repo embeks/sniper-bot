@@ -2056,28 +2056,14 @@ class SniperBot:
             pre_sol_balance = self.wallet.get_sol_balance()
             pre_token_balance = self.wallet.get_token_balance(mint)
             
-            # Get curve data for local sell
-            curve_data = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
-
-            if curve_data and curve_data.get('is_valid'):
-                # Use local TX (fast)
-                signature = await self.local_builder.create_sell_transaction(
-                    mint=mint,
-                    token_amount_ui=ui_tokens_to_sell,
-                    curve_data=curve_data,
-                    slippage_bps=5000,  # 50%
-                    token_decimals=token_decimals
-                )
-            else:
-                # Fallback to PumpPortal
-                logger.warning(f"⚠️ No curve data for local sell, using PumpPortal")
-                signature = await self.trader.create_sell_transaction(
-                    mint=mint,
-                    token_amount=ui_tokens_to_sell,
-                    slippage=50,
-                    token_decimals=token_decimals,
-                    urgency="sell"
-                )
+            # Use PumpPortal for reliable sells (no RPC failure points)
+            signature = await self.trader.create_sell_transaction(
+                mint=mint,
+                token_amount=ui_tokens_to_sell,
+                slippage=50,
+                token_decimals=token_decimals,
+                urgency="sell"
+            )
             
             if signature and not signature.startswith("1111111"):
                 # Update remaining_tokens IMMEDIATELY to prevent race condition
@@ -2447,24 +2433,14 @@ class SniperBot:
                         token_decimals = 6  # PumpFun always 6 decimals
                         ui_tokens_to_sell = tokens_sold
 
-                        # Get fresh curve data for retry
-                        retry_curve = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
-                        if retry_curve and retry_curve.get('is_valid'):
-                            retry_signature = await self.local_builder.create_sell_transaction(
-                                mint=mint,
-                                token_amount_ui=ui_tokens_to_sell,
-                                curve_data=retry_curve,
-                                slippage_bps=5000,
-                                token_decimals=token_decimals
-                            )
-                        else:
-                            retry_signature = await self.trader.create_sell_transaction(
-                                mint=mint,
-                                token_amount=ui_tokens_to_sell,
-                                slippage=50,
-                                token_decimals=token_decimals,
-                                urgency="sell"
-                            )
+                        # Use PumpPortal for reliable retry
+                        retry_signature = await self.trader.create_sell_transaction(
+                            mint=mint,
+                            token_amount=ui_tokens_to_sell,
+                            slippage=50,
+                            token_decimals=token_decimals,
+                            urgency="sell"
+                        )
 
                         if retry_signature and not retry_signature.startswith("1111111"):
                             asyncio.create_task(
@@ -2662,26 +2638,14 @@ class SniperBot:
             # Capture balance RIGHT BEFORE sell for accurate P&L
             pre_close_balance = self.wallet.get_sol_balance()
 
-            # Try local TX first (faster)
-            if curve_data and curve_data.get('is_valid') and not is_migrated:
-                slippage_bps = 8000  # 80% - fast-moving memecoins need more room
-                signature = await self.local_builder.create_sell_transaction(
-                    mint=mint,
-                    token_amount_ui=ui_token_balance,
-                    curve_data=curve_data,
-                    slippage_bps=slippage_bps,
-                    token_decimals=token_decimals
-                )
-            else:
-                # Fallback to PumpPortal (migrated tokens or no curve data)
-                logger.warning(f"⚠️ Using PumpPortal for sell (migrated={is_migrated})")
-                signature = await self.trader.create_sell_transaction(
-                    mint=mint,
-                    token_amount=ui_token_balance,
-                    slippage=100 if is_migrated else 50,
-                    token_decimals=token_decimals,
-                    urgency=urgency
-                )
+            # Use PumpPortal for reliable sells (no RPC failure points)
+            signature = await self.trader.create_sell_transaction(
+                mint=mint,
+                token_amount=ui_token_balance,
+                slippage=80,  # 80% for fast-moving memecoins
+                token_decimals=token_decimals,
+                urgency=urgency
+            )
 
             if not signature or signature.startswith("1111111"):
                 logger.error(f"❌ Close transaction failed")
@@ -2713,32 +2677,20 @@ class SniperBot:
                 retry_balance = self.wallet.get_token_balance(mint)
 
                 if retry_balance > 1:
-                    logger.info(f"🔄 {retry_balance:,.0f} tokens still in wallet, retry with 90% slippage")
-                    retry_curve = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
-
-                    if retry_curve and retry_curve.get('is_valid') and retry_curve.get('sol_in_curve', 0) > 0.1:
-                        retry_sig = await self.local_builder.create_sell_transaction(
-                            mint=mint,
-                            token_amount_ui=retry_balance,
-                            curve_data=retry_curve,
-                            slippage_bps=9500,  # 95% emergency exit
-                            token_decimals=6
-                        )
-                        if retry_sig:
-                            logger.info(f"🔄 Retry TX: {retry_sig[:16]}...")
-                            signature = retry_sig
-                            tx_result = await self._get_transaction_proceeds_robust(signature, mint, max_wait=30)
-                        else:
-                            logger.warning("⚠️ Local retry failed, trying PumpPortal with 95% slippage")
-                            retry_sig = await self.trader.create_sell_transaction(
-                                mint=mint, token_amount=retry_balance, slippage=95,
-                                token_decimals=6, urgency="emergency"
-                            )
-                            if retry_sig:
-                                signature = retry_sig
-                                tx_result = await self._get_transaction_proceeds_robust(signature, mint, max_wait=30)
+                    logger.info(f"🔄 {retry_balance:,.0f} tokens still in wallet, retry with 95% slippage")
+                    retry_sig = await self.trader.create_sell_transaction(
+                        mint=mint,
+                        token_amount=retry_balance,
+                        slippage=95,
+                        token_decimals=6,
+                        urgency="emergency"
+                    )
+                    if retry_sig:
+                        logger.info(f"🔄 Retry TX: {retry_sig[:16]}...")
+                        signature = retry_sig
+                        tx_result = await self._get_transaction_proceeds_robust(signature, mint, max_wait=30)
                     else:
-                        logger.warning(f"⚠️ Curve dead, cannot retry")
+                        logger.warning(f"⚠️ Retry sell failed")
 
             if tx_result["success"]:
                 # Got EXACT proceeds from transaction
