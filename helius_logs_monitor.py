@@ -344,8 +344,8 @@ class HeliusLogsMonitor:
         if 'buy_amounts' not in state:
             state['buy_amounts'] = []
         state['buy_amounts'].append((now, sol_amount))
-        # Keep only last 30 seconds of buy amounts
-        state['buy_amounts'] = [(t, amt) for t, amt in state['buy_amounts'] if now - t < 30]
+        # Keep only last 30 seconds of buy amounts (defensive filter)
+        state['buy_amounts'] = [x for x in state['buy_amounts'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
 
         # Track peak velocity (only after 0.5s to avoid false spikes at age≈0)
         age = now - state['created_at']
@@ -409,8 +409,8 @@ class HeliusLogsMonitor:
         state['sell_amounts'].append((now, actual_sell_sol))
         state['largest_sell'] = max(state.get('largest_sell', 0), actual_sell_sol)
 
-        # Keep only last 30 seconds of sell amounts
-        state['sell_amounts'] = [(t, amt) for t, amt in state['sell_amounts'] if now - t < 30]
+        # Keep only last 30 seconds of sell amounts (defensive filter)
+        state['sell_amounts'] = [x for x in state['sell_amounts'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
         # Keep only last 30 seconds
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
