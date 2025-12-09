@@ -185,7 +185,7 @@ class SniperBot:
         logger.info(f"  • Entry range: 21-28 SOL (5-6.5K MC sweet spot)")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
         logger.info(f"  • Take profit: ORDER FLOW EXIT (signal-based, not fixed %)")
-        logger.info(f"  • Exit signals: {ORDERFLOW_SELL_BURST_COUNT} sells in {ORDERFLOW_SELL_BURST_WINDOW}s, {ORDERFLOW_BUYER_DEATH_SECONDS}s buyer death")
+        logger.info(f"  • Exit signals: Flow-based v2 (whale exit, sell burst, pressure, buyer death)")
         logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s (let winners run)")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
