@@ -425,6 +425,17 @@ class HeliusLogsMonitor:
 
         age = time.time() - state['created_at']
         total_sol = state['vSolInBondingCurve']
+
+        # Age correction: if detected age is impossibly short for the SOL amount, correct it
+        # This handles tokens that were created before we started watching
+        if age < (total_sol / 5.0) and total_sol > 1.5:
+            impossible_velocity = total_sol / age if age > 0 else float('inf')
+            corrected_age = total_sol / 3.0
+            logger.warning(f"⚠️ AGE CORRECTION: Detected {age:.1f}s but {total_sol:.2f} SOL = {impossible_velocity:.1f} SOL/s (impossible)")
+            logger.warning(f"   Corrected age: {corrected_age:.1f}s (assuming ~3 SOL/s organic velocity)")
+            state['age_corrected'] = True
+            state['corrected_age'] = corrected_age
+            age = corrected_age
         buyers = len(state['buyers'])
         velocity = total_sol / age if age > 0 else 0
         largest_buy_pct = (state['largest_buy'] / total_sol * 100) if total_sol > 0 else 0
@@ -575,14 +586,16 @@ class HeliusLogsMonitor:
         
         # Trigger callback with enriched data
         if self.callback:
+            actual_age = state.get('corrected_age', age)
             await self.callback({
                 'mint': mint,
                 'signature': state['signature'],
                 'source': 'helius_events',
                 'type': 'pumpfun_launch',
                 'timestamp': datetime.now().isoformat(),
-                'age': age,
-                'token_age': age,
+                'age': actual_age,
+                'token_age': actual_age,
+                'age_was_corrected': state.get('age_corrected', False),
                 # Real data from events
                 'data': {
                     'vSolInBondingCurve': state['vSolInBondingCurve'],

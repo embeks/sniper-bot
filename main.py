@@ -1458,13 +1458,28 @@ class SniperBot:
                 else:
                     logger.info("🔎 Could not seed chain price; monitor will require chain before SL/rug")
 
-                # ✅ FIX: Capture entry baseline AFTER buy lands (not at detection)
-                if self.scanner:
-                    helius_state = self.scanner.watched_tokens.get(mint, {})
-                    fresh_curve = helius_state.get('vSolInBondingCurve', 0)
-                    if fresh_curve > 0:
-                        position.entry_sol_in_curve = fresh_curve
-                        logger.info(f"📊 Entry baseline updated: {fresh_curve:.2f} SOL (post-buy)")
+                # ✅ FIX: Capture entry baseline with slippage adjustment
+                # High slippage means we entered at a worse price than detection - adjust baseline
+                detection_curve = token_data['data'].get('vSolInBondingCurve', 30) if 'data' in token_data else 30
+                slippage_ratio = (actual_entry_price / estimated_entry_price) if estimated_entry_price > 0 else 1.0
+
+                if slippage_ratio > 1.15:
+                    # High slippage: adjust baseline using curve multiplier
+                    curve_multiplier = slippage_ratio ** 0.5
+                    effective_entry_curve = detection_curve * curve_multiplier
+                    logger.info(f"📊 SLIPPAGE ADJUSTMENT: Detection={detection_curve:.2f} SOL, slippage={slippage_ratio:.2f}x")
+                    logger.info(f"   Effective entry curve: {effective_entry_curve:.2f} SOL (multiplier={curve_multiplier:.3f})")
+                    position.entry_sol_in_curve = effective_entry_curve
+                    position.entry_curve_sol = effective_entry_curve
+                else:
+                    # Low slippage: use fresh Helius data if available
+                    if self.scanner:
+                        helius_state = self.scanner.watched_tokens.get(mint, {})
+                        fresh_curve = helius_state.get('vSolInBondingCurve', 0)
+                        if fresh_curve > 0:
+                            position.entry_sol_in_curve = fresh_curve
+                            position.entry_curve_sol = fresh_curve
+                            logger.info(f"📊 Entry baseline updated: {fresh_curve:.2f} SOL (post-buy, slippage={slippage_ratio:.2f}x)")
 
                 position.monitor_task = asyncio.create_task(self._monitor_position(mint))
                 logger.info(f"📊 Started monitoring position {mint[:8]}...")
