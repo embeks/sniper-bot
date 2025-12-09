@@ -100,7 +100,8 @@ class Position:
         self.entry_market_cap = entry_market_cap
         self.current_market_cap = entry_market_cap
         self.entry_sol_in_curve = 0
-        
+        self.detection_curve_sol = 0  # Original detection curve (for rug detection only)
+
         # ✅ CHATGPT FIX #4: Add source tracking and debounce fields
         self.has_chain_price = False
         self.last_price_source = "unknown"
@@ -1388,12 +1389,14 @@ class SniperBot:
                         entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
                         logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
 
-                        # SLIPPAGE-ADJUSTED BASELINE
+                        # SLIPPAGE-ADJUSTED BASELINE (for P&L only)
+                        # Store detection curve separately for rug detection
+                        _detection_curve = helius_sol if helius_sol > 0 else 6.0
+
                         if entry_slippage > 15:
-                            detection_curve = helius_sol if helius_sol > 0 else 6.0
                             slippage_multiplier = (1 + entry_slippage/100) ** 0.5
-                            _effective_entry_curve = detection_curve * slippage_multiplier
-                            logger.info(f"📊 BASELINE ADJUSTED: {detection_curve:.2f} → {_effective_entry_curve:.2f} SOL (slippage {entry_slippage:.0f}%)")
+                            _effective_entry_curve = _detection_curve * slippage_multiplier
+                            logger.info(f"📊 BASELINE ADJUSTED: {_detection_curve:.2f} → {_effective_entry_curve:.2f} SOL (slippage {entry_slippage:.0f}%)")
                         else:
                             _effective_entry_curve = None
                     else:
@@ -1441,7 +1444,11 @@ class SniperBot:
                 # position.exit_time = position.entry_time + TIMER_EXIT_BASE_SECONDS + variance
                 position.exit_time = position.entry_time + MAX_POSITION_AGE_SECONDS  # Max hold only
 
-                # Apply slippage-adjusted baseline if calculated earlier
+                # Store DETECTION curve (original, unadjusted) for rug detection
+                _detection_curve_value = helius_sol if helius_sol > 0 else (token_data['data'].get('vSolInBondingCurve', 30) if 'data' in token_data else 30)
+                position.detection_curve_sol = _detection_curve_value
+
+                # Apply slippage-adjusted baseline for P&L calculation only
                 if _effective_entry_curve is not None:
                     position.entry_sol_in_curve = _effective_entry_curve
                     position.entry_curve_sol = _effective_entry_curve
@@ -1918,15 +1925,16 @@ class SniperBot:
 
                     # ===================================================================
                     # EXIT RULE 1: Curve-based rug detection (checks liquidity drain, not price)
+                    # ✅ FIX: Use DETECTION curve (original), not slippage-adjusted baseline
                     # ===================================================================
-                    entry_curve_sol = position.entry_curve_sol if hasattr(position, 'entry_curve_sol') else 0
+                    rug_baseline = getattr(position, 'detection_curve_sol', 0) or getattr(position, 'entry_curve_sol', 0)
                     current_curve_sol = curve_data.get('sol_in_curve', 0) if curve_data else 0
 
-                    if entry_curve_sol > 0 and current_curve_sol > 0:
-                        curve_drop_pct = ((entry_curve_sol - current_curve_sol) / entry_curve_sol) * 100
+                    if rug_baseline > 0 and current_curve_sol > 0:
+                        curve_drop_pct = ((rug_baseline - current_curve_sol) / rug_baseline) * 100
 
                         if curve_drop_pct > 30 and not position.is_closing:  # 30% of liquidity drained = real rug
-                            logger.warning(f"🚨 RUG DETECTED: Curve dropped {curve_drop_pct:.1f}% ({entry_curve_sol:.2f} → {current_curve_sol:.2f} SOL)")
+                            logger.warning(f"🚨 RUG DETECTED: Curve dropped {curve_drop_pct:.1f}% ({rug_baseline:.2f} → {current_curve_sol:.2f} SOL)")
                             await self._close_position_full(mint, reason="rug_trap")
                             break
                         elif price_change <= -50 and not position.is_closing:
