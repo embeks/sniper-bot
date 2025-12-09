@@ -1373,6 +1373,7 @@ class SniperBot:
                         self.pending_buys -= 1
                         return
 
+                _effective_entry_curve = None  # Will be set if high slippage detected
                 if bought_tokens > 0 and actual_sol_spent > 0:
                     lamports_spent = actual_sol_spent * 1e9
                     token_atoms = bought_tokens * 1e6  # PumpFun uses 6 decimals
@@ -1386,6 +1387,17 @@ class SniperBot:
                     if estimated_entry_price > 0:
                         entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
                         logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
+
+                        # SLIPPAGE-ADJUSTED BASELINE
+                        if entry_slippage > 15:
+                            detection_curve = helius_sol if helius_sol > 0 else 6.0
+                            slippage_multiplier = (1 + entry_slippage/100) ** 0.5
+                            _effective_entry_curve = detection_curve * slippage_multiplier
+                            logger.info(f"📊 BASELINE ADJUSTED: {detection_curve:.2f} → {_effective_entry_curve:.2f} SOL (slippage {entry_slippage:.0f}%)")
+                        else:
+                            _effective_entry_curve = None
+                    else:
+                        _effective_entry_curve = None
                 else:
                     logger.error(f"❌ No fill data - using detection-time price (INACCURATE)")
                     actual_entry_price = estimated_entry_price
@@ -1429,9 +1441,15 @@ class SniperBot:
                 # position.exit_time = position.entry_time + TIMER_EXIT_BASE_SECONDS + variance
                 position.exit_time = position.entry_time + MAX_POSITION_AGE_SECONDS  # Max hold only
 
-                if 'data' in token_data:
+                # Apply slippage-adjusted baseline if calculated earlier
+                if _effective_entry_curve is not None:
+                    position.entry_sol_in_curve = _effective_entry_curve
+                    position.entry_curve_sol = _effective_entry_curve
+                elif 'data' in token_data:
                     position.entry_sol_in_curve = token_data['data'].get('vSolInBondingCurve', 30)
-                position.entry_curve_sol = helius_events.get('total_sol', 0) if helius_events else 0
+                    position.entry_curve_sol = helius_events.get('total_sol', 0) if helius_events else 0
+                else:
+                    position.entry_curve_sol = helius_events.get('total_sol', 0) if helius_events else 0
 
                 self.positions[mint] = position
                 self.total_trades += 1
