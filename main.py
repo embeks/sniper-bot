@@ -35,15 +35,15 @@ from config import (
     TIMER_MAX_EXTENSIONS,
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD,
     MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
-    # Order flow exit settings
-    ORDERFLOW_MIN_AGE_SECONDS, ORDERFLOW_MIN_PNL_PERCENT, ORDERFLOW_MIN_BUYS_AFTER_ENTRY,
-    ORDERFLOW_SELL_BURST_COUNT, ORDERFLOW_SELL_BURST_WINDOW,
-    ORDERFLOW_BUYER_DEATH_SECONDS, ORDERFLOW_SELL_RATIO_THRESHOLD,
-    ORDERFLOW_VELOCITY_DEATH_PERCENT,
-    ORDERFLOW_HIGH_PNL_THRESHOLD, ORDERFLOW_HIGH_PNL_SELLS, ORDERFLOW_HIGH_PNL_STALL,
-    ORDERFLOW_MEGA_PNL_THRESHOLD,
-    ORDERFLOW_UNDERWATER_SELLS, ORDERFLOW_UNDERWATER_WINDOW,
-    ORDERFLOW_DEEP_LOSS_THRESHOLD, ORDERFLOW_DEEP_LOSS_SELLS,
+    # Flow-based exit settings (new)
+    USE_LEGACY_EXITS,
+    EXIT_MIN_AGE_SECONDS, EXIT_MIN_TRANSACTIONS,
+    FLOW_WINDOW_SHORT, FLOW_WINDOW_MEDIUM,
+    RUG_SINGLE_SELL_SOL, RUG_CURVE_DRAIN_PERCENT,
+    DUMP_SELL_COUNT, DUMP_SELL_WINDOW, DUMP_SELL_SOL_TOTAL,
+    PRESSURE_SELL_RATIO, PRESSURE_MIN_SELLS,
+    FLOW_NET_NEGATIVE_SOL, DEATH_NO_BUY_SECONDS,
+    HOLD_MIN_BUYS_SHORT, HOLD_MAX_TIME_SINCE_BUY,
 )
 
 from wallet import WalletManager
@@ -53,7 +53,6 @@ from pumpportal_trader import PumpPortalTrader
 from local_swap import LocalSwapBuilder
 from performance_tracker import PerformanceTracker
 from curve_reader import BondingCurveReader
-from velocity_checker import VelocityChecker
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
@@ -116,16 +115,6 @@ class Position:
         self.last_recorded_pnl = -999  # Start at impossible value
         self.first_price_check_done = False
 
-        # RUNNER MODE TRACKING
-        self.is_runner_mode = False
-        self.runner_score = 0
-        self.add_count = 0
-        self.total_invested = amount_sol
-        self.pyramid_adds = {}  # {'add1': {'time': x, 'sol': y, 'price': z}, ...}
-        self.average_entry_price = 0
-        self.last_runner_check = 0
-        self.low_velocity_start = None  # Track when velocity dropped
-
         # RUG DETECTION - Curve drain history
         self.curve_history = []  # List of (timestamp, curve_sol) tuples
 
@@ -152,18 +141,6 @@ class SniperBot:
         rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
         self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)
         
-        self.velocity_checker = VelocityChecker(
-            min_sol_per_second=2.0,              # Lowered from 2.5
-            min_unique_buyers=VELOCITY_MIN_BUYERS,
-            max_token_age_seconds=16.0,          # Raised from 15.0
-            min_recent_1s_sol=2.0,               # Lowered from 2.5
-            min_recent_3s_sol=4.0,               # Lowered from 5.0
-            max_drop_percent=VELOCITY_MAX_DROP_PERCENT,
-            min_snapshots=1,                     # ✅ CRITICAL: Already 1
-            max_sol_per_second=15.0,             # Raised from 10.0
-            max_recent_1s_sol=20.0,              # Raised from 15.0
-            max_recent_3s_sol=35.0               # Raised from 25.0
-        )
         
         client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
         self.trader = PumpPortalTrader(self.wallet, client)
@@ -264,77 +241,19 @@ class SniperBot:
             logger.error(f"Token price calculation error: {e}")
             return 0
 
-    def _calculate_runner_score(self, mint: str, position: Position) -> int:
-        """
-        Calculate runner probability from LIVE Helius data.
-        Returns score 0-5. Score >= 4 indicates strong runner.
-        """
-        try:
-            from config import (
-                RUNNER_MIN_BUY_SELL_RATIO, RUNNER_MIN_VELOCITY,
-                RUNNER_MIN_UNIQUE_BUYERS, RUNNER_MAX_EARLY_SELLS,
-                RUNNER_MAX_BONDING_PERCENT
-            )
-
-            # Get live state from Helius monitor
-            state = {}
-            if hasattr(self, 'scanner') and self.scanner:
-                state = self.scanner.watched_tokens.get(mint, {})
-
-            age = time.time() - position.entry_time
-            score = 0
-            reasons = []
-
-            # 1. BUY PRESSURE (buys > sells * ratio)
-            buys = state.get('buy_count', 0)
-            sells = state.get('sell_count', 0)
-            if sells == 0 or buys > sells * RUNNER_MIN_BUY_SELL_RATIO:
-                score += 1
-                reasons.append(f"buy_pressure:{buys}:{sells}")
-
-            # 2. SUSTAINED VELOCITY
-            total_sol = state.get('total_sol', 0)
-            velocity = total_sol / age if age > 0 else 0
-            if velocity > RUNNER_MIN_VELOCITY:
-                score += 1
-                reasons.append(f"velocity:{velocity:.2f}")
-
-            # 3. GOOD DISTRIBUTION (many unique buyers)
-            unique_buyers = len(state.get('buyers', set()))
-            if unique_buyers >= RUNNER_MIN_UNIQUE_BUYERS:
-                score += 1
-                reasons.append(f"buyers:{unique_buyers}")
-
-            # 4. NO EARLY DUMPS
-            if sells <= RUNNER_MAX_EARLY_SELLS:
-                score += 1
-                reasons.append(f"low_sells:{sells}")
-
-            # 5. ROOM TO RUN (bonding curve %)
-            curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-            bonding_percent = (curve['sol_raised'] / 85) * 100 if curve else 50
-            if bonding_percent < RUNNER_MAX_BONDING_PERCENT:
-                score += 1
-                reasons.append(f"bonding:{bonding_percent:.1f}%")
-
-            logger.info(f"🎯 Runner score for {mint[:8]}: {score}/5 [{', '.join(reasons)}]")
-            return score
-
-        except Exception as e:
-            logger.error(f"Error calculating runner score: {e}")
-            return 0
-
     def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
         """
-        Smart exit based on real-time order flow from Helius.
-        Returns (should_exit: bool, reason: str)
+        FLOW-BASED EXIT STRATEGY v2
 
-        This sees transactions 5-13s before chart updates.
-        Exit signals:
-        - Sell burst: 3+ sells in 5s (coordinated dump)
-        - Buyer death: No new buy for 8s (momentum dead)
-        - Sell ratio: Sells >= 20% of buys (tide turning)
-        - Velocity death: Current < 25% of peak (party over)
+        Priority order:
+        1. 🚨 EMERGENCY: Whale exit, curve drain
+        2. ⚡ HIGH: Sell burst, heavy sell volume
+        3. ⚠️ MEDIUM: Sell ratio, net negative flow
+        4. 📉 LOW: Buyer death
+
+        Hold conditions override exit signals when buyers still active.
+
+        Returns (should_exit: bool, reason: str)
         """
         # Must have scanner
         if not self.scanner:
@@ -348,105 +267,108 @@ class SniperBot:
         age = now - position.entry_time
 
         # === MINIMUM CONDITIONS ===
-        # Don't exit too early - give token time to show its hand
-        if age < ORDERFLOW_MIN_AGE_SECONDS:
+        if age < EXIT_MIN_AGE_SECONDS:
             return False, ""
 
-        # Extract metrics from Helius state
+        # Get transaction counts
         buy_count = state.get('buy_count', 0)
         sell_count = state.get('sell_count', 0)
+        total_transactions = buy_count + sell_count
+
+        if total_transactions < EXIT_MIN_TRANSACTIONS:
+            return False, ""
+
+        # === EXTRACT FLOW DATA ===
         sell_timestamps = state.get('sell_timestamps', [])
         buy_timestamps = state.get('buy_timestamps', [])
+        sell_amounts = state.get('sell_amounts', [])  # List of (timestamp, sol_amount)
+        buy_amounts = state.get('buy_amounts', [])    # List of (timestamp, sol_amount)
+        largest_sell = state.get('largest_sell', 0)
         last_buy_time = state.get('last_buy_time', position.entry_time)
-        peak_velocity = state.get('peak_velocity', 0)
 
-        # Calculate time-windowed metrics
-        sells_last_5s = len([t for t in sell_timestamps if now - t < ORDERFLOW_SELL_BURST_WINDOW])
-        sells_last_10s = len([t for t in sell_timestamps if now - t < ORDERFLOW_UNDERWATER_WINDOW])
-        buys_last_5s = len([t for t in buy_timestamps if now - t < 5])
+        # Calculate windowed metrics
+        sells_5s = len([t for t in sell_timestamps if now - t < FLOW_WINDOW_SHORT])
+        buys_5s = len([t for t in buy_timestamps if now - t < FLOW_WINDOW_SHORT])
+        sells_10s = len([t for t in sell_timestamps if now - t < FLOW_WINDOW_MEDIUM])
+        buys_10s = len([t for t in buy_timestamps if now - t < FLOW_WINDOW_MEDIUM])
+
+        # Calculate SOL flow in windows
+        sell_sol_5s = sum(amt for t, amt in sell_amounts if now - t < FLOW_WINDOW_SHORT)
+        buy_sol_5s = sum(amt for t, amt in buy_amounts if now - t < FLOW_WINDOW_SHORT)
+        sell_sol_10s = sum(amt for t, amt in sell_amounts if now - t < FLOW_WINDOW_MEDIUM)
+        buy_sol_10s = sum(amt for t, amt in buy_amounts if now - t < FLOW_WINDOW_MEDIUM)
+
+        net_flow_10s = buy_sol_10s - sell_sol_10s
         time_since_last_buy = now - last_buy_time
 
-        # Current velocity
-        total_sol = state.get('total_sol', 0)
-        current_velocity = total_sol / age if age > 0 else 0
+        # === HOLD CONDITIONS (override exit signals) ===
+        buyers_still_active = (
+            buys_5s >= HOLD_MIN_BUYS_SHORT or  # 2+ buys in 5s
+            time_since_last_buy < HOLD_MAX_TIME_SINCE_BUY  # Last buy < 8s ago
+        )
 
-        # Track buyer count for stall detection
-        if not hasattr(position, 'last_buyer_count'):
-            position.last_buyer_count = len(state.get('buyers', set()))
-            position.last_buyer_time = now
-            position.entry_buy_count = buy_count
+        # Also check if net flow is positive (more coming in than leaving)
+        net_flow_positive = net_flow_10s > 0
 
-        unique_buyers = len(state.get('buyers', set()))
-        buys_since_entry = buy_count - position.entry_buy_count
+        # === 🚨 EMERGENCY EXITS (ignore hold conditions) ===
 
-        # === MEGA PROFIT PROTECTION (+50%+) ===
-        # At huge gains, exit on ANY sell
-        if pnl_percent >= ORDERFLOW_MEGA_PNL_THRESHOLD:
-            if sell_count >= 1:
-                return True, f"mega_profit_{pnl_percent:.0f}pct_sell_appeared"
+        # 1. Whale exit: single large sell indicates insider knowledge
+        if largest_sell >= RUG_SINGLE_SELL_SOL:
+            logger.warning(f"🚨 WHALE EXIT: {largest_sell:.2f} SOL single sell")
+            return True, f"whale_exit_{largest_sell:.1f}sol"
 
-        # === HIGH PROFIT PROTECTION (+30%+) ===
-        if pnl_percent >= ORDERFLOW_HIGH_PNL_THRESHOLD:
-            # Exit on light sell pressure or stall
-            if sells_last_10s >= ORDERFLOW_HIGH_PNL_SELLS:
-                return True, f"profit_protect_{pnl_percent:.0f}pct_{sells_last_10s}sells"
-            if time_since_last_buy >= ORDERFLOW_HIGH_PNL_STALL:
-                return True, f"profit_protect_{pnl_percent:.0f}pct_stalled_{time_since_last_buy:.0f}s"
+        # 2. Curve drain handled separately in _check_curve_drain
 
-        # === PROFIT ZONE EXITS (+8%+) ===
-        if pnl_percent >= ORDERFLOW_MIN_PNL_PERCENT:
-            # Need minimum buys to confirm momentum existed
-            if buys_since_entry < ORDERFLOW_MIN_BUYS_AFTER_ENTRY:
-                return False, ""  # Not enough data yet
+        # === ⚡ HIGH PRIORITY EXITS ===
 
-            # 1. SELL BURST: Coordinated dump incoming
-            if sells_last_5s >= ORDERFLOW_SELL_BURST_COUNT:
-                return True, f"sell_burst_{sells_last_5s}_in_5s"
+        # 3. Sell burst: coordinated dump starting
+        if sells_5s >= DUMP_SELL_COUNT:
+            if not buyers_still_active:
+                logger.warning(f"⚡ SELL BURST: {sells_5s} sells in {FLOW_WINDOW_SHORT}s")
+                return True, f"sell_burst_{sells_5s}_in_5s"
+            else:
+                logger.info(f"⚡ Sell burst detected ({sells_5s}) but buyers still active - holding")
 
-            # 2. BUYER DEATH: Momentum completely dead
-            if time_since_last_buy >= ORDERFLOW_BUYER_DEATH_SECONDS:
-                return True, f"buyer_death_{time_since_last_buy:.0f}s_no_buys"
+        # 4. Heavy sell volume
+        if sell_sol_5s >= DUMP_SELL_SOL_TOTAL:
+            if not buyers_still_active:
+                logger.warning(f"⚡ HEAVY SELLING: {sell_sol_5s:.2f} SOL sold in 5s")
+                return True, f"heavy_selling_{sell_sol_5s:.1f}sol"
+            else:
+                logger.info(f"⚡ Heavy selling ({sell_sol_5s:.1f} SOL) but buyers active - holding")
 
-            # 3. SELL RATIO: Tide turning against you
-            if buy_count > 0 and sell_count >= buy_count * ORDERFLOW_SELL_RATIO_THRESHOLD:
-                return True, f"sell_ratio_{sell_count}sells_vs_{buy_count}buys"
+        # === ⚠️ MEDIUM PRIORITY EXITS ===
 
-            # 4. VELOCITY DEATH: Party's over
-            if peak_velocity > 0:
-                velocity_ratio = (current_velocity / peak_velocity) * 100
-                if velocity_ratio < ORDERFLOW_VELOCITY_DEATH_PERCENT:
-                    return True, f"velocity_death_{velocity_ratio:.0f}pct_of_peak"
+        # 5. Sell ratio: tide turning
+        if sells_10s >= PRESSURE_MIN_SELLS:
+            total_10s = sells_10s + buys_10s
+            if total_10s > 0:
+                sell_ratio = sells_10s / total_10s
+                if sell_ratio >= PRESSURE_SELL_RATIO:
+                    if not buyers_still_active and not net_flow_positive:
+                        logger.warning(f"⚠️ SELL PRESSURE: {sell_ratio:.0%} sells in 10s window")
+                        return True, f"sell_pressure_{sell_ratio:.0%}"
+                    else:
+                        logger.info(f"⚠️ Sell pressure ({sell_ratio:.0%}) but flow still positive - holding")
 
-        # === LOSS PREVENTION (cut faster when underwater) ===
-        # FIXED: Use curve-based P&L in first 15s (DEX price is stale/wrong)
-        effective_pnl = pnl_percent  # Default to passed-in P&L
+        # 6. Net negative flow
+        if net_flow_10s <= FLOW_NET_NEGATIVE_SOL:
+            if not buyers_still_active:
+                logger.warning(f"⚠️ BLEEDING: {net_flow_10s:+.2f} SOL net flow in 10s")
+                return True, f"negative_flow_{net_flow_10s:.1f}sol"
+            else:
+                logger.info(f"⚠️ Negative flow ({net_flow_10s:+.1f} SOL) but buyers active - holding")
 
-        if age < 15:
-            # Calculate curve-based P&L from Helius data
-            entry_curve_sol = getattr(position, 'entry_curve_sol', 0)
-            current_curve_sol = state.get('vSolInBondingCurve', 0)
+        # === 📉 LOW PRIORITY EXITS ===
 
-            if entry_curve_sol > 0 and current_curve_sol > 0:
-                curve_pnl = ((current_curve_sol - entry_curve_sol) / entry_curve_sol) * 100
-                effective_pnl = curve_pnl
-                # Log discrepancy if significant
-                if abs(curve_pnl - pnl_percent) > 20:
-                    logger.debug(f"Curve P&L: {curve_pnl:+.1f}% vs DEX: {pnl_percent:+.1f}%")
-
-        if effective_pnl < 0:
-            # Heavy selling while underwater
-            if sells_last_10s >= ORDERFLOW_UNDERWATER_SELLS:
-                return True, f"underwater_{sells_last_10s}sells_in_10s"
-
-        # Deep loss with moderate selling
-        if pnl_percent < ORDERFLOW_DEEP_LOSS_THRESHOLD:
-            if sells_last_10s >= ORDERFLOW_DEEP_LOSS_SELLS:
-                return True, f"deep_loss_{pnl_percent:.0f}pct_{sells_last_10s}sells"
-
-        # Update buyer tracking
-        if unique_buyers > position.last_buyer_count:
-            position.last_buyer_count = unique_buyers
-            position.last_buyer_time = now
+        # 7. Buyer death: momentum completely dead
+        if time_since_last_buy >= DEATH_NO_BUY_SECONDS:
+            # Only exit if also no recent buy activity AND we're not profitable
+            if buys_5s == 0 and pnl_percent < 30:
+                logger.warning(f"📉 BUYER DEATH: {time_since_last_buy:.0f}s since last buy")
+                return True, f"buyer_death_{time_since_last_buy:.0f}s"
+            elif pnl_percent >= 30:
+                logger.info(f"📉 Buyer death but +{pnl_percent:.0f}% profit - letting it ride")
 
         return False, ""
 
@@ -1231,19 +1153,6 @@ class SniperBot:
             logger.info(f"   SOL in Curve: {curve_data['sol_raised']:.4f}")
             logger.info(f"   Velocity: {curve_data['sol_raised'] / token_age:.2f} SOL/s")
 
-            # Velocity check (skip for helius_events - already validated by event monitor)
-            if source != 'helius_events':
-                velocity_passed, velocity_reason = self.velocity_checker.check_velocity(
-                    mint=mint,
-                    curve_data=curve_data,
-                    token_age_seconds=token_age
-                )
-
-                if not velocity_passed:
-                    logger.warning(f"❌ Velocity check failed for {mint[:8]}...: {velocity_reason}")
-                    logger.info(f"   Calculated: {curve_data.get('sol_raised', 0) / token_age:.2f} SOL/s (need {VELOCITY_MIN_SOL_PER_SECOND})")
-                    return
-            
             # ✅ Store the ESTIMATED entry price from detection (for comparison later)
             raw_entry_price = curve_data.get('price_lamports_per_atomic', 0)
             estimated_entry_price = raw_entry_price
@@ -1553,13 +1462,7 @@ class SniperBot:
     async def _monitor_position(self, mint: str):
         """Monitor position - WHALE TIERED EXITS with FLATLINE DETECTION"""
         try:
-            from config import (
-                RUNNER_SCORE_THRESHOLD, RUNNER_CHECK_MIN_AGE, RUNNER_CHECK_MIN_PROFIT,
-                PYRAMID_ADD_1_PROFIT, PYRAMID_ADD_2_PROFIT, PYRAMID_ADD_3_PROFIT,
-                PYRAMID_MAX_ADDS, RUNNER_EXIT_SCORE_THRESHOLD, RUNNER_EXIT_BONDING_PERCENT,
-                RUNNER_EXIT_CRASH_PERCENT, RUNNER_EXIT_VELOCITY_MIN, RUNNER_EXIT_VELOCITY_DURATION,
-                RUNNER_STOP_LOSS_PERCENT, FLATLINE_TIMEOUT_SECONDS
-            )
+            from config import USE_LEGACY_EXITS, FLATLINE_TIMEOUT_SECONDS
 
             position = self.positions.get(mint)
             if not position:
@@ -1629,14 +1532,11 @@ class SniperBot:
                 current_time = time.time()
                 age = current_time - position.entry_time
                 
-                # Dynamic max age - extend for confirmed runners (11-trade analysis)
+                # Dynamic max age - extend for high bonding progress
                 effective_max_age = MAX_POSITION_AGE_SECONDS  # Default 120s
 
-                # Extend to 180s if runner mode OR high bonding progress
-                if position.is_runner_mode:
-                    effective_max_age = 180
-                    logger.debug(f"Runner mode: extended max age to 180s")
-                elif hasattr(self, 'curve_reader'):
+                # Extend to 180s if high bonding progress
+                if hasattr(self, 'curve_reader'):
                     try:
                         curve = self.curve_reader.get_curve_state(mint, use_cache=True)
                         if curve and curve.get('sol_raised', 0) > 0:
@@ -1783,21 +1683,22 @@ class SniperBot:
                     # ===================================================================
                     # STALLED MOMENTUM EXIT - Catch tokens stuck at low positive (never hit tier 1)
                     # ===================================================================
-                    tier1_sold = "tier1" in position.partial_sells or "tier1" in position.pending_sells
-                    dropped_from_peak = position.max_pnl_reached - price_change
+                    if USE_LEGACY_EXITS:
+                        tier1_sold = "tier1" in position.partial_sells or "tier1" in position.pending_sells
+                        dropped_from_peak = position.max_pnl_reached - price_change
 
-                    if (age >= 30 and
-                        not tier1_sold and
-                        not position.is_closing and
-                        (dropped_from_peak >= 4 or flatline_duration >= 20)):
+                        if (age >= 30 and
+                            not tier1_sold and
+                            not position.is_closing and
+                            (dropped_from_peak >= 4 or flatline_duration >= 20)):
 
-                        logger.warning(f"🐌 STALLED MOMENTUM: {mint[:8]}... age {age:.0f}s, no tier1, peak was +{position.max_pnl_reached:.1f}%")
-                        if dropped_from_peak >= 4:
-                            logger.warning(f"   Dropped {dropped_from_peak:.1f}% from peak")
-                        else:
-                            logger.warning(f"   Flat for {flatline_duration:.0f}s at {price_change:+.1f}%")
-                        await self._close_position_full(mint, reason="stalled_momentum")
-                        break
+                            logger.warning(f"🐌 STALLED MOMENTUM: {mint[:8]}... age {age:.0f}s, no tier1, peak was +{position.max_pnl_reached:.1f}%")
+                            if dropped_from_peak >= 4:
+                                logger.warning(f"   Dropped {dropped_from_peak:.1f}% from peak")
+                            else:
+                                logger.warning(f"   Flat for {flatline_duration:.0f}s at {price_change:+.1f}%")
+                            await self._close_position_full(mint, reason="stalled_momentum")
+                            break
 
                     # ===================================================================
                     # EMERGENCY EXIT: Bonding curve rug detection (runs every cycle)
@@ -1817,111 +1718,6 @@ class SniperBot:
 
                             await self._close_position_full(mint, reason="bonding_rug")
                             break
-
-                    # ===================================================================
-                    # RUNNER DETECTION: Check if token qualifies for pyramid adds
-                    # ===================================================================
-                    if (not position.is_runner_mode and
-                        age >= RUNNER_CHECK_MIN_AGE and
-                        price_change >= RUNNER_CHECK_MIN_PROFIT and
-                        position.add_count == 0):
-
-                        runner_score = self._calculate_runner_score(mint, position)
-                        position.runner_score = runner_score
-                        position.last_runner_check = time.time()
-
-                        if runner_score >= RUNNER_SCORE_THRESHOLD:
-                            position.is_runner_mode = True
-                            logger.info(f"🚀 RUNNER MODE ACTIVATED for {mint[:8]}!")
-                            logger.info(f"   Score: {runner_score}/5 (threshold: {RUNNER_SCORE_THRESHOLD})")
-                            logger.info(f"   Switching from tier exits to pyramid adds")
-
-                            if self.telegram:
-                                await self.telegram.send_message(
-                                    f"🚀 RUNNER DETECTED!\n"
-                                    f"Token: {mint[:16]}...\n"
-                                    f"Score: {runner_score}/5\n"
-                                    f"P&L: {price_change:+.1f}%\n"
-                                    f"Activating pyramid mode..."
-                                )
-
-                    # ===================================================================
-                    # RUNNER MODE: Pyramid adds and special exits
-                    # ===================================================================
-                    if position.is_runner_mode and not position.is_closing:
-
-                        # Recalculate runner score periodically (every 10s)
-                        if time.time() - position.last_runner_check > 10:
-                            position.runner_score = self._calculate_runner_score(mint, position)
-                            position.last_runner_check = time.time()
-
-                        # Get current bonding curve %
-                        curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                        current_bonding_percent = (curve['sol_raised'] / 85) * 100 if curve else 50
-
-                        # Get current velocity
-                        state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
-                        current_velocity = state.get('total_sol', 0) / age if age > 0 else 0
-
-                        # ----- RUNNER EXIT CHECKS -----
-
-                        # Exit 1: Runner score dropped
-                        if position.runner_score < RUNNER_EXIT_SCORE_THRESHOLD:
-                            logger.warning(f"📉 Runner score dropped: {position.runner_score} < {RUNNER_EXIT_SCORE_THRESHOLD}")
-                            await self._close_position_full(mint, reason="runner_score_dropped")
-                            break
-
-                        # Exit 2: Bonding curve too high
-                        if current_bonding_percent > RUNNER_EXIT_BONDING_PERCENT:
-                            logger.warning(f"📈 Bonding curve high: {current_bonding_percent:.1f}% > {RUNNER_EXIT_BONDING_PERCENT}%")
-                            await self._close_position_full(mint, reason="bonding_graduation")
-                            break
-
-                        # Exit 3: Crash from peak
-                        crash_from_peak = position.max_pnl_reached - price_change
-                        if crash_from_peak > RUNNER_EXIT_CRASH_PERCENT and position.max_pnl_reached > 20:
-                            logger.warning(f"📉 Crash from peak: {crash_from_peak:.1f}% (peak was +{position.max_pnl_reached:.1f}%)")
-                            await self._close_position_full(mint, reason="runner_peak_crash")
-                            break
-
-                        # Exit 4: Velocity death (sustained low velocity)
-                        if current_velocity < RUNNER_EXIT_VELOCITY_MIN:
-                            if position.low_velocity_start is None:
-                                position.low_velocity_start = time.time()
-                            elif time.time() - position.low_velocity_start > RUNNER_EXIT_VELOCITY_DURATION:
-                                logger.warning(f"🐌 Velocity dead: {current_velocity:.2f} < {RUNNER_EXIT_VELOCITY_MIN} for {RUNNER_EXIT_VELOCITY_DURATION}s")
-                                await self._close_position_full(mint, reason="velocity_death")
-                                break
-                        else:
-                            position.low_velocity_start = None  # Reset if velocity recovered
-
-                        # Exit 5: Runner stop loss (tighter because avg entry is higher)
-                        if position.add_count > 0 and price_change < -RUNNER_STOP_LOSS_PERCENT:
-                            logger.warning(f"🛑 Runner stop loss: {price_change:.1f}% < -{RUNNER_STOP_LOSS_PERCENT}%")
-                            await self._close_position_full(mint, reason="runner_stop_loss")
-                            break
-
-                        # ----- PYRAMID ADD CHECKS (DISABLED) -----
-                        # Disabled: Pyramid adds were filling at crash bottoms, not peaks
-                        # To re-enable: uncomment the block below
-                        #
-                        # if position.add_count < PYRAMID_MAX_ADDS and position.runner_score >= RUNNER_SCORE_THRESHOLD:
-                        #     if (price_change >= PYRAMID_ADD_1_PROFIT and "add1" not in position.pyramid_adds):
-                        #         await self._execute_pyramid_add(mint, "add1", price_change)
-                        #     elif (price_change >= PYRAMID_ADD_2_PROFIT and "add1" in position.pyramid_adds and "add2" not in position.pyramid_adds):
-                        #         await self._execute_pyramid_add(mint, "add2", price_change)
-                        #     elif (price_change >= PYRAMID_ADD_3_PROFIT and "add2" in position.pyramid_adds and "add3" not in position.pyramid_adds):
-                        #         await self._execute_pyramid_add(mint, "add3", price_change)
-
-                        # Skip normal tier exits when in runner mode
-                        await asyncio.sleep(MONITOR_CHECK_INTERVAL)
-                        continue
-
-                    self.velocity_checker.update_snapshot(
-                        mint,
-                        current_sol_in_curve,
-                        int(current_sol_in_curve / 0.4)
-                    )
 
                     # ===================================================================
                     # EXIT RULE 1: Curve-based rug detection (checks liquidity drain, not price)
@@ -1978,45 +1774,46 @@ class SniperBot:
                     # DYNAMIC CRASH DETECTION - threshold based on peak reached
                     # (11-trade analysis: let winners breathe more)
                     # ===================================================================
-                    # Skip crash detection while tier sells are pending (avoid panic-selling during profit taking)
-                    if position.pending_sells:
-                        logger.debug(f"Skipping crash check - pending sells: {position.pending_sells}")
-                    else:
-                        crash_from_peak = position.max_pnl_reached - price_change
-
-                        # Dynamic threshold: relax if we hit a big peak
-                        if position.max_pnl_reached >= 30:
-                            crash_threshold = 35  # Let winners breathe
-                        elif position.max_pnl_reached >= 20:
-                            crash_threshold = 30  # Standard
-                        elif position.max_pnl_reached >= 10:
-                            crash_threshold = 25  # Tighter
+                    if USE_LEGACY_EXITS:
+                        # Skip crash detection while tier sells are pending (avoid panic-selling during profit taking)
+                        if position.pending_sells:
+                            logger.debug(f"Skipping crash check - pending sells: {position.pending_sells}")
                         else:
-                            crash_threshold = 25  # Was 20 - give entry volatility room
+                            crash_from_peak = position.max_pnl_reached - price_change
 
-                        if (crash_from_peak > crash_threshold and
-                            price_change < 10 and
-                            not position.is_closing):
+                            # Dynamic threshold: relax if we hit a big peak
+                            if position.max_pnl_reached >= 30:
+                                crash_threshold = 35  # Let winners breathe
+                            elif position.max_pnl_reached >= 20:
+                                crash_threshold = 30  # Standard
+                            elif position.max_pnl_reached >= 10:
+                                crash_threshold = 25  # Tighter
+                            else:
+                                crash_threshold = 25  # Was 20 - give entry volatility room
 
-                            logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak (threshold: {crash_threshold}%)")
-                            logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
+                            if (crash_from_peak > crash_threshold and
+                                price_change < 10 and
+                                not position.is_closing):
 
-                            # DIAGNOSTIC: Compare price sources at exit
-                            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                            fresh_dex = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
-                            logger.info(f"🔍 PRICE DIAGNOSTIC at exit trigger:")
-                            logger.info(f"   Monitoring price: {current_token_price_sol:.10f}")
-                            logger.info(f"   Fresh curve_reader: {fresh_curve.get('price_lamports_per_atomic', 0) if fresh_curve else 'None':.10f}")
-                            logger.info(f"   Fresh dex.py: {fresh_dex.get('price_lamports_per_atomic', 0) if fresh_dex else 'None':.10f}")
+                                logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak (threshold: {crash_threshold}%)")
+                                logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
 
-                            await self._close_position_full(mint, reason="momentum_crash")
-                            break
+                                # DIAGNOSTIC: Compare price sources at exit
+                                fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                                fresh_dex = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
+                                logger.info(f"🔍 PRICE DIAGNOSTIC at exit trigger:")
+                                logger.info(f"   Monitoring price: {current_token_price_sol:.10f}")
+                                logger.info(f"   Fresh curve_reader: {fresh_curve.get('price_lamports_per_atomic', 0) if fresh_curve else 'None':.10f}")
+                                logger.info(f"   Fresh dex.py: {fresh_dex.get('price_lamports_per_atomic', 0) if fresh_dex else 'None':.10f}")
+
+                                await self._close_position_full(mint, reason="momentum_crash")
+                                break
 
                     # ===================================================================
-                    # ORDER FLOW EXIT - Replaces tier system
+                    # ORDER FLOW EXIT - Flow-based exit strategy
                     # Uses real-time Helius TX data, 5-13s advantage over charts
                     # ===================================================================
-                    if not position.is_runner_mode and not position.is_closing:
+                    if not position.is_closing:
                         should_exit, exit_reason = self._check_orderflow_exit(mint, position, price_change)
 
                         if should_exit:
@@ -2057,21 +1854,16 @@ class SniperBot:
 
                     # Progress logging
                     if check_count % 3 == 1:
-                        if position.is_runner_mode:
-                            logger.info(
-                                f"🚀 {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                                f"Peak: {position.max_pnl_reached:+.1f}% | "
-                                f"Adds: {position.add_count}/{PYRAMID_MAX_ADDS} | "
-                                f"Invested: {position.total_invested:.3f} SOL | "
-                                f"Score: {position.runner_score}/5 | Age: {age:.0f}s"
-                            )
-                        else:
-                            sold_pct = position.total_sold_percent
-                            logger.info(
-                                f"⏱️ {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                                f"Peak: {position.max_pnl_reached:+.1f}% | "
-                                f"Sold: {sold_pct:.0f}% | Age: {age:.0f}s"
-                            )
+                        # Get flow metrics for logging
+                        state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+                        sells_5s = len([t for t in state.get('sell_timestamps', []) if time.time() - t < 5])
+                        buys_5s = len([t for t in state.get('buy_timestamps', []) if time.time() - t < 5])
+
+                        logger.info(
+                            f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
+                            f"Peak: {position.max_pnl_reached:+.1f}% | "
+                            f"Flow 5s: +{buys_5s}/-{sells_5s} | Age: {age:.0f}s"
+                        )
 
                 except Exception as e:
                     logger.error(f"Error checking {mint[:8]}...: {e}")
@@ -2083,7 +1875,6 @@ class SniperBot:
             if mint in self.positions and position.status == 'completed':
                 del self.positions[mint]
                 logger.info(f"Position {mint[:8]}... removed after completion")
-                self.velocity_checker.clear_history(mint)
                 
         except Exception as e:
             logger.error(f"Monitor error for {mint[:8]}...: {e}")
@@ -2155,125 +1946,6 @@ class SniperBot:
                 
         except Exception as e:
             logger.error(f"Partial sell error: {e}")
-            return False
-
-    async def _execute_pyramid_add(self, mint: str, add_name: str, current_pnl: float) -> bool:
-        """
-        Execute pyramid add (buy more of a confirmed runner).
-        Similar structure to _execute_partial_sell but for buying.
-        """
-        try:
-            from config import PYRAMID_ADD_AMOUNT_SOL, PYRAMID_MAX_POSITION_SOL
-
-            position = self.positions.get(mint)
-            if not position:
-                return False
-
-            # Check if already added at this level
-            if add_name in position.pyramid_adds:
-                logger.debug(f"{add_name} already executed for {mint[:8]}")
-                return False
-
-            # Check max position size
-            if position.total_invested >= PYRAMID_MAX_POSITION_SOL:
-                logger.warning(f"Max position size reached: {position.total_invested:.3f} SOL")
-                return False
-
-            # Check wallet balance
-            if not self.wallet.can_trade():
-                logger.warning(f"Insufficient balance for pyramid add")
-                return False
-
-            add_amount = min(PYRAMID_ADD_AMOUNT_SOL, PYRAMID_MAX_POSITION_SOL - position.total_invested)
-
-            logger.info(f"🔺 PYRAMID ADD ({add_name}) for {mint[:8]}...")
-            logger.info(f"   Current P&L: {current_pnl:+.1f}%")
-            logger.info(f"   Adding: {add_amount:.3f} SOL")
-            logger.info(f"   Total after: {position.total_invested + add_amount:.3f} SOL")
-
-            # Get bonding curve key if available
-            bonding_curve_key = None
-            if hasattr(self, 'scanner') and self.scanner:
-                token_data = self.scanner.watched_tokens.get(mint, {})
-                bonding_curve_key = token_data.get('bondingCurveKey')
-
-            # Execute buy
-            signature = await self.trader.create_buy_transaction(
-                mint=mint,
-                sol_amount=add_amount,
-                bonding_curve_key=bonding_curve_key,
-                slippage=30,
-                urgency="buy"
-            )
-
-            if signature and not signature.startswith("1111111"):
-                # Wait for confirmation
-                await asyncio.sleep(1.5)
-
-                # Get actual tokens received
-                txd = await self._get_transaction_deltas(signature, mint)
-
-                if txd["confirmed"] and txd["token_delta"] > 0:
-                    tokens_received = txd["token_delta"]
-                    actual_sol_spent = abs(txd["sol_delta"]) if txd["sol_delta"] != 0 else add_amount
-
-                    # Calculate add price
-                    token_decimals = 6  # PumpFun always 6 decimals
-                    token_atoms = int(tokens_received * (10 ** token_decimals))
-                    lamports_spent = int(actual_sol_spent * 1e9)
-                    add_price = lamports_spent / token_atoms if token_atoms > 0 else 0
-
-                    # Update position tracking
-                    position.remaining_tokens += tokens_received
-                    position.total_invested += actual_sol_spent
-                    position.add_count += 1
-                    position.pyramid_adds[add_name] = {
-                        'time': time.time(),
-                        'sol': actual_sol_spent,
-                        'tokens': tokens_received,
-                        'price': add_price,
-                        'pnl_at_add': current_pnl,
-                        'signature': signature
-                    }
-
-                    # Recalculate average entry price
-                    total_cost_lamports = (position.entry_token_price_sol * position.initial_tokens)
-                    for add_data in position.pyramid_adds.values():
-                        add_atoms = int(add_data['tokens'] * (10 ** token_decimals))
-                        total_cost_lamports += add_data['price'] * add_atoms
-                    total_tokens = position.initial_tokens + sum(
-                        a['tokens'] for a in position.pyramid_adds.values()
-                    )
-                    position.average_entry_price = total_cost_lamports / total_tokens if total_tokens > 0 else position.entry_token_price_sol
-
-                    logger.info(f"✅ PYRAMID ADD CONFIRMED: {add_name}")
-                    logger.info(f"   Tokens received: {tokens_received:,.0f}")
-                    logger.info(f"   New total: {position.remaining_tokens:,.0f} tokens")
-                    logger.info(f"   Total invested: {position.total_invested:.3f} SOL")
-                    logger.info(f"   Avg entry price: {position.average_entry_price:.10f}")
-
-                    if self.telegram:
-                        await self.telegram.send_message(
-                            f"🔺 PYRAMID ADD ({add_name})\n"
-                            f"Token: {mint[:16]}...\n"
-                            f"Added: {actual_sol_spent:.3f} SOL\n"
-                            f"P&L at add: {current_pnl:+.1f}%\n"
-                            f"Total position: {position.total_invested:.3f} SOL\n"
-                            f"TX: https://solscan.io/tx/{signature}"
-                        )
-
-                    return True
-                else:
-                    logger.error(f"Pyramid add transaction not confirmed")
-                    return False
-            else:
-                logger.error(f"Failed to submit pyramid add transaction")
-                return False
-
-        except Exception as e:
-            logger.error(f"Pyramid add error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return False
 
     async def _confirm_sell_background(
@@ -2641,7 +2313,6 @@ class SniperBot:
                 # Cleanup position tracking
                 if mint in self.positions:
                     del self.positions[mint]
-                    self.velocity_checker.clear_history(mint)
                     logger.info(f"Active: {len(self.positions)}/{MAX_POSITIONS}")
                 return
             
@@ -2725,7 +2396,6 @@ class SniperBot:
                 
                 if mint in self.positions:
                     del self.positions[mint]
-                    self.velocity_checker.clear_history(mint)
                 return
 
             # ✅ ROBUST: Parse transaction directly (NO wallet balance delta!)
@@ -2894,9 +2564,8 @@ class SniperBot:
             
             if mint in self.positions:
                 del self.positions[mint]
-                self.velocity_checker.clear_history(mint)
                 logger.info(f"Active: {len(self.positions)}/{MAX_POSITIONS}")
-            
+
         except Exception as e:
             logger.error(f"Failed to close {mint[:8]}...: {e}")
             import traceback
@@ -2904,7 +2573,6 @@ class SniperBot:
             if mint in self.positions:
                 self.positions[mint].status = 'error'
                 del self.positions[mint]
-                self.velocity_checker.clear_history(mint)
     
     async def _close_position(self, mint: str, reason: str = "manual"):
         """Wrapper for telegram compatibility"""

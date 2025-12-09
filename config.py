@@ -74,7 +74,7 @@ TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
 # 2-tier system based on 11-trade analysis: reduces fees, lets winners run
-TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '15.0'))  # Was 30%
+TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '9999.0'))  # DISABLED - using flow exit
 TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '75.0'))      # Was 40%
 
 TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '30.0'))  # Was 40%, lowered to capture +25-35% peaks
@@ -116,7 +116,7 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '0'))
 # ============================================
 # FLATLINE DETECTION
 # ============================================
-FLATLINE_TIMEOUT_SECONDS = 15  # Was 30, now faster exit for dead tokens
+FLATLINE_TIMEOUT_SECONDS = 9999  # DISABLED - using buyer death signal instead
 
 # ============================================
 # RUG DETECTION - Curve Drain
@@ -218,8 +218,8 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # ============================================
 MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '6'))   # Fire earlier
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))   # Allow some sells, rely on sell burst detection
-MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '45.0'))  # Anti-bot: max % from single wallet (loosened to 45% based on trade analysis)
-MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '2.0'))   # Filter weak entries (was 0.8)
+MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '100.0'))  # DISABLED - flow exit handles dumps
+MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '0.0'))  # DISABLED - let tokens in, exit handles bad ones
 MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))
 MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Enter faster
 
@@ -228,7 +228,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '6.0'))  # Organic FOMO can spike to 5-6/s
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '60.0'))  # Max % from top 2 wallets combined (loosened based on trade analysis)
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '100.0'))  # DISABLED - blocked 23x winner
 
 # SELL BURST DETECTION (timing-based, not count-based)
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump
@@ -315,64 +315,53 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_FILE = None
 
 # ============================================
-# RUNNER DETECTION & PYRAMID ADDS
+# ORDER FLOW EXIT SETTINGS (FLOW-BASED v2)
 # ============================================
-# Runner score thresholds
-RUNNER_SCORE_THRESHOLD = 4          # Score >= 4 triggers runner mode (max 5)
-RUNNER_CHECK_MIN_AGE = 15.0         # Seconds after entry before checking runner score
-RUNNER_CHECK_MIN_PROFIT = 15.0      # Minimum +% before checking runner score
+# Legacy toggle - set False to use new flow-based exits
+USE_LEGACY_EXITS = False
 
-# Runner score criteria thresholds
-RUNNER_MIN_BUY_SELL_RATIO = 3.0     # buys > sells * this = +1 point
-RUNNER_MIN_VELOCITY = 1.5           # SOL/s sustained = +1 point
-RUNNER_MIN_UNIQUE_BUYERS = 7        # Unique buyers = +1 point
-RUNNER_MAX_EARLY_SELLS = 2          # Sells <= this = +1 point
-RUNNER_MAX_BONDING_PERCENT = 35.0   # Bonding < this% = +1 point
+# Minimum conditions before ANY exit signals activate
+EXIT_MIN_AGE_SECONDS = float(os.getenv('EXIT_MIN_AGE_SECONDS', '5.0'))
+EXIT_MIN_TRANSACTIONS = int(os.getenv('EXIT_MIN_TRANSACTIONS', '8'))
 
-# Pyramid add settings
-PYRAMID_ADD_1_PROFIT = 15.0         # Add at +15% if runner
-PYRAMID_ADD_2_PROFIT = 30.0         # Add at +30% if still runner
-PYRAMID_ADD_3_PROFIT = 50.0         # Add at +50% if still runner
-PYRAMID_ADD_AMOUNT_SOL = 0.05       # Amount per add
-PYRAMID_MAX_ADDS = 3                # Maximum number of adds
-PYRAMID_MAX_POSITION_SOL = 0.20     # Maximum total position size
+# Time windows for flow analysis
+FLOW_WINDOW_SHORT = float(os.getenv('FLOW_WINDOW_SHORT', '5.0'))   # 5 second window
+FLOW_WINDOW_MEDIUM = float(os.getenv('FLOW_WINDOW_MEDIUM', '10.0'))  # 10 second window
 
-# Runner mode exit thresholds
-RUNNER_EXIT_SCORE_THRESHOLD = 3     # Exit if score drops below this
-RUNNER_EXIT_BONDING_PERCENT = 60.0  # Exit if bonding curve > this%
-RUNNER_EXIT_CRASH_PERCENT = 25.0    # Exit if drops this% from peak
-RUNNER_EXIT_VELOCITY_MIN = 0.5      # Exit if velocity below this
-RUNNER_EXIT_VELOCITY_DURATION = 10.0  # For this many seconds
-RUNNER_STOP_LOSS_PERCENT = 15.0     # Tighter stop loss for runners (higher avg entry)
+# === EMERGENCY EXITS (highest priority) ===
+# Whale exit: single large sell indicates insider knowledge
+RUG_SINGLE_SELL_SOL = float(os.getenv('RUG_SINGLE_SELL_SOL', '3.0'))
 
-# ============================================
-# ORDER FLOW EXIT SETTINGS
-# ============================================
-# Minimum conditions before order flow exits activate
-ORDERFLOW_MIN_AGE_SECONDS = float(os.getenv('ORDERFLOW_MIN_AGE_SECONDS', '8.0'))
-ORDERFLOW_MIN_PNL_PERCENT = float(os.getenv('ORDERFLOW_MIN_PNL_PERCENT', '8.0'))
-ORDERFLOW_MIN_BUYS_AFTER_ENTRY = int(os.getenv('ORDERFLOW_MIN_BUYS_AFTER_ENTRY', '5'))
+# Curve drain: liquidity pulled (already exists, keep RUG_CURVE_DROP_PERCENT)
+RUG_CURVE_DRAIN_PERCENT = float(os.getenv('RUG_CURVE_DRAIN_PERCENT', '40.0'))
 
-# Exit signals
-ORDERFLOW_SELL_BURST_COUNT = int(os.getenv('ORDERFLOW_SELL_BURST_COUNT', '3'))
-ORDERFLOW_SELL_BURST_WINDOW = float(os.getenv('ORDERFLOW_SELL_BURST_WINDOW', '5.0'))
-ORDERFLOW_BUYER_DEATH_SECONDS = float(os.getenv('ORDERFLOW_BUYER_DEATH_SECONDS', '8.0'))
-ORDERFLOW_SELL_RATIO_THRESHOLD = float(os.getenv('ORDERFLOW_SELL_RATIO_THRESHOLD', '0.20'))
-ORDERFLOW_VELOCITY_DEATH_PERCENT = float(os.getenv('ORDERFLOW_VELOCITY_DEATH_PERCENT', '25.0'))
+# === HIGH PRIORITY EXITS ===
+# Sell burst: coordinated dump starting
+DUMP_SELL_COUNT = int(os.getenv('DUMP_SELL_COUNT', '4'))
+DUMP_SELL_WINDOW = float(os.getenv('DUMP_SELL_WINDOW', '5.0'))
 
-# Profit protection (tighter exits at high P&L)
-ORDERFLOW_HIGH_PNL_THRESHOLD = float(os.getenv('ORDERFLOW_HIGH_PNL_THRESHOLD', '30.0'))
-ORDERFLOW_HIGH_PNL_SELLS = int(os.getenv('ORDERFLOW_HIGH_PNL_SELLS', '2'))
-ORDERFLOW_HIGH_PNL_STALL = float(os.getenv('ORDERFLOW_HIGH_PNL_STALL', '5.0'))
+# Heavy sell volume in SOL
+DUMP_SELL_SOL_TOTAL = float(os.getenv('DUMP_SELL_SOL_TOTAL', '2.0'))
 
-# Mega profit protection
-ORDERFLOW_MEGA_PNL_THRESHOLD = float(os.getenv('ORDERFLOW_MEGA_PNL_THRESHOLD', '50.0'))
+# === MEDIUM PRIORITY EXITS ===
+# Sell ratio: tide turning (sells dominating buys)
+PRESSURE_SELL_RATIO = float(os.getenv('PRESSURE_SELL_RATIO', '0.6'))  # 60%+ sells
+PRESSURE_MIN_SELLS = int(os.getenv('PRESSURE_MIN_SELLS', '5'))  # Min sells to calculate ratio
 
-# Loss prevention (faster exit when underwater)
-ORDERFLOW_UNDERWATER_SELLS = int(os.getenv('ORDERFLOW_UNDERWATER_SELLS', '8'))
-ORDERFLOW_UNDERWATER_WINDOW = float(os.getenv('ORDERFLOW_UNDERWATER_WINDOW', '10.0'))
-ORDERFLOW_DEEP_LOSS_THRESHOLD = float(os.getenv('ORDERFLOW_DEEP_LOSS_THRESHOLD', '-10.0'))
-ORDERFLOW_DEEP_LOSS_SELLS = int(os.getenv('ORDERFLOW_DEEP_LOSS_SELLS', '3'))
+# Net flow: more leaving than entering
+FLOW_NET_NEGATIVE_SOL = float(os.getenv('FLOW_NET_NEGATIVE_SOL', '-1.5'))
+
+# === LOW PRIORITY EXITS ===
+# Buyer death: momentum completely dead
+DEATH_NO_BUY_SECONDS = float(os.getenv('DEATH_NO_BUY_SECONDS', '12.0'))
+
+# === HOLD CONDITIONS (override exit signals) ===
+HOLD_MIN_BUYS_SHORT = int(os.getenv('HOLD_MIN_BUYS_SHORT', '2'))  # 2+ buys in 5s = still pumping
+HOLD_MAX_TIME_SINCE_BUY = float(os.getenv('HOLD_MAX_TIME_SINCE_BUY', '8.0'))  # Last buy < 8s ago
+
+# === SAFETY BACKSTOPS (unchanged) ===
+# Stop loss at -35% (already exists as STOP_LOSS_PERCENTAGE)
+# Max hold at 120s (already exists as MAX_POSITION_AGE_SECONDS)
 
 # ============================================
 # DEVELOPMENT

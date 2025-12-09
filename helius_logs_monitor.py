@@ -340,6 +340,13 @@ class HeliusLogsMonitor:
         # Keep only last 30 seconds of timestamps
         state['buy_timestamps'] = [t for t in state['buy_timestamps'] if now - t < 30]
 
+        # Track buy AMOUNTS for flow-based exits
+        if 'buy_amounts' not in state:
+            state['buy_amounts'] = []
+        state['buy_amounts'].append((now, sol_amount))
+        # Keep only last 30 seconds of buy amounts
+        state['buy_amounts'] = [(t, amt) for t, amt in state['buy_amounts'] if now - t < 30]
+
         # Track peak velocity (only after 0.5s to avoid false spikes at age≈0)
         age = now - state['created_at']
         if age >= 0.5:
@@ -393,6 +400,17 @@ class HeliusLogsMonitor:
         # Track sell timing for order flow exits
         now = time.time()
         state['sell_timestamps'].append(now)
+
+        # Track sell AMOUNTS for flow-based exits
+        if 'sell_amounts' not in state:
+            state['sell_amounts'] = []
+        # Use parsed sol_amount, fallback to 0.3 SOL estimate if parse failed
+        actual_sell_sol = sol_amount if sol_amount > 0 else 0.3
+        state['sell_amounts'].append((now, actual_sell_sol))
+        state['largest_sell'] = max(state.get('largest_sell', 0), actual_sell_sol)
+
+        # Keep only last 30 seconds of sell amounts
+        state['sell_amounts'] = [(t, amt) for t, amt in state['sell_amounts'] if now - t < 30]
         # Keep only last 30 seconds
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
