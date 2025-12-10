@@ -281,8 +281,8 @@ class SniperBot:
         # === EXTRACT FLOW DATA ===
         sell_timestamps = state.get('sell_timestamps', [])
         buy_timestamps = state.get('buy_timestamps', [])
-        sell_amounts = state.get('sell_amounts', [])  # List of (timestamp, sol_amount)
-        buy_amounts = state.get('buy_amounts', [])    # List of (timestamp, sol_amount)
+        sell_amounts = state.get('flow_sells', [])  # List of (timestamp, sol_amount)
+        buy_amounts = state.get('flow_buys', [])    # List of (timestamp, sol_amount)
         largest_sell = state.get('largest_sell', 0)
         last_buy_time = state.get('last_buy_time', position.entry_time)
 

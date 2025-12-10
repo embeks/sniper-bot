@@ -340,12 +340,11 @@ class HeliusLogsMonitor:
         # Keep only last 30 seconds of timestamps
         state['buy_timestamps'] = [t for t in state['buy_timestamps'] if now - t < 30]
 
-        # Track buy AMOUNTS for flow-based exits
-        if 'buy_amounts' not in state:
-            state['buy_amounts'] = []
-        state['buy_amounts'].append((now, sol_amount))
-        # Keep only last 30 seconds of buy amounts (defensive filter)
-        state['buy_amounts'] = [x for x in state['buy_amounts'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
+        # Track buy AMOUNTS for flow-based exits (timed tuples)
+        if 'flow_buys' not in state:
+            state['flow_buys'] = []
+        state['flow_buys'].append((now, sol_amount))
+        state['flow_buys'] = [x for x in state['flow_buys'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
 
         # Track peak velocity (only after 0.5s to avoid false spikes at age≈0)
         age = now - state['created_at']
@@ -401,16 +400,14 @@ class HeliusLogsMonitor:
         now = time.time()
         state['sell_timestamps'].append(now)
 
-        # Track sell AMOUNTS for flow-based exits
-        if 'sell_amounts' not in state:
-            state['sell_amounts'] = []
+        # Track sell AMOUNTS for flow-based exits (timed tuples)
+        if 'flow_sells' not in state:
+            state['flow_sells'] = []
         # Use parsed sol_amount, fallback to 0.3 SOL estimate if parse failed
         actual_sell_sol = sol_amount if sol_amount > 0 else 0.3
-        state['sell_amounts'].append((now, actual_sell_sol))
+        state['flow_sells'].append((now, actual_sell_sol))
         state['largest_sell'] = max(state.get('largest_sell', 0), actual_sell_sol)
-
-        # Keep only last 30 seconds of sell amounts (defensive filter)
-        state['sell_amounts'] = [x for x in state['sell_amounts'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
+        state['flow_sells'] = [x for x in state['flow_sells'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
         # Keep only last 30 seconds
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
