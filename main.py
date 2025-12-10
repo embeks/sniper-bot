@@ -1509,11 +1509,16 @@ class SniperBot:
                                 # Let orderflow signals handle exit timing during actual dump
                                 logger.info(f"⚡ Curve stable/rising {curve_delta:+.1f} SOL despite {sell_ratio:.0%} sell ratio - orderflow will handle exit")
                             elif curve_delta < -1.5 or delta_drop >= 2.0:
-                                # Curve BELOW entry by significant amount OR dropping fast = real rug
-                                logger.warning(f"🚨 RUG EXIT: curve drained {curve_delta:.1f} SOL from entry")
-                                logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
-                                await self._close_position_full(mint, reason="helius_rug_curve_drain")
-                                break
+                                # SANITY CHECK: P&L must confirm the crash
+                                # Helius event tracking can drift from reality - validate against stored P&L
+                                if position.pnl_percent > -10:
+                                    logger.warning(f"⚠️ Stale Helius data: curve_delta={curve_delta:.1f} SOL but P&L={position.pnl_percent:+.1f}% - IGNORING rug signal")
+                                else:
+                                    # Confirmed crash - exit immediately
+                                    logger.warning(f"🚨 RUG EXIT: curve drained {curve_delta:.1f} SOL from entry (P&L: {position.pnl_percent:.1f}%)")
+                                    logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
+                                    await self._close_position_full(mint, reason="helius_rug_curve_drain")
+                                    break
                             else:
                                 # Minor dip below entry - hold through volatility
                                 logger.warning(f"⚠️ Curve dipped {curve_delta:.1f} SOL but holding (minor volatility)")
