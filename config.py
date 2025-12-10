@@ -66,7 +66,7 @@ PUMPFUN_EARLY_AMOUNT = float(os.getenv('PUMPFUN_EARLY_AMOUNT', BUY_AMOUNT_SOL))
 
 # FIXED POSITION SIZING - no confidence scaling
 POSITION_SIZE_DEFAULT = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
-MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '2'))
+MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '3'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '35'))  # TIGHTENED: Was 20%, now 15% to prevent gap-through
@@ -121,7 +121,7 @@ FLATLINE_TIMEOUT_SECONDS = 9999  # DISABLED - using buyer death signal instead
 # ============================================
 # RUG DETECTION - Curve Drain
 # ============================================
-RUG_CURVE_DROP_PERCENT = 30  # Exit if curve drops 30%+ from recent peak (was 20%, caused false triggers)
+RUG_CURVE_DROP_PERCENT = 55  # Exit if curve drops 30%+ from recent peak (was 20%, caused false triggers)
 RUG_CURVE_WINDOW_SECONDS = 6  # Within this time window
 
 # ============================================
@@ -333,7 +333,7 @@ FLOW_WINDOW_MEDIUM = float(os.getenv('FLOW_WINDOW_MEDIUM', '10.0'))  # 10 second
 RUG_SINGLE_SELL_SOL = float(os.getenv('RUG_SINGLE_SELL_SOL', '3.0'))
 
 # Curve drain: liquidity pulled (already exists, keep RUG_CURVE_DROP_PERCENT)
-RUG_CURVE_DRAIN_PERCENT = float(os.getenv('RUG_CURVE_DRAIN_PERCENT', '40.0'))
+RUG_CURVE_DRAIN_PERCENT = float(os.getenv('RUG_CURVE_DRAIN_PERCENT', '55.0'))
 
 # === HIGH PRIORITY EXITS ===
 # Sell burst: coordinated dump starting
