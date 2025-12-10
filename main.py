@@ -326,6 +326,11 @@ class SniperBot:
                         logger.warning(f"🚨 EARLY RUG: Curve dropped {curve_drop_5s:.0%} in 5s with only {buys_5s} buyers")
                         return True, f"rug_forming_{curve_drop_5s:.0%}"
 
+        # 0b. PROFIT DECAY: Protect gains from fast dumps (fires even with buyers active)
+        if position.max_pnl_reached > 25 and pnl_percent < (position.max_pnl_reached * 0.65) and pnl_percent > 10:
+            logger.warning(f"💰 PROFIT PROTECT: Dropped from +{position.max_pnl_reached:.1f}% to +{pnl_percent:.1f}%")
+            return True, f"profit_protect_from_{position.max_pnl_reached:.0f}pct"
+
         # 1. Whale exit: single large sell indicates insider knowledge
         if largest_sell >= RUG_SINGLE_SELL_SOL:
             logger.warning(f"🚨 WHALE EXIT: {largest_sell:.2f} SOL single sell")
