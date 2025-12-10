@@ -32,8 +32,8 @@ BACKUP_RPC_ENDPOINTS = [
 # JITO BUNDLE CONFIGURATION
 # ============================================
 JITO_ENABLED = os.getenv('JITO_ENABLED', 'true').lower() == 'true'
-JITO_TIP_AMOUNT_SOL = float(os.getenv('JITO_TIP_SOL', '0.012'))  # Default 0.005 SOL - increased for better tx landing
-JITO_TIP_AGGRESSIVE_SOL = float(os.getenv('JITO_TIP_AGGRESSIVE_SOL', '0.015'))  # For 0-sell tokens
+JITO_TIP_AMOUNT_SOL = float(os.getenv('JITO_TIP_SOL', '0.003'))  # Default 0.005 SOL - increased for better tx landing
+JITO_TIP_AGGRESSIVE_SOL = float(os.getenv('JITO_TIP_AGGRESSIVE_SOL', '0.005'))  # For 0-sell tokens
 
 # Jito Block Engine endpoints (rotate randomly to reduce contention)
 JITO_ENDPOINTS = [
