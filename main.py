@@ -312,6 +312,20 @@ class SniperBot:
 
         # === 🚨 EMERGENCY EXITS (ignore hold conditions) ===
 
+        # 0. EARLY RUG DETECTION: Curve dropping 25%+ with no buyers = rug forming
+        # Catches rugs at -5% P&L instead of -25% (before 80% drain triggers)
+        curve_history = state.get('curve_history', [])
+        if len(curve_history) >= 2 and buys_5s < 2:
+            current_curve = curve_history[-1][1] if curve_history else 0
+            older_readings = [(t, v) for t, v in curve_history if now - t > 4]
+            if older_readings and current_curve > 0:
+                old_curve = older_readings[0][1]
+                if old_curve > 0:
+                    curve_drop_5s = (old_curve - current_curve) / old_curve
+                    if curve_drop_5s > 0.25:
+                        logger.warning(f"🚨 EARLY RUG: Curve dropped {curve_drop_5s:.0%} in 5s with only {buys_5s} buyers")
+                        return True, f"rug_forming_{curve_drop_5s:.0%}"
+
         # 1. Whale exit: single large sell indicates insider knowledge
         if largest_sell >= RUG_SINGLE_SELL_SOL:
             logger.warning(f"🚨 WHALE EXIT: {largest_sell:.2f} SOL single sell")
