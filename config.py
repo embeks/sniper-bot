@@ -329,8 +329,8 @@ FLOW_WINDOW_SHORT = float(os.getenv('FLOW_WINDOW_SHORT', '5.0'))   # 5 second wi
 FLOW_WINDOW_MEDIUM = float(os.getenv('FLOW_WINDOW_MEDIUM', '10.0'))  # 10 second window
 
 # === EMERGENCY EXITS (highest priority) ===
-# Whale exit: single large sell indicates insider knowledge
-RUG_SINGLE_SELL_SOL = float(os.getenv('RUG_SINGLE_SELL_SOL', '3.0'))
+# Whale exit: single large sell relative to curve size
+RUG_SINGLE_SELL_PERCENT = int(os.getenv('RUG_SINGLE_SELL_PERCENT', '40'))  # Whale exit if single sell is 40%+ of curve
 
 # Curve drain: liquidity pulled (already exists, keep RUG_CURVE_DROP_PERCENT)
 RUG_CURVE_DRAIN_PERCENT = float(os.getenv('RUG_CURVE_DRAIN_PERCENT', '55.0'))
