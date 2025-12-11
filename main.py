@@ -39,7 +39,7 @@ from config import (
     USE_LEGACY_EXITS,
     EXIT_MIN_AGE_SECONDS, EXIT_MIN_TRANSACTIONS,
     FLOW_WINDOW_SHORT, FLOW_WINDOW_MEDIUM,
-    RUG_SINGLE_SELL_SOL, RUG_CURVE_DRAIN_PERCENT,
+    RUG_SINGLE_SELL_PERCENT, RUG_CURVE_DRAIN_PERCENT,
     DUMP_SELL_COUNT, DUMP_SELL_WINDOW, DUMP_SELL_SOL_TOTAL,
     PRESSURE_SELL_RATIO, PRESSURE_MIN_SELLS,
     FLOW_NET_NEGATIVE_SOL, DEATH_NO_BUY_SECONDS,
@@ -326,24 +326,29 @@ class SniperBot:
                         logger.warning(f"🚨 EARLY RUG: Curve dropped {curve_drop_5s:.0%} in 5s with only {buys_5s} buyers")
                         return True, f"rug_forming_{curve_drop_5s:.0%}"
 
-        # 0b. SELL BURST = TOP. 10+ sells in 5s means dump starting, exit immediately.
-        # Data: KEKW had 2 sells and pumped to 17 SOL. PENNY had 13 sells and dumped. CE had 16 sells and dumped.
-        # BUT: Only exit if curve is not growing (MineCat had 13 sells but curve +2.6 SOL, kept pumping)
+        # 0b. SELL BURST + NO BUYERS = TOP
+        # Data: MineCat had 13 sells but 27 buys = healthy churn, kept pumping
+        # 9AFV8U5d had 21 sells with buys, then sells with NO buys = dump
+        # Key insight: Curve lags behind. We see buys/sells instantly. Trust the flow, not the curve.
         if sells_5s >= 10:
-            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
-            current_curve = state.get('vSolInBondingCurve', 0)
-            curve_delta = current_curve - entry_curve if entry_curve > 0 else 0
+            # Check if buyers are still active
+            buyers_active = buys_5s >= 2 or (now - last_buy_time) < 5
 
-            if curve_delta <= 0:  # Curve flat or dropping = real dump
-                logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells in 5s at {pnl_percent:+.1f}% (top is in)")
-                return True, f"sell_burst_{sells_5s}_exit"
+            if not buyers_active:
+                logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells + only {buys_5s} buys (buyers gone)")
+                return True, f"sell_burst_{sells_5s}_no_buyers"
             else:
-                logger.info(f"⚡ Sell burst ({sells_5s}) but curve growing +{curve_delta:.1f} SOL - holding")
+                logger.info(f"⚡ Sell burst ({sells_5s}) but {buys_5s} buys in 5s - holding (buyers active)")
 
-        # 1. Whale exit: single large sell indicates insider knowledge
-        if largest_sell >= RUG_SINGLE_SELL_SOL:
-            logger.warning(f"🚨 WHALE EXIT: {largest_sell:.2f} SOL single sell")
-            return True, f"whale_exit_{largest_sell:.1f}sol"
+        # 1. Whale exit: single large sell relative to curve size
+        # 4.4 SOL on 20 SOL curve = 22% (not dangerous, just profit-taking)
+        # 4.4 SOL on 8 SOL curve = 55% (dangerous, whale dumping)
+        current_curve = state.get('vSolInBondingCurve', 0)
+        if current_curve > 0 and largest_sell > 0:
+            whale_percent = (largest_sell / current_curve) * 100
+            if whale_percent >= RUG_SINGLE_SELL_PERCENT:
+                logger.warning(f"🐋 WHALE EXIT: {largest_sell:.2f} SOL = {whale_percent:.0f}% of curve!")
+                return True, f"whale_exit_{whale_percent:.0f}pct"
 
         # 2. Curve drain handled separately in _check_curve_drain
 
