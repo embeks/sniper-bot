@@ -313,7 +313,7 @@ class SniperBot:
         # === 🚨 EMERGENCY EXITS (ignore hold conditions) ===
 
         # 0. EARLY RUG DETECTION: Curve dropping 25%+ with no buyers = rug forming
-        # Catches rugs at -5% P&L instead of -25% (before 80% drain triggers)
+        # FIX 2: Only exit if actually losing money (P&L guard)
         curve_history = state.get('curve_history', [])
         if len(curve_history) >= 2 and buys_5s < 2:
             current_curve = curve_history[-1][1] if curve_history else 0
@@ -323,8 +323,11 @@ class SniperBot:
                 if old_curve > 0:
                     curve_drop_5s = (old_curve - current_curve) / old_curve
                     if curve_drop_5s > 0.25:
-                        logger.warning(f"🚨 EARLY RUG: Curve dropped {curve_drop_5s:.0%} in 5s with only {buys_5s} buyers")
-                        return True, f"rug_forming_{curve_drop_5s:.0%}"
+                        if pnl_percent < -15:  # Only if actually losing badly
+                            logger.warning(f"🚨 EARLY RUG: Curve dropped {curve_drop_5s:.0%} with P&L {pnl_percent:.1f}%")
+                            return True, f"rug_forming_{curve_drop_5s:.0%}"
+                        else:
+                            logger.info(f"⚠️ Curve dip {curve_drop_5s:.0%} but P&L={pnl_percent:+.1f}% - holding (not a rug)")
 
         # 0b. SELL BURST + NO BUYERS = TOP
         # Data: MineCat had 13 sells but 27 buys = healthy churn, kept pumping
@@ -341,14 +344,20 @@ class SniperBot:
                 logger.info(f"⚡ Sell burst ({sells_5s}) but {buys_5s} buys in 5s - holding (buyers active)")
 
         # 1. Whale exit: single large sell relative to curve size
+        # FIX 3: Only exit if buyers are NOT absorbing the sell
         # 4.4 SOL on 20 SOL curve = 22% (not dangerous, just profit-taking)
         # 4.4 SOL on 8 SOL curve = 55% (dangerous, whale dumping)
         current_curve = state.get('vSolInBondingCurve', 0)
         if current_curve > 0 and largest_sell > 0:
             whale_percent = (largest_sell / current_curve) * 100
             if whale_percent >= RUG_SINGLE_SELL_PERCENT:
-                logger.warning(f"🐋 WHALE EXIT: {largest_sell:.2f} SOL = {whale_percent:.0f}% of curve!")
-                return True, f"whale_exit_{whale_percent:.0f}pct"
+                # Check if buyers are absorbing the whale sell
+                buyers_active = buys_5s >= 2 or (now - last_buy_time) < 5
+                if not buyers_active:
+                    logger.warning(f"🐋 WHALE EXIT: {largest_sell:.2f} SOL = {whale_percent:.0f}% of curve + NO BUYERS!")
+                    return True, f"whale_exit_{whale_percent:.0f}pct"
+                else:
+                    logger.info(f"🐋 Whale sell ({whale_percent:.0f}%) but {buys_5s} buyers active - holding")
 
         # 2. Curve drain handled separately in _check_curve_drain
 
@@ -1331,6 +1340,13 @@ class SniperBot:
                         entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
                         logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
 
+                        # FIX 1: Reject excessive slippage entries
+                        MAX_ENTRY_SLIPPAGE = 50  # 50% max
+                        if entry_slippage > MAX_ENTRY_SLIPPAGE:
+                            logger.warning(f"❌ ENTRY REJECTED: {entry_slippage:.1f}% slippage > {MAX_ENTRY_SLIPPAGE}% max")
+                            self.pending_buys -= 1
+                            return
+
                         # SLIPPAGE-ADJUSTED BASELINE (for P&L only)
                         # Store detection curve separately for rug detection
                         _detection_curve = helius_sol if helius_sol > 0 else 6.0
@@ -1514,6 +1530,24 @@ class SniperBot:
                 check_count += 1
 
                 # ===================================================================
+                # FIX 6: STALE DATA DETECTION - Exit if WebSocket stopped updating
+                # ===================================================================
+                if self.shutdown_requested or not self.running:
+                    logger.warning(f"⚠️ Bot stopped while monitoring {mint[:8]} - emergency exit")
+                    await self._close_position_full(mint, reason="bot_stopped")
+                    break
+
+                # Check for stale WebSocket data (no updates for 20s = data frozen)
+                if self.scanner:
+                    helius_state = self.scanner.watched_tokens.get(mint, {})
+                    last_update = helius_state.get('last_update', 0)
+                    if last_update > 0 and time.time() - last_update > 20:
+                        logger.error(f"🚨 STALE DATA: No WebSocket updates for {time.time() - last_update:.0f}s")
+                        logger.error(f"   Data is frozen - emergency exit to prevent holding through crash")
+                        await self._close_position_full(mint, reason="stale_data")
+                        break
+
+                # ===================================================================
                 # REAL-TIME RUG CHECK: Uses FRESH chain data, not WebSocket estimates
                 # ===================================================================
                 if self.scanner and not position.is_closing:
@@ -1674,13 +1708,27 @@ class SniperBot:
 
                     # ===================================================================
                     # FAST RUG EXIT: Check for curve drain (20% drop in 6s window)
+                    # FIX 5: Validate with RPC before exiting
                     # ===================================================================
                     if current_sol_in_curve > 0 and not position.is_closing:
-                        if self._check_curve_drain(position, current_sol_in_curve) and price_change < -5:
-                            await self._close_position_full(mint, reason="rug_drain")
-                            break
-                        elif self._check_curve_drain(position, current_sol_in_curve) and price_change >= -5:
-                            logger.info(f"⚠️ Curve drain detected but P&L={price_change:+.1f}% - likely stale data, holding")
+                        if self._check_curve_drain(position, current_sol_in_curve):
+                            # Validate with RPC before exiting
+                            logger.warning(f"⚠️ Curve drain signal - validating with RPC...")
+                            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+
+                            if fresh_curve and fresh_curve.get('sol_raised', 0) > 0 and entry_curve > 0:
+                                rpc_curve = fresh_curve['sol_raised']
+                                rpc_pnl = (((rpc_curve + 30) / (entry_curve + 30)) ** 2 - 1) * 100
+
+                                if rpc_pnl < -15:  # RPC confirms we're losing badly
+                                    logger.warning(f"🚨 RUG DRAIN CONFIRMED by RPC: P&L {rpc_pnl:.1f}%")
+                                    await self._close_position_full(mint, reason="rug_drain")
+                                    break
+                                else:
+                                    logger.info(f"✅ RPC shows P&L={rpc_pnl:+.1f}% - drain was stale data, holding")
+                            else:
+                                logger.warning(f"⚠️ RPC validation failed - being conservative, holding")
 
                     # ===================================================================
                     # ✅ NEW: ENTRY SLIPPAGE GATE - Exit only if BOTH high slippage AND dumping
@@ -1761,7 +1809,7 @@ class SniperBot:
 
                     # ===================================================================
                     # EXIT RULE 1: Curve-based rug detection (checks liquidity drain, not price)
-                    # ✅ FIX: Use DETECTION curve (original), not slippage-adjusted baseline
+                    # FIX 4: Validate with RPC before exiting (Helius can be stale)
                     # ===================================================================
                     rug_baseline = getattr(position, 'detection_curve_sol', 0) or getattr(position, 'entry_curve_sol', 0)
                     current_curve_sol = curve_data.get('sol_in_curve', 0) if curve_data else 0
@@ -1769,16 +1817,26 @@ class SniperBot:
                     if rug_baseline > 0 and current_curve_sol > 0:
                         curve_drop_pct = ((rug_baseline - current_curve_sol) / rug_baseline) * 100
 
-                        # P&L sanity check: Don't fire rug_trap if we're near breakeven or profitable
-                        # KEKW false exit: curve showed -50% but P&L was fine, token pumped to 17 SOL after
-                        if curve_drop_pct > 30 and not position.is_closing and price_change < -5:
-                            logger.warning(f"🚨 RUG DETECTED: Curve dropped {curve_drop_pct:.1f}% ({rug_baseline:.2f} → {current_curve_sol:.2f} SOL)")
-                            await self._close_position_full(mint, reason="rug_trap")
-                            break
-                        elif curve_drop_pct > 30 and price_change >= -5:
-                            logger.info(f"⚠️ Curve drop {curve_drop_pct:.1f}% but P&L={price_change:+.1f}% - stale data, holding")
+                        if curve_drop_pct > 30 and not position.is_closing:
+                            # CRITICAL: Validate with fresh RPC before exiting
+                            logger.warning(f"⚠️ Potential rug signal: {curve_drop_pct:.1f}% curve drop - validating with RPC...")
+                            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                            if fresh_curve and fresh_curve.get('sol_raised', 0) > 0:
+                                rpc_curve = fresh_curve['sol_raised']
+                                rpc_drop_pct = ((rug_baseline - rpc_curve) / rug_baseline) * 100
+                                # Calculate RPC-based P&L
+                                rpc_pnl = (((rpc_curve + 30) / (rug_baseline + 30)) ** 2 - 1) * 100
+
+                                if rpc_drop_pct > 30 and rpc_pnl < -10:
+                                    logger.warning(f"🚨 RUG CONFIRMED by RPC: curve {rpc_drop_pct:.1f}% down, P&L {rpc_pnl:.1f}%")
+                                    await self._close_position_full(mint, reason="rug_trap")
+                                    break
+                                else:
+                                    logger.info(f"✅ RPC validation: curve={rpc_curve:.2f} SOL, P&L={rpc_pnl:+.1f}% - NOT a rug, holding")
+                            else:
+                                logger.warning(f"⚠️ RPC validation failed - being conservative, holding")
                         elif price_change <= -50 and not position.is_closing:
-                            # Price down but liquidity intact - NOT a rug, just volatility
                             logger.info(f"📉 Price down {price_change:.1f}% but curve stable ({current_curve_sol:.2f} SOL) - holding")
 
                     # ===================================================================
