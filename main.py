@@ -328,9 +328,17 @@ class SniperBot:
 
         # 0b. SELL BURST = TOP. 10+ sells in 5s means dump starting, exit immediately.
         # Data: KEKW had 2 sells and pumped to 17 SOL. PENNY had 13 sells and dumped. CE had 16 sells and dumped.
+        # BUT: Only exit if curve is not growing (MineCat had 13 sells but curve +2.6 SOL, kept pumping)
         if sells_5s >= 10:
-            logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells in 5s at {pnl_percent:+.1f}% (top is in)")
-            return True, f"sell_burst_{sells_5s}_exit"
+            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+            current_curve = state.get('vSolInBondingCurve', 0)
+            curve_delta = current_curve - entry_curve if entry_curve > 0 else 0
+
+            if curve_delta <= 0:  # Curve flat or dropping = real dump
+                logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells in 5s at {pnl_percent:+.1f}% (top is in)")
+                return True, f"sell_burst_{sells_5s}_exit"
+            else:
+                logger.info(f"⚡ Sell burst ({sells_5s}) but curve growing +{curve_delta:.1f} SOL - holding")
 
         # 1. Whale exit: single large sell indicates insider knowledge
         if largest_sell >= RUG_SINGLE_SELL_SOL:
@@ -1663,9 +1671,11 @@ class SniperBot:
                     # FAST RUG EXIT: Check for curve drain (20% drop in 6s window)
                     # ===================================================================
                     if current_sol_in_curve > 0 and not position.is_closing:
-                        if self._check_curve_drain(position, current_sol_in_curve):
+                        if self._check_curve_drain(position, current_sol_in_curve) and price_change < -5:
                             await self._close_position_full(mint, reason="rug_drain")
                             break
+                        elif self._check_curve_drain(position, current_sol_in_curve) and price_change >= -5:
+                            logger.info(f"⚠️ Curve drain detected but P&L={price_change:+.1f}% - likely stale data, holding")
 
                     # ===================================================================
                     # ✅ NEW: ENTRY SLIPPAGE GATE - Exit only if BOTH high slippage AND dumping
