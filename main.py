@@ -278,6 +278,26 @@ class SniperBot:
         if total_transactions < EXIT_MIN_TRANSACTIONS:
             return False, ""
 
+        # === MOMENTUM FLIP: Curve was growing, now shrinking ===
+        # This catches tops before sell burst fires
+        curve_history = state.get('curve_history', [])
+        current_curve = state.get('vSolInBondingCurve', 0)
+        entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+
+        if len(curve_history) >= 4 and age > 20 and pnl_percent > 10 and current_curve > entry_curve:
+            # Get curve values at different time windows
+            curve_3s_ago = next((v for t, v in reversed(curve_history) if now - t >= 3), current_curve)
+            curve_6s_ago = next((v for t, v in reversed(curve_history) if now - t >= 6), curve_3s_ago)
+
+            recent_velocity = current_curve - curve_3s_ago  # Last 3s
+            older_velocity = curve_3s_ago - curve_6s_ago    # Previous 3s
+
+            # Momentum flip: was growing (+0.3/3s), now shrinking (-0.3/3s)
+            if older_velocity > 0.3 and recent_velocity < -0.3:
+                logger.warning(f"📉 MOMENTUM FLIP: Curve velocity {older_velocity:+.2f} → {recent_velocity:+.2f} SOL/3s")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting at top")
+                return True, f"momentum_flip_{recent_velocity:.1f}"
+
         # === EXTRACT FLOW DATA ===
         sell_timestamps = state.get('sell_timestamps', [])
         buy_timestamps = state.get('buy_timestamps', [])
@@ -329,19 +349,18 @@ class SniperBot:
                         else:
                             logger.info(f"⚠️ Curve dip {curve_drop_5s:.0%} but P&L={pnl_percent:+.1f}% - holding (not a rug)")
 
-        # 0b. SELL BURST + NO BUYERS = TOP
-        # Data: MineCat had 13 sells but 27 buys = healthy churn, kept pumping
-        # 9AFV8U5d had 21 sells with buys, then sells with NO buys = dump
-        # Key insight: Curve lags behind. We see buys/sells instantly. Trust the flow, not the curve.
-        if sells_5s >= 10:
-            # Check if buyers are still active
-            buyers_active = buys_5s >= 2 or (now - last_buy_time) < 5
-
-            if not buyers_active:
-                logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells + only {buys_5s} buys (buyers gone)")
-                return True, f"sell_burst_{sells_5s}_no_buyers"
+        # 0b. SELL BURST - Momentum shift detection
+        # Key insight: Don't wait for ZERO buyers, detect when sells overwhelm buys
+        # 6+ sells where sell volume > 1.5x buy volume = smart money exiting
+        if sells_5s >= 6 and sell_sol_5s > buy_sol_5s * 1.5:
+            if pnl_percent > 5:  # Only if we're green
+                logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells ({sell_sol_5s:.2f} SOL) > 1.5x buys ({buy_sol_5s:.2f} SOL)")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}% - taking profits before dump")
+                return True, f"sell_burst_{sells_5s}_momentum_shift"
             else:
-                logger.info(f"⚡ Sell burst ({sells_5s}) but {buys_5s} buys in 5s - holding (buyers active)")
+                logger.info(f"⚡ Sell burst detected but P&L={pnl_percent:+.1f}% - need profit to exit")
+        elif sells_5s >= 6:
+            logger.debug(f"⚡ {sells_5s} sells but ratio OK: {sell_sol_5s:.2f} vs {buy_sol_5s:.2f} SOL")
 
         # 1. Whale exit: single large sell relative to curve size
         # FIX 3: Only exit if buyers are NOT absorbing the sell
@@ -1648,6 +1667,20 @@ class SniperBot:
                     entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
 
                     if helius_curve_sol > 0 and entry_curve_sol > 0:
+                        # DRIFT CORRECTION: Every 5 checks, validate Helius against RPC
+                        if check_count % 5 == 0:
+                            fresh_rpc = self.curve_reader.get_curve_state(mint, use_cache=False)
+                            if fresh_rpc and fresh_rpc.get('sol_raised', 0) > 0:
+                                rpc_curve = fresh_rpc['sol_raised']
+                                if helius_curve_sol > 0:
+                                    drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100
+                                    if drift_pct > 15:
+                                        logger.warning(f"⚠️ DRIFT CORRECTION: Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
+                                        helius_curve_sol = rpc_curve
+                                        # Also update Helius state to prevent repeated drift
+                                        if self.scanner and mint in self.scanner.watched_tokens:
+                                            self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
+
                         # Calculate P&L from curve delta (AMM math)
                         VIRTUAL_RESERVES = 30
                         virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
