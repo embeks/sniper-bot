@@ -321,14 +321,9 @@ class SniperBot:
         net_flow_10s = buy_sol_10s - sell_sol_10s
         time_since_last_buy = now - last_buy_time
 
-        # === HOLD CONDITIONS (override exit signals) ===
-        buyers_still_active = (
-            buys_5s >= HOLD_MIN_BUYS_SHORT or  # 2+ buys in 5s
-            time_since_last_buy < HOLD_MAX_TIME_SINCE_BUY  # Last buy < 8s ago
-        )
-
-        # Also check if net flow is positive (more coming in than leaving)
-        net_flow_positive = net_flow_10s > 0
+        # === HOLD CONDITIONS REMOVED ===
+        # Previously blocked exits with "buyers still active" checks
+        # Now we trust the signals and only require P&L > 5% to exit
 
         # === 🚨 EMERGENCY EXITS (ignore hold conditions) ===
 
@@ -363,62 +358,52 @@ class SniperBot:
             logger.debug(f"⚡ {sells_5s} sells but ratio OK: {sell_sol_5s:.2f} vs {buy_sol_5s:.2f} SOL")
 
         # 1. Whale exit: single large sell relative to curve size
-        # FIX 3: Only exit if buyers are NOT absorbing the sell
-        # 4.4 SOL on 20 SOL curve = 22% (not dangerous, just profit-taking)
-        # 4.4 SOL on 8 SOL curve = 55% (dangerous, whale dumping)
+        # SIMPLIFIED: Trust the signal if we're green - no buyer override
         current_curve = state.get('vSolInBondingCurve', 0)
         if current_curve > 0 and largest_sell > 0:
             whale_percent = (largest_sell / current_curve) * 100
-            if whale_percent >= RUG_SINGLE_SELL_PERCENT:
-                # Check if buyers are absorbing the whale sell
-                buyers_active = buys_5s >= 2 or (now - last_buy_time) < 5
-                if not buyers_active:
-                    logger.warning(f"🐋 WHALE EXIT: {largest_sell:.2f} SOL = {whale_percent:.0f}% of curve + NO BUYERS!")
-                    return True, f"whale_exit_{whale_percent:.0f}pct"
-                else:
-                    logger.info(f"🐋 Whale sell ({whale_percent:.0f}%) but {buys_5s} buyers active - holding")
+            if whale_percent >= RUG_SINGLE_SELL_PERCENT and pnl_percent > 5:
+                logger.warning(f"🐋 WHALE EXIT: {largest_sell:.2f} SOL = {whale_percent:.0f}% of curve!")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}% - taking profits before dump")
+                return True, f"whale_exit_{whale_percent:.0f}pct"
 
         # 2. Curve drain handled separately in _check_curve_drain
 
         # === ⚡ HIGH PRIORITY EXITS ===
 
         # 3. Sell burst: coordinated dump starting
-        if sells_5s >= DUMP_SELL_COUNT:
-            if not buyers_still_active:
-                logger.warning(f"⚡ SELL BURST: {sells_5s} sells in {FLOW_WINDOW_SHORT}s")
-                return True, f"sell_burst_{sells_5s}_in_5s"
-            else:
-                logger.info(f"⚡ Sell burst detected ({sells_5s}) but buyers still active - holding")
+        # SIMPLIFIED: Trust the signal if we're green - no buyer override
+        if sells_5s >= DUMP_SELL_COUNT and pnl_percent > 5:
+            logger.warning(f"⚡ SELL BURST: {sells_5s} sells in {FLOW_WINDOW_SHORT}s")
+            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting before dump")
+            return True, f"sell_burst_{sells_5s}_in_5s"
 
         # 4. Heavy sell volume
-        if sell_sol_5s >= DUMP_SELL_SOL_TOTAL:
-            if not buyers_still_active:
-                logger.warning(f"⚡ HEAVY SELLING: {sell_sol_5s:.2f} SOL sold in 5s")
-                return True, f"heavy_selling_{sell_sol_5s:.1f}sol"
-            else:
-                logger.info(f"⚡ Heavy selling ({sell_sol_5s:.1f} SOL) but buyers active - holding")
+        # SIMPLIFIED: Trust the signal if we're green - no buyer override
+        if sell_sol_5s >= DUMP_SELL_SOL_TOTAL and pnl_percent > 5:
+            logger.warning(f"⚡ HEAVY SELLING: {sell_sol_5s:.2f} SOL sold in 5s")
+            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting before dump")
+            return True, f"heavy_selling_{sell_sol_5s:.1f}sol"
 
         # === ⚠️ MEDIUM PRIORITY EXITS ===
 
         # 5. Sell ratio: tide turning
+        # SIMPLIFIED: Trust the signal if we're green - no buyer/flow override
         if sells_10s >= PRESSURE_MIN_SELLS:
             total_10s = sells_10s + buys_10s
             if total_10s > 0:
                 sell_ratio = sells_10s / total_10s
-                if sell_ratio >= PRESSURE_SELL_RATIO:
-                    if not buyers_still_active and not net_flow_positive:
-                        logger.warning(f"⚠️ SELL PRESSURE: {sell_ratio:.0%} sells in 10s window")
-                        return True, f"sell_pressure_{sell_ratio:.0%}"
-                    else:
-                        logger.info(f"⚠️ Sell pressure ({sell_ratio:.0%}) but flow still positive - holding")
+                if sell_ratio >= PRESSURE_SELL_RATIO and pnl_percent > 5:
+                    logger.warning(f"⚠️ SELL PRESSURE: {sell_ratio:.0%} sells in 10s window")
+                    logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting on ratio shift")
+                    return True, f"sell_pressure_{sell_ratio:.0%}"
 
         # 6. Net negative flow
-        if net_flow_10s <= FLOW_NET_NEGATIVE_SOL:
-            if not buyers_still_active:
-                logger.warning(f"⚠️ BLEEDING: {net_flow_10s:+.2f} SOL net flow in 10s")
-                return True, f"negative_flow_{net_flow_10s:.1f}sol"
-            else:
-                logger.info(f"⚠️ Negative flow ({net_flow_10s:+.1f} SOL) but buyers active - holding")
+        # SIMPLIFIED: Trust the signal if we're green - no buyer override
+        if net_flow_10s <= FLOW_NET_NEGATIVE_SOL and pnl_percent > 5:
+            logger.warning(f"⚠️ BLEEDING: {net_flow_10s:+.2f} SOL net flow in 10s")
+            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting on negative flow")
+            return True, f"negative_flow_{net_flow_10s:.1f}sol"
 
         # === 📉 LOW PRIORITY EXITS ===
 
