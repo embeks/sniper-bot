@@ -323,6 +323,8 @@ class HeliusLogsMonitor:
         state['curve_history'].append((now_curve, state['vSolInBondingCurve']))
         # Keep only last 15 seconds of curve history
         state['curve_history'] = [(t, v) for t, v in state['curve_history'] if now_curve - t < 15]
+        # FIX 6b: Track last update time for stale data detection
+        state['last_update'] = time.time()
 
         # Track peak curve value from birth
         state['peak_curve_sol'] = max(state.get('peak_curve_sol', 0), state['vSolInBondingCurve'])
@@ -423,6 +425,8 @@ class HeliusLogsMonitor:
         state['curve_history'].append((now, state['vSolInBondingCurve']))
         # Keep only last 15 seconds of curve history
         state['curve_history'] = [(t, v) for t, v in state['curve_history'] if now - t < 15]
+        # FIX 6b: Track last update time for stale data detection
+        state['last_update'] = time.time()
 
         # Log with order flow detail
         recent_sells = len([t for t in state['sell_timestamps'] if now - t < 5])
