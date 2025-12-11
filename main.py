@@ -1576,16 +1576,24 @@ class SniperBot:
                                 # Let orderflow signals handle exit timing during actual dump
                                 logger.info(f"⚡ Curve stable/rising {curve_delta:+.1f} SOL despite {sell_ratio:.0%} sell ratio - orderflow will handle exit")
                             elif curve_delta < -1.5 or delta_drop >= 2.0:
-                                # SANITY CHECK: P&L must confirm the crash
-                                # Helius event tracking can drift from reality - validate against stored P&L
-                                if position.pnl_percent > -10:
-                                    logger.warning(f"⚠️ Stale Helius data: curve_delta={curve_delta:.1f} SOL but P&L={position.pnl_percent:+.1f}% - IGNORING rug signal")
+                                # CRITICAL: Validate with fresh RPC before exiting
+                                # Helius WebSocket can be stale - RPC is source of truth
+                                logger.warning(f"⚠️ Helius curve drain signal ({curve_delta:.1f} SOL) - validating with RPC...")
+                                fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+
+                                if fresh_curve and fresh_curve.get('sol_raised', 0) > 0 and entry_curve > 0:
+                                    rpc_curve = fresh_curve['sol_raised']
+                                    rpc_pnl = (((rpc_curve + 30) / (entry_curve + 30)) ** 2 - 1) * 100
+
+                                    if rpc_pnl < -15:  # RPC confirms we're actually losing badly
+                                        logger.warning(f"🚨 RUG CONFIRMED by RPC: curve={rpc_curve:.2f} SOL, P&L={rpc_pnl:.1f}%")
+                                        logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
+                                        await self._close_position_full(mint, reason="helius_rug_curve_drain")
+                                        break
+                                    else:
+                                        logger.info(f"✅ RPC shows P&L={rpc_pnl:+.1f}% (curve={rpc_curve:.2f} SOL) - Helius was stale, holding")
                                 else:
-                                    # Confirmed crash - exit immediately
-                                    logger.warning(f"🚨 RUG EXIT: curve drained {curve_delta:.1f} SOL from entry (P&L: {position.pnl_percent:.1f}%)")
-                                    logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
-                                    await self._close_position_full(mint, reason="helius_rug_curve_drain")
-                                    break
+                                    logger.warning(f"⚠️ RPC validation failed - being conservative, holding")
                             else:
                                 # Minor dip below entry - hold through volatility
                                 logger.warning(f"⚠️ Curve dipped {curve_delta:.1f} SOL but holding (minor volatility)")
