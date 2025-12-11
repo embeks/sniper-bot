@@ -326,10 +326,11 @@ class SniperBot:
                         logger.warning(f"🚨 EARLY RUG: Curve dropped {curve_drop_5s:.0%} in 5s with only {buys_5s} buyers")
                         return True, f"rug_forming_{curve_drop_5s:.0%}"
 
-        # 0b. PROFIT DECAY: Protect gains from fast dumps (fires even with buyers active)
-        if position.max_pnl_reached > 25 and pnl_percent < (position.max_pnl_reached * 0.65) and pnl_percent > 10:
-            logger.warning(f"💰 PROFIT PROTECT: Dropped from +{position.max_pnl_reached:.1f}% to +{pnl_percent:.1f}%")
-            return True, f"profit_protect_from_{position.max_pnl_reached:.0f}pct"
+        # 0b. SELL BURST = TOP. 10+ sells in 5s means dump starting, exit immediately.
+        # Data: KEKW had 2 sells and pumped to 17 SOL. PENNY had 13 sells and dumped. CE had 16 sells and dumped.
+        if sells_5s >= 10:
+            logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells in 5s at {pnl_percent:+.1f}% (top is in)")
+            return True, f"sell_burst_{sells_5s}_exit"
 
         # 1. Whale exit: single large sell indicates insider knowledge
         if largest_sell >= RUG_SINGLE_SELL_SOL:
@@ -1753,10 +1754,14 @@ class SniperBot:
                     if rug_baseline > 0 and current_curve_sol > 0:
                         curve_drop_pct = ((rug_baseline - current_curve_sol) / rug_baseline) * 100
 
-                        if curve_drop_pct > 30 and not position.is_closing:  # 30% of liquidity drained = real rug
+                        # P&L sanity check: Don't fire rug_trap if we're near breakeven or profitable
+                        # KEKW false exit: curve showed -50% but P&L was fine, token pumped to 17 SOL after
+                        if curve_drop_pct > 30 and not position.is_closing and price_change < -5:
                             logger.warning(f"🚨 RUG DETECTED: Curve dropped {curve_drop_pct:.1f}% ({rug_baseline:.2f} → {current_curve_sol:.2f} SOL)")
                             await self._close_position_full(mint, reason="rug_trap")
                             break
+                        elif curve_drop_pct > 30 and price_change >= -5:
+                            logger.info(f"⚠️ Curve drop {curve_drop_pct:.1f}% but P&L={price_change:+.1f}% - stale data, holding")
                         elif price_change <= -50 and not position.is_closing:
                             # Price down but liquidity intact - NOT a rug, just volatility
                             logger.info(f"📉 Price down {price_change:.1f}% but curve stable ({current_curve_sol:.2f} SOL) - holding")
