@@ -408,13 +408,23 @@ class SniperBot:
         # === 📉 LOW PRIORITY EXITS ===
 
         # 7. Buyer death: momentum completely dead
-        if time_since_last_buy >= DEATH_NO_BUY_SECONDS:
-            # Only exit if also no recent buy activity AND we're not profitable
-            if buys_5s == 0 and pnl_percent < 30:
-                logger.warning(f"📉 BUYER DEATH: {time_since_last_buy:.0f}s since last buy")
+        # FIX: Require price DECLINING, not just no buyers (healthy tokens pause 10-20s)
+        if time_since_last_buy >= DEATH_NO_BUY_SECONDS and buys_5s == 0:
+            peak_pnl = position.max_pnl_reached if position else pnl_percent
+            dropped_from_peak = peak_pnl - pnl_percent
+
+            if pnl_percent < 0:
+                # Negative P&L + no buyers = dead
+                logger.warning(f"📉 BUYER DEATH: {time_since_last_buy:.0f}s no buyers, P&L={pnl_percent:+.1f}%")
                 return True, f"buyer_death_{time_since_last_buy:.0f}s"
+            elif dropped_from_peak > 10 and pnl_percent < 15:
+                # Dropped 10%+ from peak = momentum lost
+                logger.warning(f"📉 BUYER DEATH: dropped {dropped_from_peak:.1f}% from peak (+{peak_pnl:.1f}% → +{pnl_percent:.1f}%)")
+                return True, f"buyer_death_drop_{dropped_from_peak:.0f}pct"
             elif pnl_percent >= 30:
-                logger.info(f"📉 Buyer death but +{pnl_percent:.0f}% profit - letting it ride")
+                logger.info(f"📉 Buyer pause but +{pnl_percent:.0f}% - letting it ride")
+            else:
+                logger.info(f"📉 Buyer pause ({time_since_last_buy:.0f}s) but price stable at +{pnl_percent:.1f}% - holding")
 
         return False, ""
 
@@ -1668,12 +1678,21 @@ class SniperBot:
                                 rpc_curve = fresh_rpc['sol_raised']
                                 if helius_curve_sol > 0:
                                     drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100
-                                    if drift_pct > 15:
-                                        logger.warning(f"⚠️ DRIFT CORRECTION: Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
+                                    if drift_pct > 25:
+                                        # HIGH DRIFT: Use RPC-only, skip orderflow exits
+                                        logger.warning(f"⚠️ HIGH DRIFT ({drift_pct:.0f}%): Using RPC. Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f}")
                                         helius_curve_sol = rpc_curve
-                                        # Also update Helius state to prevent repeated drift
+                                        position.high_drift_mode = True
                                         if self.scanner and mint in self.scanner.watched_tokens:
                                             self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
+                                    elif drift_pct > 15:
+                                        logger.warning(f"⚠️ DRIFT CORRECTION: Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
+                                        helius_curve_sol = rpc_curve
+                                        position.high_drift_mode = False
+                                        if self.scanner and mint in self.scanner.watched_tokens:
+                                            self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
+                                    else:
+                                        position.high_drift_mode = False
 
                         # Calculate P&L from curve delta (AMM math)
                         VIRTUAL_RESERVES = 30
@@ -1951,7 +1970,13 @@ class SniperBot:
                     # Uses real-time Helius TX data, 5-13s advantage over charts
                     # ===================================================================
                     if not position.is_closing:
-                        should_exit, exit_reason = self._check_orderflow_exit(mint, position, price_change)
+                        # Skip orderflow exits during high drift (P&L unreliable)
+                        if getattr(position, 'high_drift_mode', False):
+                            if check_count % 5 == 1:
+                                logger.info(f"⚠️ High drift mode - skipping orderflow exits until stable")
+                            should_exit, exit_reason = False, ""
+                        else:
+                            should_exit, exit_reason = self._check_orderflow_exit(mint, position, price_change)
 
                         if should_exit:
                             # Log order flow state for analysis
