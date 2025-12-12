@@ -1580,9 +1580,18 @@ class SniperBot:
                                 # Let orderflow signals handle exit timing during actual dump
                                 logger.info(f"⚡ Curve stable/rising {curve_delta:+.1f} SOL despite {sell_ratio:.0%} sell ratio - orderflow will handle exit")
                             elif curve_delta < -1.5 or delta_drop >= 2.0:
-                                # CRITICAL: Validate with fresh RPC before exiting
-                                # Helius WebSocket can be stale - RPC is source of truth
-                                logger.warning(f"⚠️ Helius curve drain signal ({curve_delta:.1f} SOL) - validating with RPC...")
+                                # Calculate drain percentage from Helius data
+                                helius_drain_pct = ((entry_curve - current_curve) / entry_curve * 100) if entry_curve > 0 else 0
+
+                                # EMERGENCY: Trust Helius for massive drains (>50%) - don't wait for stale RPC
+                                if helius_drain_pct > 50 or current_curve < 2.0:
+                                    logger.warning(f"🚨 EMERGENCY EXIT: Helius shows {helius_drain_pct:.0f}% drain ({entry_curve:.2f} → {current_curve:.2f} SOL)")
+                                    logger.warning(f"   Skipping RPC validation - drain too severe to wait")
+                                    await self._close_position_full(mint, reason="helius_emergency_rug")
+                                    break
+
+                                # For smaller drains (20-50%), validate with RPC
+                                logger.warning(f"⚠️ Helius curve drain signal ({curve_delta:.1f} SOL, {helius_drain_pct:.0f}%) - validating with RPC...")
                                 fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
 
                                 if fresh_curve and fresh_curve.get('sol_raised', 0) > 0 and entry_curve > 0:
@@ -1597,7 +1606,7 @@ class SniperBot:
                                     else:
                                         logger.info(f"✅ RPC shows P&L={rpc_pnl:+.1f}% (curve={rpc_curve:.2f} SOL) - Helius was stale, holding")
                                 else:
-                                    logger.warning(f"⚠️ RPC validation failed - being conservative, holding")
+                                    logger.warning(f"⚠️ RPC validation failed for {helius_drain_pct:.0f}% drain - being conservative, holding")
                             else:
                                 # Minor dip below entry - hold through volatility
                                 logger.warning(f"⚠️ Curve dipped {curve_delta:.1f} SOL but holding (minor volatility)")
