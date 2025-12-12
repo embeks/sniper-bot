@@ -1354,12 +1354,14 @@ class SniperBot:
                         entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
                         logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
 
-                        # FIX 1: Reject excessive slippage entries
-                        MAX_ENTRY_SLIPPAGE = 50  # 50% max
-                        if entry_slippage > MAX_ENTRY_SLIPPAGE:
-                            logger.warning(f"❌ ENTRY REJECTED: {entry_slippage:.1f}% slippage > {MAX_ENTRY_SLIPPAGE}% max")
-                            self.pending_buys -= 1
-                            return
+                        # DISABLED: Slippage rejection was orphaning already-bought tokens
+                        # High "slippage" = fast pump during TX flight = momentum, not bad
+                        # Re-enable if data shows high slippage correlates with losses
+                        # MAX_ENTRY_SLIPPAGE = 50  # 50% max
+                        # if entry_slippage > MAX_ENTRY_SLIPPAGE:
+                        #     logger.warning(f"❌ ENTRY REJECTED: {entry_slippage:.1f}% slippage > {MAX_ENTRY_SLIPPAGE}% max")
+                        #     self.pending_buys -= 1
+                        #     return
 
                         # SLIPPAGE-ADJUSTED BASELINE (for P&L only)
                         # Store detection curve separately for rug detection
