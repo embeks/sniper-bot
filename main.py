@@ -1864,6 +1864,7 @@ class SniperBot:
                     # ===================================================================
                     # EXIT RULE 1: Curve-based rug detection (checks liquidity drain, not price)
                     # FIX 4: Validate with RPC before exiting (Helius can be stale)
+                    # FIX 1: EMERGENCY EXIT for massive drains (>50%) - trust Helius, skip RPC
                     # ===================================================================
                     rug_baseline = getattr(position, 'detection_curve_sol', 0) or getattr(position, 'entry_curve_sol', 0)
                     current_curve_sol = curve_data.get('sol_in_curve', 0) if curve_data else 0
@@ -1872,7 +1873,15 @@ class SniperBot:
                         curve_drop_pct = ((rug_baseline - current_curve_sol) / rug_baseline) * 100
 
                         if curve_drop_pct > 30 and not position.is_closing:
-                            # CRITICAL: Validate with fresh RPC before exiting
+                            # EMERGENCY: Trust data for massive drains (>50%) - don't wait for stale RPC
+                            if curve_drop_pct > 50 or current_curve_sol < 2.0:
+                                logger.warning(f"🚨 EMERGENCY EXIT: {curve_drop_pct:.0f}% drain detected!")
+                                logger.warning(f"   Baseline: {rug_baseline:.2f} → Current: {current_curve_sol:.2f} SOL")
+                                logger.warning(f"   Skipping RPC validation - drain too severe to wait")
+                                await self._close_position_full(mint, reason="emergency_rug")
+                                break
+
+                            # For smaller drains (30-50%), validate with RPC
                             logger.warning(f"⚠️ Potential rug signal: {curve_drop_pct:.1f}% curve drop - validating with RPC...")
                             fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
 
