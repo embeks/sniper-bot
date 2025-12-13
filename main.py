@@ -1683,29 +1683,6 @@ class SniperBot:
                     entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
 
                     if helius_curve_sol > 0 and entry_curve_sol > 0:
-                        # DRIFT CORRECTION: Every 5 checks, validate Helius against RPC
-                        if check_count % 5 == 0:
-                            fresh_rpc = self.curve_reader.get_curve_state(mint, use_cache=False)
-                            if fresh_rpc and fresh_rpc.get('sol_raised', 0) > 0:
-                                rpc_curve = fresh_rpc['sol_raised']
-                                if helius_curve_sol > 0:
-                                    drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100
-                                    if drift_pct > 25:
-                                        # HIGH DRIFT: Use RPC-only, skip orderflow exits
-                                        logger.warning(f"⚠️ HIGH DRIFT ({drift_pct:.0f}%): Using RPC. Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f}")
-                                        helius_curve_sol = rpc_curve
-                                        position.high_drift_mode = True
-                                        if self.scanner and mint in self.scanner.watched_tokens:
-                                            self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
-                                    elif drift_pct > 15:
-                                        logger.warning(f"⚠️ DRIFT CORRECTION: Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
-                                        helius_curve_sol = rpc_curve
-                                        position.high_drift_mode = False
-                                        if self.scanner and mint in self.scanner.watched_tokens:
-                                            self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
-                                    else:
-                                        position.high_drift_mode = False
-
                         # Calculate P&L from curve delta (AMM math)
                         VIRTUAL_RESERVES = 30
                         virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
@@ -1984,13 +1961,7 @@ class SniperBot:
                     # Uses real-time Helius TX data, 5-13s advantage over charts
                     # ===================================================================
                     if not position.is_closing:
-                        # Skip orderflow exits during high drift (P&L unreliable)
-                        if getattr(position, 'high_drift_mode', False):
-                            if check_count % 5 == 1:
-                                logger.info(f"⚠️ High drift mode - skipping orderflow exits until stable")
-                            should_exit, exit_reason = False, ""
-                        else:
-                            should_exit, exit_reason = self._check_orderflow_exit(mint, position, price_change)
+                        should_exit, exit_reason = self._check_orderflow_exit(mint, position, price_change)
 
                         if should_exit:
                             # Log order flow state for analysis
