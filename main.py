@@ -383,11 +383,15 @@ class SniperBot:
                 logger.info(f"⚡ Sell burst ({sells_5s}) but only {dropped_from_peak:.1f}% off peak - holding")
 
         # 4. Heavy sell volume
-        # SIMPLIFIED: Trust the signal if we're green - no buyer override
+        # FIX: Require price drop from peak, not just sell volume
         if sell_sol_5s >= DUMP_SELL_SOL_TOTAL and pnl_percent > 5:
-            logger.warning(f"⚡ HEAVY SELLING: {sell_sol_5s:.2f} SOL sold in 5s")
-            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting before dump")
-            return True, f"heavy_selling_{sell_sol_5s:.1f}sol"
+            dropped_from_peak = position.max_pnl_reached - pnl_percent
+            if dropped_from_peak >= 5:  # Only exit if dropped 5%+ from peak
+                logger.warning(f"⚡ HEAVY SELLING: {sell_sol_5s:.2f} SOL + dropped {dropped_from_peak:.1f}% from peak")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}% (was +{position.max_pnl_reached:.1f}%) - exiting")
+                return True, f"heavy_selling_{sell_sol_5s:.1f}sol"
+            else:
+                logger.info(f"⚡ Heavy selling ({sell_sol_5s:.1f} SOL) but only {dropped_from_peak:.1f}% off peak - holding")
 
         # === ⚠️ MEDIUM PRIORITY EXITS ===
 
