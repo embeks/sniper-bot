@@ -372,11 +372,15 @@ class SniperBot:
         # === ⚡ HIGH PRIORITY EXITS ===
 
         # 3. Sell burst: coordinated dump starting
-        # SIMPLIFIED: Trust the signal if we're green - no buyer override
+        # FIX: Require price drop from peak, not just sell count
         if sells_5s >= DUMP_SELL_COUNT and pnl_percent > 5:
-            logger.warning(f"⚡ SELL BURST: {sells_5s} sells in {FLOW_WINDOW_SHORT}s")
-            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting before dump")
-            return True, f"sell_burst_{sells_5s}_in_5s"
+            dropped_from_peak = position.max_pnl_reached - pnl_percent
+            if dropped_from_peak >= 5:  # Only exit if dropped 5%+ from peak
+                logger.warning(f"⚡ SELL BURST: {sells_5s} sells + dropped {dropped_from_peak:.1f}% from peak")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}% (was +{position.max_pnl_reached:.1f}%) - exiting")
+                return True, f"sell_burst_{sells_5s}_in_5s"
+            else:
+                logger.info(f"⚡ Sell burst ({sells_5s}) but only {dropped_from_peak:.1f}% off peak - holding")
 
         # 4. Heavy sell volume
         # SIMPLIFIED: Trust the signal if we're green - no buyer override
@@ -1419,8 +1423,9 @@ class SniperBot:
                 position.exit_time = position.entry_time + MAX_POSITION_AGE_SECONDS  # Max hold only
 
                 # Store DETECTION curve (original, unadjusted) for rug detection
-                _detection_curve_value = helius_sol if helius_sol > 0 else (token_data['data'].get('vSolInBondingCurve', 30) if 'data' in token_data else 30)
+                _detection_curve_value = helius_sol if helius_sol > 0 else (token_data['data'].get('vSolInBondingCurve', 6) if 'data' in token_data else 6)
                 position.detection_curve_sol = _detection_curve_value
+                logger.info(f"📊 RUG BASELINE: {_detection_curve_value:.2f} SOL (real curve)")
 
                 # Apply slippage-adjusted baseline for P&L calculation only
                 if _effective_entry_curve is not None:
@@ -1575,7 +1580,8 @@ class SniperBot:
                     if sell_count >= 8 and sell_ratio > 0.25:
                         # Use Helius WebSocket data - no RPC call, no failure mode
                         current_curve = state.get('vSolInBondingCurve', 0)
-                        entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+                        # FIX: Use real detection curve, not slippage-inflated entry
+                        entry_curve = getattr(position, 'detection_curve_sol', 0) or 6.0
 
                         # Sanity check: if we have many buys but 0 curve, data is stale - skip check
                         if current_curve == 0 and buy_count > 5:
@@ -1868,7 +1874,8 @@ class SniperBot:
                     # FIX 4: Validate with RPC before exiting (Helius can be stale)
                     # FIX 1: EMERGENCY EXIT for massive drains (>50%) - trust Helius, skip RPC
                     # ===================================================================
-                    rug_baseline = getattr(position, 'detection_curve_sol', 0) or getattr(position, 'entry_curve_sol', 0)
+                    # FIX: Use ONLY real detection curve, never slippage-inflated fallback
+                    rug_baseline = getattr(position, 'detection_curve_sol', 0) or 6.0
                     current_curve_sol = curve_data.get('sol_in_curve', 0) if curve_data else 0
 
                     if rug_baseline > 0 and current_curve_sol > 0:
