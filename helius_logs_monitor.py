@@ -583,6 +583,18 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
+        # 10. BUNDLED DETECTION: First buy in same slot as creation = insider bundle
+        creation_slot = state.get('creation_slot')
+        buy_slots = state.get('buy_slots', [])
+        if creation_slot and buy_slots:
+            first_buy_slot = buy_slots[0]
+            if first_buy_slot == creation_slot:
+                same_slot_buys = len([s for s in buy_slots if s == creation_slot])
+                logger.warning(f"⛔ BUNDLED: First buy in creation slot ({same_slot_buys}/{len(buy_slots)} buys bundled)")
+                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
+
         # 9. REMOVED: Dev holdings RPC check - adds latency, kept WebSocket-based dev buy detection above
 
         # 10. DISABLED: Buyer distribution filter too strict for early entries
@@ -819,3 +831,4 @@ class HeliusLogsMonitor:
         logger.info(f"Triggered: {stats['triggers']} | Skipped (sells): {stats['skipped_sells']} | Skipped (bot): {stats['skipped_bot']}")
         logger.info(f"Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (dev): {stats.get('skipped_dev', 0)}")
         logger.info(f"Skipped (sell burst): {stats.get('skipped_sell_burst', 0)} | Skipped (curve stalled): {stats.get('skipped_curve_stalled', 0)}")
+        logger.info(f"Skipped (bundled): {stats.get('skipped_bundled', 0)}")
