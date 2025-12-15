@@ -226,6 +226,8 @@ class HeliusLogsMonitor:
         """Process incoming log notification - detect event type and route"""
         try:
             result = params.get('result', {})
+            context = result.get('context', {})
+            slot = context.get('slot')  # NEW: Extract slot number
             value = result.get('value', {})
             signature = value.get('signature', '')
             logs = value.get('logs', [])
@@ -239,16 +241,16 @@ class HeliusLogsMonitor:
             is_sell = any('Instruction: Sell' in log for log in logs)
             
             if is_create:
-                await self._handle_create(logs, signature)
+                await self._handle_create(logs, signature, slot)
             elif is_buy:
-                await self._handle_buy(logs, signature)
+                await self._handle_buy(logs, signature, slot)
             elif is_sell:
-                await self._handle_sell(logs, signature)
+                await self._handle_sell(logs, signature, slot)
                 
         except Exception as e:
             logger.error(f"Error processing log: {e}")
     
-    async def _handle_create(self, logs: list, signature: str):
+    async def _handle_create(self, logs: list, signature: str, slot: int = None):
         """Handle CreateV2 - start watching new token"""
         mint, creator = self._extract_mint_and_creator_from_create(logs)
         if not mint:
@@ -274,6 +276,8 @@ class HeliusLogsMonitor:
             'created_at': time.time(),
             'signature': signature,
             'creator': creator,
+            'creation_slot': slot,  # NEW: Track creation slot
+            'buy_slots': [],        # NEW: Track buy slots
             'buyers': set(),
             'total_sol': 0.0,
             'buy_count': 0,
@@ -292,11 +296,11 @@ class HeliusLogsMonitor:
         }
 
         if creator:
-            logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (creator: {creator[:8]}...)")
+            logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (creator: {creator[:8]}...) [slot: {slot}]")
         else:
-            logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (no creator extracted)")
+            logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (no creator) [slot: {slot}]")
     
-    async def _handle_buy(self, logs: list, signature: str):
+    async def _handle_buy(self, logs: list, signature: str, slot: int = None):
         """Handle Buy event - update token state and check entry"""
         # Extract mint from buy event
         mint, sol_amount, buyer = self._extract_buy_data(logs)
@@ -309,7 +313,11 @@ class HeliusLogsMonitor:
 
         self.stats['buys'] += 1
         state = self.watched_tokens[mint]
-        
+
+        # NEW: Track buy slot
+        if slot:
+            state['buy_slots'].append(slot)
+
         # Update state
         state['buyers'].add(buyer) if buyer else None
         state['total_sol'] += sol_amount
@@ -372,7 +380,7 @@ class HeliusLogsMonitor:
         if not already_triggered:
             await self._check_and_trigger(mint, state)
     
-    async def _handle_sell(self, logs: list, signature: str):
+    async def _handle_sell(self, logs: list, signature: str, slot: int = None):
         """Handle Sell event - track for order flow exits"""
         # USE THE REAL AMOUNT (already being parsed!)
         mint, sol_amount, seller = self._extract_buy_data(logs)
@@ -601,6 +609,18 @@ class HeliusLogsMonitor:
         logger.info(f"   Buyer velocity: {buyer_velocity:.1f}/s (max: {self.max_buyers_per_second})")
         logger.info(f"   Curve momentum: ✅ Growing")
         logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
+
+        # NEW: Slot analysis logging
+        creation_slot = state.get('creation_slot')
+        buy_slots = state.get('buy_slots', [])
+        if creation_slot and buy_slots:
+            first_buy_slot = buy_slots[0] if buy_slots else None
+            same_slot_buys = len([s for s in buy_slots if s == creation_slot])
+            unique_slots = len(set(buy_slots))
+            slot_spread = max(buy_slots) - min(buy_slots) if len(buy_slots) > 1 else 0
+            logger.info(f"   📊 SLOT DATA: creation={creation_slot}, first_buy={first_buy_slot}, same_slot={first_buy_slot == creation_slot}")
+            logger.info(f"   📊 SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} buys in creation slot, {unique_slots} unique slots, spread={slot_spread}")
+
         logger.info("=" * 60)
         
         # Trigger callback with enriched data
