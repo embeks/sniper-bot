@@ -220,7 +220,7 @@ MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '6'))   # Fire earlier
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))   # Allow some sells, rely on sell burst detection
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '100.0'))  # DISABLED - flow exit handles dumps
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '0.0'))  # DISABLED - let tokens in, exit handles bad ones
-MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '10.0'))
+MAX_TOKEN_AGE_SECONDS = float(os.getenv('MAX_TOKEN_AGE_SECONDS', '15.0'))
 MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Enter faster
 
 # NEW FILTERS (21-trade baseline learnings)
