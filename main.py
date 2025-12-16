@@ -243,19 +243,14 @@ class SniperBot:
 
     def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
         """
-        FLOW-BASED EXIT STRATEGY v2
+        SIMPLIFIED ORDER FLOW EXIT - 3 triggers only
 
-        Priority order:
-        1. 🚨 EMERGENCY: Whale exit, curve drain
-        2. ⚡ HIGH: Sell burst, heavy sell volume
-        3. ⚠️ MEDIUM: Sell ratio, net negative flow
-        4. 📉 LOW: Buyer death
-
-        Hold conditions override exit signals when buyers still active.
+        1. RUG: Curve drain > 40% from entry
+        2. WHALE: Single sell > 12% of curve in last 3s (REACTIVE detection)
+        3. BURST: 6+ sells in 5s AND curve declining
 
         Returns (should_exit: bool, reason: str)
         """
-        # Must have scanner
         if not self.scanner:
             return False, ""
 
@@ -266,189 +261,64 @@ class SniperBot:
         now = time.time()
         age = now - position.entry_time
 
-        # === MINIMUM CONDITIONS ===
-        if age < EXIT_MIN_AGE_SECONDS:
+        # Minimum age before exits (give position time to establish)
+        min_age = getattr(self, 'EXIT_MIN_AGE_SECONDS', 8)
+        if hasattr(self, 'config'):
+            min_age = self.config.get('EXIT_MIN_AGE_SECONDS', 8)
+        if age < min_age:
             return False, ""
 
-        # Get transaction counts
-        buy_count = state.get('buy_count', 0)
-        sell_count = state.get('sell_count', 0)
-        total_transactions = buy_count + sell_count
-
-        if total_transactions < EXIT_MIN_TRANSACTIONS:
-            return False, ""
-
-        # === MOMENTUM FLIP: Curve was growing, now shrinking ===
-        # This catches tops before sell burst fires
-        curve_history = state.get('curve_history', [])
-        current_curve = state.get('vSolInBondingCurve', 0)
+        # Get curve data
         entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
-
-        if len(curve_history) >= 4 and age > 20 and pnl_percent > 10 and current_curve > entry_curve:
-            # Get curve values at different time windows
-            curve_3s_ago = next((v for t, v in reversed(curve_history) if now - t >= 3), current_curve)
-            curve_6s_ago = next((v for t, v in reversed(curve_history) if now - t >= 6), curve_3s_ago)
-
-            recent_velocity = current_curve - curve_3s_ago  # Last 3s
-            older_velocity = curve_3s_ago - curve_6s_ago    # Previous 3s
-
-            # Momentum flip: was growing (+0.3/3s), now shrinking (-0.3/3s)
-            if older_velocity > 0.3 and recent_velocity < -0.3:
-                logger.warning(f"📉 MOMENTUM FLIP: Curve velocity {older_velocity:+.2f} → {recent_velocity:+.2f} SOL/3s")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting at top")
-                return True, f"momentum_flip_{recent_velocity:.1f}"
-
-        # === EXTRACT FLOW DATA ===
-        sell_timestamps = state.get('sell_timestamps', [])
-        buy_timestamps = state.get('buy_timestamps', [])
-        sell_amounts = state.get('flow_sells', [])  # List of (timestamp, sol_amount)
-        buy_amounts = state.get('flow_buys', [])    # List of (timestamp, sol_amount)
-        largest_sell = state.get('largest_sell', 0)
-        last_buy_time = state.get('last_buy_time', position.entry_time)
-
-        # Calculate windowed metrics
-        sells_5s = len([t for t in sell_timestamps if now - t < FLOW_WINDOW_SHORT])
-        buys_5s = len([t for t in buy_timestamps if now - t < FLOW_WINDOW_SHORT])
-        sells_10s = len([t for t in sell_timestamps if now - t < FLOW_WINDOW_MEDIUM])
-        buys_10s = len([t for t in buy_timestamps if now - t < FLOW_WINDOW_MEDIUM])
-
-        # Calculate SOL flow in windows
-        sell_sol_5s = sum(amt for t, amt in sell_amounts if now - t < FLOW_WINDOW_SHORT)
-        buy_sol_5s = sum(amt for t, amt in buy_amounts if now - t < FLOW_WINDOW_SHORT)
-        sell_sol_10s = sum(amt for t, amt in sell_amounts if now - t < FLOW_WINDOW_MEDIUM)
-        buy_sol_10s = sum(amt for t, amt in buy_amounts if now - t < FLOW_WINDOW_MEDIUM)
-
-        net_flow_10s = buy_sol_10s - sell_sol_10s
-        time_since_last_buy = now - last_buy_time
-
-        # === HOLD CONDITIONS REMOVED ===
-        # Previously blocked exits with "buyers still active" checks
-        # Now we trust the signals and only require P&L > 5% to exit
-
-        # === 🚨 EMERGENCY EXITS (ignore hold conditions) ===
-
-        # 0. EARLY RUG DETECTION: Curve dropping 25%+ with no buyers = rug forming
-        # FIX 2: Only exit if actually losing money (P&L guard)
-        curve_history = state.get('curve_history', [])
-        if len(curve_history) >= 2 and buys_5s < 2:
-            current_curve = curve_history[-1][1] if curve_history else 0
-            older_readings = [(t, v) for t, v in curve_history if now - t > 4]
-            if older_readings and current_curve > 0:
-                old_curve = older_readings[0][1]
-                if old_curve > 0:
-                    curve_drop_5s = (old_curve - current_curve) / old_curve
-                    if curve_drop_5s > 0.25:
-                        if pnl_percent < -15:  # Only if actually losing badly
-                            logger.warning(f"🚨 EARLY RUG: Curve dropped {curve_drop_5s:.0%} with P&L {pnl_percent:.1f}%")
-                            return True, f"rug_forming_{curve_drop_5s:.0%}"
-                        else:
-                            logger.info(f"⚠️ Curve dip {curve_drop_5s:.0%} but P&L={pnl_percent:+.1f}% - holding (not a rug)")
-
-        # 0b. SELL BURST - Momentum shift detection
-        # Key insight: Don't wait for ZERO buyers, detect when sells overwhelm buys
-        # 6+ sells where sell volume > 1.5x buy volume = smart money exiting
-        if sells_5s >= 6 and sell_sol_5s > buy_sol_5s * 1.5:
-            if pnl_percent > 5:  # Only if we're green
-                # Check if curve still growing despite sells (profit-taking vs dump)
-                entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
-                current_curve = state.get('vSolInBondingCurve', 0)
-                curve_growth = current_curve - entry_curve if entry_curve > 0 else 0
-
-                if curve_growth > 1.0:  # Curve still +1 SOL above entry = healthy profit-taking
-                    logger.info(f"⚡ Sell burst ({sells_5s}) but curve +{curve_growth:.1f} SOL above entry - profit-taking, holding")
-                else:
-                    logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells ({sell_sol_5s:.2f} SOL) > 1.5x buys ({buy_sol_5s:.2f} SOL)")
-                    logger.warning(f"   P&L: {pnl_percent:+.1f}% | Curve growth: {curve_growth:+.1f} SOL - exiting")
-                    return True, f"sell_burst_{sells_5s}_momentum_shift"
-            else:
-                logger.info(f"⚡ Sell burst detected but P&L={pnl_percent:+.1f}% - need profit to exit")
-        elif sells_5s >= 6:
-            logger.debug(f"⚡ {sells_5s} sells but ratio OK: {sell_sol_5s:.2f} vs {buy_sol_5s:.2f} SOL")
-
-        # 1. Whale exit: single large sell relative to curve size
-        # SIMPLIFIED: Trust the signal if we're green - no buyer override
         current_curve = state.get('vSolInBondingCurve', 0)
-        if current_curve > 0 and largest_sell > 0:
-            whale_percent = (largest_sell / current_curve) * 100
-            if whale_percent >= RUG_SINGLE_SELL_PERCENT and pnl_percent > 5:
-                logger.warning(f"🐋 WHALE EXIT: {largest_sell:.2f} SOL = {whale_percent:.0f}% of curve!")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}% - taking profits before dump")
-                return True, f"whale_exit_{whale_percent:.0f}pct"
 
-        # 2. Curve drain handled separately in _check_curve_drain
+        if entry_curve <= 0 or current_curve <= 0:
+            return False, ""
 
-        # === ⚡ HIGH PRIORITY EXITS ===
+        # =========================================================
+        # EXIT 1: RUG PROTECTION - Curve drain > 40%
+        # This catches dev dumps and coordinated rugs
+        # =========================================================
+        curve_drop_pct = ((entry_curve - current_curve) / entry_curve) * 100
+        if curve_drop_pct > 40:
+            logger.warning(f"🚨 RUG EXIT: Curve drained {curve_drop_pct:.0f}% ({entry_curve:.2f} → {current_curve:.2f} SOL)")
+            return True, f"rug_drain_{curve_drop_pct:.0f}pct"
 
-        # 3. Sell burst: coordinated dump starting
-        # FIX: Require price drop from peak AND curve not way above entry
-        if sells_5s >= DUMP_SELL_COUNT and pnl_percent > 5:
-            dropped_from_peak = position.max_pnl_reached - pnl_percent
+        # =========================================================
+        # EXIT 2: WHALE EXIT - Single sell > 12% of curve (last 3s)
+        # REACTIVE detection: checks RECENT sells, not all-time largest
+        # This catches smart money exiting (like Cupsey's 1.36 SOL dump)
+        # =========================================================
+        if pnl_percent > 5:  # Only exit if in profit
+            flow_sells = state.get('flow_sells', [])
+            recent_sells = [(t, amt) for t, amt in flow_sells if now - t < 3]
 
-            # NEW: Check curve growth - if still way above entry, this is profit-taking not dumping
-            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
-            current_curve = state.get('vSolInBondingCurve', 0)  # Get current curve from Helius state
-            curve_growth_pct = ((current_curve - entry_curve) / entry_curve * 100) if entry_curve > 0 else 0
+            if recent_sells:
+                largest_recent = max(amt for t, amt in recent_sells)
+                whale_pct = (largest_recent / current_curve) * 100
 
-            if curve_growth_pct > 25:  # Curve still 25%+ above entry = healthy, hold
-                logger.info(f"⚡ Sell burst ({sells_5s}) but curve still +{curve_growth_pct:.0f}% above entry - profit-taking, holding")
-            elif dropped_from_peak >= 10:  # Raised from 5% to 10% - give more room
-                logger.warning(f"⚡ SELL BURST: {sells_5s} sells + dropped {dropped_from_peak:.1f}% from peak")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}% (was +{position.max_pnl_reached:.1f}%) - exiting")
-                return True, f"sell_burst_{sells_5s}_in_5s"
+                if whale_pct >= 12:
+                    logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
+                    logger.warning(f"   P&L: {pnl_percent:+.1f}% - following smart money out")
+                    return True, f"whale_exit_{whale_pct:.0f}pct"
+
+        # =========================================================
+        # EXIT 3: SELL BURST - 6+ sells AND curve declining
+        # Only exits if curve is at/below entry (real dump, not profit-taking)
+        # This catches coordinated smaller dumps
+        # =========================================================
+        sell_timestamps = state.get('sell_timestamps', [])
+        sells_5s = len([t for t in sell_timestamps if now - t < 5])
+
+        if sells_5s >= 6 and pnl_percent > 5:
+            curve_growth = current_curve - entry_curve
+
+            if curve_growth <= 0:  # Curve at or below entry = real dump
+                logger.warning(f"⚡ SELL BURST EXIT: {sells_5s} sells, curve {curve_growth:+.1f} SOL from entry")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting before dump")
+                return True, f"sell_burst_{sells_5s}_declining"
             else:
-                logger.info(f"⚡ Sell burst ({sells_5s}) but only {dropped_from_peak:.1f}% off peak - holding")
-
-        # 4. Heavy sell volume
-        # FIX: Require price drop from peak, not just sell volume
-        if sell_sol_5s >= DUMP_SELL_SOL_TOTAL and pnl_percent > 5:
-            dropped_from_peak = position.max_pnl_reached - pnl_percent
-            if dropped_from_peak >= 5:  # Only exit if dropped 5%+ from peak
-                logger.warning(f"⚡ HEAVY SELLING: {sell_sol_5s:.2f} SOL + dropped {dropped_from_peak:.1f}% from peak")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}% (was +{position.max_pnl_reached:.1f}%) - exiting")
-                return True, f"heavy_selling_{sell_sol_5s:.1f}sol"
-            else:
-                logger.info(f"⚡ Heavy selling ({sell_sol_5s:.1f} SOL) but only {dropped_from_peak:.1f}% off peak - holding")
-
-        # === ⚠️ MEDIUM PRIORITY EXITS ===
-
-        # 5. Sell ratio: tide turning
-        # SIMPLIFIED: Trust the signal if we're green - no buyer/flow override
-        if sells_10s >= PRESSURE_MIN_SELLS:
-            total_10s = sells_10s + buys_10s
-            if total_10s > 0:
-                sell_ratio = sells_10s / total_10s
-                if sell_ratio >= PRESSURE_SELL_RATIO and pnl_percent > 5:
-                    logger.warning(f"⚠️ SELL PRESSURE: {sell_ratio:.0%} sells in 10s window")
-                    logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting on ratio shift")
-                    return True, f"sell_pressure_{sell_ratio:.0%}"
-
-        # 6. Net negative flow
-        # SIMPLIFIED: Trust the signal if we're green - no buyer override
-        if net_flow_10s <= FLOW_NET_NEGATIVE_SOL and pnl_percent > 5:
-            logger.warning(f"⚠️ BLEEDING: {net_flow_10s:+.2f} SOL net flow in 10s")
-            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting on negative flow")
-            return True, f"negative_flow_{net_flow_10s:.1f}sol"
-
-        # === 📉 LOW PRIORITY EXITS ===
-
-        # 7. Buyer death: momentum completely dead
-        # FIX: Require price DECLINING, not just no buyers (healthy tokens pause 10-20s)
-        if time_since_last_buy >= DEATH_NO_BUY_SECONDS and buys_5s == 0:
-            peak_pnl = position.max_pnl_reached if position else pnl_percent
-            dropped_from_peak = peak_pnl - pnl_percent
-
-            if pnl_percent < 0:
-                # Negative P&L + no buyers = dead
-                logger.warning(f"📉 BUYER DEATH: {time_since_last_buy:.0f}s no buyers, P&L={pnl_percent:+.1f}%")
-                return True, f"buyer_death_{time_since_last_buy:.0f}s"
-            elif dropped_from_peak > 10 and pnl_percent < 15:
-                # Dropped 10%+ from peak = momentum lost
-                logger.warning(f"📉 BUYER DEATH: dropped {dropped_from_peak:.1f}% from peak (+{peak_pnl:.1f}% → +{pnl_percent:.1f}%)")
-                return True, f"buyer_death_drop_{dropped_from_peak:.0f}pct"
-            elif pnl_percent >= 30:
-                logger.info(f"📉 Buyer pause but +{pnl_percent:.0f}% - letting it ride")
-            else:
-                logger.info(f"📉 Buyer pause ({time_since_last_buy:.0f}s) but price stable at +{pnl_percent:.1f}% - holding")
+                logger.info(f"⚡ Sell burst ({sells_5s}) but curve +{curve_growth:.1f} SOL above entry - holding")
 
         return False, ""
 
