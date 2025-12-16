@@ -615,6 +615,7 @@ class HeliusLogsMonitor:
         # RPC gives actual on-chain state - use as final validation
         try:
             rpc_state = self.curve_reader.get_curve_state(mint, use_cache=False)
+            logger.info(f"🔍 RPC DEBUG: mint={mint[:12]}..., response={rpc_state}")
             if rpc_state and rpc_state.get('sol_raised', 0) > 0:
                 rpc_curve = rpc_state['sol_raised']
                 helius_curve = total_sol
