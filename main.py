@@ -372,10 +372,18 @@ class SniperBot:
         # === ⚡ HIGH PRIORITY EXITS ===
 
         # 3. Sell burst: coordinated dump starting
-        # FIX: Require price drop from peak, not just sell count
+        # FIX: Require price drop from peak AND curve not way above entry
         if sells_5s >= DUMP_SELL_COUNT and pnl_percent > 5:
             dropped_from_peak = position.max_pnl_reached - pnl_percent
-            if dropped_from_peak >= 5:  # Only exit if dropped 5%+ from peak
+
+            # NEW: Check curve growth - if still way above entry, this is profit-taking not dumping
+            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+            current_curve = state.get('vSolInBondingCurve', 0)  # Get current curve from Helius state
+            curve_growth_pct = ((current_curve - entry_curve) / entry_curve * 100) if entry_curve > 0 else 0
+
+            if curve_growth_pct > 50:  # Curve still 50%+ above entry = healthy, hold
+                logger.info(f"⚡ Sell burst ({sells_5s}) but curve still +{curve_growth_pct:.0f}% above entry - profit-taking, holding")
+            elif dropped_from_peak >= 10:  # Raised from 5% to 10% - give more room
                 logger.warning(f"⚡ SELL BURST: {sells_5s} sells + dropped {dropped_from_peak:.1f}% from peak")
                 logger.warning(f"   P&L: {pnl_percent:+.1f}% (was +{position.max_pnl_reached:.1f}%) - exiting")
                 return True, f"sell_burst_{sells_5s}_in_5s"
@@ -1362,12 +1370,9 @@ class SniperBot:
                         entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
                         logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
 
-                        # Re-enabled: High slippage = worse entry price = lower win rate
-                        MAX_ENTRY_SLIPPAGE = 50  # 50% max
-                        if entry_slippage > MAX_ENTRY_SLIPPAGE:
-                            logger.warning(f"❌ ENTRY REJECTED: {entry_slippage:.1f}% slippage > {MAX_ENTRY_SLIPPAGE}% max")
-                            self.pending_buys -= 1
-                            return
+                        # HIGH SLIPPAGE WARNING ONLY - we already own the tokens, MUST monitor
+                        if entry_slippage > 50:
+                            logger.warning(f"⚠️ HIGH SLIPPAGE WARNING: {entry_slippage:.1f}% - monitoring anyway (tokens already bought)")
 
                         # SLIPPAGE-ADJUSTED BASELINE (for P&L only)
                         # Store detection curve separately for rug detection

@@ -488,16 +488,30 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # 2b. SELL BURST GATE - 3+ sells in window = dump in progress, skip
+        # 2b. SELL BURST GATE - Only block if sells AND curve declining
         now = time.time()
         sell_timestamps = state.get('sell_timestamps', [])
         recent_sells_burst = len([t for t in sell_timestamps if now - t < self.sell_burst_window])
 
         if recent_sells_burst >= self.sell_burst_count:
-            logger.warning(f"❌ SELL BURST: {recent_sells_burst} sells in {self.sell_burst_window}s - dump in progress")
-            self.stats['skipped_sell_burst'] += 1
-            self.triggered_tokens.add(mint)
-            return
+            # Check if curve is actually declining during sells
+            curve_history = state.get('curve_history', [])
+            curve_declining = False
+            if len(curve_history) >= 2:
+                recent_curves = [(t, v) for t, v in curve_history if now - t < self.sell_burst_window]
+                if len(recent_curves) >= 2:
+                    first_curve = recent_curves[0][1]
+                    last_curve = recent_curves[-1][1]
+                    if first_curve > 0 and last_curve < first_curve * 0.95:  # 5%+ decline
+                        curve_declining = True
+
+            if curve_declining:
+                logger.warning(f"❌ SELL BURST + DECLINING: {recent_sells_burst} sells in {self.sell_burst_window}s - dump in progress")
+                self.stats['skipped_sell_burst'] += 1
+                self.triggered_tokens.add(mint)
+                return
+            else:
+                logger.info(f"⚡ Sell burst ({recent_sells_burst}) but curve stable - allowing entry (profit-taking)")
 
         # 3. Check sells with ratio (allow up to 2 sells if buy:sell ratio >= 4:1)
         sell_count = state['sell_count']
