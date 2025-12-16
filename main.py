@@ -121,7 +121,7 @@ class SniperBot:
     def __init__(self):
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🚀 INITIALIZING SNIPER BOT - WHALE TIERED EXITS")
+        logger.info("🚀 INITIALIZING SNIPER BOT")
         logger.info("=" * 60)
         
         self.wallet = WalletManager()
@@ -177,13 +177,12 @@ class SniperBot:
         actual_trades = min(max_trades, MAX_POSITIONS) if max_trades > 0 else 0
         
         logger.info(f"📊 STARTUP STATUS:")
-        logger.info(f"  • Strategy: ⚡ HELIUS INSTANT DETECTION + WHALE EXITS")
-        logger.info(f"  • Detection: <100ms via logsSubscribe (no RPC delay)")
-        logger.info(f"  • Entry range: 21-28 SOL (5-6.5K MC sweet spot)")
+        logger.info(f"  • Strategy: ⚡ HELIUS DETECTION + ORDER FLOW EXITS")
+        logger.info(f"  • Detection: <100ms via logsSubscribe")
+        logger.info(f"  • Entry range: {MIN_BONDING_CURVE_SOL}-{MAX_BONDING_CURVE_SOL} SOL")
         logger.info(f"  • Stop loss: -{STOP_LOSS_PERCENTAGE}%")
-        logger.info(f"  • Take profit: ORDER FLOW EXIT (signal-based, not fixed %)")
-        logger.info(f"  • Exit signals: Flow-based v2 (whale exit, sell burst, pressure, buyer death)")
-        logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s (let winners run)")
+        logger.info(f"  • Exits: Rug (40% drain), Whale (15%), Burst (6+ sells)")
+        logger.info(f"  • Max hold: {MAX_POSITION_AGE_SECONDS}s")
         logger.info(f"  • Velocity gate: 2.0-15.0 SOL/s avg, ≥{VELOCITY_MIN_BUYERS} buyers")
         logger.info(f"  • Liquidity gate: {LIQUIDITY_MULTIPLIER}x buy size (min {MIN_LIQUIDITY_SOL} SOL)")
         logger.info(f"  • Max slippage: {MAX_SLIPPAGE_PERCENT}%")
@@ -243,7 +242,7 @@ class SniperBot:
         SIMPLIFIED ORDER FLOW EXIT - 3 triggers only
 
         1. RUG: Curve drain > 40% from entry
-        2. WHALE: Single sell > 12% of curve in last 3s (REACTIVE detection)
+        2. WHALE: Single sell > 15% of curve in last 3s (REACTIVE detection)
         3. BURST: 6+ sells in 5s AND curve declining
 
         Returns (should_exit: bool, reason: str)
@@ -282,7 +281,7 @@ class SniperBot:
             return True, f"rug_drain_{curve_drop_pct:.0f}pct"
 
         # =========================================================
-        # EXIT 2: WHALE EXIT - Single sell > 12% of curve (last 3s)
+        # EXIT 2: WHALE EXIT - Single sell > 15% of curve (last 3s)
         # REACTIVE detection: checks RECENT sells, not all-time largest
         # This catches smart money exiting (like Cupsey's 1.36 SOL dump)
         # =========================================================
@@ -294,7 +293,7 @@ class SniperBot:
                 largest_recent = max(amt for t, amt in recent_sells)
                 whale_pct = (largest_recent / current_curve) * 100
 
-                if whale_pct >= 12:
+                if whale_pct >= 15:
                     logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
                     logger.warning(f"   P&L: {pnl_percent:+.1f}% - following smart money out")
                     return True, f"whale_exit_{whale_pct:.0f}pct"
@@ -793,14 +792,11 @@ class SniperBot:
                 
                 sol_balance = self.wallet.get_sol_balance()
                 startup_msg = (
-                    "🚀 Bot started - WHALE TIERED EXITS\n"
+                    f"🚀 Bot started\n"
                     f"💰 Balance: {sol_balance:.4f} SOL\n"
                     f"🎯 Buy: {BUY_AMOUNT_SOL} SOL\n"
-                    f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s\n"
-                    f"💰 Tiers: 40%@+30%, 40%@+60%, 20%@+100%\n"
                     f"🛑 Stop loss: -{STOP_LOSS_PERCENTAGE}%\n"
                     f"⏱️ Max hold: {MAX_POSITION_AGE_SECONDS}s\n"
-                    f"🛡️ Liquidity: {LIQUIDITY_MULTIPLIER}x\n"
                     "Type /help for commands"
                 )
                 await self.telegram.send_message(startup_msg)
@@ -1549,13 +1545,17 @@ class SniperBot:
                             fresh_rpc = self.curve_reader.get_curve_state(mint, use_cache=False)
                             if fresh_rpc and fresh_rpc.get('sol_raised', 0) > 0:
                                 rpc_curve = fresh_rpc['sol_raised']
-                                drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100
+                                drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100 if helius_curve_sol > 0 else 0
                                 if drift_pct > 15:
-                                    logger.warning(f"⚠️ DRIFT CORRECTION: Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
-                                    helius_curve_sol = rpc_curve
-                                    # Update Helius state so future checks use corrected value
-                                    if self.scanner and mint in self.scanner.watched_tokens:
-                                        self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
+                                    if rpc_curve > helius_curve_sol:
+                                        # RPC higher = missed buys, use RPC
+                                        logger.info(f"📈 RPC > Helius: {rpc_curve:.2f} > {helius_curve_sol:.2f} - using RPC")
+                                        helius_curve_sol = rpc_curve
+                                        if self.scanner and mint in self.scanner.watched_tokens:
+                                            self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
+                                    else:
+                                        # Helius > RPC = RPC is stale, trust Helius (real-time)
+                                        logger.info(f"📈 Helius > RPC: {helius_curve_sol:.2f} > {rpc_curve:.2f} - trusting Helius")
 
                         # Calculate P&L from curve delta (AMM math)
                         VIRTUAL_RESERVES = 30
@@ -2590,13 +2590,10 @@ class SniperBot:
             self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
-            logger.info("✅ Bot running with WHALE TIERED EXITS STRATEGY")
-            logger.info(f"⚡ Velocity: ≥{VELOCITY_MIN_SOL_PER_SECOND} SOL/s, ≥{VELOCITY_MIN_BUYERS} buyers")
-            logger.info(f"⚡ Recent: ≥{VELOCITY_MIN_RECENT_1S_SOL} SOL (1s), ≥{VELOCITY_MIN_RECENT_3S_SOL} SOL (3s)")
-            logger.info(f"💰 Tiers: 40%@+30%, 40%@+60%, 20%@+100%")
+            logger.info("✅ Bot running - ORDER FLOW EXITS")
+            logger.info(f"🎯 Exits: Rug (40% drain), Whale (15%), Burst (6+ sells)")
             logger.info(f"🛑 Stop loss: -{STOP_LOSS_PERCENTAGE}%")
             logger.info(f"⏱️ Max hold: {MAX_POSITION_AGE_SECONDS}s")
-            logger.info(f"🎯 Circuit breaker: 10 consecutive losses")
             
             last_stats_time = time.time()
             
