@@ -89,7 +89,6 @@ class BondingCurveReader:
             curve_pda, _ = self.derive_curve_pda(mint_pubkey)
             
             response = self.client.get_account_info(curve_pda)
-            logger.info(f"🔍 RPC get_account_info for {curve_pda}: value={response.value is not None}, has_data={response.value.data is not None if response.value else False}")
 
             if not response.value or not response.value.data:
                 return None
