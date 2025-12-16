@@ -649,10 +649,16 @@ class HeliusLogsMonitor:
 
                 self.stats['rpc_validated'] += 1
             else:
-                # RPC failed - log but proceed (Helius-only fallback)
-                logger.warning(f"⚠️ RPC validation failed - proceeding with Helius data only")
+                # RPC failed - BLOCK entry (don't trust potentially garbage Helius data)
+                logger.warning(f"⛔ RPC validation failed - BLOCKING entry (no RPC data)")
+                self.stats['skipped_rpc_mismatch'] += 1
+                self.triggered_tokens.add(mint)
+                return
         except Exception as e:
-            logger.warning(f"⚠️ RPC validation error: {e} - proceeding with Helius data only")
+            logger.warning(f"⛔ RPC validation error: {e} - BLOCKING entry")
+            self.stats['skipped_rpc_mismatch'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
         # ===== ALL CONDITIONS MET =====
         self.triggered_tokens.add(mint)
