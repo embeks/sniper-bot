@@ -28,7 +28,6 @@ from config import (
     SELL_BURST_COUNT, SELL_BURST_WINDOW,
     CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH
 )
-from curve_reader import BondingCurveReader
 from solders.pubkey import Pubkey
 
 logger = logging.getLogger(__name__)
@@ -45,7 +44,6 @@ class HeliusLogsMonitor:
     def __init__(self, callback, rpc_client):
         self.callback = callback
         self.rpc_client = rpc_client
-        self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)  # For RPC validation on entry
         self.running = False
         self.reconnect_count = 0
         
@@ -77,8 +75,6 @@ class HeliusLogsMonitor:
             'skipped_serial_creator': 0,
             'skipped_sell_burst': 0,      # NEW: sell burst detection
             'skipped_curve_stalled': 0,   # NEW: curve momentum gate
-            'skipped_rpc_mismatch': 0,    # RPC validation rejected entry
-            'rpc_validated': 0,           # RPC validation passed
         }
         
         # Known discriminators
@@ -610,56 +606,9 @@ class HeliusLogsMonitor:
         #     self.triggered_tokens.add(mint)
         #     return
 
-        # ===== RPC VALIDATION: Ground truth check before committing capital =====
-        # Helius tracks curve from deltas - can drift if events missed
-        # RPC gives actual on-chain state - use as final validation
-        try:
-            rpc_state = self.curve_reader.get_curve_state(mint, use_cache=False)
-            logger.info(f"🔍 RPC DEBUG: mint={mint[:12]}..., response={rpc_state}")
-            if rpc_state and rpc_state.get('sol_raised', 0) > 0:
-                rpc_curve = rpc_state['sol_raised']
-                helius_curve = total_sol
-
-                # Calculate drift between Helius tracking and RPC truth
-                drift_pct = abs(rpc_curve - helius_curve) / helius_curve * 100 if helius_curve > 0 else 100
-
-                if drift_pct > 30:
-                    # Helius was significantly wrong - use RPC value
-                    logger.warning(f"⚠️ RPC CORRECTION: Helius={helius_curve:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
-
-                    # Update state with truth
-                    state['vSolInBondingCurve'] = rpc_curve
-                    total_sol = rpc_curve
-
-                    # Re-check SOL range with corrected value
-                    if rpc_curve < self.min_sol:
-                        logger.warning(f"❌ RPC REJECT: {rpc_curve:.2f} SOL below min {self.min_sol} (Helius was wrong)")
-                        self.stats['skipped_rpc_mismatch'] += 1
-                        self.triggered_tokens.add(mint)
-                        return
-                    if rpc_curve > self.max_sol:
-                        logger.warning(f"❌ RPC REJECT: {rpc_curve:.2f} SOL above max {self.max_sol} (Helius was wrong)")
-                        self.stats['skipped_rpc_mismatch'] += 1
-                        self.triggered_tokens.add(mint)
-                        return
-
-                    # Passed with corrected value
-                    logger.info(f"✅ RPC VALIDATED (corrected): {rpc_curve:.2f} SOL in range")
-                else:
-                    logger.info(f"✅ RPC VALIDATED: Helius={helius_curve:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
-
-                self.stats['rpc_validated'] += 1
-            else:
-                # RPC failed - BLOCK entry (don't trust potentially garbage Helius data)
-                logger.warning(f"⛔ RPC validation failed - BLOCKING entry (no RPC data)")
-                self.stats['skipped_rpc_mismatch'] += 1
-                self.triggered_tokens.add(mint)
-                return
-        except Exception as e:
-            logger.warning(f"⛔ RPC validation error: {e} - BLOCKING entry")
-            self.stats['skipped_rpc_mismatch'] += 1
-            self.triggered_tokens.add(mint)
-            return
+        # NOTE: RPC validation removed - tokens too new for RPC to have indexed
+        # Protection comes from: slippage rejection, drift correction during monitoring,
+        # and RPC rug detection during monitoring (token exists by then)
 
         # ===== ALL CONDITIONS MET =====
         self.triggered_tokens.add(mint)
@@ -886,5 +835,4 @@ class HeliusLogsMonitor:
         logger.info(f"Triggered: {stats['triggers']} | Skipped (sells): {stats['skipped_sells']} | Skipped (bot): {stats['skipped_bot']}")
         logger.info(f"Skipped (velocity high): {stats['skipped_velocity_high']} | Skipped (top2): {stats['skipped_top2']} | Skipped (dev): {stats.get('skipped_dev', 0)}")
         logger.info(f"Skipped (sell burst): {stats.get('skipped_sell_burst', 0)} | Skipped (curve stalled): {stats.get('skipped_curve_stalled', 0)}")
-        logger.info(f"Skipped (bundled): {stats.get('skipped_bundled', 0)} | Skipped (RPC mismatch): {stats.get('skipped_rpc_mismatch', 0)}")
-        logger.info(f"RPC validated: {stats.get('rpc_validated', 0)}")
+        logger.info(f"Skipped (bundled): {stats.get('skipped_bundled', 0)}")
