@@ -414,10 +414,20 @@ class HeliusLogsMonitor:
             state['flow_sells'] = []
         # Use parsed sol_amount, fallback to 0.3 SOL estimate if parse failed
         actual_sell_sol = sol_amount if sol_amount > 0 else 0.3
-        state['flow_sells'].append((now, actual_sell_sol))
         state['largest_sell'] = max(state.get('largest_sell', 0), actual_sell_sol)
+
+        # DUST FILTER: Only count sells >= 0.01 SOL for order flow
+        # Dust sells (0.0001 SOL) are bot probes, not real selling pressure
+        MIN_SIGNIFICANT_SELL = 0.01
+        if actual_sell_sol >= MIN_SIGNIFICANT_SELL:
+            state['flow_sells'].append((now, actual_sell_sol))
+        else:
+            # Don't count dust toward sell burst
+            if state['sell_timestamps'] and state['sell_timestamps'][-1] == now:
+                state['sell_timestamps'].pop()
+            logger.debug(f"   🧹 Dust sell ignored: {actual_sell_sol:.4f} SOL")
+
         state['flow_sells'] = [x for x in state['flow_sells'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
-        # Keep only last 30 seconds
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
         # USE REAL AMOUNT instead of 2% garbage
