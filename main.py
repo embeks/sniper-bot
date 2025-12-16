@@ -1608,12 +1608,25 @@ class SniperBot:
                                 # Calculate drain percentage from Helius data
                                 helius_drain_pct = ((entry_curve - current_curve) / entry_curve * 100) if entry_curve > 0 else 0
 
-                                # EMERGENCY: Trust Helius for massive drains (>50%) - don't wait for stale RPC
+                                # EMERGENCY RUG CHECK: Helius shows massive drain - ALWAYS validate with RPC
+                                # Helius can lag/lie during fast moves (seen 53% "drain" when curve was actually fine)
                                 if helius_drain_pct > 50 or current_curve < 2.0:
-                                    logger.warning(f"🚨 EMERGENCY EXIT: Helius shows {helius_drain_pct:.0f}% drain ({entry_curve:.2f} → {current_curve:.2f} SOL)")
-                                    logger.warning(f"   Skipping RPC validation - drain too severe to wait")
-                                    await self._close_position_full(mint, reason="helius_emergency_rug")
-                                    break
+                                    logger.warning(f"⚠️ Helius shows {helius_drain_pct:.0f}% drain ({entry_curve:.2f} → {current_curve:.2f} SOL) - validating with RPC...")
+
+                                    fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
+                                    if fresh_curve and fresh_curve.get('sol_raised', 0) > 0:
+                                        rpc_curve = fresh_curve['sol_raised']
+                                        rpc_drain_pct = ((entry_curve - rpc_curve) / entry_curve * 100) if entry_curve > 0 else 0
+
+                                        if rpc_drain_pct > 40:  # RPC confirms significant drain
+                                            logger.warning(f"🚨 EMERGENCY EXIT CONFIRMED: RPC shows {rpc_drain_pct:.0f}% drain (curve={rpc_curve:.2f} SOL)")
+                                            await self._close_position_full(mint, reason="helius_emergency_rug")
+                                            break
+                                        else:
+                                            logger.info(f"✅ RPC shows curve={rpc_curve:.2f} SOL ({rpc_drain_pct:.0f}% drain) - Helius was WRONG, holding")
+                                    else:
+                                        # RPC failed - be conservative, DON'T exit on unvalidated data
+                                        logger.warning(f"⚠️ RPC validation failed - NOT exiting on unvalidated Helius data")
 
                                 # For smaller drains (20-50%), validate with RPC
                                 logger.warning(f"⚠️ Helius curve drain signal ({curve_delta:.1f} SOL, {helius_drain_pct:.0f}%) - validating with RPC...")
