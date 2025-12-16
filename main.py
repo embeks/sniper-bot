@@ -381,7 +381,7 @@ class SniperBot:
             current_curve = state.get('vSolInBondingCurve', 0)  # Get current curve from Helius state
             curve_growth_pct = ((current_curve - entry_curve) / entry_curve * 100) if entry_curve > 0 else 0
 
-            if curve_growth_pct > 50:  # Curve still 50%+ above entry = healthy, hold
+            if curve_growth_pct > 25:  # Curve still 25%+ above entry = healthy, hold
                 logger.info(f"⚡ Sell burst ({sells_5s}) but curve still +{curve_growth_pct:.0f}% above entry - profit-taking, holding")
             elif dropped_from_peak >= 10:  # Raised from 5% to 10% - give more room
                 logger.warning(f"⚡ SELL BURST: {sells_5s} sells + dropped {dropped_from_peak:.1f}% from peak")
