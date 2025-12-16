@@ -583,17 +583,18 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # 10. BUNDLED DETECTION: First buy in same slot as creation = insider bundle
-        creation_slot = state.get('creation_slot')
-        buy_slots = state.get('buy_slots', [])
-        if creation_slot and buy_slots:
-            first_buy_slot = buy_slots[0]
-            if first_buy_slot == creation_slot:
-                same_slot_buys = len([s for s in buy_slots if s == creation_slot])
-                logger.warning(f"⛔ BUNDLED: First buy in creation slot ({same_slot_buys}/{len(buy_slots)} buys bundled)")
-                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+        # 10. DISABLED: BUNDLED DETECTION - commenting out for testing
+        # First buy in same slot as creation = insider bundle
+        # creation_slot = state.get('creation_slot')
+        # buy_slots = state.get('buy_slots', [])
+        # if creation_slot and buy_slots:
+        #     first_buy_slot = buy_slots[0]
+        #     if first_buy_slot == creation_slot:
+        #         same_slot_buys = len([s for s in buy_slots if s == creation_slot])
+        #         logger.warning(f"⛔ BUNDLED: First buy in creation slot ({same_slot_buys}/{len(buy_slots)} buys bundled)")
+        #         self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
+        #         self.triggered_tokens.add(mint)
+        #         return
 
         # 9. REMOVED: Dev holdings RPC check - adds latency, kept WebSocket-based dev buy detection above
 
