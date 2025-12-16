@@ -115,9 +115,6 @@ class Position:
         self.last_recorded_pnl = -999  # Start at impossible value
         self.first_price_check_done = False
 
-        # RUG DETECTION - Curve drain history
-        self.curve_history = []  # List of (timestamp, curve_sol) tuples
-
 class SniperBot:
     """Main sniper bot orchestrator with velocity gate, timer exits, and fail-fast"""
     
@@ -1383,37 +1380,6 @@ class SniperBot:
             logger.error(traceback.format_exc())
             self.tracker.log_buy_failed(mint, BUY_AMOUNT_SOL, str(e))
 
-    def _check_curve_drain(self, position, current_curve_sol: float) -> bool:
-        """Detect rug by fast curve drain. Returns True if rug detected."""
-        from config import RUG_CURVE_DROP_PERCENT, RUG_CURVE_WINDOW_SECONDS
-
-        now = time.time()
-        history = position.curve_history
-
-        # Add current reading
-        history.append((now, current_curve_sol))
-
-        # Keep only last N seconds
-        cutoff = now - RUG_CURVE_WINDOW_SECONDS
-        history = [(t, sol) for t, sol in history if t > cutoff]
-        position.curve_history = history
-
-        if len(history) < 2:
-            return False
-
-        # Get peak curve SOL in window
-        peak_sol = max(sol for _, sol in history)
-
-        # Check for drain
-        if peak_sol > 0:
-            drop_pct = ((peak_sol - current_curve_sol) / peak_sol) * 100
-            if drop_pct >= RUG_CURVE_DROP_PERCENT:
-                logger.warning(f"🚨 RUG DETECTED: Curve drained {drop_pct:.1f}% in {RUG_CURVE_WINDOW_SECONDS}s")
-                logger.warning(f"   Peak: {peak_sol:.2f} SOL → Current: {current_curve_sol:.2f} SOL")
-                return True
-
-        return False
-
     async def _monitor_position(self, mint: str):
         """Monitor position - WHALE TIERED EXITS with FLATLINE DETECTION"""
         try:
@@ -1656,30 +1622,6 @@ class SniperBot:
                         logger.warning(f"❌ Token {mint[:8]}... has migrated - exiting immediately")
                         await self._close_position_full(mint, reason="migration")
                         break
-
-                    # ===================================================================
-                    # FAST RUG EXIT: Check for curve drain (20% drop in 6s window)
-                    # FIX 5: Validate with RPC before exiting
-                    # ===================================================================
-                    if current_sol_in_curve > 0 and not position.is_closing:
-                        if self._check_curve_drain(position, current_sol_in_curve):
-                            # Validate with RPC before exiting
-                            logger.warning(f"⚠️ Curve drain signal - validating with RPC...")
-                            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
-
-                            if fresh_curve and fresh_curve.get('sol_raised', 0) > 0 and entry_curve > 0:
-                                rpc_curve = fresh_curve['sol_raised']
-                                rpc_pnl = (((rpc_curve + 30) / (entry_curve + 30)) ** 2 - 1) * 100
-
-                                if rpc_pnl < -15:  # RPC confirms we're losing badly
-                                    logger.warning(f"🚨 RUG DRAIN CONFIRMED by RPC: P&L {rpc_pnl:.1f}%")
-                                    await self._close_position_full(mint, reason="rug_drain")
-                                    break
-                                else:
-                                    logger.info(f"✅ RPC shows P&L={rpc_pnl:+.1f}% - drain was stale data, holding")
-                            else:
-                                logger.warning(f"⚠️ RPC validation failed - being conservative, holding")
 
                     # ===================================================================
                     # ✅ NEW: ENTRY SLIPPAGE GATE - Exit only if BOTH high slippage AND dumping
