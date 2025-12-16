@@ -407,17 +407,24 @@ class HeliusLogsMonitor:
 
         # Track sell timing for order flow exits
         now = time.time()
-        state['sell_timestamps'].append(now)
 
         # Track sell AMOUNTS for flow-based exits (timed tuples)
         if 'flow_sells' not in state:
             state['flow_sells'] = []
         # Use parsed sol_amount, fallback to 0.3 SOL estimate if parse failed
         actual_sell_sol = sol_amount if sol_amount > 0 else 0.3
-        state['flow_sells'].append((now, actual_sell_sol))
         state['largest_sell'] = max(state.get('largest_sell', 0), actual_sell_sol)
+
+        # DUST FILTER: Only count sells >= 0.02 SOL for order flow
+        # Dust sells (0.0001 SOL) are bot probes, not real selling pressure
+        MIN_SIGNIFICANT_SELL = 0.02
+        if actual_sell_sol >= MIN_SIGNIFICANT_SELL:
+            state['sell_timestamps'].append(now)
+            state['flow_sells'].append((now, actual_sell_sol))
+        else:
+            logger.debug(f"   🧹 Dust sell ignored for flow: {actual_sell_sol:.4f} SOL")
+
         state['flow_sells'] = [x for x in state['flow_sells'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
-        # Keep only last 30 seconds
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
         # USE REAL AMOUNT instead of 2% garbage

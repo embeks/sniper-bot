@@ -349,9 +349,17 @@ class SniperBot:
         # 6+ sells where sell volume > 1.5x buy volume = smart money exiting
         if sells_5s >= 6 and sell_sol_5s > buy_sol_5s * 1.5:
             if pnl_percent > 5:  # Only if we're green
-                logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells ({sell_sol_5s:.2f} SOL) > 1.5x buys ({buy_sol_5s:.2f} SOL)")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}% - taking profits before dump")
-                return True, f"sell_burst_{sells_5s}_momentum_shift"
+                # Check if curve still growing despite sells (profit-taking vs dump)
+                entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+                current_curve = state.get('vSolInBondingCurve', 0)
+                curve_growth = current_curve - entry_curve if entry_curve > 0 else 0
+
+                if curve_growth > 1.0:  # Curve still +1 SOL above entry = healthy profit-taking
+                    logger.info(f"⚡ Sell burst ({sells_5s}) but curve +{curve_growth:.1f} SOL above entry - profit-taking, holding")
+                else:
+                    logger.warning(f"💰 SELL BURST EXIT: {sells_5s} sells ({sell_sol_5s:.2f} SOL) > 1.5x buys ({buy_sol_5s:.2f} SOL)")
+                    logger.warning(f"   P&L: {pnl_percent:+.1f}% | Curve growth: {curve_growth:+.1f} SOL - exiting")
+                    return True, f"sell_burst_{sells_5s}_momentum_shift"
             else:
                 logger.info(f"⚡ Sell burst detected but P&L={pnl_percent:+.1f}% - need profit to exit")
         elif sells_5s >= 6:
