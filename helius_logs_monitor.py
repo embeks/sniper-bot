@@ -45,7 +45,7 @@ class HeliusLogsMonitor:
     def __init__(self, callback, rpc_client):
         self.callback = callback
         self.rpc_client = rpc_client
-        self.curve_reader = BondingCurveReader(rpc_client)  # For RPC validation on entry
+        self.curve_reader = BondingCurveReader(rpc_client, PUMPFUN_PROGRAM_ID)  # For RPC validation on entry
         self.running = False
         self.reconnect_count = 0
         
