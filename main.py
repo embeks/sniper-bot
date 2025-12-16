@@ -1681,6 +1681,20 @@ class SniperBot:
                     entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
 
                     if helius_curve_sol > 0 and entry_curve_sol > 0:
+                        # DRIFT CORRECTION: Every 5 checks, validate Helius against RPC
+                        # Corrects data only - does NOT disable exits
+                        if check_count % 5 == 0:
+                            fresh_rpc = self.curve_reader.get_curve_state(mint, use_cache=False)
+                            if fresh_rpc and fresh_rpc.get('sol_raised', 0) > 0:
+                                rpc_curve = fresh_rpc['sol_raised']
+                                drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100
+                                if drift_pct > 15:
+                                    logger.warning(f"⚠️ DRIFT CORRECTION: Helius={helius_curve_sol:.2f} RPC={rpc_curve:.2f} ({drift_pct:.0f}% drift)")
+                                    helius_curve_sol = rpc_curve
+                                    # Update Helius state so future checks use corrected value
+                                    if self.scanner and mint in self.scanner.watched_tokens:
+                                        self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
+
                         # Calculate P&L from curve delta (AMM math)
                         VIRTUAL_RESERVES = 30
                         virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
