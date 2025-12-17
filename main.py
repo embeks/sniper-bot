@@ -1547,15 +1547,15 @@ class SniperBot:
                                 rpc_curve = fresh_rpc['sol_raised']
                                 drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100 if helius_curve_sol > 0 else 0
                                 if drift_pct > 15:
+                                    # Log drift for diagnostics only - NEVER override Helius
+                                    # Helius is always more real-time than RPC (5-15s faster)
+                                    # During crashes: RPC shows stale high, Helius shows real crash
+                                    # During pumps: Helius catches buys before RPC
+                                    # Either way, Helius is more accurate for P&L
                                     if rpc_curve > helius_curve_sol:
-                                        # RPC higher = missed buys, use RPC
-                                        logger.info(f"📈 RPC > Helius: {rpc_curve:.2f} > {helius_curve_sol:.2f} - using RPC")
-                                        helius_curve_sol = rpc_curve
-                                        if self.scanner and mint in self.scanner.watched_tokens:
-                                            self.scanner.watched_tokens[mint]['vSolInBondingCurve'] = rpc_curve
+                                        logger.warning(f"⚠️ DRIFT: RPC ({rpc_curve:.2f}) > Helius ({helius_curve_sol:.2f}) - RPC likely stale, using Helius")
                                     else:
-                                        # Helius > RPC = RPC is stale, trust Helius (real-time)
-                                        logger.info(f"📈 Helius > RPC: {helius_curve_sol:.2f} > {rpc_curve:.2f} - trusting Helius")
+                                        logger.info(f"📈 DRIFT: Helius ({helius_curve_sol:.2f}) > RPC ({rpc_curve:.2f}) - Helius is real-time")
 
                         # Calculate P&L from curve delta (AMM math)
                         VIRTUAL_RESERVES = 30
