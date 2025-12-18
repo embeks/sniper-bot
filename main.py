@@ -239,10 +239,11 @@ class SniperBot:
 
     def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
         """
-        SIMPLIFIED ORDER FLOW EXIT - 3 triggers only
+        SIMPLIFIED ORDER FLOW EXIT - 4 triggers only
 
         1. RUG: Curve drain > 40% from entry
-        2. WHALE: Single sell > 15% of curve in last 3s (REACTIVE detection)
+        2. WHALE: Single sell > 15% of curve in last 3s AND curve declining
+        2B. VOLUME: 4+ SOL dumped in 5s (catches cascading dumps)
         3. BURST: 6+ sells in 5s AND curve declining
 
         Returns (should_exit: bool, reason: str)
@@ -294,9 +295,24 @@ class SniperBot:
                 whale_pct = (largest_recent / current_curve) * 100
 
                 if whale_pct >= 15:
-                    logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
-                    logger.warning(f"   P&L: {pnl_percent:+.1f}% - following smart money out")
-                    return True, f"whale_exit_{whale_pct:.0f}pct"
+                    curve_growth = current_curve - entry_curve
+                    if curve_growth <= 0:  # Curve declining = real dump
+                        logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
+                        logger.warning(f"   Curve declining ({curve_growth:+.1f} SOL) - following smart money out")
+                        return True, f"whale_exit_{whale_pct:.0f}pct"
+                    else:
+                        logger.info(f"⚡ Whale sell ({whale_pct:.0f}%) but curve +{curve_growth:.1f} SOL above entry - holding")
+
+        # =========================================================
+        # EXIT 2B: SELL VOLUME - Catches cascading dumps (few big sells)
+        # ProjectGPT fix: doesn't wait for 6 sells, checks TOTAL SOL dumped
+        # =========================================================
+        flow_sells = state.get('flow_sells', [])
+        recent_sell_volume = sum(amt for t, amt in flow_sells if now - t < 5)
+        if recent_sell_volume >= 4.0 and pnl_percent > -30:  # 4+ SOL dumped in 5s
+            logger.warning(f"🌊 VOLUME EXIT: {recent_sell_volume:.2f} SOL sold in last 5s")
+            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting cascade")
+            return True, f"sell_volume_{recent_sell_volume:.1f}"
 
         # =========================================================
         # EXIT 3: SELL BURST - 6+ sells AND curve declining
