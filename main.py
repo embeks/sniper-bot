@@ -239,12 +239,14 @@ class SniperBot:
 
     def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
         """
-        SIMPLIFIED ORDER FLOW EXIT - 4 triggers only
+        ORDER FLOW EXIT - 6 triggers
 
+        EMERGENCY: 4+ SOL dumped in 5s (bypasses 8s age gate at 3s)
         1. RUG: Curve drain > 40% from entry
-        2. WHALE: Single sell > 15% of curve in last 3s AND curve declining
-        2B. VOLUME: 4+ SOL dumped in 5s (catches cascading dumps)
-        3. BURST: 6+ sells in 5s AND curve declining
+        2. VELOCITY COLLAPSE: Buy velocity dropped 70%+ from peak while in profit
+        3. WHALE: Single sell > 15% of curve in last 3s AND curve declining
+        4. VOLUME: 4+ SOL dumped in 5s (catches cascading dumps)
+        5. BURST: 6+ sells in 5s AND curve declining
 
         Returns (should_exit: bool, reason: str)
         """
@@ -294,7 +296,29 @@ class SniperBot:
             return True, f"rug_drain_{curve_drop_pct:.0f}pct"
 
         # =========================================================
-        # EXIT 2: WHALE EXIT - Single sell > 15% of curve (last 3s)
+        # EXIT 2: VELOCITY COLLAPSE (PREDICTIVE)
+        # Detects pump exhaustion BEFORE sellers react
+        # Compares recent 3s buy velocity against peak velocity
+        # =========================================================
+        flow_buys = state.get('flow_buys', [])
+        recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 3)
+        recent_velocity = recent_buy_volume / 3.0 if recent_buy_volume > 0 else 0
+
+        # Track peak velocity on position (persists across checks)
+        if not hasattr(position, 'peak_recent_velocity'):
+            position.peak_recent_velocity = 0
+        position.peak_recent_velocity = max(position.peak_recent_velocity, recent_velocity)
+
+        # Trigger: velocity collapsed 70%+ from peak while in profit
+        if (position.peak_recent_velocity >= 2.0 and
+            recent_velocity < position.peak_recent_velocity * 0.3 and
+            pnl_percent > 15):
+            logger.warning(f"📉 VELOCITY COLLAPSE: {recent_velocity:.2f} SOL/s vs peak {position.peak_recent_velocity:.2f} SOL/s")
+            logger.warning(f"   Buying momentum dead - exiting at {pnl_percent:+.1f}% before dump")
+            return True, f"velocity_collapse_{recent_velocity:.1f}_vs_{position.peak_recent_velocity:.1f}"
+
+        # =========================================================
+        # EXIT 3: WHALE EXIT - Single sell > 15% of curve (last 3s)
         # REACTIVE detection: checks RECENT sells, not all-time largest
         # This catches smart money exiting (like Cupsey's 1.36 SOL dump)
         # =========================================================
@@ -316,7 +340,7 @@ class SniperBot:
                         logger.info(f"⚡ Whale sell ({whale_pct:.0f}%) but curve +{curve_growth:.1f} SOL above entry - holding")
 
         # =========================================================
-        # EXIT 2B: SELL VOLUME - Catches cascading dumps (few big sells)
+        # EXIT 4: SELL VOLUME - Catches cascading dumps (few big sells)
         # ProjectGPT fix: doesn't wait for 6 sells, checks TOTAL SOL dumped
         # =========================================================
         flow_sells = state.get('flow_sells', [])
@@ -327,7 +351,7 @@ class SniperBot:
             return True, f"sell_volume_{recent_sell_volume:.1f}"
 
         # =========================================================
-        # EXIT 3: SELL BURST - 6+ sells AND curve declining
+        # EXIT 5: SELL BURST - 6+ sells AND curve declining
         # Only exits if curve is at/below entry (real dump, not profit-taking)
         # This catches coordinated smaller dumps
         # =========================================================
