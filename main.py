@@ -256,16 +256,6 @@ class SniperBot:
         recent_sell_volume = sum(amt for t, amt in flow_sells if now - t < 5)
         recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 5)
 
-        # =========================================================
-        # EXIT 1: EMERGENCY VOLUME - Catastrophic dump detection
-        # 4+ SOL in 5s is NEVER healthy, always a cascade
-        # NO curve_growing override - this signal is absolute
-        # =========================================================
-        if recent_sell_volume >= 4.0 and age >= 3:
-            logger.warning(f"🚨 EMERGENCY VOLUME EXIT: {recent_sell_volume:.2f} SOL dumped in 5s")
-            logger.warning(f"   Position age: {age:.1f}s - exiting catastrophic dump")
-            return True, f"emergency_volume_{recent_sell_volume:.1f}"
-
         # Minimum age before NORMAL exits (give position time to establish)
         min_age = 8
         if age < min_age:
