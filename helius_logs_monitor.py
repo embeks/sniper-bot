@@ -603,18 +603,29 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # 10. DISABLED: BUNDLED DETECTION - commenting out for testing
+        # 10. BUNDLED + SLOT CLUSTERING DETECTION
         # First buy in same slot as creation = insider bundle
-        # creation_slot = state.get('creation_slot')
-        # buy_slots = state.get('buy_slots', [])
-        # if creation_slot and buy_slots:
-        #     first_buy_slot = buy_slots[0]
-        #     if first_buy_slot == creation_slot:
-        #         same_slot_buys = len([s for s in buy_slots if s == creation_slot])
-        #         logger.warning(f"⛔ BUNDLED: First buy in creation slot ({same_slot_buys}/{len(buy_slots)} buys bundled)")
-        #         self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
-        #         self.triggered_tokens.add(mint)
-        #         return
+        creation_slot = state.get('creation_slot')
+        buy_slots = state.get('buy_slots', [])
+        if creation_slot and buy_slots:
+            first_buy_slot = buy_slots[0]
+            same_slot = first_buy_slot == creation_slot
+            same_slot_buys = len([s for s in buy_slots if s == creation_slot])
+            clustering_pct = (same_slot_buys / len(buy_slots) * 100) if buy_slots else 0
+
+            # FILTER 1: First buy bundled with creation = coordinated launch
+            if same_slot:
+                logger.warning(f"⛔ BUNDLED: First buy in creation slot (coordinated launch)")
+                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
+
+            # FILTER 2: >50% of buys in creation slot = bot coordination
+            if clustering_pct > 50:
+                logger.warning(f"⛔ SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} ({clustering_pct:.0f}%) buys in creation slot")
+                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
 
         # 9. REMOVED: Dev holdings RPC check - adds latency, kept WebSocket-based dev buy detection above
 
