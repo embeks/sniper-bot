@@ -29,21 +29,11 @@ from config import (
     # Tiered take-profit (whale strategy)
     TIER_1_PROFIT_PERCENT, TIER_1_SELL_PERCENT,
     TIER_2_PROFIT_PERCENT, TIER_2_SELL_PERCENT,
-    # TIER_3 disabled - 2-tier system (11-trade analysis)
     # Timer exit parameters
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
     TIMER_MAX_EXTENSIONS,
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD,
     MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
-    # Flow-based exit settings (new)
-    USE_LEGACY_EXITS,
-    EXIT_MIN_AGE_SECONDS, EXIT_MIN_TRANSACTIONS,
-    FLOW_WINDOW_SHORT, FLOW_WINDOW_MEDIUM,
-    RUG_SINGLE_SELL_PERCENT, RUG_CURVE_DRAIN_PERCENT,
-    DUMP_SELL_COUNT, DUMP_SELL_WINDOW, DUMP_SELL_SOL_TOTAL,
-    PRESSURE_SELL_RATIO, PRESSURE_MIN_SELLS,
-    FLOW_NET_NEGATIVE_SOL, DEATH_NO_BUY_SECONDS,
-    HOLD_MIN_BUYS_SHORT, HOLD_MAX_TIME_SINCE_BUY,
 )
 
 from wallet import WalletManager
@@ -239,13 +229,13 @@ class SniperBot:
 
     def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
         """
-        ORDER FLOW EXIT - 5 triggers (rug handled by monitor loop with RPC validation)
+        ORDER FLOW EXIT - Momentum-based exits (restored from Dec 10-12)
 
-        EMERGENCY: 4+ SOL dumped in 5s (bypasses 8s age gate at 3s)
-        1. VELOCITY COLLAPSE: Buy velocity dropped 70%+ from peak while in profit
-        2. WHALE: Single sell > 15% of curve in last 3s (in profit)
-        3. VOLUME: 4+ SOL dumped in 5s (catches cascading dumps)
-        4. BURST: 6+ sells in 5s (in profit)
+        1. EMERGENCY VOLUME: 4+ SOL dumped in 5s (bypasses 8s age gate) - NO OVERRIDE
+        2. PROFIT DECAY: P&L dropped to 65% of peak while still >10%
+        3. NET NEGATIVE FLOW: Sells outweighing buys (momentum reversed)
+        4. BUY DROUGHT: No buys for 5s while in profit (momentum dead)
+        5. WHALE: Single sell > 15% of curve (smart money exiting)
 
         Returns (should_exit: bool, reason: str)
         """
@@ -259,108 +249,80 @@ class SniperBot:
         now = time.time()
         age = now - position.entry_time
 
-        # Curve direction detection - determine if net flow is still buying
-        # If curve is growing despite sells, it's healthy profit-taking not a dump
-        entry_curve = getattr(position, 'detection_curve_sol', None) or 6.0
-        current_curve = state.get('vSolInBondingCurve', 0)
-        curve_growing = current_curve > entry_curve * 1.05
+        # Get flow data
+        flow_sells = state.get('flow_sells', [])
+        flow_buys = state.get('flow_buys', [])
+
+        recent_sell_volume = sum(amt for t, amt in flow_sells if now - t < 5)
+        recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 5)
 
         # =========================================================
-        # EMERGENCY VOLUME EXIT - Bypass age gate for catastrophic dumps
-        # 4+ SOL in 5s is NEVER healthy profit-taking, always a cascade
-        # Requires 3s minimum to ensure buy landed and flow_sells populated
+        # EXIT 1: EMERGENCY VOLUME - Catastrophic dump detection
+        # 4+ SOL in 5s is NEVER healthy, always a cascade
+        # NO curve_growing override - this signal is absolute
         # =========================================================
-        flow_sells = state.get('flow_sells', [])
-        recent_sell_volume = sum(amt for t, amt in flow_sells if now - t < 5)
         if recent_sell_volume >= 4.0 and age >= 3:
-            if curve_growing:
-                logger.info(f"📈 Curve growing despite dump - holding through profit-taking ({recent_sell_volume:.2f} SOL sells)")
-            else:
-                logger.warning(f"🚨 EMERGENCY VOLUME EXIT: {recent_sell_volume:.2f} SOL dumped in 5s")
-                logger.warning(f"   Position age: {age:.1f}s - bypassing 8s gate for catastrophic dump")
-                return True, f"emergency_volume_{recent_sell_volume:.1f}"
+            logger.warning(f"🚨 EMERGENCY VOLUME EXIT: {recent_sell_volume:.2f} SOL dumped in 5s")
+            logger.warning(f"   Position age: {age:.1f}s - exiting catastrophic dump")
+            return True, f"emergency_volume_{recent_sell_volume:.1f}"
 
         # Minimum age before NORMAL exits (give position time to establish)
-        min_age = getattr(self, 'EXIT_MIN_AGE_SECONDS', 8)
-        if hasattr(self, 'config'):
-            min_age = self.config.get('EXIT_MIN_AGE_SECONDS', 8)
+        min_age = 8
         if age < min_age:
             return False, ""
 
-        # Get curve data
-        entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
-        current_curve = state.get('vSolInBondingCurve', 0)
-
-        if entry_curve <= 0 or current_curve <= 0:
-            return False, ""
+        # =========================================================
+        # EXIT 2: PROFIT DECAY - Preserve gains when momentum dies
+        # Exit when P&L drops to 65% of peak (while still >10%)
+        # This catches the slow bleed after peak
+        # =========================================================
+        if position.max_pnl_reached >= 15:  # Only if we hit a meaningful peak
+            decay_threshold = position.max_pnl_reached * 0.65
+            if pnl_percent < decay_threshold and pnl_percent > 10:
+                logger.warning(f"📉 PROFIT DECAY: {pnl_percent:+.1f}% < 65% of peak {position.max_pnl_reached:+.1f}%")
+                logger.warning(f"   Preserving gains before further decline")
+                return True, f"profit_decay_{pnl_percent:.0f}_from_{position.max_pnl_reached:.0f}"
 
         # =========================================================
-        # EXIT 1: VELOCITY COLLAPSE (PREDICTIVE)
-        # Detects pump exhaustion BEFORE sellers react
-        # Compares recent 3s buy velocity against peak velocity
+        # EXIT 3: NET NEGATIVE FLOW - Momentum reversed
+        # When sells > buys significantly, price is going DOWN
         # =========================================================
-        flow_buys = state.get('flow_buys', [])
-        recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 3)
-        recent_velocity = recent_buy_volume / 3.0 if recent_buy_volume > 0 else 0
+        net_flow = recent_buy_volume - recent_sell_volume
 
-        # Track peak velocity on position (persists across checks)
-        if not hasattr(position, 'peak_recent_velocity'):
-            position.peak_recent_velocity = 0
-        position.peak_recent_velocity = max(position.peak_recent_velocity, recent_velocity)
-
-        # Trigger: velocity collapsed 70%+ from peak while in profit
-        if (position.peak_recent_velocity >= 2.0 and
-            recent_velocity < position.peak_recent_velocity * 0.3 and
-            pnl_percent > 15):
-            logger.warning(f"📉 VELOCITY COLLAPSE: {recent_velocity:.2f} SOL/s vs peak {position.peak_recent_velocity:.2f} SOL/s")
-            logger.warning(f"   Buying momentum dead - exiting at {pnl_percent:+.1f}% before dump")
-            return True, f"velocity_collapse_{recent_velocity:.1f}_vs_{position.peak_recent_velocity:.1f}"
+        if net_flow < -1.0 and pnl_percent > 10:  # -1 SOL negative flow while in profit
+            logger.warning(f"📉 NEGATIVE FLOW: {net_flow:.2f} SOL (buys={recent_buy_volume:.2f}, sells={recent_sell_volume:.2f})")
+            logger.warning(f"   Momentum reversed - exiting at {pnl_percent:+.1f}%")
+            return True, f"negative_flow_{net_flow:.1f}"
 
         # =========================================================
-        # EXIT 2: WHALE EXIT - Single sell > 15% of curve (last 3s)
-        # REACTIVE detection: checks RECENT sells, not all-time largest
-        # This catches smart money exiting (like Cupsey's 1.36 SOL dump)
+        # EXIT 4: BUY DROUGHT - No new buyers, momentum dead
+        # If no buys for 5s during what should be active trading = dead
         # =========================================================
-        if pnl_percent > 5:  # Only exit if in profit
-            flow_sells = state.get('flow_sells', [])
+        last_buy_time = state.get('last_buy_time', 0)
+        time_since_buy = now - last_buy_time if last_buy_time > 0 else 0
+
+        if time_since_buy > 5.0 and pnl_percent > 15:
+            logger.warning(f"🏜️ BUY DROUGHT: No buys for {time_since_buy:.1f}s")
+            logger.warning(f"   Momentum dead - exiting at {pnl_percent:+.1f}%")
+            return True, f"buy_drought_{time_since_buy:.1f}s"
+
+        # =========================================================
+        # EXIT 5: WHALE EXIT - Smart money leaving
+        # Single sell > 15% of curve = whale exiting
+        # Only exit if we're in profit (don't panic sell at loss)
+        # =========================================================
+        if pnl_percent > 5:
+            current_curve = state.get('vSolInBondingCurve', 0)
             recent_sells = [(t, amt) for t, amt in flow_sells if now - t < 3]
 
-            if recent_sells:
+            if recent_sells and current_curve > 0:
                 largest_recent = max(amt for t, amt in recent_sells)
                 whale_pct = (largest_recent / current_curve) * 100
 
                 if whale_pct >= 15:
-                    if curve_growing:
-                        logger.info(f"📈 Curve growing despite whale dump - holding through profit-taking ({largest_recent:.2f} SOL whale)")
-                    else:
-                        logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
-                        return True, f"whale_exit_{whale_pct:.0f}pct"
-
-        # =========================================================
-        # EXIT 3: SELL VOLUME - Catches cascading dumps (few big sells)
-        # ProjectGPT fix: doesn't wait for 6 sells, checks TOTAL SOL dumped
-        # =========================================================
-        flow_sells = state.get('flow_sells', [])
-        recent_sell_volume = sum(amt for t, amt in flow_sells if now - t < 5)
-        if recent_sell_volume >= 4.0 and pnl_percent > -30:  # 4+ SOL dumped in 5s
-            logger.warning(f"🌊 VOLUME EXIT: {recent_sell_volume:.2f} SOL sold in last 5s")
-            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting cascade")
-            return True, f"sell_volume_{recent_sell_volume:.1f}"
-
-        # =========================================================
-        # EXIT 4: SELL BURST - 6+ sells in 5s (in profit)
-        # This catches coordinated smaller dumps
-        # =========================================================
-        sell_timestamps = state.get('sell_timestamps', [])
-        sells_5s = len([t for t in sell_timestamps if now - t < 5])
-
-        if sells_5s >= 6 and pnl_percent > 5:
-            if curve_growing:
-                logger.info(f"📈 Curve growing despite sell burst - holding through profit-taking ({sells_5s} sells)")
-            else:
-                logger.warning(f"⚡ SELL BURST EXIT: {sells_5s} sells in 5s")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting coordinated dump")
-                return True, f"sell_burst_{sells_5s}"
+                    logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
+                    logger.warning(f"   Following smart money out at {pnl_percent:+.1f}%")
+                    return True, f"whale_exit_{whale_pct:.0f}pct"
 
         return False, ""
 
@@ -1425,7 +1387,7 @@ class SniperBot:
     async def _monitor_position(self, mint: str):
         """Monitor position - WHALE TIERED EXITS with FLATLINE DETECTION"""
         try:
-            from config import USE_LEGACY_EXITS, FLATLINE_TIMEOUT_SECONDS
+            from config import FLATLINE_TIMEOUT_SECONDS
 
             position = self.positions.get(mint)
             if not position:
@@ -1708,26 +1670,6 @@ class SniperBot:
                         break
 
                     # ===================================================================
-                    # STALLED MOMENTUM EXIT - Catch tokens stuck at low positive (never hit tier 1)
-                    # ===================================================================
-                    if USE_LEGACY_EXITS:
-                        tier1_sold = "tier1" in position.partial_sells or "tier1" in position.pending_sells
-                        dropped_from_peak = position.max_pnl_reached - price_change
-
-                        if (age >= 30 and
-                            not tier1_sold and
-                            not position.is_closing and
-                            (dropped_from_peak >= 4 or flatline_duration >= 20)):
-
-                            logger.warning(f"🐌 STALLED MOMENTUM: {mint[:8]}... age {age:.0f}s, no tier1, peak was +{position.max_pnl_reached:.1f}%")
-                            if dropped_from_peak >= 4:
-                                logger.warning(f"   Dropped {dropped_from_peak:.1f}% from peak")
-                            else:
-                                logger.warning(f"   Flat for {flatline_duration:.0f}s at {price_change:+.1f}%")
-                            await self._close_position_full(mint, reason="stalled_momentum")
-                            break
-
-                    # ===================================================================
                     # EMERGENCY EXIT: Bonding curve rug detection (runs every cycle)
                     # ===================================================================
                     if age > 15 and not position.is_closing:
@@ -1812,45 +1754,6 @@ class SniperBot:
                             logger.warning(f"   P&L: {price_change:.1f}% <= -{STOP_LOSS_PERCENTAGE}%")
                             await self._close_position_full(mint, reason="stop_loss")
                             break
-
-                    # ===================================================================
-                    # DYNAMIC CRASH DETECTION - threshold based on peak reached
-                    # (11-trade analysis: let winners breathe more)
-                    # ===================================================================
-                    if USE_LEGACY_EXITS:
-                        # Skip crash detection while tier sells are pending (avoid panic-selling during profit taking)
-                        if position.pending_sells:
-                            logger.debug(f"Skipping crash check - pending sells: {position.pending_sells}")
-                        else:
-                            crash_from_peak = position.max_pnl_reached - price_change
-
-                            # Dynamic threshold: relax if we hit a big peak
-                            if position.max_pnl_reached >= 30:
-                                crash_threshold = 35  # Let winners breathe
-                            elif position.max_pnl_reached >= 20:
-                                crash_threshold = 30  # Standard
-                            elif position.max_pnl_reached >= 10:
-                                crash_threshold = 25  # Tighter
-                            else:
-                                crash_threshold = 25  # Was 20 - give entry volatility room
-
-                            if (crash_from_peak > crash_threshold and
-                                price_change < 10 and
-                                not position.is_closing):
-
-                                logger.warning(f"🚨 MOMENTUM CRASH: {mint[:8]}... dropped {crash_from_peak:.1f}% from peak (threshold: {crash_threshold}%)")
-                                logger.warning(f"   Peak: +{position.max_pnl_reached:.1f}% → Current: {price_change:+.1f}%")
-
-                                # DIAGNOSTIC: Compare price sources at exit
-                                fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                                fresh_dex = self.dex.get_bonding_curve_data(mint, prefer_chain=True)
-                                logger.info(f"🔍 PRICE DIAGNOSTIC at exit trigger:")
-                                logger.info(f"   Monitoring price: {current_token_price_sol:.10f}")
-                                logger.info(f"   Fresh curve_reader: {fresh_curve.get('price_lamports_per_atomic', 0) if fresh_curve else 'None':.10f}")
-                                logger.info(f"   Fresh dex.py: {fresh_dex.get('price_lamports_per_atomic', 0) if fresh_dex else 'None':.10f}")
-
-                                await self._close_position_full(mint, reason="momentum_crash")
-                                break
 
                     # ===================================================================
                     # ORDER FLOW EXIT - Flow-based exit strategy
