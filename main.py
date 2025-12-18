@@ -239,14 +239,13 @@ class SniperBot:
 
     def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
         """
-        ORDER FLOW EXIT - 6 triggers
+        ORDER FLOW EXIT - 5 triggers (rug handled by monitor loop with RPC validation)
 
         EMERGENCY: 4+ SOL dumped in 5s (bypasses 8s age gate at 3s)
-        1. RUG: Curve drain > 40% from entry
-        2. VELOCITY COLLAPSE: Buy velocity dropped 70%+ from peak while in profit
-        3. WHALE: Single sell > 15% of curve in last 3s AND curve declining
-        4. VOLUME: 4+ SOL dumped in 5s (catches cascading dumps)
-        5. BURST: 6+ sells in 5s AND curve declining
+        1. VELOCITY COLLAPSE: Buy velocity dropped 70%+ from peak while in profit
+        2. WHALE: Single sell > 15% of curve in last 3s (in profit)
+        3. VOLUME: 4+ SOL dumped in 5s (catches cascading dumps)
+        4. BURST: 6+ sells in 5s (in profit)
 
         Returns (should_exit: bool, reason: str)
         """
@@ -287,16 +286,7 @@ class SniperBot:
             return False, ""
 
         # =========================================================
-        # EXIT 1: RUG PROTECTION - Curve drain > 40%
-        # This catches dev dumps and coordinated rugs
-        # =========================================================
-        curve_drop_pct = ((entry_curve - current_curve) / entry_curve) * 100
-        if curve_drop_pct > 40:
-            logger.warning(f"🚨 RUG EXIT: Curve drained {curve_drop_pct:.0f}% ({entry_curve:.2f} → {current_curve:.2f} SOL)")
-            return True, f"rug_drain_{curve_drop_pct:.0f}pct"
-
-        # =========================================================
-        # EXIT 2: VELOCITY COLLAPSE (PREDICTIVE)
+        # EXIT 1: VELOCITY COLLAPSE (PREDICTIVE)
         # Detects pump exhaustion BEFORE sellers react
         # Compares recent 3s buy velocity against peak velocity
         # =========================================================
@@ -318,7 +308,7 @@ class SniperBot:
             return True, f"velocity_collapse_{recent_velocity:.1f}_vs_{position.peak_recent_velocity:.1f}"
 
         # =========================================================
-        # EXIT 3: WHALE EXIT - Single sell > 15% of curve (last 3s)
+        # EXIT 2: WHALE EXIT - Single sell > 15% of curve (last 3s)
         # REACTIVE detection: checks RECENT sells, not all-time largest
         # This catches smart money exiting (like Cupsey's 1.36 SOL dump)
         # =========================================================
@@ -331,16 +321,13 @@ class SniperBot:
                 whale_pct = (largest_recent / current_curve) * 100
 
                 if whale_pct >= 15:
-                    curve_growth = current_curve - entry_curve
-                    if curve_growth <= 0:  # Curve declining = real dump
-                        logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
-                        logger.warning(f"   Curve declining ({curve_growth:+.1f} SOL) - following smart money out")
-                        return True, f"whale_exit_{whale_pct:.0f}pct"
-                    else:
-                        logger.info(f"⚡ Whale sell ({whale_pct:.0f}%) but curve +{curve_growth:.1f} SOL above entry - holding")
+                    # 15%+ whale dump is significant - exit regardless of curve direction
+                    # Curve direction check removed: used stale Helius data causing false exits
+                    logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
+                    return True, f"whale_exit_{whale_pct:.0f}pct"
 
         # =========================================================
-        # EXIT 4: SELL VOLUME - Catches cascading dumps (few big sells)
+        # EXIT 3: SELL VOLUME - Catches cascading dumps (few big sells)
         # ProjectGPT fix: doesn't wait for 6 sells, checks TOTAL SOL dumped
         # =========================================================
         flow_sells = state.get('flow_sells', [])
@@ -351,22 +338,18 @@ class SniperBot:
             return True, f"sell_volume_{recent_sell_volume:.1f}"
 
         # =========================================================
-        # EXIT 5: SELL BURST - 6+ sells AND curve declining
-        # Only exits if curve is at/below entry (real dump, not profit-taking)
+        # EXIT 4: SELL BURST - 6+ sells in 5s (in profit)
         # This catches coordinated smaller dumps
         # =========================================================
         sell_timestamps = state.get('sell_timestamps', [])
         sells_5s = len([t for t in sell_timestamps if now - t < 5])
 
         if sells_5s >= 6 and pnl_percent > 5:
-            curve_growth = current_curve - entry_curve
-
-            if curve_growth <= 0:  # Curve at or below entry = real dump
-                logger.warning(f"⚡ SELL BURST EXIT: {sells_5s} sells, curve {curve_growth:+.1f} SOL from entry")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting before dump")
-                return True, f"sell_burst_{sells_5s}_declining"
-            else:
-                logger.info(f"⚡ Sell burst ({sells_5s}) but curve +{curve_growth:.1f} SOL above entry - holding")
+            # 6+ sells in 5s is coordinated dump - exit
+            # Curve direction check removed: used stale Helius data causing false exits
+            logger.warning(f"⚡ SELL BURST EXIT: {sells_5s} sells in 5s")
+            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting coordinated dump")
+            return True, f"sell_burst_{sells_5s}"
 
         return False, ""
 
