@@ -259,6 +259,12 @@ class SniperBot:
         now = time.time()
         age = now - position.entry_time
 
+        # Curve direction detection - determine if net flow is still buying
+        # If curve is growing despite sells, it's healthy profit-taking not a dump
+        entry_curve = getattr(position, 'detection_curve_sol', None) or 6.0
+        current_curve = state.get('vSolInBondingCurve', 0)
+        curve_growing = current_curve > entry_curve * 1.05
+
         # =========================================================
         # EMERGENCY VOLUME EXIT - Bypass age gate for catastrophic dumps
         # 4+ SOL in 5s is NEVER healthy profit-taking, always a cascade
@@ -267,9 +273,12 @@ class SniperBot:
         flow_sells = state.get('flow_sells', [])
         recent_sell_volume = sum(amt for t, amt in flow_sells if now - t < 5)
         if recent_sell_volume >= 4.0 and age >= 3:
-            logger.warning(f"🚨 EMERGENCY VOLUME EXIT: {recent_sell_volume:.2f} SOL dumped in 5s")
-            logger.warning(f"   Position age: {age:.1f}s - bypassing 8s gate for catastrophic dump")
-            return True, f"emergency_volume_{recent_sell_volume:.1f}"
+            if curve_growing:
+                logger.info(f"📈 Curve growing despite dump - holding through profit-taking ({recent_sell_volume:.2f} SOL sells)")
+            else:
+                logger.warning(f"🚨 EMERGENCY VOLUME EXIT: {recent_sell_volume:.2f} SOL dumped in 5s")
+                logger.warning(f"   Position age: {age:.1f}s - bypassing 8s gate for catastrophic dump")
+                return True, f"emergency_volume_{recent_sell_volume:.1f}"
 
         # Minimum age before NORMAL exits (give position time to establish)
         min_age = getattr(self, 'EXIT_MIN_AGE_SECONDS', 8)
@@ -321,10 +330,11 @@ class SniperBot:
                 whale_pct = (largest_recent / current_curve) * 100
 
                 if whale_pct >= 15:
-                    # 15%+ whale dump is significant - exit regardless of curve direction
-                    # Curve direction check removed: used stale Helius data causing false exits
-                    logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
-                    return True, f"whale_exit_{whale_pct:.0f}pct"
+                    if curve_growing:
+                        logger.info(f"📈 Curve growing despite whale dump - holding through profit-taking ({largest_recent:.2f} SOL whale)")
+                    else:
+                        logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
+                        return True, f"whale_exit_{whale_pct:.0f}pct"
 
         # =========================================================
         # EXIT 3: SELL VOLUME - Catches cascading dumps (few big sells)
@@ -345,11 +355,12 @@ class SniperBot:
         sells_5s = len([t for t in sell_timestamps if now - t < 5])
 
         if sells_5s >= 6 and pnl_percent > 5:
-            # 6+ sells in 5s is coordinated dump - exit
-            # Curve direction check removed: used stale Helius data causing false exits
-            logger.warning(f"⚡ SELL BURST EXIT: {sells_5s} sells in 5s")
-            logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting coordinated dump")
-            return True, f"sell_burst_{sells_5s}"
+            if curve_growing:
+                logger.info(f"📈 Curve growing despite sell burst - holding through profit-taking ({sells_5s} sells)")
+            else:
+                logger.warning(f"⚡ SELL BURST EXIT: {sells_5s} sells in 5s")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}% - exiting coordinated dump")
+                return True, f"sell_burst_{sells_5s}"
 
         return False, ""
 
