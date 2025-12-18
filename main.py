@@ -235,7 +235,7 @@ class SniperBot:
         2. PROFIT DECAY: P&L dropped to 65% of peak while still >10%
         3. NET NEGATIVE FLOW: Sells outweighing buys (momentum reversed)
         4. BUY DROUGHT: No buys for 5s while in profit (momentum dead)
-        5. WHALE: Single sell > 15% of curve (smart money exiting)
+        5. WHALE: Single sell > 16% of curve + declining curve (smart money exiting)
 
         Returns (should_exit: bool, reason: str)
         """
@@ -298,7 +298,7 @@ class SniperBot:
 
         # =========================================================
         # EXIT 5: WHALE EXIT - Smart money leaving
-        # Single sell > 15% of curve = whale exiting
+        # Single sell > 16% of curve = whale exiting
         # Only exit if we're in profit (don't panic sell at loss)
         # =========================================================
         if pnl_percent > 5:
@@ -309,10 +309,17 @@ class SniperBot:
                 largest_recent = max(amt for t, amt in recent_sells)
                 whale_pct = (largest_recent / current_curve) * 100
 
-                if whale_pct >= 15:
-                    logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
-                    logger.warning(f"   Following smart money out at {pnl_percent:+.1f}%")
-                    return True, f"whale_exit_{whale_pct:.0f}pct"
+                if whale_pct >= 16:
+                    # Only exit if curve is DECLINING after whale sell
+                    entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'detection_curve_sol', 0) or 6.0
+                    curve_growth = current_curve - entry_curve
+
+                    if curve_growth <= 0:  # Curve at or below entry = real dump
+                        logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
+                        logger.warning(f"   Curve declining ({curve_growth:+.1f} SOL) - following smart money out")
+                        return True, f"whale_exit_{whale_pct:.0f}pct"
+                    else:
+                        logger.info(f"⚡ Whale sell ({whale_pct:.0f}%) but curve +{curve_growth:.1f} SOL above entry - holding")
 
         return False, ""
 
