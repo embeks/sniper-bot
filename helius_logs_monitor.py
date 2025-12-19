@@ -106,7 +106,7 @@ class HeliusLogsMonitor:
         self.curve_momentum_window_older = CURVE_MOMENTUM_WINDOW_OLDER
         self.curve_momentum_min_growth = CURVE_MOMENTUM_MIN_GROWTH
 
-        self.max_watch_time = 60  # Stop watching sooner
+        self.max_watch_time = 180  # Match MAX_POSITION_AGE_SECONDS + buffer
 
     async def _check_dev_holdings(self, mint: str, creator: str) -> float:
         """Check if creator holds tokens. Returns token balance (0 if none)."""
@@ -205,17 +205,19 @@ class HeliusLogsMonitor:
                     await asyncio.sleep(5)
     
     async def _cleanup_old_tokens(self):
-        """Remove tokens we've been watching too long"""
+        """Remove tokens we've been watching too long - BUT NOT active positions"""
         while self.running:
             await asyncio.sleep(5)
             now = time.time()
             to_remove = []
-            
+
             for mint, state in self.watched_tokens.items():
                 age = now - state['created_at']
-                if age > self.max_watch_time:
+                # Only cleanup if: aged out AND no active position tracking it
+                has_active_position = state.get('has_active_position', False)
+                if age > self.max_watch_time and not has_active_position:
                     to_remove.append(mint)
-            
+
             for mint in to_remove:
                 final_sol = self.watched_tokens[mint]['total_sol']
                 logger.debug(f"🗑️ Stopped watching {mint[:8]}... (timed out at {final_sol:.2f} SOL)")
