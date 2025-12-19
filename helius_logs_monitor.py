@@ -427,13 +427,17 @@ class HeliusLogsMonitor:
         state['flow_sells'] = [x for x in state['flow_sells'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
-        # USE REAL AMOUNT instead of 2% garbage
+        # USE REAL AMOUNT - fallback to last known sell size or minimum
         if sol_amount > 0:
             state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - sol_amount)
+            # Track last good sell amount for fallback
+            state['last_known_sell_amount'] = sol_amount
         else:
-            # Fallback only if parsing failed - use conservative 5%
-            estimated = state['vSolInBondingCurve'] * 0.05
-            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - estimated)
+            # Fallback: use last known sell amount, or 0.1 SOL minimum
+            # 5% was accumulating errors over many failed parses
+            fallback_amount = state.get('last_known_sell_amount', 0.1)
+            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - fallback_amount)
+            logger.warning(f"⚠️ Sell parse failed, using fallback: {fallback_amount:.4f} SOL")
 
         # Track curve momentum for rug detection gate
         state['curve_history'].append((now, state['vSolInBondingCurve']))
