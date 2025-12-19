@@ -2161,7 +2161,7 @@ class SniperBot:
             if not signature or signature.startswith("1111111"):
                 logger.error(f"❌ Close transaction failed")
                 position.status = 'close_failed'
-                
+
                 if reason in ["migration", "max_age", "no_data"]:
                     logger.warning(f"Removing unsellable position {mint[:8]}...")
                     if self.telegram:
@@ -2169,9 +2169,53 @@ class SniperBot:
                             f"⚠️ Could not sell {mint[:16]}\n"
                             f"Reason: {reason}\nRemoving to free slot"
                         )
-                
+
                 if mint in self.positions:
                     del self.positions[mint]
+                return
+
+            # ✅ NON-BLOCKING: Spawn background task for TX confirmation and P&L logging
+            # This allows entry detection to resume immediately (~500ms after sell TX submission)
+            logger.info(f"📤 Sell TX submitted: {signature[:16]}... (confirming in background)")
+            logger.info(f"🔗 Solscan: https://solscan.io/tx/{signature}")
+
+            asyncio.create_task(
+                self._finalize_close_background(
+                    mint=mint,
+                    reason=reason,
+                    signature=signature,
+                    hold_time=hold_time,
+                    ui_token_balance=ui_token_balance
+                )
+            )
+            # Return immediately - background task handles the rest
+            return
+
+        except Exception as e:
+            logger.error(f"Failed to close {mint[:8]}...: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            if mint in self.positions:
+                self.positions[mint].status = 'error'
+                del self.positions[mint]
+    
+    async def _finalize_close_background(
+        self,
+        mint: str,
+        reason: str,
+        signature: str,
+        hold_time: float,
+        ui_token_balance: float
+    ):
+        """
+        Background task to finalize position close after TX submission.
+        Handles TX confirmation, parsing, P&L calculation, and cleanup.
+        Runs in background so entry detection isn't blocked.
+        """
+        try:
+            position = self.positions.get(mint)
+            if not position:
+                logger.warning(f"Position {mint[:8]} already removed during background finalization")
                 return
 
             # ✅ ROBUST: Parse transaction directly (NO wallet balance delta!)
@@ -2257,10 +2301,8 @@ class SniperBot:
                 logger.warning(f"   Transaction: https://solscan.io/tx/{signature}")
 
                 # Mark as unknown - don't fabricate P&L numbers
-                actual_sol_received = 0
                 actual_tokens_sold = ui_token_balance
                 estimated_fees = 0.009
-                trading_pnl_sol = 0  # Unknown
                 actual_fees_paid = estimated_fees
                 gross_sale_proceeds = 0
                 final_pnl_sol = 0  # Unknown - don't add to totals
@@ -2278,17 +2320,17 @@ class SniperBot:
                 logger.error(f"   Transaction: https://solscan.io/tx/{signature}")
             elif final_pnl_sol < 0:
                 logger.debug(f"Normal loss: Trading P&L {final_pnl_sol:+.6f} SOL (fees: {actual_fees_paid:.6f} SOL)")
-            
+
             position.sell_signatures.append(signature)
             position.status = 'closed'
-            
+
             if final_pnl_sol > 0:
                 self.profitable_trades += 1
                 self.consecutive_losses = 0
             else:
                 self.consecutive_losses += 1
                 self.session_loss_count += 1
-            
+
             position.realized_pnl_sol = final_pnl_sol
 
             # Only add to totals if P&L is known
@@ -2301,9 +2343,9 @@ class SniperBot:
                 mint=mint,
                 tokens_sold=actual_tokens_sold,
                 signature=signature,
-                sol_received=gross_sale_proceeds,  # ✅ Gross sale proceeds (corrected timing)
-                pnl_sol=final_pnl_sol,  # ✅ Pure trading P&L
-                fees_paid=actual_fees_paid,  # ✅ Separate fees
+                sol_received=gross_sale_proceeds,
+                pnl_sol=final_pnl_sol,
+                fees_paid=actual_fees_paid,
                 pnl_percent=position.pnl_percent,
                 hold_time_seconds=hold_time,
                 reason=reason,
@@ -2323,7 +2365,7 @@ class SniperBot:
             logger.info(f"   Fees Paid: {actual_fees_paid:.4f} SOL")
             logger.info(f"   Net Realized: {net_realized_sol:+.4f} SOL")
             logger.info(f"   Consecutive losses: {self.consecutive_losses}")
-            
+
             if self.telegram:
                 emoji = "💰" if final_pnl_sol > 0 else "🔴"
                 msg = (
@@ -2337,19 +2379,21 @@ class SniperBot:
                 if self.consecutive_losses >= 2:
                     msg += f"\n⚠️ Losses: {self.consecutive_losses}/10"
                 await self.telegram.send_message(msg)
-            
+
             if mint in self.positions:
                 del self.positions[mint]
                 logger.info(f"Active: {len(self.positions)}/{MAX_POSITIONS}")
 
         except Exception as e:
-            logger.error(f"Failed to close {mint[:8]}...: {e}")
+            logger.error(f"Background close finalization failed for {mint[:8]}: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            # Cleanup position on error
             if mint in self.positions:
                 self.positions[mint].status = 'error'
                 del self.positions[mint]
-    
+                logger.info(f"Removed errored position. Active: {len(self.positions)}/{MAX_POSITIONS}")
+
     async def _close_position(self, mint: str, reason: str = "manual"):
         """Wrapper for telegram compatibility"""
         await self._close_position_full(mint, reason)
