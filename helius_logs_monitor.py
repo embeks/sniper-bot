@@ -610,6 +610,7 @@ class HeliusLogsMonitor:
 
         # 10. BUNDLED + SLOT CLUSTERING DETECTION
         # First buy in same slot as creation = insider bundle
+        # DISABLED: Bundled filter too aggressive - logs warning but doesn't skip
         creation_slot = state.get('creation_slot')
         buy_slots = state.get('buy_slots', [])
         if creation_slot and buy_slots:
@@ -619,18 +620,20 @@ class HeliusLogsMonitor:
             clustering_pct = (same_slot_buys / len(buy_slots) * 100) if buy_slots else 0
 
             # FILTER 1: First buy bundled with creation = coordinated launch
+            # DISABLED: Still log for visibility but don't skip
             if same_slot:
-                logger.warning(f"⛔ BUNDLED: First buy in creation slot (coordinated launch)")
-                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+                logger.warning(f"⚠️ BUNDLED: First buy in creation slot (coordinated launch) - FILTER DISABLED")
+                # self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
+                # self.triggered_tokens.add(mint)
+                # return
 
             # FILTER 2: >50% of buys in creation slot = bot coordination
+            # DISABLED: Still log for visibility but don't skip
             if clustering_pct > 50:
-                logger.warning(f"⛔ SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} ({clustering_pct:.0f}%) buys in creation slot")
-                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+                logger.warning(f"⚠️ SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} ({clustering_pct:.0f}%) buys in creation slot - FILTER DISABLED")
+                # self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
+                # self.triggered_tokens.add(mint)
+                # return
 
         # 9. REMOVED: Dev holdings RPC check - adds latency, kept WebSocket-based dev buy detection above
 
