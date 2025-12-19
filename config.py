@@ -126,7 +126,7 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '0'))
 RUG_FLOOR_SOL = 2.0           # Below this = liquidity gone = definite rug
 MOMENTUM_DEATH_SOL = 1.5      # Lost this much from entry = sellers winning
 PROFIT_PEAK_THRESHOLD_SOL = 3.0   # Must hit this profit before decay triggers
-PROFIT_DECAY_FROM_PEAK_SOL = 2.0  # Exit if dropped this from peak
+PROFIT_DECAY_FROM_PEAK_SOL = 3.5  # Exit if dropped this from peak
 WHALE_SELL_PERCENT = 15.0     # Single sell this % of curve = smart money exit
 BUY_DROUGHT_SECONDS = 8.0     # No buys for this long + declining = dead
 MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
