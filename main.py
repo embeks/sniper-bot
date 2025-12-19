@@ -27,7 +27,7 @@ from config import (
     # Velocity ceiling parameters
     VELOCITY_MAX_SOL_PER_SECOND, VELOCITY_MAX_RECENT_1S_SOL, VELOCITY_MAX_RECENT_3S_SOL,
     # Tiered take-profit (whale strategy)
-    TIER_1_PROFIT_PERCENT, TIER_1_SELL_PERCENT,
+    TIER_1_SELL_PERCENT,
     TIER_2_PROFIT_PERCENT, TIER_2_SELL_PERCENT,
     # Timer exit parameters
     TIMER_EXIT_BASE_SECONDS, TIMER_EXIT_VARIANCE_SECONDS,
@@ -1503,8 +1503,6 @@ class SniperBot:
     async def _monitor_position(self, mint: str):
         """Monitor position - WHALE TIERED EXITS with FLATLINE DETECTION"""
         try:
-            from config import FLATLINE_TIMEOUT_SECONDS
-
             position = self.positions.get(mint)
             if not position:
                 return
