@@ -23,7 +23,7 @@ from config import (
     # NEW IMPORTS for 21-trade baseline filters
     MAX_TOP2_BUY_PERCENT, MIN_TOKEN_AGE_SECONDS,
     # NEW: Buyer velocity and sell ratio filters
-    MAX_BUYERS_PER_SECOND, MAX_SELLS_AT_ENTRY, MIN_BUY_SELL_RATIO,
+    MAX_BUYERS_PER_SECOND, MIN_BUYERS_PER_SECOND, MAX_SELLS_AT_ENTRY, MIN_BUY_SELL_RATIO,
     # NEW: Sell burst and curve momentum gates
     SELL_BURST_COUNT, SELL_BURST_WINDOW,
     CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH
@@ -93,6 +93,7 @@ class HeliusLogsMonitor:
         # NEW: 21-trade baseline filters
         # self.max_velocity = MAX_VELOCITY  # Redundant - using buyer velocity instead
         self.max_buyers_per_second = MAX_BUYERS_PER_SECOND  # Coordination detection
+        self.min_buyers_per_second = MIN_BUYERS_PER_SECOND  # Minimum buyer velocity
         self.max_sells_at_entry = MAX_SELLS_AT_ENTRY  # Max sells allowed at entry
         self.min_buy_sell_ratio = MIN_BUY_SELL_RATIO  # Min buy:sell ratio
         self.max_top2_percent = MAX_TOP2_BUY_PERCENT  # 65% max from top 2 wallets
@@ -566,6 +567,13 @@ class HeliusLogsMonitor:
         # 5c. Check buyer velocity (coordination detection)
         token_age = age
         buyer_velocity = buy_count / max(token_age, 0.1)
+
+        # Minimum buyer velocity - filters weak organic traction
+        if buyer_velocity < self.min_buyers_per_second:
+            logger.warning(f"❌ Buyer velocity too low: {buyer_velocity:.1f}/s (min {self.min_buyers_per_second})")
+            self.triggered_tokens.add(mint)
+            return
+
         # DISABLED: Buyer velocity filter - too aggressive, blocking organic runners
         # if buyer_velocity > self.max_buyers_per_second:
         #     logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
