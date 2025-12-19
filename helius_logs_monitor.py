@@ -473,10 +473,11 @@ class HeliusLogsMonitor:
         velocity = total_sol / age if age > 0 else 0
         largest_buy_pct = (state['largest_buy'] / total_sol * 100) if total_sol > 0 else 0
         
-        # NEW: Calculate top-2 concentration
+        # NEW: Calculate top-2 concentration (compare to total BUYS, not current curve)
         buy_amounts = sorted(state['buy_amounts'], reverse=True)
+        total_buy_sol = sum(buy_amounts)  # Total bought (ignores sells)
         top2_sol = sum(buy_amounts[:2]) if len(buy_amounts) >= 2 else sum(buy_amounts)
-        top2_pct = (top2_sol / total_sol * 100) if total_sol > 0 else 0
+        top2_pct = (top2_sol / total_buy_sol * 100) if total_buy_sol > 0 else 0
 
         # ===== ENTRY CONDITIONS =====
 
