@@ -1442,7 +1442,11 @@ class SniperBot:
                 self.positions[mint] = position
                 self.total_trades += 1
                 self.pending_buys -= 1
-                
+
+                # Mark token as having active position (prevents Helius cleanup)
+                if self.scanner and mint in self.scanner.watched_tokens:
+                    self.scanner.watched_tokens[mint]['has_active_position'] = True
+
                 exit_in_seconds = position.exit_time - position.entry_time
                 
                 logger.info(f"✅ BUY EXECUTED: {mint[:8]}...")
@@ -2380,6 +2384,10 @@ class SniperBot:
                     msg += f"\n⚠️ Losses: {self.consecutive_losses}/10"
                 await self.telegram.send_message(msg)
 
+            # Clear active position flag so Helius can cleanup
+            if self.scanner and mint in self.scanner.watched_tokens:
+                self.scanner.watched_tokens[mint]['has_active_position'] = False
+
             if mint in self.positions:
                 del self.positions[mint]
                 logger.info(f"Active: {len(self.positions)}/{MAX_POSITIONS}")
@@ -2388,6 +2396,9 @@ class SniperBot:
             logger.error(f"Background close finalization failed for {mint[:8]}: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            # Clear active position flag so Helius can cleanup
+            if self.scanner and mint in self.scanner.watched_tokens:
+                self.scanner.watched_tokens[mint]['has_active_position'] = False
             # Cleanup position on error
             if mint in self.positions:
                 self.positions[mint].status = 'error'
