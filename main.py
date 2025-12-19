@@ -332,7 +332,7 @@ class SniperBot:
         """
         from config import (
             RUG_FLOOR_SOL, MOMENTUM_DEATH_SOL, PROFIT_PEAK_THRESHOLD_SOL,
-            PROFIT_DECAY_FROM_PEAK_SOL, WHALE_SELL_PERCENT, BUY_DROUGHT_SECONDS,
+            PROFIT_DECAY_PERCENT, WHALE_SELL_PERCENT, BUY_DROUGHT_SECONDS,
             MIN_EXIT_AGE_SECONDS
         )
 
@@ -416,9 +416,10 @@ class SniperBot:
         profit_from_entry = peak_curve - entry_curve
 
         if profit_from_entry >= PROFIT_PEAK_THRESHOLD_SOL:
-            if curve_from_peak <= -PROFIT_DECAY_FROM_PEAK_SOL:
-                logger.warning(f"📉 PROFIT DECAY: Peak +{profit_from_entry:.1f}, now {curve_from_peak:+.1f} from peak")
-                return True, f"profit_decay_{peak_curve:.1f}_to_{current_curve:.1f}", pnl_percent
+            drop_percent = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
+            if drop_percent >= PROFIT_DECAY_PERCENT:
+                logger.warning(f"📉 PROFIT DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
+                return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
 
         # ===========================================
         # EXIT 5: BUY DROUGHT (no buys + declining)
