@@ -69,12 +69,15 @@ POSITION_SIZE_DEFAULT = float(os.getenv('BUY_AMOUNT_SOL', '0.05'))
 MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '3'))
 MIN_SOL_BALANCE = float(os.getenv('MIN_SOL_BALANCE', '0.05'))
 
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '35'))  # TIGHTENED: Was 20%, now 15% to prevent gap-through
+# STOP_LOSS_PERCENTAGE - Now handled by MOMENTUM_DEATH_SOL in curve-based exits
+# Kept for backward compatibility but not used for exit decisions
+STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENT', '35'))
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_1', '200')) / 100 * 100
 
 # Tiered take-profit (whale strategy - let winners run)
 # 2-tier system based on 11-trade analysis: reduces fees, lets winners run
-TIER_1_PROFIT_PERCENT = float(os.getenv('TIER_1_PROFIT', '9999.0'))  # DISABLED - using flow exit
+# TIER_1 DISABLED - exits now handled by curve-based system
+# TIER_1_PROFIT_PERCENT = 9999.0  # REMOVED - dead code path
 TIER_1_SELL_PERCENT = float(os.getenv('TIER_1_SELL', '75.0'))      # Was 40%
 
 TIER_2_PROFIT_PERCENT = float(os.getenv('TIER_2_PROFIT', '30.0'))  # Was 40%, lowered to capture +25-35% peaks
@@ -114,15 +117,19 @@ TIMER_EXTENSION_PNL_THRESHOLD = float(os.getenv('TIMER_EXTENSION_PNL_THRESHOLD',
 TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '0'))
 
 # ============================================
-# FLATLINE DETECTION
+# RUG DETECTION - CURVE-BASED (Absolute SOL thresholds)
 # ============================================
-FLATLINE_TIMEOUT_SECONDS = 9999  # DISABLED - using buyer death signal instead
+# OLD percentage-based (caused false exits like EsFdhfGd):
+# RUG_CURVE_DROP_PERCENT = 55  # REMOVED - percentages lie during volatility
 
-# ============================================
-# RUG DETECTION - Curve Drain
-# ============================================
-RUG_CURVE_DROP_PERCENT = 55  # Exit if curve drops 30%+ from recent peak (was 20%, caused false triggers)
-RUG_CURVE_WINDOW_SECONDS = 6  # Within this time window
+# NEW absolute thresholds (never false trigger):
+RUG_FLOOR_SOL = 2.0           # Below this = liquidity gone = definite rug
+MOMENTUM_DEATH_SOL = 1.5      # Lost this much from entry = sellers winning
+PROFIT_PEAK_THRESHOLD_SOL = 3.0   # Must hit this profit before decay triggers
+PROFIT_DECAY_FROM_PEAK_SOL = 2.0  # Exit if dropped this from peak
+WHALE_SELL_PERCENT = 15.0     # Single sell this % of curve = smart money exit
+BUY_DROUGHT_SECONDS = 8.0     # No buys for this long + declining = dead
+MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
@@ -332,8 +339,7 @@ FLOW_WINDOW_MEDIUM = float(os.getenv('FLOW_WINDOW_MEDIUM', '10.0'))  # 10 second
 # Whale exit: single large sell relative to curve size
 RUG_SINGLE_SELL_PERCENT = int(os.getenv('RUG_SINGLE_SELL_PERCENT', '40'))  # Whale exit if single sell is 40%+ of curve
 
-# Curve drain: liquidity pulled (already exists, keep RUG_CURVE_DROP_PERCENT)
-RUG_CURVE_DRAIN_PERCENT = float(os.getenv('RUG_CURVE_DRAIN_PERCENT', '55.0'))
+# Curve drain: Now handled by RUG_FLOOR_SOL in curve-based exits
 
 # === HIGH PRIORITY EXITS ===
 # Sell burst: coordinated dump starting

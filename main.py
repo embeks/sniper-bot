@@ -323,6 +323,125 @@ class SniperBot:
 
         return False, ""
 
+    def _check_curve_exits(self, mint: str, position: Position) -> tuple:
+        """
+        CURVE-BASED EXIT SYSTEM - All decisions from Helius WebSocket
+        NO RPC calls. Uses absolute SOL thresholds, not percentages.
+
+        Returns: (should_exit: bool, reason: str, pnl_percent: float)
+        """
+        from config import (
+            RUG_FLOOR_SOL, MOMENTUM_DEATH_SOL, PROFIT_PEAK_THRESHOLD_SOL,
+            PROFIT_DECAY_FROM_PEAK_SOL, WHALE_SELL_PERCENT, BUY_DROUGHT_SECONDS,
+            MIN_EXIT_AGE_SECONDS
+        )
+
+        if not self.scanner:
+            return False, "", 0.0
+
+        state = self.scanner.watched_tokens.get(mint, {})
+        if not state:
+            return False, "", 0.0
+
+        now = time.time()
+        age = now - position.entry_time
+
+        # Get curve values from Helius (real-time, no RPC)
+        current_curve = state.get('vSolInBondingCurve', 0)
+
+        # Use detection curve (original, not slippage-adjusted) for consistency
+        entry_curve = getattr(position, 'detection_curve_sol', 0)
+        if entry_curve == 0:
+            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or 6.0
+
+        # Track peak curve
+        peak_curve = state.get('peak_curve_sol', current_curve)
+        if current_curve > peak_curve:
+            state['peak_curve_sol'] = current_curve
+            peak_curve = current_curve
+
+        # Calculate P&L from curve (for display only, not exit decisions)
+        # PumpFun AMM: price ∝ (vSol + 30)²
+        VIRTUAL_RESERVES = 30.0
+        if entry_curve > 0:
+            virtual_entry = entry_curve + VIRTUAL_RESERVES
+            virtual_current = current_curve + VIRTUAL_RESERVES
+            pnl_percent = ((virtual_current / virtual_entry) ** 2 - 1) * 100
+        else:
+            pnl_percent = 0.0
+
+        # Curve deltas
+        curve_from_entry = current_curve - entry_curve
+        curve_from_peak = current_curve - peak_curve
+
+        # ===========================================
+        # EXIT 1: RUG FLOOR (highest priority - always check)
+        # ===========================================
+        if current_curve < RUG_FLOOR_SOL:
+            logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} floor")
+            return True, f"rug_floor_{current_curve:.1f}", pnl_percent
+
+        # Minimum age gate for non-emergency exits
+        if age < MIN_EXIT_AGE_SECONDS:
+            return False, "", pnl_percent
+
+        # ===========================================
+        # EXIT 2: MOMENTUM DEATH (lost 1.5+ SOL from entry + still falling)
+        # ===========================================
+        if curve_from_entry < -MOMENTUM_DEATH_SOL:
+            curve_history = state.get('curve_history', [])
+            if len(curve_history) >= 2:
+                recent = [(t, v) for t, v in curve_history if now - t < 3]
+                if len(recent) >= 2 and recent[-1][1] <= recent[0][1]:
+                    logger.warning(f"📉 MOMENTUM DEATH: {curve_from_entry:+.2f} SOL from entry")
+                    return True, f"momentum_death_{curve_from_entry:.1f}", pnl_percent
+
+        # ===========================================
+        # EXIT 3: WHALE DUMP (large sell + curve at/below entry)
+        # ===========================================
+        flow_sells = state.get('flow_sells', [])
+        recent_sells = [(t, amt) for t, amt in flow_sells if now - t < 3]
+
+        if recent_sells and current_curve > 0:
+            largest_sell = max(amt for t, amt in recent_sells)
+            whale_pct = (largest_sell / current_curve) * 100
+
+            if whale_pct >= WHALE_SELL_PERCENT and curve_from_entry <= 0:
+                logger.warning(f"🐋 WHALE DUMP: {largest_sell:.2f} SOL ({whale_pct:.0f}%) + curve flat")
+                return True, f"whale_dump_{whale_pct:.0f}pct", pnl_percent
+
+        # ===========================================
+        # EXIT 4: PROFIT DECAY (hit good peak, now giving back)
+        # ===========================================
+        profit_from_entry = peak_curve - entry_curve
+
+        if profit_from_entry >= PROFIT_PEAK_THRESHOLD_SOL:
+            if curve_from_peak <= -PROFIT_DECAY_FROM_PEAK_SOL:
+                logger.warning(f"📉 PROFIT DECAY: Peak +{profit_from_entry:.1f}, now {curve_from_peak:+.1f} from peak")
+                return True, f"profit_decay_{peak_curve:.1f}_to_{current_curve:.1f}", pnl_percent
+
+        # ===========================================
+        # EXIT 5: BUY DROUGHT (no buys + declining)
+        # ===========================================
+        last_buy_time = state.get('last_buy_time', 0)
+        time_since_buy = now - last_buy_time if last_buy_time > 0 else 0
+
+        if time_since_buy > BUY_DROUGHT_SECONDS:
+            curve_history = state.get('curve_history', [])
+            if len(curve_history) >= 3:
+                old_curves = [v for t, v in curve_history if now - t > 3]
+                new_curves = [v for t, v in curve_history if now - t <= 3]
+
+                if old_curves and new_curves:
+                    old_avg = sum(old_curves) / len(old_curves)
+                    new_avg = sum(new_curves) / len(new_curves)
+
+                    if new_avg < old_avg - 0.5:
+                        logger.warning(f"🏜️ BUY DROUGHT: {time_since_buy:.1f}s + curve declining")
+                        return True, f"buy_drought_{time_since_buy:.0f}s", pnl_percent
+
+        return False, "", pnl_percent
+
     async def _fetch_sol_price_birdeye(self) -> float:
         """
         Fetch current SOL price from Birdeye with correct API format.
@@ -1421,83 +1540,19 @@ class SniperBot:
                         break
 
                 # ===================================================================
-                # REAL-TIME RUG CHECK: Uses FRESH chain data, not WebSocket estimates
+                # EARLY RUG CHECK: Simple floor check (no RPC)
+                # Full exit logic handled by _check_curve_exits below
                 # ===================================================================
                 if self.scanner and not position.is_closing:
                     state = self.scanner.watched_tokens.get(mint, {})
-                    sell_count = state.get('sell_count', 0)
-                    buy_count = state.get('buy_count', 0)
-                    sell_ratio = sell_count / buy_count if buy_count > 0 else 1.0
+                    current_curve = state.get('vSolInBondingCurve', 0)
 
-                    if sell_count >= 8 and sell_ratio > 0.25:
-                        # Use Helius WebSocket data - no RPC call, no failure mode
-                        current_curve = state.get('vSolInBondingCurve', 0)
-                        # FIX: Use real detection curve, not slippage-inflated entry
-                        entry_curve = getattr(position, 'detection_curve_sol', 0) or 6.0
-
-                        # Sanity check: if we have many buys but 0 curve, data is stale - skip check
-                        if current_curve == 0 and buy_count > 5:
-                            logger.warning(f"⚠️ Helius shows 0 SOL but {buy_count} buys - stale data, skipping rug check")
-                            # Don't break - continue monitoring
-                        elif entry_curve > 0 and current_curve > 0:
-                            curve_delta = current_curve - entry_curve
-                            delta_drop = getattr(position, 'last_curve_delta', 0) - curve_delta
-                            position.last_curve_delta = curve_delta
-
-                            if curve_delta >= 0:
-                                # Curve at or above entry = NOT a rug
-                                # High sell ratio + stable/rising curve = healthy profit-taking
-                                # Let orderflow signals handle exit timing during actual dump
-                                logger.info(f"⚡ Curve stable/rising {curve_delta:+.1f} SOL despite {sell_ratio:.0%} sell ratio - orderflow will handle exit")
-                            elif curve_delta < -1.5 or delta_drop >= 2.0:
-                                # Calculate drain percentage from Helius data
-                                helius_drain_pct = ((entry_curve - current_curve) / entry_curve * 100) if entry_curve > 0 else 0
-
-                                # EMERGENCY RUG CHECK: Helius shows massive drain - ALWAYS validate with RPC
-                                # Helius can lag/lie during fast moves (seen 53% "drain" when curve was actually fine)
-                                if helius_drain_pct > 50 or current_curve < 2.0:
-                                    logger.warning(f"⚠️ Helius shows {helius_drain_pct:.0f}% drain ({entry_curve:.2f} → {current_curve:.2f} SOL) - validating with RPC...")
-
-                                    fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                                    if fresh_curve and fresh_curve.get('sol_raised', 0) > 0:
-                                        rpc_curve = fresh_curve['sol_raised']
-                                        rpc_drain_pct = ((entry_curve - rpc_curve) / entry_curve * 100) if entry_curve > 0 else 0
-
-                                        if rpc_drain_pct > 40:  # RPC confirms significant drain
-                                            logger.warning(f"🚨 EMERGENCY EXIT CONFIRMED: RPC shows {rpc_drain_pct:.0f}% drain (curve={rpc_curve:.2f} SOL)")
-                                            await self._close_position_full(mint, reason="helius_emergency_rug")
-                                            break
-                                        else:
-                                            logger.info(f"✅ RPC shows curve={rpc_curve:.2f} SOL ({rpc_drain_pct:.0f}% drain) - Helius was WRONG, holding")
-                                    else:
-                                        # RPC failed - be conservative, DON'T exit on unvalidated data
-                                        logger.warning(f"⚠️ RPC validation failed - NOT exiting on unvalidated Helius data")
-
-                                # For smaller drains (20-50%), validate with RPC
-                                logger.warning(f"⚠️ Helius curve drain signal ({curve_delta:.1f} SOL, {helius_drain_pct:.0f}%) - validating with RPC...")
-                                fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-
-                                if fresh_curve and fresh_curve.get('sol_raised', 0) > 0 and entry_curve > 0:
-                                    rpc_curve = fresh_curve['sol_raised']
-                                    rpc_pnl = (((rpc_curve + 30) / (entry_curve + 30)) ** 2 - 1) * 100
-
-                                    if rpc_pnl < -15:  # RPC confirms we're actually losing badly
-                                        logger.warning(f"🚨 RUG CONFIRMED by RPC: curve={rpc_curve:.2f} SOL, P&L={rpc_pnl:.1f}%")
-                                        logger.warning(f"   {sell_count} sells / {buy_count} buys ({sell_ratio:.0%})")
-                                        await self._close_position_full(mint, reason="helius_rug_curve_drain")
-                                        break
-                                    else:
-                                        logger.info(f"✅ RPC shows P&L={rpc_pnl:+.1f}% (curve={rpc_curve:.2f} SOL) - Helius was stale, holding")
-                                else:
-                                    logger.warning(f"⚠️ RPC validation failed for {helius_drain_pct:.0f}% drain - being conservative, holding")
-                            else:
-                                # Minor dip below entry - hold through volatility
-                                logger.warning(f"⚠️ Curve dipped {curve_delta:.1f} SOL but holding (minor volatility)")
-                        elif current_curve < 2.0 and buy_count < 5:
-                            # Only exit if BOTH curve is low AND we don't have significant buy activity
-                            logger.warning(f"🚨 CURVE EMPTY: {current_curve:.2f} SOL with {sell_count} sells, only {buy_count} buys")
-                            await self._close_position_full(mint, reason="curve_empty")
-                            break
+                    # Instant rug floor check - no RPC needed
+                    from config import RUG_FLOOR_SOL
+                    if current_curve > 0 and current_curve < RUG_FLOOR_SOL:
+                        logger.warning(f"🚨 EARLY RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} floor")
+                        await self._close_position_full(mint, reason="early_rug_floor")
+                        break
 
                 # Early exit if position fully sold
                 if position.remaining_tokens <= 0 and not position.pending_sells:
@@ -1531,281 +1586,61 @@ class SniperBot:
 
                 try:
                     # ===================================================================
-                    # P&L CALCULATION - Use Helius WebSocket (real-time) with RPC fallback
-                    # Helius sees transactions 5-13s before RPC updates
+                    # CURVE-BASED EXITS - All from Helius, NO RPC for decisions
                     # ===================================================================
-                    price_change = None
-                    source = None
-                    current_curve_sol = 0
+                    should_exit, exit_reason, pnl_percent = self._check_curve_exits(mint, position)
 
-                    # PRIMARY: Use Helius real-time data (now accurate with real sell amounts)
+                    # Update position for display
+                    position.pnl_percent = pnl_percent
+                    position.max_pnl_reached = max(position.max_pnl_reached, pnl_percent)
+
+                    # Get current curve for logging
                     helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
-                    helius_curve_sol = helius_state.get('vSolInBondingCurve', 0)
-                    entry_curve_sol = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'entry_curve_sol', 0)
+                    current_curve_sol = helius_state.get('vSolInBondingCurve', 0)
 
-                    if helius_curve_sol > 0 and entry_curve_sol > 0:
-                        # DRIFT CORRECTION: Every 5 checks, validate Helius against RPC
-                        # Corrects data only - does NOT disable exits
-                        if check_count % 5 == 0:
-                            fresh_rpc = self.curve_reader.get_curve_state(mint, use_cache=False)
-                            if fresh_rpc and fresh_rpc.get('sol_raised', 0) > 0:
-                                rpc_curve = fresh_rpc['sol_raised']
-                                drift_pct = abs(rpc_curve - helius_curve_sol) / helius_curve_sol * 100 if helius_curve_sol > 0 else 0
-                                if drift_pct > 15:
-                                    # Log drift for diagnostics only - NEVER override Helius
-                                    # Helius is always more real-time than RPC (5-15s faster)
-                                    # During crashes: RPC shows stale high, Helius shows real crash
-                                    # During pumps: Helius catches buys before RPC
-                                    # Either way, Helius is more accurate for P&L
-                                    if rpc_curve > helius_curve_sol:
-                                        logger.warning(f"⚠️ DRIFT: RPC ({rpc_curve:.2f}) > Helius ({helius_curve_sol:.2f}) - RPC likely stale, using Helius")
-                                    else:
-                                        logger.info(f"📈 DRIFT: Helius ({helius_curve_sol:.2f}) > RPC ({rpc_curve:.2f}) - Helius is real-time")
+                    if should_exit:
+                        logger.info(f"📊 CURVE EXIT: {mint[:8]}...")
+                        logger.info(f"   Reason: {exit_reason}")
+                        logger.info(f"   P&L: {pnl_percent:+.1f}%")
+                        logger.info(f"   Curve: {current_curve_sol:.2f} SOL")
+                        await self._close_position_full(mint, reason=exit_reason)
+                        break
 
-                        # Calculate P&L from curve delta (AMM math)
-                        VIRTUAL_RESERVES = 30
-                        virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
-                        virtual_current = helius_curve_sol + VIRTUAL_RESERVES
-                        price_change = (((virtual_current / virtual_entry) ** 2) - 1) * 100
-                        current_curve_sol = helius_curve_sol
-                        source = 'helius_realtime'
+                    # ===================================================================
+                    # MAX AGE EXIT (keep this - timer based)
+                    # ===================================================================
+                    effective_max_age = MAX_POSITION_AGE_SECONDS
+                    if current_curve_sol > 12:  # High bonding = runner
+                        effective_max_age = 180
 
-                        logger.debug(f"Helius P&L: entry={entry_curve_sol:.2f} current={helius_curve_sol:.2f} change={price_change:+.1f}%")
+                    if age > effective_max_age:
+                        logger.warning(f"⏰ MAX AGE: {age:.0f}s > {effective_max_age}s")
+                        await self._close_position_full(mint, reason="max_age")
+                        break
 
-                    # FALLBACK: Use RPC if Helius unavailable
-                    if price_change is None:
-                        curve_state = self.curve_reader.get_curve_state(mint, use_cache=False)
-
-                        if curve_state and curve_state.get('price_lamports_per_atomic', 0) > 0:
-                            current_token_price_sol = curve_state['price_lamports_per_atomic']
-                            current_curve_sol = curve_state.get('sol_raised', 0)
-
-                            if position.entry_token_price_sol > 0:
-                                price_change = ((current_token_price_sol / position.entry_token_price_sol) - 1) * 100
-                                source = 'rpc_price'
-                            elif entry_curve_sol > 0 and current_curve_sol > 0:
-                                VIRTUAL_RESERVES = 30
-                                virtual_entry = entry_curve_sol + VIRTUAL_RESERVES
-                                virtual_current = current_curve_sol + VIRTUAL_RESERVES
-                                price_change = (((virtual_current / virtual_entry) ** 2) - 1) * 100
-                                source = 'rpc_curve'
-                        else:
-                            consecutive_data_failures += 1
-                            logger.warning(f"No data for {mint[:8]}... (failure {consecutive_data_failures}/{DATA_FAILURE_TOLERANCE})")
-                            await asyncio.sleep(1)
-                            continue
-
-                    if price_change is None:
-                        consecutive_data_failures += 1
-                        await asyncio.sleep(1)
-                        continue
-
-                    # Update position state
-                    position.pnl_percent = price_change
-                    position.max_pnl_reached = max(position.max_pnl_reached, price_change)
-                    position.last_price_source = source
-                    consecutive_data_failures = 0
-
-                    # Build curve_data for downstream use
-                    curve_state = self.curve_reader.get_curve_state(mint, use_cache=True) if source.startswith('helius') else curve_state
-                    curve_data = {
-                        'sol_in_curve': current_curve_sol,
-                        'price_lamports_per_atomic': curve_state.get('price_lamports_per_atomic', 0) if curve_state else 0,
-                        'is_migrated': curve_state.get('complete', False) if curve_state else False,
-                        'is_valid': True,
-                        'source': source
-                    }
-
-                    position.has_chain_price = True
-                    position.last_price_update = time.time()
-                    current_sol_in_curve = current_curve_sol
-                    current_token_price_sol = position.entry_token_price_sol * (1 + price_change/100) if position.entry_token_price_sol > 0 else 0
-                    position.current_price = current_token_price_sol
-
-                    # Check for migration
-                    if curve_data.get('is_migrated'):
-                        logger.warning(f"❌ Token {mint[:8]}... has migrated - exiting immediately")
+                    # ===================================================================
+                    # MIGRATION CHECK (keep this)
+                    # ===================================================================
+                    if current_curve_sol >= 85:
+                        logger.warning(f"🚀 MIGRATION: Curve at {current_curve_sol:.0f} SOL")
                         await self._close_position_full(mint, reason="migration")
                         break
 
                     # ===================================================================
-                    # ✅ NEW: ENTRY SLIPPAGE GATE - Exit only if BOTH high slippage AND dumping
+                    # PROGRESS LOGGING
                     # ===================================================================
-                    if not position.first_price_check_done:
-                        position.first_price_check_done = True
-
-                        # Entry price should already be set from fill data
-                        # Only use current price as fallback if fill data was missing
-                        if position.entry_token_price_sol == 0:
-                            logger.error(f"⚠️ Entry price missing - using current as fallback (INACCURATE)")
-                            position.entry_token_price_sol = current_token_price_sol
-                        # DO NOT reset price_change to 0 - show real slippage from entry
-
-                        position.last_pnl_change_time = time.time()
-                        position.last_recorded_pnl = price_change
-
-                        logger.info(f"📊 First price check for {mint[:8]}...")
-                        logger.info(f"   Entry: {position.entry_token_price_sol:.10f} lamports/atomic")
-                        logger.info(f"   Current: {current_token_price_sol:.10f} lamports/atomic")
-                        logger.info(f"   P&L: {price_change:+.1f}%")
-
-                    # ===================================================================
-                    # ✅ NEW: FLATLINE DETECTION - Exit if stuck negative for 30s
-                    # ===================================================================
-                    # Check if P&L has improved by at least 2% since last check
-                    if price_change > position.last_recorded_pnl + 2:
-                        position.last_recorded_pnl = price_change
-                        position.last_pnl_change_time = time.time()
-                    
-                    flatline_duration = time.time() - position.last_pnl_change_time
-
-                    # If stuck negative for N seconds with no improvement, token is dead
-                    if flatline_duration > FLATLINE_TIMEOUT_SECONDS and price_change < 0 and not position.is_closing:
-                        logger.warning(f"💀 FLATLINE DETECTED: {mint[:8]}... stuck at {price_change:.1f}% for {flatline_duration:.0f}s")
-                        logger.warning(f"   No price improvement - token is dead, exiting")
-                        await self._close_position_full(mint, reason="flatline")
-                        break
-
-                    # ===================================================================
-                    # EMERGENCY EXIT: Bonding curve rug detection (runs every cycle)
-                    # ===================================================================
-                    if age > 15 and not position.is_closing:
-                        curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                        if curve and curve.get('sol_raised', 100) < 2.0:  # Less than 2 SOL = rugged
-                            logger.warning(f"🚨 BONDING RUG: {mint[:8]}... only {curve['sol_raised']:.2f} SOL in curve")
-
-                            # ✅ FIX: On rug, sell EVERYTHING immediately - don't wait for pending sells
-                            # _close_position_full gets actual wallet balance, so it handles whether
-                            # tier1 landed or not. One transaction, one fee, fastest exit.
-                            if position.pending_sells:
-                                logger.warning(f"   Pending sells: {position.pending_sells} - IGNORING, selling full balance NOW")
-                                position.pending_sells.clear()
-                                position.pending_token_amounts.clear()
-
-                            await self._close_position_full(mint, reason="bonding_rug")
-                            break
-
-                    # ===================================================================
-                    # EXIT RULE 1: Curve-based rug detection (checks liquidity drain, not price)
-                    # FIX 4: Validate with RPC before exiting (Helius can be stale)
-                    # FIX 1: EMERGENCY EXIT for massive drains (>50%) - trust Helius, skip RPC
-                    # ===================================================================
-                    # FIX: Use ONLY real detection curve, never slippage-inflated fallback
-                    rug_baseline = getattr(position, 'detection_curve_sol', 0) or 6.0
-                    current_curve_sol = curve_data.get('sol_in_curve', 0) if curve_data else 0
-
-                    if rug_baseline > 0 and current_curve_sol > 0:
-                        curve_drop_pct = ((rug_baseline - current_curve_sol) / rug_baseline) * 100
-
-                        if curve_drop_pct > 30 and not position.is_closing:
-                            # For drains >30%, validate with RPC
-                            logger.warning(f"⚠️ Potential rug signal: {curve_drop_pct:.1f}% curve drop - validating with RPC...")
-                            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-
-                            if fresh_curve and fresh_curve.get('sol_raised', 0) > 0:
-                                rpc_curve = fresh_curve['sol_raised']
-                                rpc_drop_pct = ((rug_baseline - rpc_curve) / rug_baseline) * 100
-                                # Calculate RPC-based P&L
-                                rpc_pnl = (((rpc_curve + 30) / (rug_baseline + 30)) ** 2 - 1) * 100
-
-                                if rpc_drop_pct > 30 and rpc_pnl < -10:
-                                    logger.warning(f"🚨 RUG CONFIRMED by RPC: curve {rpc_drop_pct:.1f}% down, P&L {rpc_pnl:.1f}%")
-                                    await self._close_position_full(mint, reason="rug_trap")
-                                    break
-                                else:
-                                    logger.info(f"✅ RPC validation: curve={rpc_curve:.2f} SOL, P&L={rpc_pnl:+.1f}% - NOT a rug, holding")
-                            else:
-                                logger.warning(f"⚠️ RPC validation failed - being conservative, holding")
-                        elif price_change <= -50 and not position.is_closing:
-                            logger.info(f"📉 Price down {price_change:.1f}% but curve stable ({current_curve_sol:.2f} SOL) - holding")
-
-                    # ===================================================================
-                    # EXIT RULE 2: STOP LOSS (-10%)
-                    # ===================================================================
-                    if hasattr(position, 'entry_slippage_grace_until') and time.time() < position.entry_slippage_grace_until:
-                        if check_count % 5 == 1:  # Log occasionally
-                            logger.info(f"⏳ Entry slippage grace period active, skipping stop loss for {mint[:8]}...")
-                    elif price_change <= -STOP_LOSS_PERCENTAGE and not position.is_closing:
-                        # Require chain confirmation to avoid false triggers from stale Helius data
-                        if source != 'chain':
-                            logger.warning(f"🚧 STOP LOSS signal from [{source}] - confirming with chain...")
-                            fresh_curve = self.curve_reader.get_curve_state(mint, use_cache=False)
-                            if fresh_curve and fresh_curve.get('sol_raised', 0) > 0 and entry_curve_sol > 0:
-                                chain_curve_sol = fresh_curve['sol_raised']
-                                virtual_entry = entry_curve_sol + 30
-                                virtual_chain = chain_curve_sol + 30
-                                chain_pnl = ((virtual_chain / virtual_entry) ** 2 - 1) * 100
-
-                                if chain_pnl > -STOP_LOSS_PERCENTAGE:
-                                    logger.info(f"✅ Chain shows {chain_pnl:+.1f}% - NOT stop loss, continuing")
-                                    price_change = chain_pnl
-                                    position.pnl_percent = chain_pnl
-                                else:
-                                    logger.warning(f"🛑 Chain confirms stop loss: {chain_pnl:.1f}%")
-                                    await self._close_position_full(mint, reason="stop_loss")
-                                    break
-                            else:
-                                logger.warning(f"🚧 Cannot verify stop loss - chain read failed, holding")
-                        else:
-                            logger.warning(f"🛑 STOP LOSS HIT for {mint[:8]}... (chain confirmed)")
-                            logger.warning(f"   P&L: {price_change:.1f}% <= -{STOP_LOSS_PERCENTAGE}%")
-                            await self._close_position_full(mint, reason="stop_loss")
-                            break
-
-                    # ===================================================================
-                    # ORDER FLOW EXIT - Flow-based exit strategy
-                    # Uses real-time Helius TX data, 5-13s advantage over charts
-                    # ===================================================================
-                    if not position.is_closing:
-                        should_exit, exit_reason = self._check_orderflow_exit(mint, position, price_change)
-
-                        if should_exit:
-                            # Log order flow state for analysis
-                            state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
-                            sell_timestamps = state.get('sell_timestamps', [])
-                            recent_sells = len([t for t in sell_timestamps if time.time() - t < 5])
-
-                            logger.info(f"📊 ORDER FLOW EXIT: {mint[:8]}...")
-                            logger.info(f"   Signal: {exit_reason}")
-                            logger.info(f"   P&L at exit: {price_change:+.1f}%")
-                            logger.info(f"   Peak P&L was: {position.max_pnl_reached:+.1f}%")
-                            logger.info(f"   Age: {age:.1f}s")
-                            logger.info(f"   Buys: {state.get('buy_count', 0)} | Sells: {state.get('sell_count', 0)} | Recent sells (5s): {recent_sells}")
-
-                            await self._close_position_full(mint, reason=f"orderflow_{exit_reason}")
-                            break
-
-                    # ===================================================================
-                    # EXIT RULE 5: TIER 3 DISABLED - 2-tier system (11-trade analysis)
-                    # Tier 2 now sells remaining 50% at +60%, reducing fees
-                    # ===================================================================
-                    # # Track pending + sold to decide if tier3 should fire
-                    # pending_percent = len(position.pending_sells) * 40  # tier1=40%, tier2=40%
-                    # effective_sold = position.total_sold_percent + pending_percent
-                    #
-                    # if (not position.is_runner_mode and
-                    #     price_change >= TIER_3_PROFIT_PERCENT and
-                    #     effective_sold >= 80 and  # ✅ Count pending sells too
-                    #     "tier3" not in position.partial_sells and
-                    #     "tier3" not in position.pending_sells and
-                    #     not position.is_closing):
-                    #
-                    #     logger.info(f"💰 TIER 3 TAKE PROFIT: {price_change:+.1f}% >= {TIER_3_PROFIT_PERCENT}%")
-                    #     logger.info(f"   Closing final {100 - position.total_sold_percent:.0f}% of position")
-                    #     await self._close_position_full(mint, reason="tier3_profit")
-                    #     break
-
-                    # Progress logging
                     if check_count % 3 == 1:
-                        # Get flow metrics for logging
-                        state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+                        entry_curve = getattr(position, 'detection_curve_sol', 0) or 6.0
+                        curve_delta = current_curve_sol - entry_curve
+
+                        state = helius_state
                         sells_5s = len([t for t in state.get('sell_timestamps', []) if time.time() - t < 5])
                         buys_5s = len([t for t in state.get('buy_timestamps', []) if time.time() - t < 5])
 
                         logger.info(
-                            f"📊 {mint[:8]}... | P&L: {price_change:+.1f}% | "
-                            f"Peak: {position.max_pnl_reached:+.1f}% | "
-                            f"Flow 5s: +{buys_5s}/-{sells_5s} | Age: {age:.0f}s"
+                            f"📊 {mint[:8]}... | P&L: {pnl_percent:+.1f}% | "
+                            f"Curve: {current_curve_sol:.2f} ({curve_delta:+.1f}) | "
+                            f"Flow: +{buys_5s}/-{sells_5s} | Age: {age:.0f}s"
                         )
 
                 except Exception as e:
