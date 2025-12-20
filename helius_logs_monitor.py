@@ -41,9 +41,10 @@ BLACKLISTED_CREATORS = {
 class HeliusLogsMonitor:
     """Subscribe to PumpFun program logs and track all events"""
     
-    def __init__(self, callback, rpc_client):
+    def __init__(self, callback, rpc_client, exit_callback=None):
         self.callback = callback
         self.rpc_client = rpc_client
+        self.exit_callback = exit_callback
         self.running = False
         self.reconnect_count = 0
         
@@ -455,6 +456,10 @@ class HeliusLogsMonitor:
             logger.warning(f"⚠️ SELL #{state['sell_count']} on {mint[:8]}... -{sol_amount:.4f} SOL ({recent_sells} in last 5s)")
         else:
             logger.warning(f"⚠️ SELL #{state['sell_count']} on {mint[:8]}... (parse failed) ({recent_sells} in last 5s)")
+
+        # INSTANT EXIT CHECK: If we hold this token, check exit conditions NOW
+        if state.get('has_active_position') and self.exit_callback:
+            await self.exit_callback(mint, state)
     
     async def _check_and_trigger(self, mint: str, state: dict):
         """Check if token meets entry conditions and trigger callback"""
