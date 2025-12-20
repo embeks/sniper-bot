@@ -42,6 +42,7 @@ from helius_logs_monitor import HeliusLogsMonitor
 from pumpportal_trader import PumpPortalTrader
 from local_swap import LocalSwapBuilder
 from performance_tracker import PerformanceTracker
+from trade_logger import TradeLogger
 from curve_reader import BondingCurveReader
 
 logging.basicConfig(
@@ -121,7 +122,8 @@ class SniperBot:
         self.telegram = None
         self.telegram_polling_task = None
         self.tracker = PerformanceTracker()
-        
+        self.trade_logger = TradeLogger("/data/trades_clean.csv")
+
         from solana.rpc.api import Client
         from config import RPC_ENDPOINT, PUMPFUN_PROGRAM_ID
         
@@ -1447,6 +1449,7 @@ class SniperBot:
                 )
                 
                 position = Position(mint, actual_sol_spent, bought_tokens, entry_market_cap)
+                position.entry_buyers = unique_buyers
                 position.buy_signature = signature
                 position.initial_tokens = bought_tokens
                 position.remaining_tokens = bought_tokens
@@ -2373,6 +2376,22 @@ class SniperBot:
                 self.session_loss_count += 1
 
             position.realized_pnl_sol = final_pnl_sol
+
+            # Log completed trade to clean CSV
+            helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+            self.trade_logger.log_trade(
+                mint=mint,
+                entry_curve=getattr(position, 'detection_curve_sol', 6.0),
+                peak_curve=helius_state.get('peak_curve_sol', 0),
+                exit_curve=helius_state.get('vSolInBondingCurve', 0),
+                entry_buyers=getattr(position, 'entry_buyers', 0),
+                exit_reason=reason,
+                hold_secs=hold_time,
+                sells_survived=helius_state.get('sell_count', 0),
+                invested=position.amount_sol,
+                received=total_sol_received,
+                max_pnl_pct=position.max_pnl_reached
+            )
 
             # Only add to totals if P&L is known
             if not getattr(position, 'pnl_unknown', False):
