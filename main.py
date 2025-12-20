@@ -443,6 +443,49 @@ class SniperBot:
 
         return False, "", pnl_percent
 
+    async def _on_position_sell(self, mint: str, state: dict):
+        """
+        INSTANT EXIT CHECK - Called by Helius the moment a sell hits our position.
+        Checks exit conditions immediately instead of waiting for poll loop.
+        """
+        position = self.positions.get(mint)
+        if not position or position.status != 'active' or position.is_closing:
+            return
+
+        current_curve = state.get('vSolInBondingCurve', 0)
+        if current_curve <= 0:
+            return
+
+        # Get entry baseline
+        entry_curve = getattr(position, 'detection_curve_sol', 0)
+        if entry_curve <= 0:
+            entry_curve = getattr(position, 'entry_sol_in_curve', 6.0)
+
+        # INSTANT CHECK 1: Relative floor (85% of entry)
+        relative_floor = entry_curve * 0.85
+        if current_curve < relative_floor:
+            logger.warning(f"🚨 INSTANT EXIT: Curve {current_curve:.2f} < {relative_floor:.2f} (85% of entry {entry_curve:.2f})")
+            await self._close_position_full(mint, reason=f"instant_floor_{current_curve:.1f}")
+            return
+
+        # INSTANT CHECK 2: Absolute floor (safety net)
+        from config import RUG_FLOOR_SOL
+        if current_curve < RUG_FLOOR_SOL:
+            logger.warning(f"🚨 INSTANT RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} absolute floor")
+            await self._close_position_full(mint, reason=f"instant_rug_{current_curve:.1f}")
+            return
+
+        # INSTANT CHECK 3: Profit decay (30% drop from peak)
+        peak_curve = state.get('peak_curve_sol', current_curve)
+        profit_from_entry = peak_curve - entry_curve
+
+        if profit_from_entry >= 3.0:  # Had meaningful profit (3+ SOL growth)
+            drop_pct = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
+            if drop_pct >= 0.30:
+                logger.warning(f"📉 INSTANT DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} ({drop_pct:.0%} drop)")
+                await self._close_position_full(mint, reason=f"instant_decay_{drop_pct:.0%}")
+                return
+
     async def _fetch_sol_price_birdeye(self) -> float:
         """
         Fetch current SOL price from Birdeye with correct API format.
@@ -969,8 +1012,8 @@ class SniperBot:
         if not self.scanner:
             from solana.rpc.api import Client
             rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
-            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
-        
+            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client, exit_callback=self._on_position_sell)
+
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
             try:
@@ -2422,7 +2465,7 @@ class SniperBot:
 
             from solana.rpc.api import Client
             rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
-            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client)
+            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client, exit_callback=self._on_position_sell)
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot running - ORDER FLOW EXITS")
