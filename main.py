@@ -461,21 +461,14 @@ class SniperBot:
         if entry_curve <= 0:
             entry_curve = getattr(position, 'entry_sol_in_curve', 6.0)
 
-        # INSTANT CHECK 1: Relative floor (85% of entry)
-        relative_floor = entry_curve * 0.85
-        if current_curve < relative_floor:
-            logger.warning(f"🚨 INSTANT EXIT: Curve {current_curve:.2f} < {relative_floor:.2f} (85% of entry {entry_curve:.2f})")
-            await self._close_position_full(mint, reason=f"instant_floor_{current_curve:.1f}")
-            return
-
-        # INSTANT CHECK 2: Absolute floor (safety net)
+        # INSTANT CHECK: Absolute floor (safety net)
         from config import RUG_FLOOR_SOL
         if current_curve < RUG_FLOOR_SOL:
             logger.warning(f"🚨 INSTANT RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} absolute floor")
             await self._close_position_full(mint, reason=f"instant_rug_{current_curve:.1f}")
             return
 
-        # INSTANT CHECK 3: Profit decay (30% drop from peak)
+        # PROFIT DECAY CHECK: 30% drop from peak
         peak_curve = state.get('peak_curve_sol', current_curve)
         profit_from_entry = peak_curve - entry_curve
 
