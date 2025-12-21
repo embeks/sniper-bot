@@ -377,19 +377,11 @@ class SniperBot:
         curve_from_peak = current_curve - peak_curve
 
         # ===========================================
-        # EXIT 1: DYNAMIC ENTRY FLOOR (highest priority - always check)
-        # Uses entry curve as floor - exit if drops below where we entered
+        # EXIT 1: RUG FLOOR (highest priority - always check)
         # ===========================================
-        entry_floor = entry_curve * 0.95  # 5% buffer below entry
-        effective_floor = max(entry_floor, RUG_FLOOR_SOL)  # Never below absolute floor
-
-        if current_curve < effective_floor:
-            if current_curve < RUG_FLOOR_SOL:
-                logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} absolute floor")
-                return True, f"rug_floor_{current_curve:.1f}", pnl_percent
-            else:
-                logger.warning(f"🚨 ENTRY FLOOR: {current_curve:.2f} SOL < {effective_floor:.2f} (entry: {entry_curve:.2f})")
-                return True, f"entry_floor_{current_curve:.1f}", pnl_percent
+        if current_curve < RUG_FLOOR_SOL:
+            logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} floor")
+            return True, f"rug_floor_{current_curve:.1f}", pnl_percent
 
         # Minimum age gate for non-emergency exits
         if age < MIN_EXIT_AGE_SECONDS:
@@ -1651,19 +1643,11 @@ class SniperBot:
                     state = self.scanner.watched_tokens.get(mint, {})
                     current_curve = state.get('vSolInBondingCurve', 0)
 
-                    # Instant dynamic floor check - no RPC needed
+                    # Instant rug floor check - no RPC needed
                     from config import RUG_FLOOR_SOL
-                    entry_curve = getattr(position, 'detection_curve_sol', RUG_FLOOR_SOL)
-                    entry_floor = entry_curve * 0.95
-                    effective_floor = max(entry_floor, RUG_FLOOR_SOL)
-
-                    if current_curve > 0 and current_curve < effective_floor:
-                        if current_curve < RUG_FLOOR_SOL:
-                            logger.warning(f"🚨 EARLY RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} absolute floor")
-                            await self._close_position_full(mint, reason="early_rug_floor")
-                        else:
-                            logger.warning(f"🚨 ENTRY FLOOR: Curve {current_curve:.2f} < {effective_floor:.2f} (entry: {entry_curve:.2f})")
-                            await self._close_position_full(mint, reason=f"entry_floor_{current_curve:.1f}")
+                    if current_curve > 0 and current_curve < RUG_FLOOR_SOL:
+                        logger.warning(f"🚨 EARLY RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} floor")
+                        await self._close_position_full(mint, reason="early_rug_floor")
                         break
 
                 # Early exit if position fully sold
