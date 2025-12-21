@@ -2220,14 +2220,52 @@ class SniperBot:
             # Capture balance RIGHT BEFORE sell for accurate P&L
             pre_close_balance = self.wallet.get_sol_balance()
 
-            # Use PumpPortal for reliable sells (no RPC failure points)
-            signature = await self.trader.create_sell_transaction(
-                mint=mint,
-                token_amount=ui_token_balance,
-                slippage=80,  # 80% for fast-moving memecoins
-                token_decimals=token_decimals,
-                urgency=urgency
-            )
+            # ===== TRY LOCAL SELL FIRST (faster - same as buys) =====
+            signature = None
+
+            # Build curve_data for local builder from Helius state
+            if curve_data and curve_data.get('is_valid'):
+                local_curve_data = {
+                    'virtual_sol_reserves': curve_data.get('virtual_sol_reserves', 0),
+                    'virtual_token_reserves': curve_data.get('virtual_token_reserves', 0),
+                }
+            else:
+                # Build from helius_curve_sol if available
+                local_curve_data = None
+                if helius_curve_sol > 0:
+                    virtual_sol = 30 + helius_curve_sol
+                    virtual_sol_lamports = int(virtual_sol * 1e9)
+                    INITIAL_K = 30 * 1_073_000_191 * 1e15
+                    virtual_tokens_atomic = int(INITIAL_K / virtual_sol_lamports)
+                    local_curve_data = {
+                        'virtual_sol_reserves': virtual_sol_lamports,
+                        'virtual_token_reserves': virtual_tokens_atomic,
+                    }
+
+            # Try local sell (Jito first, same as buys)
+            if local_curve_data:
+                try:
+                    signature = await self.local_builder.create_sell_transaction(
+                        mint=mint,
+                        token_amount_ui=ui_token_balance,
+                        curve_data=local_curve_data,
+                        slippage_bps=8000,  # 80% = 8000 bps
+                        token_decimals=6
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Local sell failed: {e}")
+                    signature = None
+
+            # ===== FALLBACK TO PUMPPORTAL IF LOCAL FAILED =====
+            if not signature:
+                logger.warning(f"⚠️ Local sell failed, falling back to PumpPortal...")
+                signature = await self.trader.create_sell_transaction(
+                    mint=mint,
+                    token_amount=ui_token_balance,
+                    slippage=80,
+                    token_decimals=token_decimals,
+                    urgency=urgency
+                )
 
             if not signature or signature.startswith("1111111"):
                 logger.error(f"❌ Close transaction failed")
