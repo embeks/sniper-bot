@@ -9,7 +9,7 @@ import signal
 import time
 import random
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 
 from config import (
@@ -1451,6 +1451,12 @@ class SniperBot:
                 position = Position(mint, actual_sol_spent, bought_tokens, entry_market_cap)
                 position.entry_buyers = unique_buyers
                 position.buy_signature = signature
+                # Capture entry metrics for trade logger
+                position.entry_velocity = helius_events.get('velocity', 0) if helius_events else 0
+                position.token_age_sec = helius_events.get('age_seconds', 0) if helius_events else 0
+                position.sells_at_entry = helius_events.get('sell_count', 0) if helius_events else 0
+                position.buy_latency_ms = execution_time_ms
+                position.entry_slippage_pct = entry_slippage if 'entry_slippage' in locals() else 0
                 position.initial_tokens = bought_tokens
                 position.remaining_tokens = bought_tokens
                 position.last_valid_balance = bought_tokens
@@ -1634,7 +1640,13 @@ class SniperBot:
 
                     # Update position for display
                     position.pnl_percent = pnl_percent
-                    position.max_pnl_reached = max(position.max_pnl_reached, pnl_percent)
+                    # Capture peak timing when max PnL is reached
+                    if pnl_percent > position.max_pnl_reached:
+                        position.max_pnl_reached = pnl_percent
+                        if not hasattr(position, 'peak_time'):
+                            position.peak_time = time.time()
+                    else:
+                        position.max_pnl_reached = max(position.max_pnl_reached, pnl_percent)
 
                     # Get current curve for logging
                     helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
@@ -2156,8 +2168,13 @@ class SniperBot:
             else:
                 logger.info(f"💰 Selling from tracker: {ui_token_balance:,.2f} tokens")
 
-            # Use Helius real-time curve data for sell (chain RPC is 2-13s stale)
+            # Capture exit decision metrics BEFORE sell TX
             helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+            position.exit_decision_time = time.time()
+            position.exit_curve_decision = helius_state.get('vSolInBondingCurve', 0)
+            position.sell_start_time = time.time()
+
+            # Use Helius real-time curve data for sell (chain RPC is 2-13s stale)
             helius_curve_sol = helius_state.get('vSolInBondingCurve', 0)
 
             if helius_curve_sol > 0:
@@ -2377,20 +2394,35 @@ class SniperBot:
 
             position.realized_pnl_sol = final_pnl_sol
 
-            # Log completed trade to clean CSV
+            # Log completed trade to clean CSV with all metrics
             helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
+            exit_curve_final = helius_state.get('vSolInBondingCurve', 0)
+            entry_slippage_pct = getattr(position, 'entry_slippage_pct', 0)
+            sell_latency_ms = (time.time() - position.sell_start_time) * 1000 if hasattr(position, 'sell_start_time') else 0
+            peak_time_sec = (position.peak_time - position.entry_time) if hasattr(position, 'peak_time') else 0
+            peak_to_exit_sec = (position.exit_decision_time - position.peak_time) if hasattr(position, 'peak_time') and hasattr(position, 'exit_decision_time') else 0
+
             self.trade_logger.log_trade(
                 mint=mint,
-                entry_curve=getattr(position, 'detection_curve_sol', 6.0),
+                entry_curve=getattr(position, 'detection_curve_sol', 0),
                 peak_curve=helius_state.get('peak_curve_sol', 0),
-                exit_curve=helius_state.get('vSolInBondingCurve', 0),
+                exit_curve_decision=getattr(position, 'exit_curve_decision', 0),
+                exit_curve_final=exit_curve_final,
                 entry_buyers=getattr(position, 'entry_buyers', 0),
+                entry_velocity=getattr(position, 'entry_velocity', 0),
+                token_age_sec=getattr(position, 'token_age_sec', 0),
+                sells_at_entry=getattr(position, 'sells_at_entry', 0),
                 exit_reason=reason,
                 hold_secs=hold_time,
+                peak_time_sec=peak_time_sec,
+                peak_to_exit_sec=peak_to_exit_sec,
                 sells_survived=helius_state.get('sell_count', 0),
                 invested=position.amount_sol,
                 received=total_sol_received,
-                max_pnl_pct=position.max_pnl_reached
+                max_pnl_pct=position.max_pnl_reached,
+                entry_slippage_pct=entry_slippage_pct,
+                buy_latency_ms=getattr(position, 'buy_latency_ms', 0),
+                sell_latency_ms=sell_latency_ms
             )
 
             # Only add to totals if P&L is known
