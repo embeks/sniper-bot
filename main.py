@@ -447,39 +447,42 @@ class SniperBot:
 
     async def _on_position_sell(self, mint: str, state: dict):
         """
-        INSTANT EXIT CHECK - Called by Helius the moment a sell hits our position.
-        Checks exit conditions immediately instead of waiting for poll loop.
+        INSTANT EXIT CHECK - Called by Helius on EVERY sell event.
+        Runs full exit condition check immediately (no 2-second delay).
+        """
+        position = self.positions.get(mint)
+        if not position or position.status != 'active' or position.is_closing:
+            return
+
+        # Run FULL exit condition check instantly (same logic as monitoring loop)
+        should_exit, exit_reason, pnl_percent = self._check_curve_exits(mint, position)
+
+        if should_exit:
+            logger.warning(f"⚡ INSTANT EXIT: {exit_reason} (triggered by sell event)")
+            await self._close_position_full(mint, reason=exit_reason)
+            return
+
+        # Update position P&L for display
+        position.pnl_percent = pnl_percent
+        if pnl_percent > position.max_pnl_reached:
+            position.max_pnl_reached = pnl_percent
+            if not hasattr(position, 'peak_time'):
+                position.peak_time = time.time()
+
+    async def _on_position_buy(self, mint: str, state: dict):
+        """
+        INSTANT CHECK on buy events - detects migration threshold.
         """
         position = self.positions.get(mint)
         if not position or position.status != 'active' or position.is_closing:
             return
 
         current_curve = state.get('vSolInBondingCurve', 0)
-        if current_curve <= 0:
-            return
 
-        # Get entry baseline
-        entry_curve = getattr(position, 'detection_curve_sol', 0)
-        if entry_curve <= 0:
-            entry_curve = getattr(position, 'entry_sol_in_curve', 6.0)
-
-        # INSTANT CHECK: Absolute floor (safety net)
-        from config import RUG_FLOOR_SOL
-        if current_curve < RUG_FLOOR_SOL:
-            logger.warning(f"🚨 INSTANT RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} absolute floor")
-            await self._close_position_full(mint, reason=f"instant_rug_{current_curve:.1f}")
-            return
-
-        # PROFIT DECAY CHECK: 30% drop from peak
-        peak_curve = state.get('peak_curve_sol', current_curve)
-        profit_from_entry = peak_curve - entry_curve
-
-        if profit_from_entry >= 3.0:  # Had meaningful profit (3+ SOL growth)
-            drop_pct = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
-            if drop_pct >= 0.30:
-                logger.warning(f"📉 INSTANT DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} ({drop_pct:.0%} drop)")
-                await self._close_position_full(mint, reason=f"instant_decay_{drop_pct:.0%}")
-                return
+        # Instant migration check
+        if current_curve >= 85:
+            logger.warning(f"⚡ INSTANT MIGRATION: Curve at {current_curve:.0f} SOL")
+            await self._close_position_full(mint, reason="migration")
 
     async def _fetch_sol_price_birdeye(self) -> float:
         """
@@ -1007,7 +1010,12 @@ class SniperBot:
         if not self.scanner:
             from solana.rpc.api import Client
             rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
-            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client, exit_callback=self._on_position_sell)
+            self.scanner = HeliusLogsMonitor(
+                self.on_token_found,
+                rpc_client,
+                exit_callback=self._on_position_sell,
+                buy_callback=self._on_position_buy
+            )
 
         if self.scanner_task and not self.scanner_task.done():
             self.scanner_task.cancel()
@@ -1633,32 +1641,10 @@ class SniperBot:
                     break
 
                 try:
-                    # ===================================================================
-                    # CURVE-BASED EXITS - All from Helius, NO RPC for decisions
-                    # ===================================================================
-                    should_exit, exit_reason, pnl_percent = self._check_curve_exits(mint, position)
-
-                    # Update position for display
-                    position.pnl_percent = pnl_percent
-                    # Capture peak timing when max PnL is reached
-                    if pnl_percent > position.max_pnl_reached:
-                        position.max_pnl_reached = pnl_percent
-                        if not hasattr(position, 'peak_time'):
-                            position.peak_time = time.time()
-                    else:
-                        position.max_pnl_reached = max(position.max_pnl_reached, pnl_percent)
-
-                    # Get current curve for logging
+                    # Exit checks now handled by instant callbacks (_on_position_sell, _on_position_buy)
+                    # This loop only handles max_age timer
                     helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
                     current_curve_sol = helius_state.get('vSolInBondingCurve', 0)
-
-                    if should_exit:
-                        logger.info(f"📊 CURVE EXIT: {mint[:8]}...")
-                        logger.info(f"   Reason: {exit_reason}")
-                        logger.info(f"   P&L: {pnl_percent:+.1f}%")
-                        logger.info(f"   Curve: {current_curve_sol:.2f} SOL")
-                        await self._close_position_full(mint, reason=exit_reason)
-                        break
 
                     # ===================================================================
                     # MAX AGE EXIT (keep this - timer based)
@@ -2509,7 +2495,12 @@ class SniperBot:
 
             from solana.rpc.api import Client
             rpc_client = Client(RPC_ENDPOINT.replace('wss://', 'https://').replace('ws://', 'http://'))
-            self.scanner = HeliusLogsMonitor(self.on_token_found, rpc_client, exit_callback=self._on_position_sell)
+            self.scanner = HeliusLogsMonitor(
+                self.on_token_found,
+                rpc_client,
+                exit_callback=self._on_position_sell,
+                buy_callback=self._on_position_buy
+            )
             self.scanner_task = asyncio.create_task(self.scanner.start())
             
             logger.info("✅ Bot running - ORDER FLOW EXITS")
