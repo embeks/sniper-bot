@@ -2170,13 +2170,20 @@ class SniperBot:
             # This prevents double-selling when rug detected during tier confirmation
             ui_token_balance = position.remaining_tokens
 
-            # Sanity check against wallet
-            actual_wallet = self.wallet.get_token_balance(mint)
-            if actual_wallet > 0 and actual_wallet < ui_token_balance:
-                ui_token_balance = actual_wallet
-                logger.info(f"💰 Wallet balance lower than tracker: {actual_wallet:,.2f} (tier confirmed)")
+            # Skip RPC for emergency exits - 416ms delay is fatal during dumps
+            emergency_reasons = ["whale_dump", "rug_floor", "stop_loss", "early_rug", "momentum_death", "rug_", "stale_data"]
+            is_emergency = any(r in reason for r in emergency_reasons)
+
+            if is_emergency:
+                logger.info(f"⚡ EMERGENCY EXIT: Using tracker balance {ui_token_balance:,.2f} (skipping RPC)")
             else:
-                logger.info(f"💰 Selling from tracker: {ui_token_balance:,.2f} tokens")
+                # Sanity check against wallet (only for non-emergency exits)
+                actual_wallet = self.wallet.get_token_balance(mint)
+                if actual_wallet > 0 and actual_wallet < ui_token_balance:
+                    ui_token_balance = actual_wallet
+                    logger.info(f"💰 Wallet balance lower than tracker: {actual_wallet:,.2f}")
+                else:
+                    logger.info(f"💰 Selling from tracker: {ui_token_balance:,.2f} tokens")
 
             # Capture exit decision metrics BEFORE sell TX
             helius_state = self.scanner.watched_tokens.get(mint, {}) if self.scanner else {}
@@ -2245,11 +2252,14 @@ class SniperBot:
             # Try local sell (Jito first, same as buys)
             if local_curve_data:
                 try:
+                    # Use 95% slippage for emergency exits, 80% for normal
+                    sell_slippage = 9500 if is_emergency else 8000
+
                     signature = await self.local_builder.create_sell_transaction(
                         mint=mint,
                         token_amount_ui=ui_token_balance,
                         curve_data=local_curve_data,
-                        slippage_bps=8000,  # 80% = 8000 bps
+                        slippage_bps=sell_slippage,
                         token_decimals=6
                     )
                 except Exception as e:
