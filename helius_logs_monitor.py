@@ -41,10 +41,11 @@ BLACKLISTED_CREATORS = {
 class HeliusLogsMonitor:
     """Subscribe to PumpFun program logs and track all events"""
     
-    def __init__(self, callback, rpc_client, exit_callback=None):
+    def __init__(self, callback, rpc_client, exit_callback=None, buy_callback=None):
         self.callback = callback
         self.rpc_client = rpc_client
         self.exit_callback = exit_callback
+        self.buy_callback = buy_callback
         self.running = False
         self.reconnect_count = 0
         
@@ -378,7 +379,11 @@ class HeliusLogsMonitor:
                 f"   📈 {mint[:8]}... | {state['total_sol']:.2f} SOL | "
                 f"{len(state['buyers'])} buyers | {age:.1f}s"
             )
-        
+
+        # INSTANT CALLBACK for active positions (migration detection)
+        if self.buy_callback and state.get('has_active_position', False):
+            await self.buy_callback(mint, state)
+
         # Check entry conditions (skip if already triggered)
         if not already_triggered:
             await self._check_and_trigger(mint, state)
