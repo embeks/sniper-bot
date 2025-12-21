@@ -1595,6 +1595,30 @@ class SniperBot:
                         await self._close_position_full(mint, reason="stale_data")
                         break
 
+                # Calculate P&L for display (exit checks handled by instant callbacks)
+                if self.scanner:
+                    helius_state = self.scanner.watched_tokens.get(mint, {})
+                    current_curve = helius_state.get('vSolInBondingCurve', 0)
+                    entry_curve = getattr(position, 'detection_curve_sol', 0) or 6.0
+
+                    # PumpFun AMM: price ∝ (vSol + 30)²
+                    VIRTUAL_RESERVES = 30.0
+                    if entry_curve > 0 and current_curve > 0:
+                        virtual_entry = entry_curve + VIRTUAL_RESERVES
+                        virtual_current = current_curve + VIRTUAL_RESERVES
+                        pnl_percent = ((virtual_current / virtual_entry) ** 2 - 1) * 100
+                    else:
+                        pnl_percent = 0.0
+
+                    # Update position for display
+                    position.pnl_percent = pnl_percent
+                    if pnl_percent > position.max_pnl_reached:
+                        position.max_pnl_reached = pnl_percent
+                        if not hasattr(position, 'peak_time'):
+                            position.peak_time = time.time()
+                else:
+                    pnl_percent = position.pnl_percent  # Fallback if scanner died
+
                 # ===================================================================
                 # EARLY RUG CHECK: Simple floor check (no RPC)
                 # Full exit logic handled by _check_curve_exits below
