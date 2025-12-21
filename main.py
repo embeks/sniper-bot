@@ -1469,6 +1469,7 @@ class SniperBot:
                 position = Position(mint, actual_sol_spent, bought_tokens, entry_market_cap)
                 position.entry_buyers = unique_buyers
                 position.buy_signature = signature
+                position.creator = creator  # Store for local sell TX
                 # Capture entry metrics for trade logger
                 position.entry_velocity = helius_events.get('velocity', 0) if helius_events else 0
                 position.token_age_sec = token_age if 'token_age' in dir() else 0
