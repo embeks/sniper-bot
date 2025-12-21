@@ -377,11 +377,19 @@ class SniperBot:
         curve_from_peak = current_curve - peak_curve
 
         # ===========================================
-        # EXIT 1: RUG FLOOR (highest priority - always check)
+        # EXIT 1: DYNAMIC ENTRY FLOOR (highest priority - always check)
+        # Uses entry curve as floor - exit if drops below where we entered
         # ===========================================
-        if current_curve < RUG_FLOOR_SOL:
-            logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} floor")
-            return True, f"rug_floor_{current_curve:.1f}", pnl_percent
+        entry_floor = entry_curve * 0.95  # 5% buffer below entry
+        effective_floor = max(entry_floor, RUG_FLOOR_SOL)  # Never below absolute floor
+
+        if current_curve < effective_floor:
+            if current_curve < RUG_FLOOR_SOL:
+                logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} absolute floor")
+                return True, f"rug_floor_{current_curve:.1f}", pnl_percent
+            else:
+                logger.warning(f"🚨 ENTRY FLOOR: {current_curve:.2f} SOL < {effective_floor:.2f} (entry: {entry_curve:.2f})")
+                return True, f"entry_floor_{current_curve:.1f}", pnl_percent
 
         # Minimum age gate for non-emergency exits
         if age < MIN_EXIT_AGE_SECONDS:
@@ -1471,8 +1479,14 @@ class SniperBot:
                 position.buy_signature = signature
                 # Capture entry metrics for trade logger
                 position.entry_velocity = helius_events.get('velocity', 0) if helius_events else 0
-                position.token_age_sec = helius_events.get('age_seconds', 0) if helius_events else 0
+                position.token_age_sec = token_age if 'token_age' in dir() else 0
                 position.sells_at_entry = helius_events.get('sell_count', 0) if helius_events else 0
+                # New entry pattern metrics for analysis
+                _entry_sol = helius_events.get('vSolInBondingCurve', 1) if helius_events else 1
+                position.largest_buy_pct = (helius_events.get('largest_buy', 0) / _entry_sol * 100) if helius_events and _entry_sol > 0 else 0
+                position.top2_concentration = helius_events.get('top2_concentration', 0) if helius_events else 0
+                position.bundled = helius_events.get('same_slot', False) if helius_events else False
+                position.buyer_velocity = (helius_events.get('buy_count', 0) / max(token_age, 0.1)) if helius_events else 0
                 position.buy_latency_ms = execution_time_ms
                 position.entry_slippage_pct = entry_slippage if 'entry_slippage' in locals() else 0
                 position.initial_tokens = bought_tokens
@@ -1637,11 +1651,19 @@ class SniperBot:
                     state = self.scanner.watched_tokens.get(mint, {})
                     current_curve = state.get('vSolInBondingCurve', 0)
 
-                    # Instant rug floor check - no RPC needed
+                    # Instant dynamic floor check - no RPC needed
                     from config import RUG_FLOOR_SOL
-                    if current_curve > 0 and current_curve < RUG_FLOOR_SOL:
-                        logger.warning(f"🚨 EARLY RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} floor")
-                        await self._close_position_full(mint, reason="early_rug_floor")
+                    entry_curve = getattr(position, 'detection_curve_sol', RUG_FLOOR_SOL)
+                    entry_floor = entry_curve * 0.95
+                    effective_floor = max(entry_floor, RUG_FLOOR_SOL)
+
+                    if current_curve > 0 and current_curve < effective_floor:
+                        if current_curve < RUG_FLOOR_SOL:
+                            logger.warning(f"🚨 EARLY RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} absolute floor")
+                            await self._close_position_full(mint, reason="early_rug_floor")
+                        else:
+                            logger.warning(f"🚨 ENTRY FLOOR: Curve {current_curve:.2f} < {effective_floor:.2f} (entry: {entry_curve:.2f})")
+                            await self._close_position_full(mint, reason=f"entry_floor_{current_curve:.1f}")
                         break
 
                 # Early exit if position fully sold
@@ -2478,8 +2500,12 @@ class SniperBot:
                 exit_curve_final=exit_curve_final,
                 entry_buyers=getattr(position, 'entry_buyers', 0),
                 entry_velocity=getattr(position, 'entry_velocity', 0),
+                buyer_velocity=getattr(position, 'buyer_velocity', 0),
                 token_age_sec=getattr(position, 'token_age_sec', 0),
                 sells_at_entry=getattr(position, 'sells_at_entry', 0),
+                largest_buy_pct=getattr(position, 'largest_buy_pct', 0),
+                top2_concentration=getattr(position, 'top2_concentration', 0),
+                bundled=getattr(position, 'bundled', False),
                 exit_reason=reason,
                 hold_secs=hold_time,
                 peak_time_sec=peak_time_sec,
