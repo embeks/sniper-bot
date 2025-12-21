@@ -526,7 +526,11 @@ class LocalSwapBuilder:
 
             # Calculate SOL out
             sol_out = self.calculate_sol_out(token_amount, virtual_sol_reserves, virtual_token_reserves)
-            min_sol_output = int(sol_out * (10000 - slippage_bps) / 10000)
+            # For emergency slippage (95%+), accept ANY output - we want OUT
+            if slippage_bps >= 9500:
+                min_sol_output = 1  # 1 lamport = accept anything
+            else:
+                min_sol_output = int(sol_out * (10000 - slippage_bps) / 10000)
 
             logger.info(f"⚡ Building LOCAL sell TX for {mint[:8]}...")
             logger.info(f"   Tokens: {token_amount_ui:,.2f} ({token_amount:,} atomic)")
