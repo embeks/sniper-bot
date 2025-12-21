@@ -258,36 +258,31 @@ class LocalSwapBuilder:
         bonding_curve: Pubkey,
         associated_bonding_curve: Pubkey,
         user_ata: Pubkey,
+        creator_vault: Pubkey,
         token_amount: int,
         min_sol_output: int
     ) -> Instruction:
         """
-        Build Pump.fun sell instruction
-        
-        Args:
-            mint: Token mint address
-            bonding_curve: Bonding curve PDA
-            associated_bonding_curve: Bonding curve's token account
-            user_ata: User's associated token account
-            token_amount: Tokens to sell (atomic units)
-            min_sol_output: Minimum SOL to receive (lamports)
+        Build Pump.fun sell instruction (14 accounts per current IDL)
         """
         # Instruction data: discriminator + token_amount (u64) + min_sol_output (u64)
         data = SELL_DISCRIMINATOR + struct.pack('<Q', token_amount) + struct.pack('<Q', min_sol_output)
-        
+
         accounts = [
-            AccountMeta(self.global_pda, is_signer=False, is_writable=False),
-            AccountMeta(PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),
-            AccountMeta(mint, is_signer=False, is_writable=False),
-            AccountMeta(bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(associated_bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(user_ata, is_signer=False, is_writable=True),
-            AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),
-            AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(self.event_authority, is_signer=False, is_writable=False),
-            AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(self.global_pda, is_signer=False, is_writable=False),             # 0 Global
+            AccountMeta(PUMPFUN_FEE_RECIPIENT, is_signer=False, is_writable=True),        # 1 Fee Recipient
+            AccountMeta(mint, is_signer=False, is_writable=False),                        # 2 Mint
+            AccountMeta(bonding_curve, is_signer=False, is_writable=True),                # 3 Bonding Curve
+            AccountMeta(associated_bonding_curve, is_signer=False, is_writable=True),     # 4 Associated Bonding Curve
+            AccountMeta(user_ata, is_signer=False, is_writable=True),                     # 5 Associated User
+            AccountMeta(self.wallet.pubkey, is_signer=True, is_writable=True),            # 6 User
+            AccountMeta(SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),           # 7 System Program
+            AccountMeta(creator_vault, is_signer=False, is_writable=True),                # 8 Creator Vault
+            AccountMeta(TOKEN_2022_PROGRAM_ID, is_signer=False, is_writable=False),       # 9 Token Program
+            AccountMeta(self.event_authority, is_signer=False, is_writable=False),        # 10 Event Authority
+            AccountMeta(PUMPFUN_PROGRAM_ID, is_signer=False, is_writable=False),          # 11 Program
+            AccountMeta(self.fee_config, is_signer=False, is_writable=True),              # 12 Fee Config
+            AccountMeta(FEE_PROGRAM_ID, is_signer=False, is_writable=False),              # 13 Fee Program
         ]
 
         return Instruction(PUMPFUN_PROGRAM_ID, data, accounts)
@@ -476,7 +471,8 @@ class LocalSwapBuilder:
         token_amount_ui: float,
         curve_data: dict = None,
         slippage_bps: int = 5000,
-        token_decimals: int = 6
+        token_decimals: int = 6,
+        creator: str = None
     ) -> Optional[str]:
         """
         Build and send a sell transaction locally - JITO FIRST like buys
@@ -501,6 +497,13 @@ class LocalSwapBuilder:
             bonding_curve, _ = self.derive_bonding_curve_pda(mint_pubkey)
             associated_bonding_curve = self.derive_associated_token_account(bonding_curve, mint_pubkey)
             user_ata = self.derive_associated_token_account(self.wallet.pubkey, mint_pubkey)
+
+            # Derive creator vault (required for sell)
+            if not creator:
+                logger.error(f"❌ Creator pubkey required for local sell TX")
+                return None
+            creator_pubkey = Pubkey.from_string(creator)
+            creator_vault = self.derive_creator_vault_pda(creator_pubkey)
 
             # Use passed curve_data if available (from Helius - faster)
             # Otherwise query chain (slower but accurate)
@@ -543,6 +546,7 @@ class LocalSwapBuilder:
                 bonding_curve,
                 associated_bonding_curve,
                 user_ata,
+                creator_vault,
                 token_amount,
                 min_sol_output
             )
