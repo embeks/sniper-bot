@@ -1114,6 +1114,16 @@ class SniperBot:
                 logger.info(f"   SOL: {actual_sol:.2f} | Buyers: {unique_buyers} | Velocity: {velocity:.2f}/s")
                 logger.info(f"   Buys: {buy_count} | Sells: {sell_count} | Age: {token_age:.1f}s")
 
+                # Log ALL entry metrics for pattern analysis
+                logger.info(f"📊 ENTRY PATTERN DATA:")
+                logger.info(f"   sells_at_entry: {sell_count}")
+                logger.info(f"   largest_buy_pct: {event_data.get('largest_buy_pct', 0):.1f}%")
+                logger.info(f"   top2_concentration: {event_data.get('top2_concentration', 0):.1f}%")
+                logger.info(f"   velocity: {velocity:.2f} SOL/s")
+                logger.info(f"   buyer_velocity: {event_data.get('buyer_velocity', 0):.1f}/s")
+                logger.info(f"   bundled: {event_data.get('same_slot', False)}")
+                logger.info(f"   slot_clustering_pct: {event_data.get('slot_clustering_pct', 0):.0f}%")
+
                 # Skip velocity checker - already validated by event monitor
                 # Skip holder check - we have real buyer count
                 # Skip SOL range check - already validated
