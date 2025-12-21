@@ -2268,8 +2268,8 @@ class SniperBot:
             # Try local sell (Jito first, same as buys)
             if local_curve_data:
                 try:
-                    # Use 95% slippage for emergency exits, 80% for normal
-                    sell_slippage = 9500 if is_emergency else 8000
+                    # Use 95% slippage for all exits
+                    sell_slippage = 9500
 
                     signature = await self.local_builder.create_sell_transaction(
                         mint=mint,
@@ -2288,7 +2288,7 @@ class SniperBot:
                 signature = await self.trader.create_sell_transaction(
                     mint=mint,
                     token_amount=ui_token_balance,
-                    slippage=80,
+                    slippage=95,
                     token_decimals=token_decimals,
                     urgency=urgency
                 )
