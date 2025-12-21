@@ -2277,7 +2277,7 @@ class SniperBot:
                         curve_data=local_curve_data,
                         slippage_bps=sell_slippage,
                         token_decimals=6,
-                        creator=position.get('creator')
+                        creator=position.creator
                     )
                 except Exception as e:
                     logger.warning(f"⚠️ Local sell failed: {e}")
