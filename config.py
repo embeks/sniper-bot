@@ -136,7 +136,7 @@ MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 # ============================================
 # Tier 1: Under 12 SOL - use sell burst exit
 SELL_BURST_EXIT_MAX_CURVE = 12.0      # Only trigger sell burst below this curve
-SELL_BURST_EXIT_MIN_SELLS = 5         # 5 real sells (filtered) to trigger
+SELL_BURST_EXIT_MIN_SELLS = 3         # 3 real sells (filtered) to trigger
 SELL_BURST_EXIT_MIN_SOL = 0.01        # Ignore dust sells below this
 
 # Tier 2: 12-25 SOL - looser profit decay (let it cook)
