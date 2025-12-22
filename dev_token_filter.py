@@ -15,7 +15,7 @@ _creator_token_cache = {}
 _cache_lock = asyncio.Lock()
 
 
-async def get_dev_token_count(creator_wallet: str, timeout: float = 1.0) -> int:
+async def get_dev_token_count(creator_wallet: str, timeout: float = 0.3) -> int:
     """
     Count how many PumpFun tokens this wallet has created.
     Returns: token count, or -1 on error
@@ -29,7 +29,7 @@ async def get_dev_token_count(creator_wallet: str, timeout: float = 1.0) -> int:
 
     count = -1
     try:
-        url = f"https://api.helius.xyz/v0/addresses/{creator_wallet}/transactions?api-key={HELIUS_API_KEY}&type=CREATE&source=PUMP_FUN&limit=100"
+        url = f"https://api.helius.xyz/v0/addresses/{creator_wallet}/transactions?api-key={HELIUS_API_KEY}&type=CREATE&source=PUMP_FUN&limit=2"
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
