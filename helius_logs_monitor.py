@@ -600,6 +600,17 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
+        # 5e. CURVE DRAIN GATE - Reject if significant selling already occurred
+        # total_sol = actual curve, state['total_sol'] = cumulative buys (never decreases)
+        # If curve < 85% of total buys, dumping is in progress
+        cumulative_buys = state.get('total_sol', total_sol)
+        if cumulative_buys > 0 and total_sol < cumulative_buys * 0.85:
+            drain_pct = ((cumulative_buys - total_sol) / cumulative_buys) * 100
+            logger.warning(f"❌ CURVE DRAINED: {drain_pct:.0f}% sold (curve={total_sol:.2f}, buys={cumulative_buys:.2f})")
+            self.stats['skipped_curve_stalled'] += 1
+            self.triggered_tokens.add(mint)
+            return
+
         # 6. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
             logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
