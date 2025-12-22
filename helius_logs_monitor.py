@@ -28,6 +28,7 @@ from config import (
     SELL_BURST_COUNT, SELL_BURST_WINDOW,
     CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH
 )
+from dev_token_filter import get_dev_token_count
 from solders.pubkey import Pubkey
 
 logger = logging.getLogger(__name__)
@@ -264,6 +265,14 @@ class HeliusLogsMonitor:
         if creator and creator in BLACKLISTED_CREATORS:
             logger.warning(f"🚫 BLACKLISTED CREATOR: {creator[:12]}... - skipping {mint[:12]}...")
             return
+
+        # Check if serial rugger
+        dev_count = await get_dev_token_count(creator)
+        if dev_count > 1:
+            print(f"🚫 SERIAL RUGGER: {creator[:8]}... has {dev_count} historical tokens - SKIP")
+            return
+        if dev_count == 1:
+            print(f"✅ First-time creator: {creator[:8]}...")
 
         # Track and filter serial creators (scammers launch many tokens)
         if creator:
