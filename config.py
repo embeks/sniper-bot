@@ -132,6 +132,21 @@ BUY_DROUGHT_SECONDS = 8.0     # No buys for this long + declining = dead
 MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 
 # ============================================
+# TIERED EXIT SYSTEM (curve-based)
+# ============================================
+# Tier 1: Under 12 SOL - use sell burst exit
+SELL_BURST_EXIT_MAX_CURVE = 12.0      # Only trigger sell burst below this curve
+SELL_BURST_EXIT_MIN_SELLS = 5         # 5 real sells (filtered) to trigger
+SELL_BURST_EXIT_MIN_SOL = 0.01        # Ignore dust sells below this
+
+# Tier 2: 12-25 SOL - looser profit decay (let it cook)
+PROFIT_DECAY_MID_PERCENT = 0.40       # 40% drop from peak triggers exit
+MID_TIER_MAX_CURVE = 25.0             # Upper bound for mid-tier
+
+# Tier 3: 25+ SOL - runner, tighter decay (catch the top)
+PROFIT_DECAY_RUNNER_PERCENT = 0.30    # 30% drop from peak triggers exit
+
+# ============================================
 # MOMENTUM EXIT SETTINGS
 # ============================================
 MOMENTUM_MAX_DRAWDOWN_PP = float(os.getenv('MOMENTUM_MAX_DRAWDOWN_PP', '15.0'))     # Raised from 25.0
