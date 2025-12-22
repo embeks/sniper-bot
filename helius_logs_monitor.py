@@ -266,13 +266,19 @@ class HeliusLogsMonitor:
             logger.warning(f"🚫 BLACKLISTED CREATOR: {creator[:12]}... - skipping {mint[:12]}...")
             return
 
-        # Check if serial rugger
-        dev_count = await get_dev_token_count(creator)
-        if dev_count > 1:
-            print(f"🚫 SERIAL RUGGER: {creator[:8]}... has {dev_count} historical tokens - SKIP")
-            return
-        if dev_count == 1:
-            print(f"✅ First-time creator: {creator[:8]}...")
+        # Check if serial rugger via Helius API
+        if creator:
+            dev_count = await get_dev_token_count(creator)
+            if dev_count > 1:
+                logger.warning(f"🚫 SERIAL RUGGER: {creator[:8]}... has {dev_count} historical tokens - SKIP")
+                self.stats['skipped_serial_rugger'] = self.stats.get('skipped_serial_rugger', 0) + 1
+                return
+            elif dev_count == 1:
+                logger.info(f"✅ First-time creator: {creator[:8]}...")
+            elif dev_count == 0:
+                logger.info(f"✅ New creator (0 history): {creator[:8]}...")
+            else:
+                logger.debug(f"⚠️ Dev count check failed for {creator[:8]}... (API error)")
 
         # Track and filter serial creators (scammers launch many tokens)
         if creator:
