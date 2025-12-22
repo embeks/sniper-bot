@@ -29,14 +29,14 @@ async def get_dev_token_count(creator_wallet: str, timeout: float = 1.0) -> int:
 
     count = -1
     try:
-        url = f"https://api.helius.xyz/v0/addresses/{creator_wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
+        url = f"https://api.helius.xyz/v0/addresses/{creator_wallet}/transactions?api-key={HELIUS_API_KEY}&type=CREATE&source=PUMP_FUN&limit=100"
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, list):
-                        count = sum(1 for tx in data if tx.get("type") == "CREATE" and tx.get("source") == "PUMP_FUN")
+                        count = len(data)
 
     except Exception as e:
         logger.debug(f"Dev token count error: {e}")
