@@ -278,7 +278,10 @@ class HeliusLogsMonitor:
             elif dev_count == 0:
                 logger.info(f"✅ New creator (0 history): {creator[:8]}...")
             else:
-                logger.debug(f"⚠️ Dev count check failed for {creator[:8]}... (API error)")
+                # API error (-1) - block by default, don't let unknowns through
+                logger.warning(f"🚫 CREATOR CHECK FAILED: {creator[:8]}... (API error) - blocking by default")
+                self.stats['skipped_creator_check_failed'] = self.stats.get('skipped_creator_check_failed', 0) + 1
+                return
 
         # Track and filter serial creators (scammers launch many tokens)
         if creator:
