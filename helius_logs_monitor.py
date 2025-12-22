@@ -278,6 +278,7 @@ class HeliusLogsMonitor:
         # Initialize token state with creator
         self.watched_tokens[mint] = {
             'created_at': time.time(),
+            'caught_creation': True,  # We witnessed CreateV2 - real age is known
             'signature': signature,
             'creator': creator,
             'creation_slot': slot,  # NEW: Track creation slot
@@ -478,7 +479,7 @@ class HeliusLogsMonitor:
 
         # Age correction: if detected age is impossibly short for the SOL amount, correct it
         # This handles tokens that were created before we started watching
-        if age < (total_sol / 5.0) and total_sol > 1.5:
+        if not state.get('caught_creation', False) and age < (total_sol / 5.0) and total_sol > 1.5:
             impossible_velocity = total_sol / age if age > 0 else float('inf')
             corrected_age = total_sol / 3.0
             logger.warning(f"⚠️ AGE CORRECTION: Detected {age:.1f}s but {total_sol:.2f} SOL = {impossible_velocity:.1f} SOL/s (impossible)")
