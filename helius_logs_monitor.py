@@ -278,10 +278,10 @@ class HeliusLogsMonitor:
             elif dev_count == 0:
                 logger.info(f"✅ New creator (0 history): {creator[:8]}...")
             else:
-                # API error (-1) - block by default, don't let unknowns through
-                logger.warning(f"🚫 CREATOR CHECK FAILED: {creator[:8]}... (API error) - blocking by default")
-                self.stats['skipped_creator_check_failed'] = self.stats.get('skipped_creator_check_failed', 0) + 1
-                return
+                # API error (-1) - ALLOW and let rug detection handle it
+                # Don't block opportunities due to API failures
+                logger.warning(f"⚠️ Creator check failed: {creator[:8]}... (API error) - allowing anyway")
+                self.stats['creator_check_failed_allowed'] = self.stats.get('creator_check_failed_allowed', 0) + 1
 
         # Track and filter serial creators (scammers launch many tokens)
         if creator:
