@@ -29,6 +29,7 @@ from config import (
     CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH
 )
 from solders.pubkey import Pubkey
+from dev_token_filter import get_dev_token_count
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +265,19 @@ class HeliusLogsMonitor:
         if creator and creator in BLACKLISTED_CREATORS:
             logger.warning(f"🚫 BLACKLISTED CREATOR: {creator[:12]}... - skipping {mint[:12]}...")
             return
+
+        # ========== THE KILLER FILTER ==========
+        if creator:
+            dev_token_count = await get_dev_token_count(creator)
+            if dev_token_count > 1:
+                logger.warning(f"🚫 SERIAL RUGGER: {creator[:12]}... has {dev_token_count} historical tokens - SKIP")
+                self.stats['skipped_serial_creator'] += 1
+                return
+            elif dev_token_count == 1:
+                logger.info(f"✅ First-time creator: {creator[:12]}...")
+            elif dev_token_count == 0:
+                logger.info(f"✅ Virgin wallet: {creator[:12]}...")
+        # =======================================
 
         # Track and filter serial creators (scammers launch many tokens)
         if creator:
