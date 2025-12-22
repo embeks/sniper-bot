@@ -60,7 +60,7 @@ class HeliusLogsMonitor:
 
         # Track creator launches - skip serial scammers
         self.creator_launches: Dict[str, int] = {}  # creator -> launch count
-        self.max_creator_launches = 2  # Skip if creator launched 3+ tokens in session
+        self.max_creator_launches = 1  # Skip if creator launched 3+ tokens in session
 
         # Statistics
         self.stats = {
