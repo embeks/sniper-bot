@@ -6,13 +6,13 @@ Counts PumpFun CREATE transactions to identify serial token launchers.
 import aiohttp
 import asyncio
 import logging
-import os
+
+from config import HELIUS_API_KEY
 
 logger = logging.getLogger(__name__)
 
 _creator_token_cache = {}
 _cache_lock = asyncio.Lock()
-HELIUS_API_KEY = os.getenv("HELIUS_API")
 
 
 async def get_dev_token_count(creator_wallet: str, timeout: float = 1.0) -> int:
