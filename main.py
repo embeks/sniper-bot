@@ -34,6 +34,8 @@ from config import (
     TIMER_MAX_EXTENSIONS,
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD,
     MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
+    SELL_BURST_EXIT_MAX_CURVE, SELL_BURST_EXIT_MIN_SELLS, SELL_BURST_EXIT_MIN_SOL,
+    PROFIT_DECAY_MID_PERCENT, MID_TIER_MAX_CURVE, PROFIT_DECAY_RUNNER_PERCENT,
 )
 
 from wallet import WalletManager
@@ -413,14 +415,37 @@ class SniperBot:
                 return True, f"whale_dump_{whale_pct:.0f}pct", pnl_percent
 
         # ===========================================
-        # EXIT 4: PROFIT DECAY (hit good peak, now giving back)
+        # EXIT 4: SELL BURST (curve < 12 SOL, 5+ real sells)
         # ===========================================
-        profit_from_entry = peak_curve - entry_curve
+        if current_curve < SELL_BURST_EXIT_MAX_CURVE:
+            flow_sells = state.get('flow_sells', [])
+            # Count real sells (>0.01 SOL) in last 5 seconds
+            real_sells_5s = [
+                (t, amt) for t, amt in flow_sells
+                if now - t < 5.0 and amt >= SELL_BURST_EXIT_MIN_SOL
+            ]
 
-        if profit_from_entry >= PROFIT_PEAK_THRESHOLD_SOL:
-            drop_percent = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
-            if drop_percent >= PROFIT_DECAY_PERCENT:
-                logger.warning(f"📉 PROFIT DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
+            if len(real_sells_5s) >= SELL_BURST_EXIT_MIN_SELLS:
+                # Only exit if position is profitable
+                if pnl_percent > 0:
+                    logger.warning(f"🔥 SELL BURST: {len(real_sells_5s)} real sells in 5s at {current_curve:.1f} SOL")
+                    return True, f"sell_burst_{len(real_sells_5s)}_at_{current_curve:.1f}", pnl_percent
+
+        # ===========================================
+        # EXIT 5: TIERED PROFIT DECAY
+        # ===========================================
+        drop_percent = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
+
+        # Tier 2: 12-25 SOL curve - 40% decay (let it cook)
+        if current_curve >= SELL_BURST_EXIT_MAX_CURVE and current_curve < MID_TIER_MAX_CURVE:
+            if drop_percent >= PROFIT_DECAY_MID_PERCENT:
+                logger.warning(f"📉 MID-TIER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
+                return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
+
+        # Tier 3: 25+ SOL curve - 30% decay (runner, catch the top)
+        elif current_curve >= MID_TIER_MAX_CURVE:
+            if drop_percent >= PROFIT_DECAY_RUNNER_PERCENT:
+                logger.warning(f"📉 RUNNER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
                 return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
 
         # ===========================================
