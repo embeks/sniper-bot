@@ -417,7 +417,7 @@ class SniperBot:
         # ===========================================
         # EXIT 4: SELL BURST (curve < 12 SOL, 5+ real sells)
         # ===========================================
-        if current_curve < SELL_BURST_EXIT_MAX_CURVE:
+        if current_curve < SELL_BURST_EXIT_MAX_CURVE and peak_curve < SELL_BURST_EXIT_MAX_CURVE:
             flow_sells = state.get('flow_sells', [])
             # Count real sells (>0.01 SOL) in last 5 seconds
             real_sells_5s = [
@@ -437,13 +437,13 @@ class SniperBot:
         drop_percent = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
 
         # Tier 2: 12-25 SOL curve - 40% decay (let it cook)
-        if current_curve >= SELL_BURST_EXIT_MAX_CURVE and current_curve < MID_TIER_MAX_CURVE:
+        if peak_curve >= SELL_BURST_EXIT_MAX_CURVE and peak_curve < MID_TIER_MAX_CURVE:
             if drop_percent >= PROFIT_DECAY_MID_PERCENT:
                 logger.warning(f"📉 MID-TIER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
                 return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
 
         # Tier 3: 25+ SOL curve - 30% decay (runner, catch the top)
-        elif current_curve >= MID_TIER_MAX_CURVE:
+        elif peak_curve >= MID_TIER_MAX_CURVE:
             if drop_percent >= PROFIT_DECAY_RUNNER_PERCENT:
                 logger.warning(f"📉 RUNNER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
                 return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
