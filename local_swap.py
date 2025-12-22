@@ -69,10 +69,13 @@ class LocalSwapBuilder:
             FEE_PROGRAM_ID
         )[0]
 
-        # Blockhash caching - refresh every 2s in background
+        # Blockhash caching - refresh every 800ms in background
         self._cached_blockhash = None
         self._blockhash_lock = asyncio.Lock()
         self._blockhash_task = None
+
+        # Jito endpoint latency tracking - pick fastest responding endpoint
+        self._jito_latencies = {}  # endpoint -> list of recent latencies (ms)
 
         logger.info(f"LocalSwapBuilder initialized")
         logger.info(f"  Global PDA: {self.global_pda}")
@@ -81,13 +84,13 @@ class LocalSwapBuilder:
         logger.info(f"  Fee Config: {self.fee_config}")
 
     async def start_blockhash_cache(self):
-        """Start background task to refresh blockhash every 2 seconds"""
+        """Start background task to refresh blockhash every 800ms"""
         if self._blockhash_task is None:
             self._blockhash_task = asyncio.create_task(self._refresh_blockhash_loop())
-            logger.info("🔄 Blockhash cache started (refreshes every 2s)")
+            logger.info("🔄 Blockhash cache started (refreshes every 800ms)")
 
     async def _refresh_blockhash_loop(self):
-        """Background loop to refresh blockhash every 2 seconds"""
+        """Background loop to refresh blockhash every 800ms (Solana slots are ~400ms)"""
         while True:
             try:
                 blockhash_resp = self.client.get_latest_blockhash()
@@ -95,7 +98,7 @@ class LocalSwapBuilder:
                     self._cached_blockhash = blockhash_resp.value.blockhash
             except Exception as e:
                 logger.warning(f"⚠️ Blockhash refresh failed: {e}")
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.8)  # Reduced from 2s - fresher blockhash = less rejection risk
 
     def _build_jito_tip_instruction(self, tip_lamports: int) -> Instruction:
         """Build a SOL transfer instruction to a random Jito tip account"""
@@ -113,13 +116,47 @@ class LocalSwapBuilder:
 
         return Instruction(SYSTEM_PROGRAM_ID, data, accounts)
 
+    def _get_fastest_jito_endpoint(self, endpoints: list) -> str:
+        """Pick the Jito endpoint with lowest average latency, or random if no data"""
+        if not self._jito_latencies:
+            return random.choice(endpoints)
+
+        # Calculate average latency for each endpoint (last 5 requests)
+        avg_latencies = {}
+        for ep in endpoints:
+            if ep in self._jito_latencies and self._jito_latencies[ep]:
+                recent = self._jito_latencies[ep][-5:]
+                avg_latencies[ep] = sum(recent) / len(recent)
+            else:
+                avg_latencies[ep] = 500  # Default 500ms for unknown endpoints
+
+        # Pick fastest, with some randomness to avoid always hammering one endpoint
+        sorted_eps = sorted(avg_latencies.items(), key=lambda x: x[1])
+        # Pick from top 2 fastest endpoints randomly
+        top_eps = [ep for ep, _ in sorted_eps[:2]]
+        return random.choice(top_eps)
+
+    def _record_jito_latency(self, endpoint: str, latency_ms: float, success: bool):
+        """Record latency for an endpoint (penalize failures)"""
+        if endpoint not in self._jito_latencies:
+            self._jito_latencies[endpoint] = []
+
+        # Penalize failures with high latency value
+        recorded_latency = latency_ms if success else 1000.0
+        self._jito_latencies[endpoint].append(recorded_latency)
+
+        # Keep only last 10 measurements
+        if len(self._jito_latencies[endpoint]) > 10:
+            self._jito_latencies[endpoint] = self._jito_latencies[endpoint][-10:]
+
     async def _send_via_jito(self, signed_tx_bytes: bytes) -> Optional[str]:
         """Send transaction via Jito block engine for priority inclusion"""
         from config import JITO_ENDPOINTS
         import base64
 
         tx_base64 = base64.b64encode(signed_tx_bytes).decode('utf-8')
-        endpoint = random.choice(JITO_ENDPOINTS)
+        endpoint = self._get_fastest_jito_endpoint(JITO_ENDPOINTS)
+        start_time = time.time()
 
         payload = {
             "jsonrpc": "2.0",
@@ -134,25 +171,31 @@ class LocalSwapBuilder:
                     endpoint,
                     json=payload,
                     headers={"Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=5)
+                    timeout=aiohttp.ClientTimeout(total=1.0)  # Reduced from 5s - Jito responds in 50-200ms normally
                 ) as response:
                     result = await response.json()
+                    latency_ms = (time.time() - start_time) * 1000
 
                     if "result" in result:
                         sig = result["result"]
+                        self._record_jito_latency(endpoint, latency_ms, success=True)
                         logger.info(f"🚀 Jito accepted: {sig[:16]}...")
                         return sig
                     elif "error" in result:
+                        self._record_jito_latency(endpoint, latency_ms, success=False)
                         logger.warning(f"⚠️ Jito rejected: {result['error'].get('message', result['error'])}")
                         return None
                     else:
+                        self._record_jito_latency(endpoint, latency_ms, success=False)
                         logger.warning(f"⚠️ Unexpected Jito response: {result}")
                         return None
 
         except asyncio.TimeoutError:
-            logger.warning(f"⚠️ Jito timeout")
+            self._record_jito_latency(endpoint, 1000.0, success=False)
+            logger.warning(f"⚠️ Jito timeout ({endpoint.split('/')[2]})")
             return None
         except Exception as e:
+            self._record_jito_latency(endpoint, 1000.0, success=False)
             logger.warning(f"⚠️ Jito error: {e}")
             return None
 
@@ -432,9 +475,8 @@ class LocalSwapBuilder:
 
             rpc_instructions = [compute_limit_ix, compute_price_ix, create_ata_ix, buy_ix]
 
-            # Get fresh blockhash for RPC attempt
-            blockhash_resp = self.client.get_latest_blockhash()
-            recent_blockhash = blockhash_resp.value.blockhash
+            # Use cached blockhash - don't add 100-500ms delay for fresh one
+            # Blockhash refreshes every 800ms, still valid from Jito attempt
 
             message = Message.new_with_blockhash(
                 rpc_instructions,
@@ -597,9 +639,8 @@ class LocalSwapBuilder:
 
             rpc_instructions = [compute_limit_ix, compute_price_ix, sell_ix]
 
-            # Get fresh blockhash for RPC attempt
-            blockhash_resp = self.client.get_latest_blockhash()
-            recent_blockhash = blockhash_resp.value.blockhash
+            # Use cached blockhash - don't add 100-500ms delay for fresh one
+            # Blockhash refreshes every 800ms, still valid from Jito attempt
 
             message = Message.new_with_blockhash(
                 rpc_instructions,
