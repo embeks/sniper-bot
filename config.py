@@ -239,7 +239,7 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # ============================================
 # EARLY ENTRY QUALITY GATES
 # ============================================
-MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '4'))   # 4 unique buyers minimum
+MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '3'))   # 3 unique buyers minimum
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))   # Allow some sells, rely on sell burst detection
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '50.0'))  # RE-ENABLED: 6CdZ47UW had 53% single buy = rug
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '1.5'))  # Minimum SOL velocity to filter weak entries
