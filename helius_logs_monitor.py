@@ -266,7 +266,7 @@ class HeliusLogsMonitor:
             logger.warning(f"🚫 BLACKLISTED CREATOR: {creator[:12]}... - skipping {mint[:12]}...")
             return
 
-        # Check if serial rugger via Helius API
+        # Check if serial rugger via Helius API - FAIL-CLOSED (block on error)
         if creator:
             dev_count = await get_dev_token_count(creator)
             if dev_count > 1:
@@ -278,9 +278,10 @@ class HeliusLogsMonitor:
             elif dev_count == 0:
                 logger.info(f"✅ New creator (0 history): {creator[:8]}...")
             else:
-                # API error (-1) - allow through, rely on rug detection and other protections
-                logger.info(f"⚠️ CREATOR CHECK FAILED: {creator[:8]}... (API error) - allowing (fail-open)")
-                self.stats['creator_check_failed_allowed'] = self.stats.get('creator_check_failed_allowed', 0) + 1
+                # API error (-1) - FAIL-CLOSED: Block unknown creators (scams like ELON with 1977 dev tokens)
+                logger.warning(f"🚫 CREATOR CHECK FAILED: {creator[:8]}... (API error) - BLOCKING (fail-closed)")
+                self.stats['creator_check_failed_blocked'] = self.stats.get('creator_check_failed_blocked', 0) + 1
+                return
 
         # Track and filter serial creators (scammers launch many tokens)
         if creator:
@@ -520,11 +521,11 @@ class HeliusLogsMonitor:
         if total_sol < self.min_sol:
             return  # Too early, keep watching
 
-        # DISABLED: Overshoot ceiling - redundant with velocity ceiling, blocking runners
-        # if total_sol > self.max_sol:
-        #     logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol}")
-        #     self.triggered_tokens.add(mint)  # Don't check again
-        #     return
+        # RE-ENABLED: SOL ceiling - ELON entered at 10.2 SOL when range was 4-7
+        if total_sol > self.max_sol:
+            logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol} - SKIP")
+            self.triggered_tokens.add(mint)  # Don't check again
+            return
 
         # 2. Minimum unique buyers
         if buyers < self.min_buyers:
