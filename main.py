@@ -362,13 +362,16 @@ class SniperBot:
             state['peak_curve_sol'] = current_curve
             peak_curve = current_curve
 
-        # Calculate P&L from curve (for display only, not exit decisions)
-        # PumpFun AMM: price ∝ (vSol + 30)²
+        # Calculate P&L from ACTUAL fill price (not curve estimate)
         VIRTUAL_RESERVES = 30.0
-        if entry_curve > 0:
-            virtual_entry = entry_curve + VIRTUAL_RESERVES
-            virtual_current = current_curve + VIRTUAL_RESERVES
-            pnl_percent = ((virtual_current / virtual_entry) ** 2 - 1) * 100
+        virtual_sol_lamports = (current_curve + VIRTUAL_RESERVES) * 1e9
+        INITIAL_K = 30e9 * 1073000191e6  # PumpFun launch reserves product
+        virtual_tokens_atomic = INITIAL_K / virtual_sol_lamports
+        current_price = virtual_sol_lamports / virtual_tokens_atomic  # lamports per atomic
+
+        entry_price = getattr(position, 'entry_token_price_sol', 0)
+        if entry_price > 0:
+            pnl_percent = ((current_price / entry_price) - 1) * 100
         else:
             pnl_percent = 0.0
 
@@ -1654,12 +1657,19 @@ class SniperBot:
                     current_curve = helius_state.get('vSolInBondingCurve', 0)
                     entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'detection_curve_sol', 0) or 6.0
 
-                    # PumpFun AMM: price ∝ (vSol + 30)²
+                    # Calculate P&L from ACTUAL fill price (not curve estimate)
                     VIRTUAL_RESERVES = 30.0
-                    if entry_curve > 0 and current_curve > 0:
-                        virtual_entry = entry_curve + VIRTUAL_RESERVES
-                        virtual_current = current_curve + VIRTUAL_RESERVES
-                        pnl_percent = ((virtual_current / virtual_entry) ** 2 - 1) * 100
+                    if current_curve > 0:
+                        virtual_sol_lamports = (current_curve + VIRTUAL_RESERVES) * 1e9
+                        INITIAL_K = 30e9 * 1073000191e6  # PumpFun launch reserves product
+                        virtual_tokens_atomic = INITIAL_K / virtual_sol_lamports
+                        current_price = virtual_sol_lamports / virtual_tokens_atomic
+
+                        entry_price = getattr(position, 'entry_token_price_sol', 0)
+                        if entry_price > 0:
+                            pnl_percent = ((current_price / entry_price) - 1) * 100
+                        else:
+                            pnl_percent = 0.0
                     else:
                         pnl_percent = 0.0
 
