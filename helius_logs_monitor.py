@@ -350,7 +350,7 @@ class HeliusLogsMonitor:
     async def _handle_buy(self, logs: list, signature: str, slot: int = None):
         """Handle Buy event - update token state and check entry"""
         # Extract mint from buy event
-        mint, sol_amount, buyer = self._extract_buy_data(logs)
+        mint, sol_amount, buyer, virtual_sol_reserves = self._extract_buy_data(logs)
         
         if not mint or mint not in self.watched_tokens:
             return
@@ -371,7 +371,12 @@ class HeliusLogsMonitor:
         state['buy_count'] += 1
         state['largest_buy'] = max(state['largest_buy'], sol_amount)
         state['buy_amounts'].append(sol_amount)
-        state['vSolInBondingCurve'] += sol_amount
+        # Use ACTUAL curve state from TradeEvent (not cumulative tracking)
+        if virtual_sol_reserves > 30:
+            state['vSolInBondingCurve'] = virtual_sol_reserves - 30  # Subtract 30 SOL virtual offset
+        else:
+            # Fallback to cumulative if parsing failed
+            state['vSolInBondingCurve'] += sol_amount
 
         # Track curve momentum for rug detection gate
         now_curve = time.time()
@@ -434,7 +439,7 @@ class HeliusLogsMonitor:
     async def _handle_sell(self, logs: list, signature: str, slot: int = None):
         """Handle Sell event - track for order flow exits"""
         # USE THE REAL AMOUNT (already being parsed!)
-        mint, sol_amount, seller = self._extract_buy_data(logs)
+        mint, sol_amount, seller, virtual_sol_reserves = self._extract_buy_data(logs)
 
         if not mint or mint not in self.watched_tokens:
             return
@@ -479,14 +484,16 @@ class HeliusLogsMonitor:
         state['flow_sells'] = [x for x in state['flow_sells'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
 
-        # USE REAL AMOUNT - fallback to last known sell size or minimum
-        if sol_amount > 0:
+        # Use ACTUAL curve state from TradeEvent (not cumulative tracking)
+        if virtual_sol_reserves > 30:
+            state['vSolInBondingCurve'] = virtual_sol_reserves - 30  # Subtract 30 SOL virtual offset
+            logger.debug(f"   📊 Curve state from TradeEvent: {state['vSolInBondingCurve']:.2f} SOL")
+        elif sol_amount > 0:
+            # Fallback to subtraction if virtualSolReserves parsing failed
             state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - sol_amount)
-            # Track last good sell amount for fallback
             state['last_known_sell_amount'] = sol_amount
         else:
-            # Fallback: use last known sell amount, or 0.1 SOL minimum
-            # 5% was accumulating errors over many failed parses
+            # Last resort fallback
             fallback_amount = state.get('last_known_sell_amount', 0.1)
             state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - fallback_amount)
             logger.warning(f"⚠️ Sell parse failed, using fallback: {fallback_amount:.4f} SOL")
@@ -873,70 +880,62 @@ class HeliusLogsMonitor:
     
     def _extract_buy_data(self, logs: list) -> tuple:
         """
-        Extract mint, SOL amount, and buyer from Buy event logs
-        Returns: (mint, sol_amount, buyer_wallet) or (None, 0, None)
+        Extract mint, SOL amount, buyer, and ACTUAL curve state from Buy/Sell event logs
+        Returns: (mint, sol_amount, buyer_wallet, virtual_sol_reserves) or (None, 0, None, 0)
+
+        TradeEvent struct (bytes 97-105 = virtualSolReserves - the ACTUAL curve state post-trade):
+        discriminator(8) + mint(32) + solAmount(8) + tokenAmount(8) + isBuy(1) + user(32) +
+        timestamp(8) + virtualSolReserves(8) + virtualTokenReserves(8) + ...
         """
         mint = None
         sol_amount = 0.0
         buyer = None
-        
+        virtual_sol_reserves = 0.0
+
         for log in logs:
-            # Try to get mint from various log formats
             if "Program data:" in log:
                 data_b64 = log.replace("Program data:", "").strip()
-                
+
                 padding = 4 - len(data_b64) % 4
                 if padding != 4:
                     data_b64 += '=' * padding
-                
+
                 try:
                     decoded = base64.b64decode(data_b64)
-                    
+
                     # Skip CreateV2 discriminator
                     if len(decoded) >= 8 and decoded[:8].hex() == self.CREATE_V2_DISCRIMINATOR:
                         continue
-                    
-                    # Trade event structure (best guess based on PumpFun):
-                    # discriminator(8) + mint(32) + sol_amount(8) + token_amount(8) + user(32) + is_buy(1) + timestamp(8)
-                    if len(decoded) >= 89:
+
+                    # TradeEvent: need at least 105 bytes for virtualSolReserves
+                    if len(decoded) >= 105:
                         # Extract mint (bytes 8-40)
                         potential_mint = base58.b58encode(decoded[8:40]).decode()
-                        
+
                         # Validate it looks like a PumpFun mint
                         if potential_mint.endswith('pump'):
                             mint = potential_mint
-                            
+
                             # SOL amount (bytes 40-48, lamports)
                             sol_lamports = int.from_bytes(decoded[40:48], 'little')
                             sol_amount = sol_lamports / 1e9
-                            
-                            # Buyer wallet (bytes 56-88)
-                            if len(decoded) >= 88:
-                                buyer = base58.b58encode(decoded[56:88]).decode()
-                            
+
+                            # Buyer wallet (bytes 57-89, after isBuy flag at byte 56)
+                            buyer = base58.b58encode(decoded[57:89]).decode()
+
+                            # virtualSolReserves (bytes 97-105) - ACTUAL curve state post-trade
+                            virtual_sol_lamports = int.from_bytes(decoded[97:105], 'little')
+                            virtual_sol_reserves = virtual_sol_lamports / 1e9
+
                             break
                 except:
                     continue
-            
-            # Fallback: Try to find mint in account keys (from log messages)
-            if "pump" in log.lower():
-                # Look for mint address pattern
-                words = log.split()
-                for word in words:
-                    if word.endswith('pump') and len(word) > 40:
-                        mint = word
-                        break
-        
-        # If we found a watched mint but couldn't parse amount, estimate from context
-        if mint and mint in self.watched_tokens and sol_amount == 0:
-            # Assume average buy of 0.3-0.5 SOL
-            sol_amount = 0.4
-        
-        return (mint, sol_amount, buyer)
+
+        return (mint, sol_amount, buyer, virtual_sol_reserves)
     
     def _extract_mint_from_sell(self, logs: list) -> Optional[str]:
         """Extract mint from Sell event - similar to buy"""
-        mint, _, _ = self._extract_buy_data(logs)
+        mint, _, _, _ = self._extract_buy_data(logs)
         return mint
     
     def get_stats(self) -> Dict:
