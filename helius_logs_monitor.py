@@ -327,7 +327,7 @@ class HeliusLogsMonitor:
             state = self.watched_tokens[mint]
             state['dev_check_pending'] = False
 
-            if dev_count > 1:
+            if dev_count > 0:
                 logger.warning(f"🚫 SERIAL RUGGER: {creator[:8]}... has {dev_count} tokens - REMOVING")
                 self.triggered_tokens.add(mint)
                 del self.watched_tokens[mint]

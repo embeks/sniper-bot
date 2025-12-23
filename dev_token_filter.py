@@ -58,6 +58,6 @@ async def get_dev_token_count(creator_wallet: str, timeout: float = 2.5) -> int:
 
 
 async def is_first_time_creator(creator_wallet: str) -> bool:
-    """Returns False if wallet has 2+ historical token creates (serial rugger)."""
+    """Returns False if wallet has 1+ historical token creates (serial rugger)."""
     count = await get_dev_token_count(creator_wallet)
-    return count == -1 or count <= 1
+    return count == -1 or count == 0
