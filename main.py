@@ -1436,15 +1436,9 @@ class SniperBot:
                     logger.warning(f"⚠️ TX reading failed - using wallet balance: {bought_tokens:,.0f} tokens")
 
                 else:
-                    logger.warning("⚠️ No tokens in wallet immediately - waiting 2s more")
-                    await asyncio.sleep(2)
-                    bought_tokens = self.wallet.get_token_balance(mint)
-                    actual_sol_spent = _position_buy_amount  # Use stored value, not config
-
-                    if bought_tokens == 0:
-                        logger.error("❌ Still no tokens - position may have failed")
-                        self.pending_buys -= 1
-                        return
+                    logger.warning("⚠️ No tokens in wallet - TX likely failed, moving on")
+                    self.pending_buys -= 1
+                    return
 
                 _effective_entry_curve = None  # Will be set if high slippage detected
                 if bought_tokens > 0 and actual_sol_spent > 0:
