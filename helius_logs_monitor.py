@@ -26,7 +26,8 @@ from config import (
     MAX_BUYERS_PER_SECOND, MIN_BUYERS_PER_SECOND, MAX_SELLS_AT_ENTRY, MIN_BUY_SELL_RATIO,
     # NEW: Sell burst and curve momentum gates
     SELL_BURST_COUNT, SELL_BURST_WINDOW,
-    CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH
+    CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH,
+    ENABLE_DEV_TOKEN_FILTER,
 )
 from dev_token_filter import get_dev_token_count
 from solders.pubkey import Pubkey
@@ -304,10 +305,11 @@ class HeliusLogsMonitor:
             'dev_check_passed': False,
         }
 
-        # Spawn background dev check (non-blocking)
-        if creator:
+        # Spawn background dev check (non-blocking) - if enabled
+        if creator and ENABLE_DEV_TOKEN_FILTER:
             asyncio.create_task(self._check_dev_background(mint, creator))
         else:
+            # Skip dev check - either no creator or filter disabled
             self.watched_tokens[mint]['dev_check_pending'] = False
             self.watched_tokens[mint]['dev_check_passed'] = True
 

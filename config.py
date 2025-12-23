@@ -258,6 +258,9 @@ MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '100.0'))  # RE-E
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump
 SELL_BURST_WINDOW = float(os.getenv('SELL_BURST_WINDOW', '3.0'))  # Time window in seconds
 
+# Dev token filter toggle
+ENABLE_DEV_TOKEN_FILTER = False  # Set True to re-enable
+
 # CURVE MOMENTUM GATE (ensure pump is still active)
 CURVE_MOMENTUM_WINDOW_RECENT = float(os.getenv('CURVE_MOMENTUM_WINDOW_RECENT', '2.0'))  # Recent window (seconds)
 CURVE_MOMENTUM_WINDOW_OLDER = float(os.getenv('CURVE_MOMENTUM_WINDOW_OLDER', '5.0'))    # Older window (seconds)
