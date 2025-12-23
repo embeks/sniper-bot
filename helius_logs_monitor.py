@@ -531,13 +531,19 @@ class HeliusLogsMonitor:
             logger.debug(f"   {mint[:8]}... only {buyers} buyers (need {self.min_buyers})")
             return
 
-        # 2b. SELL BURST GATE - Only block if sells AND curve declining
+        # 2b. SELL BURST GATE - Only block if HEAVY sells AND significant curve drop
+        # RELAXED: HT41Sf2v had 5 sells at 20 SOL, ran to 172 SOL after skip (8x missed)
+        # Early sell pressure on runners is profit-taking, not dumps
         now = time.time()
         sell_timestamps = state.get('sell_timestamps', [])
         recent_sells_burst = len([t for t in sell_timestamps if now - t < self.sell_burst_window])
 
-        if recent_sells_burst >= self.sell_burst_count:
-            # Check if curve is actually declining during sells
+        # Raised threshold: 10+ sells (was 4) AND 15%+ curve drop (was 5%)
+        SELL_BURST_HEAVY_THRESHOLD = 10
+        SELL_BURST_DECLINE_PCT = 0.85  # 15% decline = curve at 85% of start
+
+        if recent_sells_burst >= SELL_BURST_HEAVY_THRESHOLD:
+            # Check if curve is SIGNIFICANTLY declining during sells
             curve_history = state.get('curve_history', [])
             curve_declining = False
             if len(curve_history) >= 2:
@@ -545,16 +551,18 @@ class HeliusLogsMonitor:
                 if len(recent_curves) >= 2:
                     first_curve = recent_curves[0][1]
                     last_curve = recent_curves[-1][1]
-                    if first_curve > 0 and last_curve < first_curve * 0.95:  # 5%+ decline
+                    if first_curve > 0 and last_curve < first_curve * SELL_BURST_DECLINE_PCT:  # 15%+ decline
                         curve_declining = True
 
             if curve_declining:
-                logger.warning(f"❌ SELL BURST + DECLINING: {recent_sells_burst} sells in {self.sell_burst_window}s - dump in progress")
+                logger.warning(f"❌ HEAVY SELL BURST: {recent_sells_burst} sells in {self.sell_burst_window}s + >15% curve drop - real dump")
                 self.stats['skipped_sell_burst'] += 1
                 self.triggered_tokens.add(mint)
                 return
             else:
-                logger.info(f"⚡ Sell burst ({recent_sells_burst}) but curve stable - allowing entry (profit-taking)")
+                logger.info(f"⚡ Sell burst ({recent_sells_burst}) but curve stable - allowing (profit-taking)")
+        elif recent_sells_burst >= 4:
+            logger.info(f"⚡ Light sells ({recent_sells_burst}) - normal profit-taking, allowing")
 
         # 3. Check sells with ratio (allow up to 2 sells if buy:sell ratio >= 4:1)
         sell_count = state['sell_count']
@@ -609,9 +617,12 @@ class HeliusLogsMonitor:
         #     self.triggered_tokens.add(mint)
         #     return
 
-        # 5d. PEAK CURVE GATE - Reject if already declining from peak
+        # 5d. PEAK CURVE GATE - Reject if SIGNIFICANTLY declining from peak
+        # RELAXED: Runners regularly dip 5-10% during normal price action
+        # Raised from 5% to 15% to avoid filtering healthy consolidation
         peak = state.get('peak_curve_sol', total_sol)
-        if total_sol < peak * 0.95:
+        PEAK_DECLINE_THRESHOLD = 0.85  # 15% decline = curve at 85% of peak
+        if total_sol < peak * PEAK_DECLINE_THRESHOLD:
             drop_pct = ((peak - total_sol) / peak) * 100
             logger.warning(f"❌ DECLINING FROM PEAK: {peak:.2f} → {total_sol:.2f} SOL (-{drop_pct:.1f}%)")
             self.stats['skipped_curve_stalled'] += 1
@@ -658,7 +669,8 @@ class HeliusLogsMonitor:
             return
 
         # 10. BUNDLED + SLOT CLUSTERING DETECTION
-        # First buy in same slot as creation = insider bundle
+        # DISABLED: 100% of runners tonight were bundled/coordinated launches
+        # Coordinated launches ARE the market - this filter skipped 5 runners (17x, 15x, 15x, 3x, 3x)
         creation_slot = state.get('creation_slot')
         buy_slots = state.get('buy_slots', [])
         if creation_slot and buy_slots:
@@ -667,21 +679,11 @@ class HeliusLogsMonitor:
             same_slot_buys = len([s for s in buy_slots if s == creation_slot])
             clustering_pct = (same_slot_buys / len(buy_slots) * 100) if buy_slots else 0
 
-            # FILTER 1: First buy bundled with creation = coordinated launch
-            # ENABLED: Skip insider bundles where dev buys in same slot as creation
+            # Log for analysis but DON'T skip
             if same_slot:
-                logger.warning(f"❌ BUNDLED: First buy in creation slot (coordinated launch) - SKIP")
-                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
-
-            # FILTER 2: >70% of buys in creation slot = bot coordination
-            # ENABLED: Skip heavy slot clustering (threshold raised from 50% to 70%)
+                logger.info(f"ℹ️ BUNDLED (allowed): First buy in creation slot - coordinated launches are normal")
             if clustering_pct > 70:
-                logger.warning(f"❌ SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} ({clustering_pct:.0f}%) buys in creation slot - SKIP")
-                self.stats['skipped_bundled'] = self.stats.get('skipped_bundled', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+                logger.info(f"ℹ️ SLOT CLUSTERING (allowed): {same_slot_buys}/{len(buy_slots)} ({clustering_pct:.0f}%) buys in creation slot")
 
         # 9. REMOVED: Dev holdings RPC check - adds latency, kept WebSocket-based dev buy detection above
 
