@@ -421,8 +421,8 @@ class SniperBot:
                 return True, f"whale_dump_{whale_pct:.0f}pct", pnl_percent
 
         # ===========================================
-        # EXIT 4: SELL BURST (curve < 12 SOL, 6+ real sells + 15% curve drop)
-        # RELAXED: "drop" had 3 sells totaling 0.55 SOL (profit-taking), ran to 17K after exit
+        # EXIT 4: SELL BURST (curve < 12 SOL) - ONLY if BELOW ENTRY
+        # Profit-taking looks identical to dumps (6+ sells), but dumps go below entry
         # ===========================================
         if current_curve < SELL_BURST_EXIT_MAX_CURVE and peak_curve < SELL_BURST_EXIT_MAX_CURVE:
             flow_sells = state.get('flow_sells', [])
@@ -433,13 +433,14 @@ class SniperBot:
             ]
 
             if len(real_sells_5s) >= SELL_BURST_EXIT_MIN_SELLS:
-                # Also require 15% curve drop to confirm it's a dump, not profit-taking
-                sell_burst_drop = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
-                if sell_burst_drop >= 0.15 and pnl_percent > 0:
-                    logger.warning(f"🔥 SELL BURST: {len(real_sells_5s)} sells + {sell_burst_drop:.0%} curve drop")
-                    return True, f"sell_burst_{len(real_sells_5s)}_at_{current_curve:.1f}", pnl_percent
+                # CRITICAL: Only exit if curve drops BELOW entry
+                # Above entry = profit-taking (healthy), below entry = real dump
+                if current_curve < entry_curve:
+                    logger.warning(f"🔥 SELL BURST + BELOW ENTRY: {len(real_sells_5s)} sells, curve {current_curve:.1f} < entry {entry_curve:.1f}")
+                    return True, f"sell_burst_underwater_{len(real_sells_5s)}_at_{current_curve:.1f}", pnl_percent
                 else:
-                    logger.info(f"⚡ Sell burst ({len(real_sells_5s)}) but only {sell_burst_drop:.0%} drop - holding (profit-taking)")
+                    gain_above_entry = ((current_curve / entry_curve) - 1) * 100 if entry_curve > 0 else 0
+                    logger.info(f"⚡ Sell burst ({len(real_sells_5s)}) but +{gain_above_entry:.0f}% above entry - profit-taking, holding")
 
         # ===========================================
         # EXIT 5: TIERED PROFIT DECAY

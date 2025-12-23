@@ -140,11 +140,11 @@ SELL_BURST_EXIT_MIN_SELLS = 6         # 6 real sells (was 3) - drop killed runne
 SELL_BURST_EXIT_MIN_SOL = 0.01        # Ignore dust sells below this
 
 # Tier 2: 12-25 SOL - looser profit decay (let it cook)
-PROFIT_DECAY_MID_PERCENT = 0.50       # 50% drop from peak (was 40%) - let runners cook
+PROFIT_DECAY_MID_PERCENT = 0.30       # 30% drop from peak
 MID_TIER_MAX_CURVE = 25.0             # Upper bound for mid-tier
 
 # Tier 3: 25+ SOL - runner, RELAXED decay (FROZONE ran to 69 SOL after 40% dip)
-PROFIT_DECAY_RUNNER_PERCENT = 0.60    # 60% drop from peak (was 30%) - runners dip hard before continuing
+PROFIT_DECAY_RUNNER_PERCENT = 0.30    # 30% drop from peak
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
