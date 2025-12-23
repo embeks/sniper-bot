@@ -136,7 +136,7 @@ class WalletManager:
         logger.debug(f"⚠️ No existing ATA found for {mint[:8]}..., using classic SPL default")
         return get_associated_token_address(self.pubkey, mint_pubkey), TOKEN_PROGRAM_ID
     
-    def get_token_balance(self, mint: str, max_retries: int = 6, retry_delay: float = 1.0) -> float:
+    def get_token_balance(self, mint: str, max_retries: int = 3, retry_delay: float = 0.5) -> float:
         """
         Get balance for a specific token - returns UI amount (human readable)
         HELIUS OPTIMIZED: Uses commitment levels for faster reads
