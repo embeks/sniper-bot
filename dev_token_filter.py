@@ -15,10 +15,11 @@ _creator_token_cache = {}
 _cache_lock = asyncio.Lock()
 
 
-async def get_dev_token_count(creator_wallet: str, timeout: float = 0.3) -> int:
+async def get_dev_token_count(creator_wallet: str, timeout: float = 1.5) -> int:
     """
     Count how many PumpFun tokens this wallet has created.
-    Returns: token count, or -1 on error
+    Returns: token count, or -1 on error (FAIL-CLOSED - caller should block)
+    Timeout raised to 1.5s to avoid false negatives on slow API responses.
     """
     if not creator_wallet or not HELIUS_API_KEY:
         return -1
