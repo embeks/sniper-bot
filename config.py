@@ -224,8 +224,8 @@ EARLY_ENTRY_SLIPPAGE_BPS = int(os.getenv('EARLY_ENTRY_SLIPPAGE_BPS', '10000'))  
 PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
-MIN_BONDING_CURVE_SOL = 4.0   # Match whale entry zone (4-7 SOL)
-MAX_BONDING_CURVE_SOL = 7.0   # Exit before crowded, match whale
+MIN_BONDING_CURVE_SOL = 2.5   # Earlier entry for less slippage (2.5-5 SOL)
+MAX_BONDING_CURVE_SOL = 5.0   # Earlier range for less competition
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
@@ -238,7 +238,7 @@ PUMPFUN_EARLY_BUY = os.getenv('PUMPFUN_EARLY_BUY', 'true').lower() == 'true'
 # ============================================
 # EARLY ENTRY QUALITY GATES
 # ============================================
-MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '4'))   # Enter with fewer buyers like whale
+MIN_UNIQUE_BUYERS = int(os.getenv('MIN_UNIQUE_BUYERS', '3'))   # 3 buyers normal at 2.5 SOL curve
 MAX_SELLS_BEFORE_ENTRY = int(os.getenv('MAX_SELLS_BEFORE_ENTRY', '3'))   # Allow some sells, rely on sell burst detection
 MAX_SINGLE_BUY_PERCENT = float(os.getenv('MAX_SINGLE_BUY_PERCENT', '50.0'))  # RE-ENABLED: 6CdZ47UW had 53% single buy = rug
 MIN_VELOCITY = float(os.getenv('MIN_VELOCITY', '1.5'))  # Minimum SOL velocity to filter weak entries
