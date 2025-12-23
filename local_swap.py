@@ -389,11 +389,9 @@ class LocalSwapBuilder:
             sol_lamports = int(sol_amount * 1e9)
             tokens_out_raw = self.calculate_tokens_out(sol_lamports, virtual_sol, virtual_tokens)
 
-            # Dynamic slippage: reduce expected tokens to account for price movement
-            # With 150% slippage (slippage_bps=15000), we expect 40% of calculated tokens
-            # This means we're saying "I'll accept getting in at a higher price"
-            token_slippage_factor = 10000 / (10000 + slippage_bps)
-            tokens_out = int(tokens_out_raw * token_slippage_factor)
+            # Request full tokens calculated from SOL input
+            # max_sol_cost provides price protection if curve moves up
+            tokens_out = tokens_out_raw
 
             # Max SOL cost: the absolute ceiling we'll pay
             # For fast tokens, allow up to 3x input to compete with other bots
@@ -404,7 +402,7 @@ class LocalSwapBuilder:
             logger.info(f"   Creator: {creator[:16]}...")
             logger.info(f"   SOL in: {sol_amount} ({sol_lamports:,} lamports)")
             logger.info(f"   Raw tokens: {tokens_out_raw:,}")
-            logger.info(f"   Adjusted tokens (slippage): {tokens_out:,} ({token_slippage_factor:.1%})")
+            logger.info(f"   Tokens requested: {tokens_out:,}")
             logger.info(f"   Max SOL cost: {max_sol_cost:,} lamports ({max_sol_cost/1e9:.4f} SOL)")
 
             # Build buy instruction
