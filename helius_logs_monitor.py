@@ -84,8 +84,8 @@ class HeliusLogsMonitor:
         self.CREATE_V2_DISCRIMINATOR = "1b72a94ddeeb6376"
 
         # Entry thresholds from config (early entry with relaxed quality gates)
-        self.min_sol = MIN_BONDING_CURVE_SOL      # 2.0 SOL - enter at ~3K MC
-        self.max_sol = MAX_BONDING_CURVE_SOL      # 6.0 SOL - tight window
+        self.min_sol = MIN_BONDING_CURVE_SOL      # 4.0 SOL min
+        self.max_sol = MAX_BONDING_CURVE_SOL      # 7.0 SOL max
         self.min_buyers = MIN_UNIQUE_BUYERS       # 4 unique buyers
         self.max_sell_count = MAX_SELLS_BEFORE_ENTRY  # 2 sells max (strict)
         self.max_single_buy_percent = MAX_SINGLE_BUY_PERCENT  # 35% anti-bot
