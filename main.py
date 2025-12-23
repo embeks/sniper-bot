@@ -380,8 +380,18 @@ class SniperBot:
         # EXIT 1: RUG FLOOR (highest priority - always check)
         # ===========================================
         if current_curve < RUG_FLOOR_SOL:
-            logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} floor")
-            return True, f"rug_floor_{current_curve:.1f}", pnl_percent
+            # SANITY CHECK: Don't rug floor if there's active buying
+            # WebSocket batch processing can show sells BEFORE buys in same batch
+            # causing false rug floor triggers (GkpbzBbT exit at 1.98 while 12+ SOL was pumping)
+            flow_buys = state.get('flow_buys', [])
+            recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 3)
+
+            if recent_buy_volume >= 2.0:
+                logger.info(f"⚡ Rug floor ({current_curve:.2f}) BUT {recent_buy_volume:.1f} SOL bought in 3s - HOLDING")
+                # Don't trigger rug floor - curve isn't actually dead
+            else:
+                logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} floor")
+                return True, f"rug_floor_{current_curve:.1f}", pnl_percent
 
         # Minimum age gate for non-emergency exits
         if age < MIN_EXIT_AGE_SECONDS:
@@ -1674,9 +1684,18 @@ class SniperBot:
                     # Instant rug floor check - no RPC needed
                     from config import RUG_FLOOR_SOL
                     if current_curve > 0 and current_curve < RUG_FLOOR_SOL:
-                        logger.warning(f"🚨 EARLY RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} floor")
-                        await self._close_position_full(mint, reason="early_rug_floor")
-                        break
+                        # SANITY CHECK: Don't rug floor if there's active buying
+                        # WebSocket batch processing can show sells BEFORE buys in same batch
+                        now = time.time()
+                        flow_buys = state.get('flow_buys', [])
+                        recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 3)
+
+                        if recent_buy_volume >= 2.0:
+                            logger.info(f"⚡ Early rug ({current_curve:.2f}) BUT {recent_buy_volume:.1f} SOL bought in 3s - HOLDING")
+                        else:
+                            logger.warning(f"🚨 EARLY RUG: Curve {current_curve:.2f} < {RUG_FLOOR_SOL} floor")
+                            await self._close_position_full(mint, reason="early_rug_floor")
+                            break
 
                 # Early exit if position fully sold
                 if position.remaining_tokens <= 0 and not position.pending_sells:
