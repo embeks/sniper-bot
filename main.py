@@ -353,10 +353,8 @@ class SniperBot:
         # Get curve values from Helius (real-time, no RPC)
         current_curve = state.get('vSolInBondingCurve', 0)
 
-        # Use detection curve (original, not slippage-adjusted) for consistency
-        entry_curve = getattr(position, 'detection_curve_sol', 0)
-        if entry_curve == 0:
-            entry_curve = getattr(position, 'entry_sol_in_curve', 0) or 6.0
+        # Use slippage-adjusted entry curve for accurate P&L (falls back to detection if not set)
+        entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'detection_curve_sol', 0) or 6.0
 
         # Track peak curve
         peak_curve = state.get('peak_curve_sol', current_curve)
@@ -1641,7 +1639,7 @@ class SniperBot:
                 if self.scanner:
                     helius_state = self.scanner.watched_tokens.get(mint, {})
                     current_curve = helius_state.get('vSolInBondingCurve', 0)
-                    entry_curve = getattr(position, 'detection_curve_sol', 0) or 6.0
+                    entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'detection_curve_sol', 0) or 6.0
 
                     # PumpFun AMM: price ∝ (vSol + 30)²
                     VIRTUAL_RESERVES = 30.0
@@ -1736,7 +1734,7 @@ class SniperBot:
                     # PROGRESS LOGGING
                     # ===================================================================
                     if check_count % 3 == 1:
-                        entry_curve = getattr(position, 'detection_curve_sol', 0) or 6.0
+                        entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'detection_curve_sol', 0) or 6.0
                         curve_delta = current_curve_sol - entry_curve
 
                         state = helius_state
