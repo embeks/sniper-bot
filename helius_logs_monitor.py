@@ -266,23 +266,6 @@ class HeliusLogsMonitor:
             logger.warning(f"🚫 BLACKLISTED CREATOR: {creator[:12]}... - skipping {mint[:12]}...")
             return
 
-        # Check if serial rugger via Helius API - FAIL-CLOSED (block on error)
-        if creator:
-            dev_count = await get_dev_token_count(creator)
-            if dev_count > 1:
-                logger.warning(f"🚫 SERIAL RUGGER: {creator[:8]}... has {dev_count} historical tokens - SKIP")
-                self.stats['skipped_serial_rugger'] = self.stats.get('skipped_serial_rugger', 0) + 1
-                return
-            elif dev_count == 1:
-                logger.info(f"✅ First-time creator: {creator[:8]}...")
-            elif dev_count == 0:
-                logger.info(f"✅ New creator (0 history): {creator[:8]}...")
-            else:
-                # API error (-1) - FAIL-CLOSED: Block unknown creators (scams like ELON with 1977 dev tokens)
-                logger.warning(f"🚫 CREATOR CHECK FAILED: {creator[:8]}... (API error) - BLOCKING (fail-closed)")
-                self.stats['creator_check_failed_blocked'] = self.stats.get('creator_check_failed_blocked', 0) + 1
-                return
-
         # Track and filter serial creators (scammers launch many tokens)
         if creator:
             self.creator_launches[creator] = self.creator_launches.get(creator, 0) + 1
@@ -316,13 +299,52 @@ class HeliusLogsMonitor:
             'last_buy_time': time.time(),
             # Curve momentum tracking for rug detection
             'curve_history': [],  # List of (timestamp, vSolInBondingCurve) tuples
+            # Dev check state (non-blocking)
+            'dev_check_pending': True,
+            'dev_check_passed': False,
         }
+
+        # Spawn background dev check (non-blocking)
+        if creator:
+            asyncio.create_task(self._check_dev_background(mint, creator))
+        else:
+            self.watched_tokens[mint]['dev_check_pending'] = False
+            self.watched_tokens[mint]['dev_check_passed'] = True
 
         if creator:
             logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (creator: {creator[:8]}...) [slot: {slot}]")
         else:
             logger.info(f"👀 [{self.stats['creates']}] Watching: {mint[:16]}... (no creator) [slot: {slot}]")
-    
+
+    async def _check_dev_background(self, mint: str, creator: str):
+        """Background dev check - removes token if serial rugger"""
+        try:
+            dev_count = await get_dev_token_count(creator)
+
+            if mint not in self.watched_tokens:
+                return
+
+            state = self.watched_tokens[mint]
+            state['dev_check_pending'] = False
+
+            if dev_count > 1:
+                logger.warning(f"🚫 SERIAL RUGGER: {creator[:8]}... has {dev_count} tokens - REMOVING")
+                self.triggered_tokens.add(mint)
+                del self.watched_tokens[mint]
+            elif dev_count >= 0:
+                logger.info(f"✅ Creator check passed: {creator[:8]}... ({dev_count} history)")
+                state['dev_check_passed'] = True
+            else:
+                # API error - fail closed
+                logger.warning(f"🚫 DEV CHECK FAILED (API error) - REMOVING {mint[:8]}...")
+                self.triggered_tokens.add(mint)
+                del self.watched_tokens[mint]
+        except Exception as e:
+            logger.error(f"Dev check error: {e}")
+            if mint in self.watched_tokens:
+                self.triggered_tokens.add(mint)
+                del self.watched_tokens[mint]
+
     async def _handle_buy(self, logs: list, signature: str, slot: int = None):
         """Handle Buy event - update token state and check entry"""
         # Extract mint from buy event
@@ -491,6 +513,13 @@ class HeliusLogsMonitor:
         # Already triggered?
         if mint in self.triggered_tokens:
             return
+
+        # Wait for dev check before allowing entry
+        if state.get('dev_check_pending', False):
+            return  # Still waiting for API
+
+        if not state.get('dev_check_passed', False):
+            return  # Check failed or pending
 
         age = time.time() - state['created_at']
         total_sol = state['vSolInBondingCurve']
