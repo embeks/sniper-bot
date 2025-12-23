@@ -225,8 +225,8 @@ PUMPFUN_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBE
 PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
 # Entry range - EARLIER to avoid slippage war
-MIN_BONDING_CURVE_SOL = 2.5  # Was 4.0
-MAX_BONDING_CURVE_SOL = 8.0  # Was 7.0
+MIN_BONDING_CURVE_SOL = 4.0
+MAX_BONDING_CURVE_SOL = 12.0
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
@@ -252,7 +252,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '6.0'))  # Organic FOMO can spike to 5-6/s
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '100.0'))  # RE-ENABLED: 6CdZ47UW had 90.9% top-2 = coordinated rug
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '70.0'))  # Blocks coordinated pump-and-dumps (78-95% top-2 = rug, <25% = organic)
 
 # SELL BURST DETECTION (timing-based, not count-based)
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump

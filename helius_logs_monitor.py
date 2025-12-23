@@ -620,17 +620,6 @@ class HeliusLogsMonitor:
         #     self.triggered_tokens.add(mint)
         #     return
 
-        # 4. Anti-bot check: single wallet dominance (max 35%)
-        if largest_buy_pct > self.max_single_buy_percent:
-            logger.warning(f"❌ Single wallet dominance: {largest_buy_pct:.1f}% (max {self.max_single_buy_percent}%)")
-            self.stats['skipped_bot'] += 1
-            self.triggered_tokens.add(mint)
-            return
-
-        # 5. Minimum velocity check
-        if velocity < self.min_velocity:
-            logger.debug(f"   {mint[:8]}... low velocity: {velocity:.2f} SOL/s (need {self.min_velocity})")
-            return
 
         # 5b. DISABLED: Maximum SOL velocity check - redundant with buyer velocity
         # if velocity > self.max_velocity:
@@ -656,30 +645,7 @@ class HeliusLogsMonitor:
         #     self.triggered_tokens.add(mint)
         #     return
 
-        # 5d. PEAK CURVE GATE - Reject if SIGNIFICANTLY declining from peak
-        # RELAXED: Runners regularly dip 5-10% during normal price action
-        # Raised from 5% to 15% to avoid filtering healthy consolidation
-        peak = state.get('peak_curve_sol', total_sol)
-        PEAK_DECLINE_THRESHOLD = 0.85  # 15% decline = curve at 85% of peak
-        if total_sol < peak * PEAK_DECLINE_THRESHOLD:
-            drop_pct = ((peak - total_sol) / peak) * 100
-            logger.warning(f"❌ DECLINING FROM PEAK: {peak:.2f} → {total_sol:.2f} SOL (-{drop_pct:.1f}%)")
-            self.stats['skipped_curve_stalled'] += 1
-            self.triggered_tokens.add(mint)
-            return
-
-        # 5e. CURVE DRAIN GATE - Reject if significant selling already occurred
-        # total_sol = actual curve, state['total_sol'] = cumulative buys (never decreases)
-        # If curve < 85% of total buys, dumping is in progress
-        cumulative_buys = state.get('total_sol', total_sol)
-        if cumulative_buys > 0 and total_sol < cumulative_buys * 0.85:
-            drain_pct = ((cumulative_buys - total_sol) / cumulative_buys) * 100
-            logger.warning(f"❌ CURVE DRAINED: {drain_pct:.0f}% sold (curve={total_sol:.2f}, buys={cumulative_buys:.2f})")
-            self.stats['skipped_curve_stalled'] += 1
-            self.triggered_tokens.add(mint)
-            return
-
-        # 6. Token age check (must be fresh for early entry)
+        # 4. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
             logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
             return
