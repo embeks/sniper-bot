@@ -424,26 +424,27 @@ class SniperBot:
                 return True, f"whale_dump_{whale_pct:.0f}pct", pnl_percent
 
         # ===========================================
-        # EXIT 4: SELL BURST (curve < 12 SOL) - ONLY if BELOW ENTRY
-        # Profit-taking looks identical to dumps (6+ sells), but dumps go below entry
+        # EXIT 4: VELOCITY CRASH (Tier 1 & 2) - 20% drop in 1 second
+        # YJ8PUzVJ: 30+ sells in 5s, ran to 250 SOL (sell count useless)
+        # COWSPIN: 15 sells crashed 74% in 4ms (velocity catches this)
         # ===========================================
-        if current_curve < SELL_BURST_EXIT_MAX_CURVE and peak_curve < SELL_BURST_EXIT_MAX_CURVE:
-            flow_sells = state.get('flow_sells', [])
-            # Count real sells (>0.01 SOL) in last 5 seconds
-            real_sells_5s = [
-                (t, amt) for t, amt in flow_sells
-                if now - t < 5.0 and amt >= SELL_BURST_EXIT_MIN_SOL
-            ]
+        if peak_curve < MID_TIER_MAX_CURVE:  # Tier 1 & 2 only (< 25 SOL)
+            from config import VELOCITY_CRASH_THRESHOLD, VELOCITY_CRASH_WINDOW_SEC
+            curve_history = state.get('curve_history', [])
 
-            if len(real_sells_5s) >= SELL_BURST_EXIT_MIN_SELLS:
-                # CRITICAL: Only exit if curve drops BELOW entry
-                # Above entry = profit-taking (healthy), below entry = real dump
-                if current_curve < entry_curve:
-                    logger.warning(f"🔥 SELL BURST + BELOW ENTRY: {len(real_sells_5s)} sells, curve {current_curve:.1f} < entry {entry_curve:.1f}")
-                    return True, f"sell_burst_underwater_{len(real_sells_5s)}_at_{current_curve:.1f}", pnl_percent
-                else:
-                    gain_above_entry = ((current_curve / entry_curve) - 1) * 100 if entry_curve > 0 else 0
-                    logger.info(f"⚡ Sell burst ({len(real_sells_5s)}) but +{gain_above_entry:.0f}% above entry - profit-taking, holding")
+            # Find curve value from ~1 second ago
+            curve_1s_ago = None
+            for t, v in reversed(curve_history):
+                time_ago = now - t
+                if time_ago >= VELOCITY_CRASH_WINDOW_SEC:
+                    curve_1s_ago = v
+                    break
+
+            if curve_1s_ago and curve_1s_ago > 0:
+                velocity_drop = (curve_1s_ago - current_curve) / curve_1s_ago
+                if velocity_drop >= VELOCITY_CRASH_THRESHOLD:
+                    logger.warning(f"⚡ VELOCITY CRASH: {curve_1s_ago:.2f} → {current_curve:.2f} SOL ({velocity_drop:.0%} drop in 1s)")
+                    return True, f"velocity_crash_{velocity_drop:.0%}_in_1s", pnl_percent
 
         # ===========================================
         # EXIT 5: TIERED PROFIT DECAY (with Tier 2 sell burst)
@@ -452,27 +453,7 @@ class SniperBot:
 
         # Tier 2: 12-25 SOL curve
         if peak_curve >= SELL_BURST_EXIT_MAX_CURVE and peak_curve < MID_TIER_MAX_CURVE:
-            # SELL BURST + DECLINING CURVE (catch dumps before 40% decay)
-            # 8+ sells in 5s AND 15%+ drop from peak AND curve still falling
-            flow_sells = state.get('flow_sells', [])
-            real_sells_5s = [
-                (t, amt) for t, amt in flow_sells
-                if now - t < 5.0 and amt >= SELL_BURST_EXIT_MIN_SOL
-            ]
-
-            if len(real_sells_5s) >= 8 and drop_percent >= 0.15:
-                # Confirm curve is DECLINING (not just dipped and recovered)
-                curve_history = state.get('curve_history', [])
-                curve_declining = False
-                if len(curve_history) >= 2:
-                    recent = [(t, v) for t, v in curve_history if now - t < 5]
-                    if len(recent) >= 2 and recent[-1][1] < recent[0][1]:
-                        curve_declining = True
-
-                if curve_declining:
-                    logger.warning(f"🔥 TIER2 SELL BURST: {len(real_sells_5s)} sells + {drop_percent:.0%} drop + declining")
-                    return True, f"tier2_sell_burst_{len(real_sells_5s)}_at_{current_curve:.1f}", pnl_percent
-
+            # Velocity crash already handled above for Tier 1 & 2
             # Standard decay check (40% from peak)
             if drop_percent >= PROFIT_DECAY_MID_PERCENT:
                 logger.warning(f"📉 MID-TIER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
