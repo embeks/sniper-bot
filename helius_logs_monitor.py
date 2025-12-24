@@ -629,9 +629,10 @@ class HeliusLogsMonitor:
         #     return
 
         # 5b2. Minimum SOL velocity (momentum gate)
+        # Don't permanently reject - velocity can improve. Will re-check on next buy.
+        # Age check will permanently reject if it gets too old.
         if velocity < self.min_velocity:
-            logger.warning(f"❌ Velocity too low: {velocity:.2f} SOL/s (min {self.min_velocity})")
-            self.triggered_tokens.add(mint)
+            logger.debug(f"⏳ Velocity {velocity:.2f} SOL/s below {self.min_velocity} - waiting for momentum")
             return
 
         # 5c. Check buyer velocity (coordination detection)
