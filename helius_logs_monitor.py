@@ -628,6 +628,12 @@ class HeliusLogsMonitor:
         #     self.triggered_tokens.add(mint)
         #     return
 
+        # 5b2. Minimum SOL velocity (momentum gate)
+        if velocity < self.min_velocity:
+            logger.warning(f"❌ Velocity too low: {velocity:.2f} SOL/s (min {self.min_velocity})")
+            self.triggered_tokens.add(mint)
+            return
+
         # 5c. Check buyer velocity (coordination detection)
         token_age = age
         buyer_velocity = buy_count / max(token_age, 0.1)

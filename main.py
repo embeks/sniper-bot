@@ -1458,6 +1458,22 @@ class SniperBot:
                         entry_slippage = ((actual_entry_price / estimated_entry_price) - 1) * 100
                         logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
 
+                        # NEGATIVE SLIPPAGE = price dropped during fill = dump in progress
+                        if entry_slippage < -10:
+                            logger.warning(f"🚨 NEGATIVE ENTRY SLIPPAGE: {entry_slippage:.1f}% - dump in progress!")
+                            logger.warning(f"   Selling immediately to minimize loss")
+                            self.pending_buys -= 1
+                            sell_sig = await self.trader.create_sell_transaction(
+                                mint=mint,
+                                token_amount=bought_tokens,
+                                slippage=95,
+                                token_decimals=6,
+                                urgency="emergency"
+                            )
+                            if sell_sig:
+                                logger.info(f"🔗 Emergency sell TX: https://solscan.io/tx/{sell_sig}")
+                            return
+
                         # HIGH SLIPPAGE WARNING ONLY - we already own the tokens, MUST monitor
                         if entry_slippage > 50:
                             logger.warning(f"⚠️ HIGH SLIPPAGE WARNING: {entry_slippage:.1f}% - monitoring anyway (tokens already bought)")
