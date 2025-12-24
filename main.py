@@ -446,12 +446,34 @@ class SniperBot:
                     logger.info(f"⚡ Sell burst ({len(real_sells_5s)}) but +{gain_above_entry:.0f}% above entry - profit-taking, holding")
 
         # ===========================================
-        # EXIT 5: TIERED PROFIT DECAY
+        # EXIT 5: TIERED PROFIT DECAY (with Tier 2 sell burst)
         # ===========================================
         drop_percent = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
 
-        # Tier 2: 12-25 SOL curve - 40% decay (let it cook)
+        # Tier 2: 12-25 SOL curve
         if peak_curve >= SELL_BURST_EXIT_MAX_CURVE and peak_curve < MID_TIER_MAX_CURVE:
+            # SELL BURST + DECLINING CURVE (catch dumps before 40% decay)
+            # 8+ sells in 5s AND 15%+ drop from peak AND curve still falling
+            flow_sells = state.get('flow_sells', [])
+            real_sells_5s = [
+                (t, amt) for t, amt in flow_sells
+                if now - t < 5.0 and amt >= SELL_BURST_EXIT_MIN_SOL
+            ]
+
+            if len(real_sells_5s) >= 8 and drop_percent >= 0.15:
+                # Confirm curve is DECLINING (not just dipped and recovered)
+                curve_history = state.get('curve_history', [])
+                curve_declining = False
+                if len(curve_history) >= 2:
+                    recent = [(t, v) for t, v in curve_history if now - t < 5]
+                    if len(recent) >= 2 and recent[-1][1] < recent[0][1]:
+                        curve_declining = True
+
+                if curve_declining:
+                    logger.warning(f"🔥 TIER2 SELL BURST: {len(real_sells_5s)} sells + {drop_percent:.0%} drop + declining")
+                    return True, f"tier2_sell_burst_{len(real_sells_5s)}_at_{current_curve:.1f}", pnl_percent
+
+            # Standard decay check (40% from peak)
             if drop_percent >= PROFIT_DECAY_MID_PERCENT:
                 logger.warning(f"📉 MID-TIER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
                 return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
