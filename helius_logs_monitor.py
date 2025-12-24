@@ -648,7 +648,8 @@ class HeliusLogsMonitor:
         # RE-ENABLED: Max buyer velocity filter at 10/s
         # 4oZTd3yQ: 16.8/s = coordinated bots, instant dump (-10.4%)
         # YJ8PUzVJ: 4.7/s = organic FOMO, ran to 250 SOL
-        if buyer_velocity > self.max_buyers_per_second:
+        # Only apply after 1s - at 0.0s, 3 buyers / 0.1s = 30/s is fake math, not coordination
+        if age >= 1.0 and buyer_velocity > self.max_buyers_per_second:
             logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
             self.stats['skipped_velocity_high'] += 1
             self.triggered_tokens.add(mint)
@@ -668,7 +669,8 @@ class HeliusLogsMonitor:
 
         # 7. Top-2 concentration check - blocks coordinated entries
         # Two wallets at 30% each = 60% concentration, should fail
-        if top2_pct > self.max_top2_percent:
+        # Only apply after 1s - with only 3 buyers, top-2 = 100% is meaningless
+        if age >= 1.0 and top2_pct > self.max_top2_percent:
             logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
             self.stats['skipped_top2'] += 1
             self.triggered_tokens.add(mint)
