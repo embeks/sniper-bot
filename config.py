@@ -134,10 +134,16 @@ MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 # ============================================
 # TIERED EXIT SYSTEM (curve-based)
 # ============================================
-# Tier 1: Under 12 SOL - use sell burst exit
-SELL_BURST_EXIT_MAX_CURVE = 12.0      # Only trigger sell burst below this curve
-SELL_BURST_EXIT_MIN_SELLS = 6         # 6 real sells (was 3) - drop killed runner on 0.55 SOL profit-taking
+# Tier 1/2 boundary
+SELL_BURST_EXIT_MAX_CURVE = 12.0      # Tier 1 ceiling
+SELL_BURST_EXIT_MIN_SELLS = 6         # LEGACY - not used
 SELL_BURST_EXIT_MIN_SOL = 0.01        # Ignore dust sells below this
+
+# VELOCITY CRASH DETECTION (replaces sell burst counting)
+# YJ8PUzVJ: 30+ sells, ran to 250 SOL - sell count meaningless
+# COWSPIN: crashed 74% in 4ms - velocity catches this instantly
+VELOCITY_CRASH_THRESHOLD = 0.20       # 20% drop in 1 second = crash
+VELOCITY_CRASH_WINDOW_SEC = 1.0       # Time window for velocity check
 
 # Tier 2: 12-25 SOL - looser profit decay (let it cook)
 PROFIT_DECAY_MID_PERCENT = 0.40       # 40% drop from peak
