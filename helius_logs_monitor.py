@@ -638,12 +638,14 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # DISABLED: Buyer velocity filter - too aggressive, blocking organic runners
-        # if buyer_velocity > self.max_buyers_per_second:
-        #     logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
-        #     self.stats['skipped_velocity_high'] += 1
-        #     self.triggered_tokens.add(mint)
-        #     return
+        # RE-ENABLED: Max buyer velocity filter at 10/s
+        # 4oZTd3yQ: 16.8/s = coordinated bots, instant dump (-10.4%)
+        # YJ8PUzVJ: 4.7/s = organic FOMO, ran to 250 SOL
+        if buyer_velocity > self.max_buyers_per_second:
+            logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
+            self.stats['skipped_velocity_high'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
         # 4. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
