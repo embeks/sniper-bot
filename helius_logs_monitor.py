@@ -581,8 +581,8 @@ class HeliusLogsMonitor:
         sell_timestamps = state.get('sell_timestamps', [])
         recent_sells_3s = len([t for t in sell_timestamps if now_check - t < 2.0])
         if recent_sells_3s >= 2:
-            logger.warning(f"❌ Recent sells: {recent_sells_3s} in last 2s - waiting for clean entry")
-            return  # Don't add to triggered_tokens - can re-check later
+            logger.warning(f"⚠️ Recent sells: {recent_sells_3s} in last 2s - continuing (sell burst gate handles this)")
+            # Removed return - let the smarter curve-stability check handle this
 
         # 2. Minimum unique buyers
         if buyers < self.min_buyers:

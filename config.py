@@ -225,7 +225,7 @@ PUMPFUN_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7Abicfh
 
 # Entry range - EARLIER to avoid slippage war
 MIN_BONDING_CURVE_SOL = 4.0
-MAX_BONDING_CURVE_SOL = 12.0
+MAX_BONDING_CURVE_SOL = 14.0
 MIGRATION_THRESHOLD_SOL = 85
 
 MIN_VIRTUAL_SOL_RESERVES = 30
@@ -251,7 +251,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '10.0'))  # Re-enabled: 16.8/s = coordinated bots (4oZTd3yQ), 4.7/s = organic (YJ8PUzVJ)
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '65.0'))  # Lowered from 70 - G3zKft2g was exactly 70% and rugged
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '100.0'))  # Disabled - logging only, won't block entries
 
 # SELL BURST DETECTION (timing-based, not count-based)
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump
