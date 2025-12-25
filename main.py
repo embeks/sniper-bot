@@ -1293,7 +1293,8 @@ class SniperBot:
                         logger.info(f"   Entry slippage vs detection: {entry_slippage:+.1f}%")
 
                         # NEGATIVE SLIPPAGE = price dropped during fill = dump in progress
-                        if entry_slippage < -10:
+                        # Only exit on SEVERE drops (-30%+), not normal volatility (-10% to -15% is common)
+                        if entry_slippage < -30:
                             logger.warning(f"🚨 NEGATIVE ENTRY SLIPPAGE: {entry_slippage:.1f}% - dump in progress!")
                             logger.warning(f"   Selling immediately to minimize loss")
                             self.pending_buys -= 1
