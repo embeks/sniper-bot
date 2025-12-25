@@ -34,8 +34,6 @@ from config import (
     TIMER_MAX_EXTENSIONS,
     FAIL_FAST_CHECK_TIME, FAIL_FAST_PNL_THRESHOLD,
     MIN_BONDING_CURVE_SOL, MAX_BONDING_CURVE_SOL,
-    SELL_BURST_EXIT_MAX_CURVE, SELL_BURST_EXIT_MIN_SELLS, SELL_BURST_EXIT_MIN_SOL,
-    PROFIT_DECAY_MID_PERCENT, MID_TIER_MAX_CURVE, PROFIT_DECAY_RUNNER_PERCENT,
 )
 
 from wallet import WalletManager
@@ -230,102 +228,6 @@ class SniperBot:
         except Exception as e:
             logger.error(f"Token price calculation error: {e}")
             return 0
-
-    def _check_orderflow_exit(self, mint: str, position: Position, pnl_percent: float) -> tuple:
-        """
-        ORDER FLOW EXIT - Momentum-based exits (restored from Dec 10-12)
-
-        1. EMERGENCY VOLUME: 4+ SOL dumped in 5s (bypasses 8s age gate) - NO OVERRIDE
-        2. PROFIT DECAY: P&L dropped to 65% of peak while still >10%
-        3. NET NEGATIVE FLOW: Sells outweighing buys (momentum reversed)
-        4. BUY DROUGHT: No buys for 5s while in profit (momentum dead)
-        5. WHALE: Single sell > 16% of curve + declining curve (smart money exiting)
-
-        Returns (should_exit: bool, reason: str)
-        """
-        if not self.scanner:
-            return False, ""
-
-        state = self.scanner.watched_tokens.get(mint, {})
-        if not state:
-            return False, ""
-
-        now = time.time()
-        age = now - position.entry_time
-
-        # Get flow data
-        flow_sells = state.get('flow_sells', [])
-        flow_buys = state.get('flow_buys', [])
-
-        recent_sell_volume = sum(amt for t, amt in flow_sells if now - t < 5)
-        recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 5)
-
-        # Minimum age before NORMAL exits (give position time to establish)
-        min_age = 8
-        if age < min_age:
-            return False, ""
-
-        # =========================================================
-        # EXIT 2: PROFIT DECAY - Preserve gains when momentum dies
-        # Exit when P&L drops to 65% of peak (while still >10%)
-        # This catches the slow bleed after peak
-        # =========================================================
-        if position.max_pnl_reached >= 15:  # Only if we hit a meaningful peak
-            decay_threshold = position.max_pnl_reached * 0.65
-            if pnl_percent < decay_threshold and pnl_percent > 10:
-                logger.warning(f"📉 PROFIT DECAY: {pnl_percent:+.1f}% < 65% of peak {position.max_pnl_reached:+.1f}%")
-                logger.warning(f"   Preserving gains before further decline")
-                return True, f"profit_decay_{pnl_percent:.0f}_from_{position.max_pnl_reached:.0f}"
-
-        # =========================================================
-        # EXIT 3: NET NEGATIVE FLOW - Momentum reversed
-        # When sells > buys significantly, price is going DOWN
-        # =========================================================
-        net_flow = recent_buy_volume - recent_sell_volume
-
-        if net_flow < -1.0 and pnl_percent > 10:  # -1 SOL negative flow while in profit
-            logger.warning(f"📉 NEGATIVE FLOW: {net_flow:.2f} SOL (buys={recent_buy_volume:.2f}, sells={recent_sell_volume:.2f})")
-            logger.warning(f"   Momentum reversed - exiting at {pnl_percent:+.1f}%")
-            return True, f"negative_flow_{net_flow:.1f}"
-
-        # =========================================================
-        # EXIT 4: BUY DROUGHT - No new buyers, momentum dead
-        # If no buys for 5s during what should be active trading = dead
-        # =========================================================
-        last_buy_time = state.get('last_buy_time', 0)
-        time_since_buy = now - last_buy_time if last_buy_time > 0 else 0
-
-        if time_since_buy > 5.0 and pnl_percent > 15:
-            logger.warning(f"🏜️ BUY DROUGHT: No buys for {time_since_buy:.1f}s")
-            logger.warning(f"   Momentum dead - exiting at {pnl_percent:+.1f}%")
-            return True, f"buy_drought_{time_since_buy:.1f}s"
-
-        # =========================================================
-        # EXIT 5: WHALE EXIT - Smart money leaving
-        # Single sell > 16% of curve = whale exiting
-        # Only exit if we're in profit (don't panic sell at loss)
-        # =========================================================
-        if pnl_percent > 5:
-            current_curve = state.get('vSolInBondingCurve', 0)
-            recent_sells = [(t, amt) for t, amt in flow_sells if now - t < 3]
-
-            if recent_sells and current_curve > 0:
-                largest_recent = max(amt for t, amt in recent_sells)
-                whale_pct = (largest_recent / current_curve) * 100
-
-                if whale_pct >= 16:
-                    # Only exit if curve is DECLINING after whale sell
-                    entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'detection_curve_sol', 0) or 6.0
-                    curve_growth = current_curve - entry_curve
-
-                    if curve_growth <= 0:  # Curve at or below entry = real dump
-                        logger.warning(f"🐋 WHALE EXIT: {largest_recent:.2f} SOL sell = {whale_pct:.0f}% of curve")
-                        logger.warning(f"   Curve declining ({curve_growth:+.1f} SOL) - following smart money out")
-                        return True, f"whale_exit_{whale_pct:.0f}pct"
-                    else:
-                        logger.info(f"⚡ Whale sell ({whale_pct:.0f}%) but curve +{curve_growth:.1f} SOL above entry - holding")
-
-        return False, ""
 
     def _check_curve_exits(self, mint: str, position: Position) -> tuple:
         """
