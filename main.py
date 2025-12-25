@@ -240,7 +240,7 @@ class SniperBot:
         """
         from config import (
             RUG_FLOOR_SOL, MIN_EXIT_AGE_SECONDS,
-            TIER1_MAX_CURVE_SOL,
+            TIER1_MAX_CURVE_SOL, TIER1_CURVE_DROP_SOL,
             TIER2_DROP_FROM_PEAK_PCT
         )
 
@@ -313,7 +313,7 @@ class SniperBot:
         # ===========================================
         if peak_curve < TIER1_MAX_CURVE_SOL:
             curve_drop = peak_curve - current_curve
-            if curve_drop >= 2.0:
+            if curve_drop >= TIER1_CURVE_DROP_SOL:
                 logger.warning(f"📉 CURVE DROP (Tier 1): Peak {peak_curve:.1f} → {current_curve:.1f} SOL (-{curve_drop:.1f})")
                 logger.warning(f"   P&L: {pnl_percent:+.1f}%")
                 return True, f"curve_drop_t1_{curve_drop:.1f}sol", pnl_percent

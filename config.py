@@ -137,6 +137,7 @@ MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 # ============================================
 # Tier 1: Under 15 SOL - exit on momentum death (inflow dies)
 TIER1_MAX_CURVE_SOL = 15.0  # Lowered from 25 - 2 SOL drop too sensitive above 15 SOL
+TIER1_CURVE_DROP_SOL = 1.0  # Exit when curve drops this much from peak (under TIER1_MAX_CURVE_SOL)
 TIER1_MIN_PROFIT_PCT = 20.0           # Must be up 20%+ before momentum exit activates
 TIER1_INFLOW_WINDOW_SEC = 2.0         # Check inflow over 2 seconds
 TIER1_INFLOW_DEATH_THRESHOLD = 0.3    # If recent inflow < 30% of previous window, momentum dead
