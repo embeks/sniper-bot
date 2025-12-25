@@ -145,12 +145,17 @@ SELL_BURST_EXIT_MIN_SOL = 0.01        # Ignore dust sells below this
 VELOCITY_CRASH_THRESHOLD = 0.20       # 20% drop in 1 second = crash
 VELOCITY_CRASH_WINDOW_SEC = 1.0       # Time window for velocity check
 
-# Tier 2: 12-25 SOL - looser profit decay (let it cook)
-PROFIT_DECAY_MID_PERCENT = 0.40       # 40% drop from peak
-MID_TIER_MAX_CURVE = 25.0             # Upper bound for mid-tier
+# ============================================
+# TWO-TIER EXIT SYSTEM
+# ============================================
+# Tier 1: Under 25 SOL - exit on momentum death (inflow dies)
+TIER1_MAX_CURVE_SOL = 25.0
+TIER1_MIN_PROFIT_PCT = 20.0           # Must be up 20%+ before momentum exit activates
+TIER1_INFLOW_WINDOW_SEC = 2.0         # Check inflow over 2 seconds
+TIER1_INFLOW_DEATH_THRESHOLD = 0.3    # If recent inflow < 30% of previous window, momentum dead
 
-# Tier 3: 25+ SOL - runner, RELAXED decay (FROZONE ran to 69 SOL after 40% dip)
-PROFIT_DECAY_RUNNER_PERCENT = 0.30    # 30% drop from peak
+# Tier 2: 25+ SOL - exit on 30% drop from peak
+TIER2_DROP_FROM_PEAK_PCT = 0.30       # 30% drop from peak
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
