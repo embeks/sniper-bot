@@ -445,6 +445,10 @@ class HeliusLogsMonitor:
 
         state = self.watched_tokens[mint]
 
+        # Skip if already marked as rug/triggered
+        if mint in self.triggered_tokens:
+            return
+
         # DUST SELL FILTER - ignore sells < 0.01 SOL entirely
         MIN_DUST_THRESHOLD = 0.01
         if sol_amount < MIN_DUST_THRESHOLD and sol_amount >= 0:
@@ -460,12 +464,19 @@ class HeliusLogsMonitor:
         # DEV RUG CHECK - use FRESH curve data only
         if virtual_sol_reserves > 30 and sol_amount > 0:
             fresh_curve = virtual_sol_reserves - 30
-            sell_ratio = sol_amount / fresh_curve if fresh_curve > 0 else 0
-            if sell_ratio > 0.60:
-                logger.warning(f"🚨 DEV RUG: Sell drained {sell_ratio:.0%} of curve ({sol_amount:.2f}/{fresh_curve:.2f} SOL)")
-                self.stats['skipped_dev_rug'] = self.stats.get('skipped_dev_rug', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+            # Skip if curve too small (< 0.5 SOL) - data unreliable at this level
+            if fresh_curve < 0.5:
+                logger.debug(f"   ⚠️ Curve too small for rug check: {fresh_curve:.2f} SOL")
+            else:
+                sell_ratio = sol_amount / fresh_curve
+                # Cap at 100% - can't drain more than exists (stale data if > 100%)
+                if sell_ratio > 1.0:
+                    logger.debug(f"   ⚠️ Impossible sell ratio {sell_ratio:.0%} - stale data, skipping")
+                elif sell_ratio > 0.60:
+                    logger.warning(f"🚨 DEV RUG: Sell drained {sell_ratio:.0%} of curve ({sol_amount:.2f}/{fresh_curve:.2f} SOL)")
+                    self.stats['skipped_dev_rug'] = self.stats.get('skipped_dev_rug', 0) + 1
+                    self.triggered_tokens.add(mint)
+                    return
 
         state['sell_count'] += 1
 
