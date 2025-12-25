@@ -508,6 +508,7 @@ class HeliusLogsMonitor:
 
         # INSTANT EXIT CHECK: If we hold this token, check exit conditions NOW
         if state.get('has_active_position') and self.exit_callback:
+            logger.info(f"📞 EXIT CB: {mint[:8]}... curve={state.get('vSolInBondingCurve', 0):.2f} peak={state.get('peak_curve_sol', 0):.2f}")
             await self.exit_callback(mint, state)
     
     async def _check_and_trigger(self, mint: str, state: dict):

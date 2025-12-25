@@ -330,6 +330,13 @@ class SniperBot:
         if not position or position.status != 'active' or position.is_closing:
             return
 
+        # DEBUG: Log callback fired and current curve state
+        current_curve = state.get('vSolInBondingCurve', 0)
+        peak_curve = state.get('peak_curve_sol', 0)
+        curve_drop = peak_curve - current_curve if peak_curve > 0 else 0
+        age = time.time() - position.entry_time
+        logger.info(f"⚡ SELL CB: {mint[:8]}... curve={current_curve:.2f} peak={peak_curve:.2f} drop={curve_drop:.2f} age={age:.1f}s")
+
         # Run FULL exit condition check instantly (same logic as monitoring loop)
         should_exit, exit_reason, pnl_percent = self._check_curve_exits(mint, position)
 
