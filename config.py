@@ -134,13 +134,13 @@ MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 # ============================================
 # TWO-TIER EXIT SYSTEM
 # ============================================
-# Tier 1: Under 25 SOL - exit on momentum death (inflow dies)
-TIER1_MAX_CURVE_SOL = 25.0
+# Tier 1: Under 15 SOL - exit on momentum death (inflow dies)
+TIER1_MAX_CURVE_SOL = 15.0  # Lowered from 25 - 2 SOL drop too sensitive above 15 SOL
 TIER1_MIN_PROFIT_PCT = 20.0           # Must be up 20%+ before momentum exit activates
 TIER1_INFLOW_WINDOW_SEC = 2.0         # Check inflow over 2 seconds
 TIER1_INFLOW_DEATH_THRESHOLD = 0.3    # If recent inflow < 30% of previous window, momentum dead
 
-# Tier 2: 25+ SOL - exit on 30% drop from peak
+# Tier 2: 15+ SOL - exit on 30% drop from peak
 TIER2_DROP_FROM_PEAK_PCT = 0.30       # 30% drop from peak
 
 # ============================================
@@ -249,7 +249,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '10.0'))  # Re-enabled: 16.8/s = coordinated bots (4oZTd3yQ), 4.7/s = organic (YJ8PUzVJ)
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '70.0'))  # Blocks coordinated pump-and-dumps (78-95% top-2 = rug, <25% = organic)
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '65.0'))  # Lowered from 70 - G3zKft2g was exactly 70% and rugged
 
 # SELL BURST DETECTION (timing-based, not count-based)
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump
