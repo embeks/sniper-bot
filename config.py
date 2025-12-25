@@ -132,20 +132,6 @@ BUY_DROUGHT_SECONDS = 8.0     # No buys for this long + declining = dead
 MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 
 # ============================================
-# TIERED EXIT SYSTEM (curve-based)
-# ============================================
-# Tier 1/2 boundary
-SELL_BURST_EXIT_MAX_CURVE = 12.0      # Tier 1 ceiling
-SELL_BURST_EXIT_MIN_SELLS = 6         # LEGACY - not used
-SELL_BURST_EXIT_MIN_SOL = 0.01        # Ignore dust sells below this
-
-# VELOCITY CRASH DETECTION (replaces sell burst counting)
-# YJ8PUzVJ: 30+ sells, ran to 250 SOL - sell count meaningless
-# COWSPIN: crashed 74% in 4ms - velocity catches this instantly
-VELOCITY_CRASH_THRESHOLD = 0.20       # 20% drop in 1 second = crash
-VELOCITY_CRASH_WINDOW_SEC = 1.0       # Time window for velocity check
-
-# ============================================
 # TWO-TIER EXIT SYSTEM
 # ============================================
 # Tier 1: Under 25 SOL - exit on momentum death (inflow dies)
