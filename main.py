@@ -290,6 +290,17 @@ class SniperBot:
                 logger.warning(f"🚨 RUG FLOOR: {current_curve:.2f} SOL < {RUG_FLOOR_SOL} floor")
                 return True, f"rug_floor_{current_curve:.1f}", pnl_percent
 
+        # ===========================================
+        # EXIT 2: EMERGENCY CURVE DROP (bypasses age gate)
+        # Large drops are real dumps, not early noise
+        # ===========================================
+        from config import EMERGENCY_CURVE_DROP_SOL
+        curve_drop = peak_curve - current_curve
+        if curve_drop >= EMERGENCY_CURVE_DROP_SOL:
+            logger.warning(f"🚨 EMERGENCY DROP: Peak {peak_curve:.1f} → {current_curve:.1f} SOL (-{curve_drop:.1f})")
+            logger.warning(f"   Bypassing age gate ({age:.1f}s < {MIN_EXIT_AGE_SECONDS}s) - P&L: {pnl_percent:+.1f}%")
+            return True, f"emergency_drop_{curve_drop:.1f}sol", pnl_percent
+
         # Minimum age gate for non-emergency exits
         if age < MIN_EXIT_AGE_SECONDS:
             return False, "", pnl_percent

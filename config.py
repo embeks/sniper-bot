@@ -124,6 +124,7 @@ TIMER_MAX_EXTENSIONS = int(os.getenv('TIMER_MAX_EXTENSIONS', '0'))
 
 # NEW absolute thresholds (never false trigger):
 RUG_FLOOR_SOL = 1.5           # Below this = liquidity gone = definite rug
+EMERGENCY_CURVE_DROP_SOL = 4.0  # 4+ SOL drop exits immediately regardless of age
 MOMENTUM_DEATH_SOL = 1.5      # Lost this much from entry = sellers winning
 PROFIT_PEAK_THRESHOLD_SOL = 3.0   # Must hit this profit before decay triggers
 PROFIT_DECAY_PERCENT = 0.30  # 30% drop from peak triggers exit
