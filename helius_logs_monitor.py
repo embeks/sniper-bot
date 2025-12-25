@@ -423,7 +423,7 @@ class HeliusLogsMonitor:
         if state['buy_count'] % 5 == 0 or state['total_sol'] >= self.min_sol * 0.7:
             age = time.time() - state['created_at']
             logger.info(
-                f"   📈 {mint[:8]}... | {state['total_sol']:.2f} SOL | "
+                f"   📈 {mint[:8]}... | {state['vSolInBondingCurve']:.2f} SOL | "
                 f"{len(state['buyers'])} buyers | {age:.1f}s"
             )
 
@@ -443,18 +443,26 @@ class HeliusLogsMonitor:
         if not mint or mint not in self.watched_tokens:
             return
 
-        self.stats['sells'] += 1
         state = self.watched_tokens[mint]
 
-        # FIRST-SELL RUG CHECK: >60% drain = dev rug
-        current_curve = state['vSolInBondingCurve']
-        if current_curve > 0 and sol_amount > 0:
-            sell_ratio = sol_amount / current_curve
-            if sell_ratio > 1.0:
-                # Stale curve data - mathematically impossible, skip rug check
-                logger.warning(f"⚠️ Stale curve data: {sell_ratio:.0%} drain impossible, skipping")
-            elif sell_ratio > 0.60:
-                logger.warning(f"🚨 DEV RUG: Sell drained {sell_ratio:.0%} of curve ({sol_amount:.2f}/{current_curve:.2f} SOL)")
+        # DUST SELL FILTER - ignore sells < 0.01 SOL entirely
+        MIN_DUST_THRESHOLD = 0.01
+        if sol_amount < MIN_DUST_THRESHOLD and sol_amount >= 0:
+            if virtual_sol_reserves > 30:
+                state['vSolInBondingCurve'] = virtual_sol_reserves - 30
+                state['curve_history'].append((time.time(), state['vSolInBondingCurve']))
+                state['last_update'] = time.time()
+            logger.debug(f"   🧹 Dust sell ignored: {sol_amount:.6f} SOL")
+            return
+
+        self.stats['sells'] += 1
+
+        # DEV RUG CHECK - use FRESH curve data only
+        if virtual_sol_reserves > 30 and sol_amount > 0:
+            fresh_curve = virtual_sol_reserves - 30
+            sell_ratio = sol_amount / fresh_curve if fresh_curve > 0 else 0
+            if sell_ratio > 0.60:
+                logger.warning(f"🚨 DEV RUG: Sell drained {sell_ratio:.0%} of curve ({sol_amount:.2f}/{fresh_curve:.2f} SOL)")
                 self.stats['skipped_dev_rug'] = self.stats.get('skipped_dev_rug', 0) + 1
                 self.triggered_tokens.add(mint)
                 return
@@ -471,14 +479,9 @@ class HeliusLogsMonitor:
         actual_sell_sol = sol_amount if sol_amount > 0 else 0.3
         state['largest_sell'] = max(state.get('largest_sell', 0), actual_sell_sol)
 
-        # DUST FILTER: Only count sells >= 0.02 SOL for order flow
-        # Dust sells (0.0001 SOL) are bot probes, not real selling pressure
-        MIN_SIGNIFICANT_SELL = 0.02
-        if actual_sell_sol >= MIN_SIGNIFICANT_SELL:
-            state['sell_timestamps'].append(now)
-            state['flow_sells'].append((now, actual_sell_sol))
-        else:
-            logger.debug(f"   🧹 Dust sell ignored for flow: {actual_sell_sol:.4f} SOL")
+        # Flow tracking (dust already filtered at method start)
+        state['sell_timestamps'].append(now)
+        state['flow_sells'].append((now, actual_sell_sol))
 
         state['flow_sells'] = [x for x in state['flow_sells'] if isinstance(x, tuple) and len(x) == 2 and now - x[0] < 30]
         state['sell_timestamps'] = [t for t in state['sell_timestamps'] if now - t < 30]
