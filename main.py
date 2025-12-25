@@ -329,15 +329,18 @@ class SniperBot:
 
     def _check_curve_exits(self, mint: str, position: Position) -> tuple:
         """
-        CURVE-BASED EXIT SYSTEM - All decisions from Helius WebSocket
-        NO RPC calls. Uses absolute SOL thresholds, not percentages.
+        TWO-TIER EXIT SYSTEM
+
+        Tier 1 (< 25 SOL): Exit when inflow dies (momentum death)
+        Tier 2 (≥ 25 SOL): Exit on 30% drop from peak
 
         Returns: (should_exit: bool, reason: str, pnl_percent: float)
         """
         from config import (
-            RUG_FLOOR_SOL, MOMENTUM_DEATH_SOL, PROFIT_PEAK_THRESHOLD_SOL,
-            PROFIT_DECAY_PERCENT, WHALE_SELL_PERCENT, BUY_DROUGHT_SECONDS,
-            MIN_EXIT_AGE_SECONDS
+            RUG_FLOOR_SOL, MIN_EXIT_AGE_SECONDS,
+            TIER1_MAX_CURVE_SOL, TIER1_MIN_PROFIT_PCT,
+            TIER1_INFLOW_WINDOW_SEC, TIER1_INFLOW_DEATH_THRESHOLD,
+            TIER2_DROP_FROM_PEAK_PCT
         )
 
         if not self.scanner:
@@ -352,8 +355,6 @@ class SniperBot:
 
         # Get curve values from Helius (real-time, no RPC)
         current_curve = state.get('vSolInBondingCurve', 0)
-
-        # Use slippage-adjusted entry curve for accurate P&L (falls back to detection if not set)
         entry_curve = getattr(position, 'entry_sol_in_curve', 0) or getattr(position, 'detection_curve_sol', 0) or 6.0
 
         # Track peak curve
@@ -362,12 +363,12 @@ class SniperBot:
             state['peak_curve_sol'] = current_curve
             peak_curve = current_curve
 
-        # Calculate P&L from ACTUAL fill price (not curve estimate)
+        # Calculate P&L from ACTUAL fill price
         VIRTUAL_RESERVES = 30.0
         virtual_sol_lamports = (current_curve + VIRTUAL_RESERVES) * 1e9
-        INITIAL_K = 30e9 * 1073000191e6  # PumpFun launch reserves product
+        INITIAL_K = 30e9 * 1073000191e6
         virtual_tokens_atomic = INITIAL_K / virtual_sol_lamports
-        current_price = virtual_sol_lamports / virtual_tokens_atomic  # lamports per atomic
+        current_price = virtual_sol_lamports / virtual_tokens_atomic
 
         entry_price = getattr(position, 'entry_token_price_sol', 0)
         if entry_price > 0:
@@ -375,16 +376,10 @@ class SniperBot:
         else:
             pnl_percent = 0.0
 
-        # Curve deltas
-        curve_from_entry = current_curve - entry_curve
-        curve_from_peak = current_curve - peak_curve
-
         # ===========================================
         # EXIT 1: RUG FLOOR (highest priority - always check)
         # ===========================================
         if current_curve < RUG_FLOOR_SOL:
-            # SANITY CHECK: Don't rug floor if active buying
-            # Batch processing can show low curve before buys in same batch update it
             flow_buys = state.get('flow_buys', [])
             recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 3)
 
@@ -399,91 +394,51 @@ class SniperBot:
             return False, "", pnl_percent
 
         # ===========================================
-        # EXIT 2: MOMENTUM DEATH (lost 1.5+ SOL from entry + still falling)
+        # TIER 1: Under 25 SOL - Momentum Death Exit
+        # Exit when inflow dies while in profit
         # ===========================================
-        if curve_from_entry < -MOMENTUM_DEATH_SOL:
-            curve_history = state.get('curve_history', [])
-            if len(curve_history) >= 2:
-                recent = [(t, v) for t, v in curve_history if now - t < 3]
-                if len(recent) >= 2 and recent[-1][1] <= recent[0][1]:
-                    logger.warning(f"📉 MOMENTUM DEATH: {curve_from_entry:+.2f} SOL from entry")
-                    return True, f"momentum_death_{curve_from_entry:.1f}", pnl_percent
+        if peak_curve < TIER1_MAX_CURVE_SOL:
+            # Only activate if in profit
+            if pnl_percent >= TIER1_MIN_PROFIT_PCT:
+                flow_buys = state.get('flow_buys', [])
 
-        # ===========================================
-        # EXIT 3: WHALE DUMP (large sell + curve at/below entry)
-        # ===========================================
-        flow_sells = state.get('flow_sells', [])
-        recent_sells = [(t, amt) for t, amt in flow_sells if now - t < 3]
+                # Calculate inflow in recent window (last 2 seconds)
+                recent_inflow = sum(amt for t, amt in flow_buys if now - t < TIER1_INFLOW_WINDOW_SEC)
 
-        if recent_sells and current_curve > 0:
-            largest_sell = max(amt for t, amt in recent_sells)
-            whale_pct = (largest_sell / current_curve) * 100
+                # Calculate inflow in previous window (2-4 seconds ago)
+                previous_inflow = sum(amt for t, amt in flow_buys
+                                      if TIER1_INFLOW_WINDOW_SEC <= (now - t) < (TIER1_INFLOW_WINDOW_SEC * 2))
 
-            if whale_pct >= WHALE_SELL_PERCENT and curve_from_entry <= 0:
-                logger.warning(f"🐋 WHALE DUMP: {largest_sell:.2f} SOL ({whale_pct:.0f}%) + curve flat")
-                return True, f"whale_dump_{whale_pct:.0f}pct", pnl_percent
+                # Momentum death: recent inflow dropped significantly
+                if previous_inflow > 0.5:  # Only check if there was meaningful previous inflow
+                    inflow_ratio = recent_inflow / previous_inflow
 
-        # ===========================================
-        # EXIT 4: VELOCITY CRASH (Tier 1 & 2) - 20% drop in 1 second
-        # YJ8PUzVJ: 30+ sells in 5s, ran to 250 SOL (sell count useless)
-        # COWSPIN: 15 sells crashed 74% in 4ms (velocity catches this)
-        # ===========================================
-        if peak_curve < MID_TIER_MAX_CURVE:  # Tier 1 & 2 only (< 25 SOL)
-            from config import VELOCITY_CRASH_THRESHOLD, VELOCITY_CRASH_WINDOW_SEC
-            curve_history = state.get('curve_history', [])
+                    if inflow_ratio < TIER1_INFLOW_DEATH_THRESHOLD:
+                        logger.warning(f"📉 MOMENTUM DEATH (Tier 1): Inflow {previous_inflow:.2f} → {recent_inflow:.2f} SOL ({inflow_ratio:.0%})")
+                        logger.warning(f"   Curve: {current_curve:.1f} SOL | P&L: {pnl_percent:+.1f}%")
+                        return True, f"momentum_death_t1_{inflow_ratio:.0%}", pnl_percent
 
-            # Find curve value from ~1 second ago
-            curve_1s_ago = None
-            for t, v in reversed(curve_history):
-                time_ago = now - t
-                if time_ago >= VELOCITY_CRASH_WINDOW_SEC:
-                    curve_1s_ago = v
-                    break
-
-            if curve_1s_ago and curve_1s_ago > 0:
-                velocity_drop = (curve_1s_ago - current_curve) / curve_1s_ago
-                if velocity_drop >= VELOCITY_CRASH_THRESHOLD:
-                    logger.warning(f"⚡ VELOCITY CRASH: {curve_1s_ago:.2f} → {current_curve:.2f} SOL ({velocity_drop:.0%} drop in 1s)")
-                    return True, f"velocity_crash_{velocity_drop:.0%}_in_1s", pnl_percent
+                # Also exit if NO buys at all for 2+ seconds (complete drought)
+                elif recent_inflow < 0.1 and previous_inflow < 0.1:
+                    # Check if there were buys before that
+                    older_inflow = sum(amt for t, amt in flow_buys
+                                       if (TIER1_INFLOW_WINDOW_SEC * 2) <= (now - t) < (TIER1_INFLOW_WINDOW_SEC * 3))
+                    if older_inflow > 0.5:
+                        logger.warning(f"📉 MOMENTUM DEATH (Tier 1): No inflow for {TIER1_INFLOW_WINDOW_SEC * 2:.0f}s")
+                        logger.warning(f"   Curve: {current_curve:.1f} SOL | P&L: {pnl_percent:+.1f}%")
+                        return True, f"momentum_death_t1_drought", pnl_percent
 
         # ===========================================
-        # EXIT 5: TIERED PROFIT DECAY (with Tier 2 sell burst)
+        # TIER 2: 25+ SOL - 30% Drop From Peak
+        # Token proved itself, wait for confirmation
         # ===========================================
-        drop_percent = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
+        else:  # peak_curve >= TIER1_MAX_CURVE_SOL
+            drop_from_peak = (peak_curve - current_curve) / peak_curve if peak_curve > 0 else 0
 
-        # Tier 2: 12-25 SOL curve
-        if peak_curve >= SELL_BURST_EXIT_MAX_CURVE and peak_curve < MID_TIER_MAX_CURVE:
-            # Velocity crash already handled above for Tier 1 & 2
-            # Standard decay check (40% from peak)
-            if drop_percent >= PROFIT_DECAY_MID_PERCENT:
-                logger.warning(f"📉 MID-TIER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
-                return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
-
-        # Tier 3: 25+ SOL curve - 30% decay (runner, catch the top)
-        elif peak_curve >= MID_TIER_MAX_CURVE:
-            if drop_percent >= PROFIT_DECAY_RUNNER_PERCENT:
-                logger.warning(f"📉 RUNNER DECAY: Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_percent:.0%} drop)")
-                return True, f"profit_decay_{drop_percent:.0%}_from_{peak_curve:.1f}", pnl_percent
-
-        # ===========================================
-        # EXIT 5: BUY DROUGHT (no buys + declining)
-        # ===========================================
-        last_buy_time = state.get('last_buy_time', 0)
-        time_since_buy = now - last_buy_time if last_buy_time > 0 else 0
-
-        if time_since_buy > BUY_DROUGHT_SECONDS:
-            curve_history = state.get('curve_history', [])
-            if len(curve_history) >= 3:
-                old_curves = [v for t, v in curve_history if now - t > 3]
-                new_curves = [v for t, v in curve_history if now - t <= 3]
-
-                if old_curves and new_curves:
-                    old_avg = sum(old_curves) / len(old_curves)
-                    new_avg = sum(new_curves) / len(new_curves)
-
-                    if new_avg < old_avg - 0.5:
-                        logger.warning(f"🏜️ BUY DROUGHT: {time_since_buy:.1f}s + curve declining")
-                        return True, f"buy_drought_{time_since_buy:.0f}s", pnl_percent
+            if drop_from_peak >= TIER2_DROP_FROM_PEAK_PCT:
+                logger.warning(f"📉 PROFIT DECAY (Tier 2): Peak {peak_curve:.1f} → {current_curve:.1f} SOL ({drop_from_peak:.0%} drop)")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}%")
+                return True, f"profit_decay_t2_{drop_from_peak:.0%}", pnl_percent
 
         return False, "", pnl_percent
 
