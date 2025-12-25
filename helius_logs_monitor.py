@@ -671,7 +671,7 @@ class HeliusLogsMonitor:
         # Two wallets at 30% each = 60% concentration, should fail
         # Only check top-2 concentration if we have enough buyers for it to be meaningful
         # With 3-4 buyers, top-2 will always be 50-100% mathematically
-        if unique_buyers >= 5 and top2_pct > self.max_top2_percent:
+        if buyers >= 5 and top2_pct > self.max_top2_percent:
             logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
             self.stats['skipped_top2'] += 1
             self.triggered_tokens.add(mint)
