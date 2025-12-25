@@ -560,12 +560,12 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)  # Don't check again
             return
 
-        # 1b. HARD BLOCK: Any sells in last 3 seconds
+        # 1b. Sell activity check - require 2+ recent sells to block (1 sell = normal profit taking)
         now_check = time.time()
         sell_timestamps = state.get('sell_timestamps', [])
-        recent_sells_3s = len([t for t in sell_timestamps if now_check - t < 3.0])
-        if recent_sells_3s > 0:
-            logger.warning(f"❌ Recent sells: {recent_sells_3s} in last 3s - waiting for clean entry")
+        recent_sells_3s = len([t for t in sell_timestamps if now_check - t < 2.0])
+        if recent_sells_3s >= 2:
+            logger.warning(f"❌ Recent sells: {recent_sells_3s} in last 2s - waiting for clean entry")
             return  # Don't add to triggered_tokens - can re-check later
 
         # 2. Minimum unique buyers
@@ -672,8 +672,8 @@ class HeliusLogsMonitor:
 
         # 7. Top-2 concentration check - blocks coordinated entries
         # Always check regardless of buyer count - 96% concentration = death
-        if top2_pct > 80.0:
-            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max 80%)")
+        if top2_pct > self.max_top2_percent:
+            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
             self.stats['skipped_top2'] += 1
             self.triggered_tokens.add(mint)
             return
