@@ -694,6 +694,13 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
+        # 6. Single wallet concentration check
+        if largest_buy_pct > self.max_single_buy_percent:
+            logger.warning(f"❌ Single wallet too large: {largest_buy_pct:.1f}% (max {self.max_single_buy_percent}%)")
+            self.stats['skipped_single_wallet'] = self.stats.get('skipped_single_wallet', 0) + 1
+            self.triggered_tokens.add(mint)
+            return
+
         # 8. NEW: Dev buy filter - creator buying tokens = guaranteed dump
         dev_buys = state.get('dev_buys', 0)
         if dev_buys > 0:
