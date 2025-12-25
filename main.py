@@ -240,8 +240,7 @@ class SniperBot:
         """
         from config import (
             RUG_FLOOR_SOL, MIN_EXIT_AGE_SECONDS,
-            TIER1_MAX_CURVE_SOL, TIER1_MIN_PROFIT_PCT,
-            TIER1_INFLOW_WINDOW_SEC, TIER1_INFLOW_DEATH_THRESHOLD,
+            TIER1_MAX_CURVE_SOL,
             TIER2_DROP_FROM_PEAK_PCT
         )
 
@@ -296,39 +295,17 @@ class SniperBot:
             return False, "", pnl_percent
 
         # ===========================================
-        # TIER 1: Under 25 SOL - Momentum Death Exit
-        # Exit when inflow dies while in profit
+        # TIER 1: Under 25 SOL - Exit on 2 SOL curve drop from peak
+        # Simple rule: if curve drops 2 SOL from peak, exit
+        # Strong tokens absorb dumps (curve stays up)
+        # Weak tokens collapse (curve drops)
         # ===========================================
         if peak_curve < TIER1_MAX_CURVE_SOL:
-            # Only activate if in profit
-            if pnl_percent >= TIER1_MIN_PROFIT_PCT:
-                flow_buys = state.get('flow_buys', [])
-
-                # Calculate inflow in recent window (last 2 seconds)
-                recent_inflow = sum(amt for t, amt in flow_buys if now - t < TIER1_INFLOW_WINDOW_SEC)
-
-                # Calculate inflow in previous window (2-4 seconds ago)
-                previous_inflow = sum(amt for t, amt in flow_buys
-                                      if TIER1_INFLOW_WINDOW_SEC <= (now - t) < (TIER1_INFLOW_WINDOW_SEC * 2))
-
-                # Momentum death: recent inflow dropped significantly
-                if previous_inflow > 0.5:  # Only check if there was meaningful previous inflow
-                    inflow_ratio = recent_inflow / previous_inflow
-
-                    if inflow_ratio < TIER1_INFLOW_DEATH_THRESHOLD:
-                        logger.warning(f"📉 MOMENTUM DEATH (Tier 1): Inflow {previous_inflow:.2f} → {recent_inflow:.2f} SOL ({inflow_ratio:.0%})")
-                        logger.warning(f"   Curve: {current_curve:.1f} SOL | P&L: {pnl_percent:+.1f}%")
-                        return True, f"momentum_death_t1_{inflow_ratio:.0%}", pnl_percent
-
-                # Also exit if NO buys at all for 2+ seconds (complete drought)
-                elif recent_inflow < 0.1 and previous_inflow < 0.1:
-                    # Check if there were buys before that
-                    older_inflow = sum(amt for t, amt in flow_buys
-                                       if (TIER1_INFLOW_WINDOW_SEC * 2) <= (now - t) < (TIER1_INFLOW_WINDOW_SEC * 3))
-                    if older_inflow > 0.5:
-                        logger.warning(f"📉 MOMENTUM DEATH (Tier 1): No inflow for {TIER1_INFLOW_WINDOW_SEC * 2:.0f}s")
-                        logger.warning(f"   Curve: {current_curve:.1f} SOL | P&L: {pnl_percent:+.1f}%")
-                        return True, f"momentum_death_t1_drought", pnl_percent
+            curve_drop = peak_curve - current_curve
+            if curve_drop >= 2.0:
+                logger.warning(f"📉 CURVE DROP (Tier 1): Peak {peak_curve:.1f} → {current_curve:.1f} SOL (-{curve_drop:.1f})")
+                logger.warning(f"   P&L: {pnl_percent:+.1f}%")
+                return True, f"curve_drop_t1_{curve_drop:.1f}sol", pnl_percent
 
         # ===========================================
         # TIER 2: 25+ SOL - 30% Drop From Peak

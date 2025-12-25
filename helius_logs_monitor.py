@@ -487,15 +487,10 @@ class HeliusLogsMonitor:
         if virtual_sol_reserves > 30:
             state['vSolInBondingCurve'] = virtual_sol_reserves - 30  # Subtract 30 SOL virtual offset
             logger.debug(f"   📊 Curve state from TradeEvent: {state['vSolInBondingCurve']:.2f} SOL")
-        elif sol_amount > 0:
-            # Fallback to subtraction if virtualSolReserves parsing failed
-            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - sol_amount)
-            state['last_known_sell_amount'] = sol_amount
         else:
-            # Last resort fallback
-            fallback_amount = state.get('last_known_sell_amount', 0.1)
-            state['vSolInBondingCurve'] = max(0, state['vSolInBondingCurve'] - fallback_amount)
-            logger.warning(f"⚠️ Sell parse failed, using fallback: {fallback_amount:.4f} SOL")
+            # DON'T corrupt curve state on parse failure - subtraction is wrong math
+            # Next buy event will correct it with accurate virtualSolReserves
+            logger.debug(f"   ⚠️ Sell parse incomplete, keeping curve at {state['vSolInBondingCurve']:.2f} SOL")
 
         # Track curve momentum for rug detection gate
         state['curve_history'].append((now, state['vSolInBondingCurve']))
@@ -563,6 +558,14 @@ class HeliusLogsMonitor:
             logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol} - SKIP")
             self.triggered_tokens.add(mint)  # Don't check again
             return
+
+        # 1b. HARD BLOCK: Any sells in last 3 seconds
+        now_check = time.time()
+        sell_timestamps = state.get('sell_timestamps', [])
+        recent_sells_3s = len([t for t in sell_timestamps if now_check - t < 3.0])
+        if recent_sells_3s > 0:
+            logger.warning(f"❌ Recent sells: {recent_sells_3s} in last 3s - waiting for clean entry")
+            return  # Don't add to triggered_tokens - can re-check later
 
         # 2. Minimum unique buyers
         if buyers < self.min_buyers:
@@ -667,11 +670,9 @@ class HeliusLogsMonitor:
         # ===== NEW FILTERS (21-trade baseline learnings) =====
 
         # 7. Top-2 concentration check - blocks coordinated entries
-        # Two wallets at 30% each = 60% concentration, should fail
-        # Only check top-2 concentration if we have enough buyers for it to be meaningful
-        # With 3-4 buyers, top-2 will always be 50-100% mathematically
-        if buyers >= 5 and top2_pct > self.max_top2_percent:
-            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
+        # Always check regardless of buyer count - 96% concentration = death
+        if top2_pct > 80.0:
+            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max 80%)")
             self.stats['skipped_top2'] += 1
             self.triggered_tokens.add(mint)
             return
