@@ -768,10 +768,9 @@ class HeliusLogsMonitor:
             logger.info(f"   📊 SLOT DATA: creation={creation_slot}, first_buy={first_buy_slot}, same_slot={first_buy_slot == creation_slot}")
             logger.info(f"   📊 SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} buys in creation slot, {unique_slots} unique slots, spread={slot_spread}")
 
-            # Filter coordinated instant rugs (80%+ buys in creation slot with tight spread)
-            creation_slot_pct = same_slot_buys / len(buy_slots) if buy_slots else 0
-            if creation_slot_pct >= 0.80 and slot_spread <= 2 and buyers >= 5:
-                logger.warning(f"❌ COORDINATED SNIPERS: {creation_slot_pct:.0%} in creation slot (spread={slot_spread}) - skipping")
+            # Filter coordinated launches (first buy in creation slot + tight spread = knew launch time)
+            if same_slot and slot_spread <= 2 and buyers >= 5:
+                logger.warning(f"❌ COORDINATED LAUNCH: same_slot + spread={slot_spread} + {buyers} buyers - skipping")
                 self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
                 self.triggered_tokens.add(mint)
                 return
