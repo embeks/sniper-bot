@@ -570,11 +570,11 @@ class HeliusLogsMonitor:
         if total_sol < self.min_sol:
             return  # Too early, keep watching
 
-        # RE-ENABLED: SOL ceiling - ELON entered at 10.2 SOL when range was 4-7
-        if total_sol > self.max_sol:
-            logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol} - SKIP")
-            self.triggered_tokens.add(mint)  # Don't check again
-            return
+        # DISABLED: SOL ceiling - let tokens overshoot entry zone, we can still enter
+        # if total_sol > self.max_sol:
+        #     logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol} - SKIP")
+        #     self.triggered_tokens.add(mint)  # Don't check again
+        #     return
 
         # 1b. Sell activity check - require 2+ recent sells to block (1 sell = normal profit taking)
         now_check = time.time()
@@ -664,15 +664,15 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # DISABLED: Max buyer velocity filter at 10/s
+        # RE-ENABLED: Max buyer velocity filter at 10/s
         # 4oZTd3yQ: 16.8/s = coordinated bots, instant dump (-10.4%)
         # YJ8PUzVJ: 4.7/s = organic FOMO, ran to 250 SOL
         # Only apply after 1s - at 0.0s, 3 buyers / 0.1s = 30/s is fake math, not coordination
-        # if age >= 1.0 and buyer_velocity > self.max_buyers_per_second:
-        #     logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
-        #     self.stats['skipped_velocity_high'] += 1
-        #     self.triggered_tokens.add(mint)
-        #     return
+        if age >= 1.0 and buyer_velocity > self.max_buyers_per_second:
+            logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
+            self.stats['skipped_velocity_high'] += 1
+            self.triggered_tokens.add(mint)
+            return
 
         # 4. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
