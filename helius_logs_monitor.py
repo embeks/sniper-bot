@@ -775,6 +775,13 @@ class HeliusLogsMonitor:
                 self.triggered_tokens.add(mint)
                 return
 
+            # Filter fake organic spread (high spread but clustered in only 2 slots = not real discovery)
+            if same_slot and unique_slots <= 2 and buyers >= 4:
+                logger.warning(f"❌ FAKE SPREAD: same_slot + only {unique_slots} unique slots + {buyers} buyers - skipping")
+                self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
+
         logger.info("=" * 60)
         
         # Trigger callback with enriched data
