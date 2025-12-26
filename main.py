@@ -1373,6 +1373,8 @@ class SniperBot:
                 position.largest_buy_pct = (helius_events.get('largest_buy', 0) / _entry_sol * 100) if helius_events and _entry_sol > 0 else 0
                 position.top2_concentration = helius_events.get('top2_concentration', 0) if helius_events else 0
                 position.bundled = helius_events.get('same_slot', False) if helius_events else False
+                position.unique_slots = helius_events.get('unique_slots', 0) if helius_events else 0
+                position.slot_spread = helius_events.get('slot_spread', 0) if helius_events else 0
                 position.buyer_velocity = (helius_events.get('buy_count', 0) / max(token_age, 0.1)) if helius_events else 0
                 position.buy_latency_ms = execution_time_ms
                 position.entry_slippage_pct = entry_slippage if 'entry_slippage' in locals() else 0
@@ -2402,6 +2404,8 @@ class SniperBot:
                 largest_buy_pct=getattr(position, 'largest_buy_pct', 0),
                 top2_concentration=getattr(position, 'top2_concentration', 0),
                 bundled=getattr(position, 'bundled', False),
+                unique_slots=getattr(position, 'unique_slots', 0),
+                slot_spread=getattr(position, 'slot_spread', 0),
                 exit_reason=reason,
                 hold_secs=hold_time,
                 peak_time_sec=peak_time_sec,
