@@ -768,6 +768,13 @@ class HeliusLogsMonitor:
             logger.info(f"   📊 SLOT DATA: creation={creation_slot}, first_buy={first_buy_slot}, same_slot={first_buy_slot == creation_slot}")
             logger.info(f"   📊 SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} buys in creation slot, {unique_slots} unique slots, spread={slot_spread}")
 
+            # Filter coordinated instant rugs (all buyers in same slot = knew launch time)
+            if unique_slots == 1 and buyers >= 4:
+                logger.warning(f"❌ COORDINATED SNIPERS: {buyers} buys all in 1 slot (spread=0) - skipping")
+                self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
+
         logger.info("=" * 60)
         
         # Trigger callback with enriched data
