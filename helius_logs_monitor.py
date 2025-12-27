@@ -27,6 +27,8 @@ from config import (
     SELL_BURST_COUNT, SELL_BURST_WINDOW,
     CURVE_MOMENTUM_WINDOW_RECENT, CURVE_MOMENTUM_WINDOW_OLDER, CURVE_MOMENTUM_MIN_GROWTH,
     ENABLE_DEV_TOKEN_FILTER,
+    # NEW: Cluster cooldown for coordinated launches
+    CLUSTER_COOLDOWN_AGE, CLUSTER_MIN_RECENT_BUYS,
 )
 from dev_token_filter import get_dev_token_count
 from solders.pubkey import Pubkey
@@ -774,19 +776,35 @@ class HeliusLogsMonitor:
             logger.info(f"   📊 SLOT DATA: creation={creation_slot}, first_buy={first_buy_slot}, same_slot={first_buy_slot == creation_slot}")
             logger.info(f"   📊 SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} buys in creation slot, {unique_slots} unique slots, spread={slot_spread}")
 
-            # Filter coordinated launches (first buy in creation slot + tight spread = knew launch time)
-            if same_slot and slot_spread <= 2 and buyers >= 5:
-                logger.warning(f"❌ COORDINATED LAUNCH: same_slot + spread={slot_spread} + {buyers} buyers - skipping")
-                self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+            # CLUSTER COOLDOWN: High clustering + young age = WAIT, don't permanently skip
+            # Coordinated launches CAN be runners - we just can't tell at 0.5s
+            # At 2s+, dumps have stopped buying, runners still have new buyers
+            slot_clustering_pct = (same_slot_buys / len(buy_slots)) if buy_slots else 0
 
-            # Filter fake organic spread (high spread but clustered in only 2 slots = not real discovery)
-            if same_slot and unique_slots <= 2 and buyers >= 4:
-                logger.warning(f"❌ FAKE SPREAD: same_slot + only {unique_slots} unique slots + {buyers} buyers - skipping")
-                self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+            is_coordinated_pattern = (
+                (same_slot and slot_spread <= 2 and buyers >= 5) or
+                (same_slot and unique_slots <= 2 and buyers >= 4)
+            )
+
+            if is_coordinated_pattern:
+                if age < CLUSTER_COOLDOWN_AGE:
+                    # TOO YOUNG TO TELL - wait for demand confirmation
+                    logger.info(f"⏳ CLUSTER COOLDOWN: {slot_clustering_pct:.0%} clustering, age {age:.1f}s < {CLUSTER_COOLDOWN_AGE}s - waiting for demand confirmation")
+                    # DO NOT add to triggered_tokens - will re-check on next buy event
+                    return
+                else:
+                    # AGE >= CLUSTER_COOLDOWN_AGE - check if demand continued
+                    recent_buys = len([t for t in state.get('buy_timestamps', []) if time.time() - t < CLUSTER_COOLDOWN_AGE])
+                    if recent_buys >= CLUSTER_MIN_RECENT_BUYS:
+                        # Demand continued after coordinated start - likely real runner
+                        logger.info(f"✅ CLUSTER PASSED: {slot_clustering_pct:.0%} clustering BUT {recent_buys} buys in last {CLUSTER_COOLDOWN_AGE}s - demand confirmed")
+                        # Continue to entry (don't return)
+                    else:
+                        # No follow-through buying - coordinated dump
+                        logger.warning(f"❌ CLUSTER FAILED: {slot_clustering_pct:.0%} clustering + only {recent_buys} recent buys - skipping")
+                        self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
+                        self.triggered_tokens.add(mint)
+                        return
 
         logger.info("=" * 60)
         
