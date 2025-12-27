@@ -673,16 +673,28 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # WHALE PUMP DETECTION: High velocity + large average buy = coordinated whales, not organic FOMO
-        # CqtAhFdW: 17.35 SOL/s + 3.3 SOL/buyer = instant rug
-        # 8ghpx5cU: 3.12 SOL/s + 0.43 SOL/buyer = organic runner
-        if velocity > WHALE_VELOCITY_THRESHOLD:
+        # WHALE PUMP DETECTION: High velocity + large average buy = coordinated whales
+        # Uses COOLDOWN approach like cluster detection - wait and confirm demand dies
+        # CqtAhFdW: 17.35 SOL/s + 3.3 SOL/buyer = instant rug (no continued buying)
+        # FCHVCk2y: 7.0 SOL/buyer initially BUT continued buying for 60s = tradeable
+        if age >= 1.0 and velocity > WHALE_VELOCITY_THRESHOLD:
             sol_per_buyer = total_sol / buyers if buyers > 0 else 999
             if sol_per_buyer > WHALE_SOL_PER_BUYER_MAX:
-                logger.warning(f"❌ WHALE PUMP: {velocity:.1f} SOL/s + {sol_per_buyer:.1f} SOL/buyer (max {WHALE_SOL_PER_BUYER_MAX} at high velocity)")
-                self.stats['skipped_whale_pump'] = self.stats.get('skipped_whale_pump', 0) + 1
-                self.triggered_tokens.add(mint)
-                return
+                if age < CLUSTER_COOLDOWN_AGE:
+                    # TOO YOUNG - wait for demand confirmation (same logic as cluster cooldown)
+                    logger.info(f"⏳ WHALE COOLDOWN: {velocity:.1f} SOL/s + {sol_per_buyer:.1f} SOL/buyer, age {age:.1f}s - waiting")
+                    return  # Don't add to triggered_tokens, will re-check on next buy
+                else:
+                    # Check if organic buying continued after whale start
+                    recent_buys = len([t for t in state.get('buy_timestamps', []) if time.time() - t < CLUSTER_COOLDOWN_AGE])
+                    if recent_buys >= CLUSTER_MIN_RECENT_BUYS:
+                        logger.info(f"✅ WHALE PASSED: Whale start BUT {recent_buys} buys in last {CLUSTER_COOLDOWN_AGE}s - tradeable window exists")
+                        # Continue to entry - exit logic handles eventual dump
+                    else:
+                        logger.warning(f"❌ WHALE FAILED: {velocity:.1f} SOL/s + {sol_per_buyer:.1f} SOL/buyer + only {recent_buys} recent buys - instant dump")
+                        self.stats['skipped_whale_pump'] = self.stats.get('skipped_whale_pump', 0) + 1
+                        self.triggered_tokens.add(mint)
+                        return
 
         # 4. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
