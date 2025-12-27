@@ -788,12 +788,17 @@ class HeliusLogsMonitor:
                 if is_whale_pump_now:
                     still_failing.append(f"whale_pump {velocity:.1f}SOL/s + {sol_per_buyer_now:.1f}SOL/buyer")
 
-                if still_failing or recent_buys < CLUSTER_MIN_RECENT_BUYS:
-                    reason = ", ".join(still_failing) if still_failing else "filters passed"
-                    logger.warning(f"❌ COOLDOWN FAILED: [{reason}] + {recent_buys} recent buys < {CLUSTER_MIN_RECENT_BUYS}")
+                if still_failing:
+                    # Filters still failing after cooldown - permanent reject
+                    logger.warning(f"❌ COOLDOWN FAILED: [{', '.join(still_failing)}] still failing after {CLUSTER_COOLDOWN_AGE}s")
                     self.stats['skipped_cooldown_failed'] = self.stats.get('skipped_cooldown_failed', 0) + 1
                     self.triggered_tokens.add(mint)
                     del self.cooldown_tokens[mint]
+                    return
+                elif recent_buys < CLUSTER_MIN_RECENT_BUYS:
+                    # Filters passed but not enough recent buys - retry on next buy
+                    logger.info(f"⏳ COOLDOWN: Filters passed but {recent_buys} < {CLUSTER_MIN_RECENT_BUYS} recent buys - will retry")
+                    del self.cooldown_tokens[mint]  # Clear cooldown so next buy gets fresh check
                     return
                 else:
                     # All passed!
