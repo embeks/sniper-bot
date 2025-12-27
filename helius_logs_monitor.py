@@ -29,6 +29,7 @@ from config import (
     ENABLE_DEV_TOKEN_FILTER,
     # NEW: Cluster cooldown for coordinated launches
     CLUSTER_COOLDOWN_AGE, CLUSTER_MIN_RECENT_BUYS,
+    WHALE_VELOCITY_THRESHOLD, WHALE_SOL_PER_BUYER_MAX,
 )
 from dev_token_filter import get_dev_token_count
 from solders.pubkey import Pubkey
@@ -671,6 +672,17 @@ class HeliusLogsMonitor:
             self.stats['skipped_velocity_high'] += 1
             self.triggered_tokens.add(mint)
             return
+
+        # WHALE PUMP DETECTION: High velocity + large average buy = coordinated whales, not organic FOMO
+        # CqtAhFdW: 17.35 SOL/s + 3.3 SOL/buyer = instant rug
+        # 8ghpx5cU: 3.12 SOL/s + 0.43 SOL/buyer = organic runner
+        if velocity > WHALE_VELOCITY_THRESHOLD:
+            sol_per_buyer = total_sol / buyers if buyers > 0 else 999
+            if sol_per_buyer > WHALE_SOL_PER_BUYER_MAX:
+                logger.warning(f"❌ WHALE PUMP: {velocity:.1f} SOL/s + {sol_per_buyer:.1f} SOL/buyer (max {WHALE_SOL_PER_BUYER_MAX} at high velocity)")
+                self.stats['skipped_whale_pump'] = self.stats.get('skipped_whale_pump', 0) + 1
+                self.triggered_tokens.add(mint)
+                return
 
         # 4. Token age check (must be fresh for early entry)
         if age < self.min_token_age:
