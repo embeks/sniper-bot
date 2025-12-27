@@ -250,7 +250,11 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '10.0'))  # Re-enabled: 16.8/s = coordinated bots (4oZTd3yQ), 4.7/s = organic (YJ8PUzVJ)
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '75.0'))  # Re-enabled: 98%, 89.9% = instant rugs
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '60.0'))  # Lowered: 64.6% top-2 = J14tmvNR rug
+
+# WHALE PUMP DETECTION (high velocity + large average buys = coordinated pump)
+WHALE_VELOCITY_THRESHOLD = float(os.getenv('WHALE_VELOCITY_THRESHOLD', '12.0'))  # SOL/s trigger
+WHALE_SOL_PER_BUYER_MAX = float(os.getenv('WHALE_SOL_PER_BUYER_MAX', '2.0'))  # Max avg buy size at high velocity
 
 # SELL BURST DETECTION (timing-based, not count-based)
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump
