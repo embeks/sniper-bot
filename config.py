@@ -34,6 +34,7 @@ BACKUP_RPC_ENDPOINTS = [
 JITO_ENABLED = os.getenv('JITO_ENABLED', 'true').lower() == 'true'
 JITO_TIP_AMOUNT_SOL = float(os.getenv('JITO_TIP_SOL', '0.003'))  # Default 0.005 SOL - increased for better tx landing
 JITO_TIP_AGGRESSIVE_SOL = float(os.getenv('JITO_TIP_AGGRESSIVE_SOL', '0.003'))  # For 0-sell tokens
+JITO_TIP_SELL_SOL = float(os.getenv('JITO_TIP_SELL_SOL', '0.001'))  # Lower tip for sells (less time-critical)
 
 # Jito Block Engine endpoints (rotate randomly to reduce contention)
 JITO_ENDPOINTS = [
@@ -142,7 +143,7 @@ TIER1_INFLOW_WINDOW_SEC = 2.0         # Check inflow over 2 seconds
 TIER1_INFLOW_DEATH_THRESHOLD = 0.3    # If recent inflow < 30% of previous window, momentum dead
 
 # Tier 2: 15+ SOL - exit on 30% drop from peak
-TIER2_DROP_FROM_PEAK_PCT = 0.30       # 30% drop from peak
+TIER2_DROP_FROM_PEAK_PCT = 0.20       # 20% drop from peak (tighter exit for better fills)
 
 # ============================================
 # MOMENTUM EXIT SETTINGS
