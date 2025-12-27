@@ -264,6 +264,10 @@ CURVE_MOMENTUM_WINDOW_RECENT = float(os.getenv('CURVE_MOMENTUM_WINDOW_RECENT', '
 CURVE_MOMENTUM_WINDOW_OLDER = float(os.getenv('CURVE_MOMENTUM_WINDOW_OLDER', '5.0'))    # Older window (seconds)
 CURVE_MOMENTUM_MIN_GROWTH = float(os.getenv('CURVE_MOMENTUM_MIN_GROWTH', '1.02'))       # Min 2% growth required
 
+# CLUSTER COOLDOWN (demand confirmation for coordinated launches)
+CLUSTER_COOLDOWN_AGE = float(os.getenv('CLUSTER_COOLDOWN_AGE', '2.0'))  # Wait this long before judging clustered tokens
+CLUSTER_MIN_RECENT_BUYS = int(os.getenv('CLUSTER_MIN_RECENT_BUYS', '2'))  # Need this many buys in last 2s to confirm demand
+
 # ============================================
 # DEX CONFIGURATION
 # ============================================
