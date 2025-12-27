@@ -749,32 +749,16 @@ class HeliusLogsMonitor:
         # Protection comes from: slippage rejection, drift correction during monitoring,
         # and RPC rug detection during monitoring (token exists by then)
 
-        # ===== ALL CONDITIONS MET =====
-        self.triggered_tokens.add(mint)
-        self.stats['triggers'] += 1
-
-        logger.info("=" * 60)
-        logger.info(f"🚀 EARLY ENTRY: {mint}")
-        logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
-        logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
-        logger.info(f"   Sells: {sell_count} (recent: {recent_sells_burst} in {self.sell_burst_window}s)")
-        logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
-        logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
-        logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
-        logger.info(f"   Buyer velocity: {buyer_velocity:.1f}/s (max: {self.max_buyers_per_second})")
-        logger.info(f"   Curve momentum: ✅ Growing")
-        logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
-
-        # NEW: Slot analysis logging
+        # CLUSTER COOLDOWN CHECK - must happen BEFORE triggered_tokens.add()
+        # so WAIT logic can re-check on next buy event
         creation_slot = state.get('creation_slot')
         buy_slots = state.get('buy_slots', [])
         if creation_slot and buy_slots:
             first_buy_slot = buy_slots[0] if buy_slots else None
+            same_slot = (first_buy_slot == creation_slot)
             same_slot_buys = len([s for s in buy_slots if s == creation_slot])
             unique_slots = len(set(buy_slots))
             slot_spread = max(buy_slots) - min(buy_slots) if len(buy_slots) > 1 else 0
-            logger.info(f"   📊 SLOT DATA: creation={creation_slot}, first_buy={first_buy_slot}, same_slot={first_buy_slot == creation_slot}")
-            logger.info(f"   📊 SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} buys in creation slot, {unique_slots} unique slots, spread={slot_spread}")
 
             # CLUSTER COOLDOWN: High clustering + young age = WAIT, don't permanently skip
             # Coordinated launches CAN be runners - we just can't tell at 0.5s
@@ -805,6 +789,27 @@ class HeliusLogsMonitor:
                         self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
                         self.triggered_tokens.add(mint)
                         return
+
+        # ===== ALL CONDITIONS MET =====
+        self.triggered_tokens.add(mint)
+        self.stats['triggers'] += 1
+
+        logger.info("=" * 60)
+        logger.info(f"🚀 EARLY ENTRY: {mint}")
+        logger.info(f"   SOL: {total_sol:.2f} (range: {self.min_sol}-{self.max_sol})")
+        logger.info(f"   Buyers: {buyers} (min: {self.min_buyers})")
+        logger.info(f"   Sells: {sell_count} (recent: {recent_sells_burst} in {self.sell_burst_window}s)")
+        logger.info(f"   Largest buy: {largest_buy_pct:.1f}% (max: {self.max_single_buy_percent}%)")
+        logger.info(f"   Top-2 concentration: {top2_pct:.1f}% (max: {self.max_top2_percent}%)")
+        logger.info(f"   Velocity: {velocity:.2f} SOL/s (min: {self.min_velocity})")
+        logger.info(f"   Buyer velocity: {buyer_velocity:.1f}/s (max: {self.max_buyers_per_second})")
+        logger.info(f"   Curve momentum: ✅ Growing")
+        logger.info(f"   Age: {age:.1f}s (max: {self.max_token_age}s)")
+
+        # Slot analysis logging (variables already calculated above)
+        if creation_slot and buy_slots:
+            logger.info(f"   📊 SLOT DATA: creation={creation_slot}, first_buy={first_buy_slot}, same_slot={same_slot}")
+            logger.info(f"   📊 SLOT CLUSTERING: {same_slot_buys}/{len(buy_slots)} buys in creation slot, {unique_slots} unique slots, spread={slot_spread}")
 
         logger.info("=" * 60)
         
