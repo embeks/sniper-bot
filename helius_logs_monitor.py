@@ -61,6 +61,7 @@ class HeliusLogsMonitor:
         # Token state tracking
         self.watched_tokens: Dict[str, dict] = {}
         self.triggered_tokens: Set[str] = set()  # Don't re-trigger
+        self.cooldown_tokens: Dict[str, float] = {}  # mint -> cooldown_start_time
 
         # Track creator launches - skip serial scammers
         self.creator_launches: Dict[str, int] = {}  # creator -> launch count
@@ -229,6 +230,9 @@ class HeliusLogsMonitor:
                 final_sol = self.watched_tokens[mint]['total_sol']
                 logger.debug(f"🗑️ Stopped watching {mint[:8]}... (timed out at {final_sol:.2f} SOL)")
                 del self.watched_tokens[mint]
+                # Also clean up cooldown tracking
+                if mint in self.cooldown_tokens:
+                    del self.cooldown_tokens[mint]
     
     async def _process_log_notification(self, params: Dict):
         """Process incoming log notification - detect event type and route"""
@@ -663,67 +667,15 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # RE-ENABLED: Max buyer velocity filter at 10/s
-        # 4oZTd3yQ: 16.8/s = coordinated bots, instant dump (-10.4%)
-        # YJ8PUzVJ: 4.7/s = organic FOMO, ran to 250 SOL
-        # Only apply after 1s - at 0.0s, 3 buyers / 0.1s = 30/s is fake math, not coordination
-        if age >= 1.0 and buyer_velocity > self.max_buyers_per_second:
-            logger.warning(f"❌ Buyer velocity too high: {buyer_velocity:.1f}/s (max {self.max_buyers_per_second}) - likely coordinated")
-            self.stats['skipped_velocity_high'] += 1
-            self.triggered_tokens.add(mint)
-            return
+        # ===== PERMANENT FILTERS (instant reject, no cooldown) =====
 
-        # WHALE PUMP DETECTION: High velocity + large average buy = coordinated whales
-        # Uses COOLDOWN approach like cluster detection - wait and confirm demand dies
-        # CqtAhFdW: 17.35 SOL/s + 3.3 SOL/buyer = instant rug (no continued buying)
-        # FCHVCk2y: 7.0 SOL/buyer initially BUT continued buying for 60s = tradeable
-        if age >= 1.0 and velocity > WHALE_VELOCITY_THRESHOLD:
-            sol_per_buyer = total_sol / buyers if buyers > 0 else 999
-            if sol_per_buyer > WHALE_SOL_PER_BUYER_MAX:
-                if age < CLUSTER_COOLDOWN_AGE:
-                    # TOO YOUNG - wait for demand confirmation (same logic as cluster cooldown)
-                    logger.info(f"⏳ WHALE COOLDOWN: {velocity:.1f} SOL/s + {sol_per_buyer:.1f} SOL/buyer, age {age:.1f}s - waiting")
-                    return  # Don't add to triggered_tokens, will re-check on next buy
-                else:
-                    # Check if organic buying continued after whale start
-                    recent_buys = len([t for t in state.get('buy_timestamps', []) if time.time() - t < CLUSTER_COOLDOWN_AGE])
-                    if recent_buys >= CLUSTER_MIN_RECENT_BUYS:
-                        logger.info(f"✅ WHALE PASSED: Whale start BUT {recent_buys} buys in last {CLUSTER_COOLDOWN_AGE}s - tradeable window exists")
-                        # Continue to entry - exit logic handles eventual dump
-                    else:
-                        logger.warning(f"❌ WHALE FAILED: {velocity:.1f} SOL/s + {sol_per_buyer:.1f} SOL/buyer + only {recent_buys} recent buys - instant dump")
-                        self.stats['skipped_whale_pump'] = self.stats.get('skipped_whale_pump', 0) + 1
-                        self.triggered_tokens.add(mint)
-                        return
-
-        # 4. Token age check (must be fresh for early entry)
-        if age < self.min_token_age:
-            logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
-            return
-
+        # Token age check - max age is permanent reject
         if age > self.max_token_age:
             logger.warning(f"❌ Token too old: {age:.1f}s (max {self.max_token_age}s)")
             self.triggered_tokens.add(mint)
             return
 
-        # ===== NEW FILTERS (21-trade baseline learnings) =====
-
-        # 7. Top-2 concentration check - blocks coordinated entries
-        # Always check regardless of buyer count - 96% concentration = death
-        if top2_pct > self.max_top2_percent:
-            logger.warning(f"❌ Top-2 wallet concentration: {top2_pct:.1f}% (max {self.max_top2_percent}%)")
-            self.stats['skipped_top2'] += 1
-            self.triggered_tokens.add(mint)
-            return
-
-        # 6. Single wallet concentration check
-        if largest_buy_pct > self.max_single_buy_percent:
-            logger.warning(f"❌ Single wallet too large: {largest_buy_pct:.1f}% (max {self.max_single_buy_percent}%)")
-            self.stats['skipped_single_wallet'] = self.stats.get('skipped_single_wallet', 0) + 1
-            self.triggered_tokens.add(mint)
-            return
-
-        # 8. NEW: Dev buy filter - creator buying tokens = guaranteed dump
+        # Dev buy filter - creator buying tokens = guaranteed dump
         dev_buys = state.get('dev_buys', 0)
         if dev_buys > 0:
             logger.warning(f"❌ Dev bought tokens: {dev_buys} buys ({state.get('dev_sol', 0):.2f} SOL)")
@@ -731,7 +683,7 @@ class HeliusLogsMonitor:
             self.triggered_tokens.add(mint)
             return
 
-        # 9. Serial creator filter - moved from create to see full token data
+        # Serial creator filter
         creator = state.get('creator')
         if creator:
             creator_count = self.creator_launches.get(creator, 0)
@@ -741,52 +693,36 @@ class HeliusLogsMonitor:
                 self.triggered_tokens.add(mint)
                 return
 
-        # 10. BUNDLED + SLOT CLUSTERING DETECTION
-        # DISABLED: 100% of runners tonight were bundled/coordinated launches
-        # Coordinated launches ARE the market - this filter skipped 5 runners (17x, 15x, 15x, 3x, 3x)
+        # Token age check - min age is wait (not reject)
+        if age < self.min_token_age:
+            logger.debug(f"   {mint[:8]}... too young: {age:.1f}s (need {self.min_token_age}s)")
+            return
+
+        # ===== IMPROVABLE FILTERS WITH UNIFIED COOLDOWN =====
+        # These filters CAN improve with more buyers, so we wait before rejecting
+
+        # Calculate improvable filter conditions
+        is_high_buyer_velocity = (age >= 1.0 and buyer_velocity > self.max_buyers_per_second)
+        is_top2_concentrated = (top2_pct > self.max_top2_percent)
+        is_single_wallet_concentrated = (largest_buy_pct > self.max_single_buy_percent)
+
+        # Cluster detection (coordinated pattern)
         creation_slot = state.get('creation_slot')
         buy_slots = state.get('buy_slots', [])
-        if creation_slot and buy_slots:
-            first_buy_slot = buy_slots[0]
-            same_slot = first_buy_slot == creation_slot
-            same_slot_buys = len([s for s in buy_slots if s == creation_slot])
-            clustering_pct = (same_slot_buys / len(buy_slots) * 100) if buy_slots else 0
+        is_coordinated_pattern = False
+        slot_clustering_pct = 0
+        first_buy_slot = None
+        same_slot = False
+        same_slot_buys = 0
+        unique_slots = 0
+        slot_spread = 0
 
-            # Log for analysis but DON'T skip
-            if same_slot:
-                logger.info(f"ℹ️ BUNDLED (allowed): First buy in creation slot - coordinated launches are normal")
-            if clustering_pct > 70:
-                logger.info(f"ℹ️ SLOT CLUSTERING (allowed): {same_slot_buys}/{len(buy_slots)} ({clustering_pct:.0f}%) buys in creation slot")
-
-        # 9. REMOVED: Dev holdings RPC check - adds latency, kept WebSocket-based dev buy detection above
-
-        # 10. DISABLED: Buyer distribution filter too strict for early entries
-        # Already protected by single wallet (45%) and top-2 concentration (60%) filters
-        # sol_per_buyer = total_sol / buyers if buyers > 0 else 999
-        # if sol_per_buyer > 0.75:
-        #     logger.warning(f"❌ Poor buyer distribution: {sol_per_buyer:.2f} SOL/buyer (max 0.75)")
-        #     self.stats['skipped_distribution'] = self.stats.get('skipped_distribution', 0) + 1
-        #     self.triggered_tokens.add(mint)
-        #     return
-
-        # NOTE: RPC validation removed - tokens too new for RPC to have indexed
-        # Protection comes from: slippage rejection, drift correction during monitoring,
-        # and RPC rug detection during monitoring (token exists by then)
-
-        # CLUSTER COOLDOWN CHECK - must happen BEFORE triggered_tokens.add()
-        # so WAIT logic can re-check on next buy event
-        creation_slot = state.get('creation_slot')
-        buy_slots = state.get('buy_slots', [])
         if creation_slot and buy_slots:
             first_buy_slot = buy_slots[0] if buy_slots else None
             same_slot = (first_buy_slot == creation_slot)
             same_slot_buys = len([s for s in buy_slots if s == creation_slot])
             unique_slots = len(set(buy_slots))
             slot_spread = max(buy_slots) - min(buy_slots) if len(buy_slots) > 1 else 0
-
-            # CLUSTER COOLDOWN: High clustering + young age = WAIT, don't permanently skip
-            # Coordinated launches CAN be runners - we just can't tell at 0.5s
-            # At 2s+, dumps have stopped buying, runners still have new buyers
             slot_clustering_pct = (same_slot_buys / len(buy_slots)) if buy_slots else 0
 
             is_coordinated_pattern = (
@@ -794,25 +730,74 @@ class HeliusLogsMonitor:
                 (same_slot and unique_slots <= 2 and buyers >= 4)
             )
 
-            if is_coordinated_pattern:
-                if age < CLUSTER_COOLDOWN_AGE:
-                    # TOO YOUNG TO TELL - wait for demand confirmation
-                    logger.info(f"⏳ CLUSTER COOLDOWN: {slot_clustering_pct:.0%} clustering, age {age:.1f}s < {CLUSTER_COOLDOWN_AGE}s - waiting for demand confirmation")
-                    # DO NOT add to triggered_tokens - will re-check on next buy event
+        # Collect failed improvable filters
+        failed_filters = []
+        if is_high_buyer_velocity:
+            failed_filters.append(f"buyer_velocity {buyer_velocity:.1f}/s > {self.max_buyers_per_second}")
+        if is_top2_concentrated:
+            failed_filters.append(f"top2 {top2_pct:.1f}% > {self.max_top2_percent}%")
+        if is_single_wallet_concentrated:
+            failed_filters.append(f"largest_buy {largest_buy_pct:.1f}% > {self.max_single_buy_percent}%")
+        if is_coordinated_pattern:
+            failed_filters.append(f"coordinated {slot_clustering_pct:.0%}")
+
+        # If ANY improvable filter fails OR mint already in cooldown
+        if failed_filters or mint in self.cooldown_tokens:
+            # Start cooldown if not started
+            if mint not in self.cooldown_tokens:
+                self.cooldown_tokens[mint] = time.time()
+
+            cooldown_elapsed = time.time() - self.cooldown_tokens[mint]
+
+            if cooldown_elapsed < CLUSTER_COOLDOWN_AGE:
+                # Still in cooldown - wait
+                reasons = ", ".join(failed_filters) if failed_filters else "in cooldown"
+                logger.info(f"⏳ COOLDOWN: [{reasons}] - waiting ({cooldown_elapsed:.1f}s/{CLUSTER_COOLDOWN_AGE}s)")
+                return
+            else:
+                # Cooldown elapsed - RE-CHECK all improvable filters with current state
+                # Recalculate buyer velocity with current data
+                buyer_velocity_now = buy_count / max(age, 0.1)
+                is_high_buyer_velocity_now = (age >= 1.0 and buyer_velocity_now > self.max_buyers_per_second)
+                is_top2_concentrated_now = (top2_pct > self.max_top2_percent)
+                is_single_wallet_concentrated_now = (largest_buy_pct > self.max_single_buy_percent)
+                # Coordinated pattern doesn't change - same slot data
+                is_coordinated_pattern_now = is_coordinated_pattern
+
+                # Check demand confirmation
+                recent_buys = len([t for t in state.get('buy_timestamps', []) if time.time() - t < CLUSTER_COOLDOWN_AGE])
+
+                # Collect still-failing filters
+                still_failing = []
+                if is_high_buyer_velocity_now:
+                    still_failing.append(f"buyer_velocity {buyer_velocity_now:.1f}/s")
+                if is_top2_concentrated_now:
+                    still_failing.append(f"top2 {top2_pct:.1f}%")
+                if is_single_wallet_concentrated_now:
+                    still_failing.append(f"largest_buy {largest_buy_pct:.1f}%")
+                if is_coordinated_pattern_now:
+                    still_failing.append(f"coordinated {slot_clustering_pct:.0%}")
+
+                if still_failing or recent_buys < CLUSTER_MIN_RECENT_BUYS:
+                    reason = ", ".join(still_failing) if still_failing else "filters passed"
+                    logger.warning(f"❌ COOLDOWN FAILED: [{reason}] + {recent_buys} recent buys < {CLUSTER_MIN_RECENT_BUYS}")
+                    self.stats['skipped_cooldown_failed'] = self.stats.get('skipped_cooldown_failed', 0) + 1
+                    self.triggered_tokens.add(mint)
+                    del self.cooldown_tokens[mint]
                     return
                 else:
-                    # AGE >= CLUSTER_COOLDOWN_AGE - check if demand continued
-                    recent_buys = len([t for t in state.get('buy_timestamps', []) if time.time() - t < CLUSTER_COOLDOWN_AGE])
-                    if recent_buys >= CLUSTER_MIN_RECENT_BUYS:
-                        # Demand continued after coordinated start - likely real runner
-                        logger.info(f"✅ CLUSTER PASSED: {slot_clustering_pct:.0%} clustering BUT {recent_buys} buys in last {CLUSTER_COOLDOWN_AGE}s - demand confirmed")
-                        # Continue to entry (don't return)
-                    else:
-                        # No follow-through buying - coordinated dump
-                        logger.warning(f"❌ CLUSTER FAILED: {slot_clustering_pct:.0%} clustering + only {recent_buys} recent buys - skipping")
-                        self.stats['skipped_coordinated'] = self.stats.get('skipped_coordinated', 0) + 1
-                        self.triggered_tokens.add(mint)
-                        return
+                    # All passed!
+                    logger.info(f"✅ COOLDOWN PASSED: {recent_buys} recent buys confirmed demand")
+                    del self.cooldown_tokens[mint]
+                    # Continue to entry...
+
+        # BUNDLED + SLOT CLUSTERING INFO (logging only, no reject)
+        if creation_slot and buy_slots:
+            clustering_pct = (same_slot_buys / len(buy_slots) * 100) if buy_slots else 0
+            if same_slot:
+                logger.info(f"ℹ️ BUNDLED (allowed): First buy in creation slot - coordinated launches are normal")
+            if clustering_pct > 70:
+                logger.info(f"ℹ️ SLOT CLUSTERING (allowed): {same_slot_buys}/{len(buy_slots)} ({clustering_pct:.0f}%) buys in creation slot")
 
         # ===== ALL CONDITIONS MET =====
         self.triggered_tokens.add(mint)
