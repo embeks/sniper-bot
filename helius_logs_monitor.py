@@ -730,6 +730,10 @@ class HeliusLogsMonitor:
                 (same_slot and unique_slots <= 2 and buyers >= 4)
             )
 
+        # Whale pump detection (high velocity + large average buys = coordinated whales)
+        sol_per_buyer = total_sol / buyers if buyers > 0 else 999
+        is_whale_pump = (age >= 1.0 and velocity > WHALE_VELOCITY_THRESHOLD and sol_per_buyer > WHALE_SOL_PER_BUYER_MAX)
+
         # Collect failed improvable filters
         failed_filters = []
         if is_high_buyer_velocity:
@@ -740,6 +744,8 @@ class HeliusLogsMonitor:
             failed_filters.append(f"largest_buy {largest_buy_pct:.1f}% > {self.max_single_buy_percent}%")
         if is_coordinated_pattern:
             failed_filters.append(f"coordinated {slot_clustering_pct:.0%}")
+        if is_whale_pump:
+            failed_filters.append(f"whale_pump {velocity:.1f}SOL/s + {sol_per_buyer:.1f}SOL/buyer")
 
         # If ANY improvable filter fails OR mint already in cooldown
         if failed_filters or mint in self.cooldown_tokens:
@@ -763,6 +769,8 @@ class HeliusLogsMonitor:
                 is_single_wallet_concentrated_now = (largest_buy_pct > self.max_single_buy_percent)
                 # Coordinated pattern doesn't change - same slot data
                 is_coordinated_pattern_now = is_coordinated_pattern
+                sol_per_buyer_now = total_sol / buyers if buyers > 0 else 999
+                is_whale_pump_now = (age >= 1.0 and velocity > WHALE_VELOCITY_THRESHOLD and sol_per_buyer_now > WHALE_SOL_PER_BUYER_MAX)
 
                 # Check demand confirmation
                 recent_buys = len([t for t in state.get('buy_timestamps', []) if time.time() - t < CLUSTER_COOLDOWN_AGE])
@@ -777,6 +785,8 @@ class HeliusLogsMonitor:
                     still_failing.append(f"largest_buy {largest_buy_pct:.1f}%")
                 if is_coordinated_pattern_now:
                     still_failing.append(f"coordinated {slot_clustering_pct:.0%}")
+                if is_whale_pump_now:
+                    still_failing.append(f"whale_pump {velocity:.1f}SOL/s + {sol_per_buyer_now:.1f}SOL/buyer")
 
                 if still_failing or recent_buys < CLUSTER_MIN_RECENT_BUYS:
                     reason = ", ".join(still_failing) if still_failing else "filters passed"
