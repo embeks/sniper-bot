@@ -599,12 +599,12 @@ class LocalSwapBuilder:
                 recent_blockhash = blockhash_resp.value.blockhash
 
             # ===== ATTEMPT 1: JITO (same as buys) =====
-            from config import JITO_ENABLED, JITO_TIP_AMOUNT_SOL
+            from config import JITO_ENABLED, JITO_TIP_SELL_SOL
 
             sig = None
             if JITO_ENABLED:
-                # Use same tip as buys for priority
-                jito_tip_sol = JITO_TIP_AMOUNT_SOL  # 0.003 SOL
+                # Use lower tip for sells (less time-critical than buys)
+                jito_tip_sol = JITO_TIP_SELL_SOL  # 0.001 SOL (sells less time-critical)
                 tip_lamports = int(jito_tip_sol * 1e9)
                 tip_ix = self._build_jito_tip_instruction(tip_lamports)
 
