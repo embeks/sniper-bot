@@ -30,6 +30,8 @@ from config import (
     # NEW: Cluster cooldown for coordinated launches
     CLUSTER_COOLDOWN_AGE, CLUSTER_MIN_RECENT_BUYS,
     WHALE_VELOCITY_THRESHOLD, WHALE_SOL_PER_BUYER_MAX,
+    # NEW: Minimum sells filter
+    MIN_SELLS_HIGH_CURVE, HIGH_CURVE_SELL_THRESHOLD,
 )
 from dev_token_filter import get_dev_token_count
 from solders.pubkey import Pubkey
@@ -578,6 +580,13 @@ class HeliusLogsMonitor:
             logger.warning(f"❌ {mint[:8]}... overshot: {total_sol:.2f} > {self.max_sol} - SKIP")
             self.triggered_tokens.add(mint)  # Don't check again
             return
+
+        # 1c. Minimum sells filter - require profit-taking at higher curves
+        # 0 sells at high curve = bundlers holding everything = coordinated dump incoming
+        if total_sol >= HIGH_CURVE_SELL_THRESHOLD:
+            if state['sell_count'] < MIN_SELLS_HIGH_CURVE:
+                logger.warning(f"⏳ {mint[:8]}... no sells at {total_sol:.1f} SOL - waiting for profit-taking")
+                return  # Keep watching, don't permanently reject
 
         # 1b. Sell activity check - require 2+ recent sells to block (1 sell = normal profit taking)
         now_check = time.time()

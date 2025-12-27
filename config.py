@@ -135,14 +135,14 @@ MIN_EXIT_AGE_SECONDS = 8.0    # Min age before non-emergency exits
 # ============================================
 # TWO-TIER EXIT SYSTEM
 # ============================================
-# Tier 1: Under 15 SOL - exit on momentum death (inflow dies)
-TIER1_MAX_CURVE_SOL = 15.0  # Lowered from 25 - 2 SOL drop too sensitive above 15 SOL
+# Tier 1: Under 10 SOL - exit on momentum death (inflow dies)
+TIER1_MAX_CURVE_SOL = 10.0  # Lowered from 15 - allows 20% exit for 10+ SOL runners
 TIER1_CURVE_DROP_SOL = 1.0  # Exit when curve drops this much from peak (under TIER1_MAX_CURVE_SOL)
 TIER1_MIN_PROFIT_PCT = 20.0           # Must be up 20%+ before momentum exit activates
 TIER1_INFLOW_WINDOW_SEC = 2.0         # Check inflow over 2 seconds
 TIER1_INFLOW_DEATH_THRESHOLD = 0.3    # If recent inflow < 30% of previous window, momentum dead
 
-# Tier 2: 15+ SOL - exit on 30% drop from peak
+# Tier 2: 10+ SOL - exit on 20% drop from peak
 TIER2_DROP_FROM_PEAK_PCT = 0.20       # 20% drop from peak (tighter exit for better fills)
 
 # ============================================
@@ -272,6 +272,10 @@ CURVE_MOMENTUM_MIN_GROWTH = float(os.getenv('CURVE_MOMENTUM_MIN_GROWTH', '1.02')
 # CLUSTER COOLDOWN (demand confirmation for coordinated launches)
 CLUSTER_COOLDOWN_AGE = float(os.getenv('CLUSTER_COOLDOWN_AGE', '2.0'))  # Wait this long before judging clustered tokens
 CLUSTER_MIN_RECENT_BUYS = int(os.getenv('CLUSTER_MIN_RECENT_BUYS', '2'))  # Need this many buys in last 2s to confirm demand
+
+# MINIMUM SELLS FILTER (healthy profit-taking indicates organic flow)
+MIN_SELLS_HIGH_CURVE = int(os.getenv('MIN_SELLS_HIGH_CURVE', '1'))  # Require 1+ sells before entry at high curves
+HIGH_CURVE_SELL_THRESHOLD = float(os.getenv('HIGH_CURVE_SELL_THRESHOLD', '6.0'))  # Only applies above this curve level
 
 # ============================================
 # DEX CONFIGURATION
