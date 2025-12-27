@@ -296,16 +296,23 @@ class SniperBot:
 
         # ===========================================
         # TIER 1: Under 25 SOL - Exit on 2 SOL curve drop from peak
-        # Simple rule: if curve drops 2 SOL from peak, exit
-        # Strong tokens absorb dumps (curve stays up)
-        # Weak tokens collapse (curve drops)
+        # BUT check for active buying first - dips with buyers recover
         # ===========================================
         if peak_curve < TIER1_MAX_CURVE_SOL:
             curve_drop = peak_curve - current_curve
             if curve_drop >= TIER1_CURVE_DROP_SOL:
-                logger.warning(f"📉 CURVE DROP (Tier 1): Peak {peak_curve:.1f} → {current_curve:.1f} SOL (-{curve_drop:.1f})")
-                logger.warning(f"   P&L: {pnl_percent:+.1f}%")
-                return True, f"curve_drop_t1_{curve_drop:.1f}sol", pnl_percent
+                # Check if there's still active buying (dip vs dump)
+                flow_buys = state.get('flow_buys', [])
+                recent_buy_volume = sum(amt for t, amt in flow_buys if now - t < 3)
+
+                if recent_buy_volume >= 1.0:
+                    # Active buying during dip = likely recovery, hold
+                    logger.info(f"⚡ Curve drop ({curve_drop:.1f}) BUT {recent_buy_volume:.1f} SOL bought in 3s - HOLDING")
+                else:
+                    # No buying = real dump, exit
+                    logger.warning(f"📉 CURVE DROP (Tier 1): Peak {peak_curve:.1f} → {current_curve:.1f} SOL (-{curve_drop:.1f})")
+                    logger.warning(f"   P&L: {pnl_percent:+.1f}% | Recent buys: {recent_buy_volume:.2f} SOL")
+                    return True, f"curve_drop_t1_{curve_drop:.1f}sol", pnl_percent
 
         # ===========================================
         # TIER 2: 25+ SOL - 30% Drop From Peak
@@ -2354,6 +2361,7 @@ class SniperBot:
                 estimated_fees = 0.009
                 actual_fees_paid = estimated_fees
                 gross_sale_proceeds = 0
+                total_sol_received = 0  # Initialize for trade logger
                 final_pnl_sol = 0  # Unknown - don't add to totals
 
                 # Flag this trade as having unknown P&L

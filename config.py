@@ -250,7 +250,7 @@ MIN_TOKEN_AGE_SECONDS = float(os.getenv('MIN_TOKEN_AGE_SECONDS', '0.2'))   # Ent
 MAX_BUYERS_PER_SECOND = float(os.getenv('MAX_BUYERS_PER_SECOND', '10.0'))  # Re-enabled: 16.8/s = coordinated bots (4oZTd3yQ), 4.7/s = organic (YJ8PUzVJ)
 MAX_SELLS_AT_ENTRY = int(os.getenv('MAX_SELLS_AT_ENTRY', '5'))
 MIN_BUY_SELL_RATIO = float(os.getenv('MIN_BUY_SELL_RATIO', '1.5'))
-MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '100.0'))  # Disabled - logging only, won't block entries
+MAX_TOP2_BUY_PERCENT = float(os.getenv('MAX_TOP2_BUY_PERCENT', '75.0'))  # Re-enabled: 98%, 89.9% = instant rugs
 
 # SELL BURST DETECTION (timing-based, not count-based)
 SELL_BURST_COUNT = int(os.getenv('SELL_BURST_COUNT', '4'))        # Number of sells that indicates dump
