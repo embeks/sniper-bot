@@ -266,13 +266,9 @@ class HeliusLogsMonitor:
             logger.warning(f"🚫 BLACKLISTED CREATOR: {creator[:12]}... - skipping {mint[:12]}...")
             return
 
-        # Track and filter serial creators (scammers launch many tokens)
+        # Track creator launches (filter applied at entry evaluation, not here)
         if creator:
             self.creator_launches[creator] = self.creator_launches.get(creator, 0) + 1
-            if self.creator_launches[creator] > self.max_creator_launches:
-                logger.warning(f"🚫 SERIAL CREATOR: {creator[:12]}... launched {self.creator_launches[creator]} tokens - skipping")
-                self.stats['skipped_serial_creator'] += 1
-                return
 
         self.stats['creates'] += 1
 
@@ -708,6 +704,16 @@ class HeliusLogsMonitor:
             self.stats['skipped_dev'] = self.stats.get('skipped_dev', 0) + 1
             self.triggered_tokens.add(mint)
             return
+
+        # 9. Serial creator filter - moved from create to see full token data
+        creator = state.get('creator')
+        if creator:
+            creator_count = self.creator_launches.get(creator, 0)
+            if creator_count > self.max_creator_launches:
+                logger.warning(f"❌ SERIAL CREATOR: {creator[:12]}... launched {creator_count} tokens this session")
+                self.stats['skipped_serial_creator'] += 1
+                self.triggered_tokens.add(mint)
+                return
 
         # 10. BUNDLED + SLOT CLUSTERING DETECTION
         # DISABLED: 100% of runners tonight were bundled/coordinated launches
